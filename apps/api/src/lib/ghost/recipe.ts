@@ -13,9 +13,11 @@
 //  the network, so its access log (the hyperprox_metrics format) sees every
 //  request and Site metrics works with no changes.
 //
-//  The setup page is never open. nginx refuses POST to Ghost's setup endpoint
-//  for good, so nobody on the network can claim the site; HyperProx creates
-//  the owner over the container's loopback (lib/ghost/setup.ts).
+//  The setup page is never open. Until HyperProx has made the owner (over the
+//  container's loopback, lib/ghost/setup.ts) and read it back, nginx does not
+//  proxy to Ghost at all: it serves a holding page (503). Only then is the Ghost
+//  site turned on, and even then nginx refuses any write to the setup endpoint,
+//  in every case, versioned or not, for good.
 //
 //  Secrets are files. The database passwords (and the SMTP password, when
 //  there is one) are written to /opt/ghost/secrets, a folder only root can
@@ -23,16 +25,21 @@
 //  read through their *_FILE settings. They are never in an environment file,
 //  a compose file or a command line.
 //
-//  The images are pinned to one release each, never `latest`.
+//  The images are pinned to one release each by tag and digest, never `latest`.
 // =============================================================================
 
 import type { RecipeOption } from '../catalogue'
 import { LOG_FORMAT_LINE } from '../site-metrics/log-format'
 
 export const GHOST_RECIPE_ID = 'ghost'
-/** One Ghost release and one MySQL 8.4 LTS release; changing either is an upgrade, made on purpose. */
-export const GHOST_IMAGE = 'ghost:6.77.0'
-export const MYSQL_IMAGE = 'mysql:8.4.13'
+/**
+ * One Ghost release and one MySQL 8.4 LTS release, each by tag and by the digest of its multi-arch index, so the tag
+ * cannot be moved under a site. Changing either is an upgrade, made on purpose.
+ */
+export const GHOST_VERSION = '6.77.0'
+export const MYSQL_VERSION = '8.4.13'
+export const GHOST_IMAGE = `ghost:${GHOST_VERSION}@sha256:2e3ca97643ea2a8cde6d0c97fae15ff39bfb60714f5abaab3f65263a2ed7c2a7`
+export const MYSQL_IMAGE = `mysql:${MYSQL_VERSION}@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902`
 export const GHOST_DIR = '/opt/ghost'
 /** Where Ghost answers inside its container, published on the container's loopback only. */
 export const GHOST_PORT = 2368
@@ -74,6 +81,30 @@ export function checkGhostOptions(v: Record<string, string>): string[] {
 
 /** Whether these options turn mail on. */
 export const mailWanted = (v: Record<string, string>) => Boolean(v.GHOST_SMTP_HOST)
+
+/**
+ * Turns the Ghost site on in nginx (after the owner exists): the real site in, the holding page out, checked by nginx -t,
+ * reloaded. If the check fails the holding page stays. HyperProx reads the result back over HTTP afterwards.
+ */
+export const GHOST_OPEN_SCRIPT = [
+  'set -e',
+  '[ -f /etc/nginx/sites-available/ghost ]',
+  'ln -sf /etc/nginx/sites-available/ghost /etc/nginx/sites-enabled/ghost',
+  'rm -f /etc/nginx/sites-enabled/ghost-holding',
+  'if ! nginx -t >/dev/null 2>&1; then',
+  '  rm -f /etc/nginx/sites-enabled/ghost',
+  '  ln -sf /etc/nginx/sites-available/ghost-holding /etc/nginx/sites-enabled/ghost-holding',
+  '  echo "@@ghost nginx refused"; exit 1',
+  'fi',
+  'systemctl reload nginx',
+  // A reload is not instant: the old workers serve the holding page for a moment. Wait until it is gone.
+  'for i in $(seq 1 30); do',
+  '  C=$(curl -s -o /dev/null --max-time 5 -w "%{http_code}" http://127.0.0.1/ghost/api/admin/site/ || true)',
+  '  [ "$C" != 503 ] && [ "$C" != 000 ] && break',
+  '  sleep 1',
+  'done',
+  'echo "@@ghost open"',
+].join('\n')
 
 /**
  * The compose file. Constant: everything that differs per site is in ghost.env (plain settings, already checked)
@@ -137,6 +168,9 @@ secrets:
  * that is never sent.
  */
 export function ghostEnvFile(v: { url: string; smtpHost?: string; smtpPort?: string; smtpSecure?: string; smtpUser?: string; smtpFrom?: string }, verification = false): string {
+  // Compose reads env_file values with ${...} interpolation and quotes; none of these may hold a $, a quote, a space,
+  // a # or a line break, whatever checked them first.
+  for (const [k, x] of Object.entries(v)) if (x !== undefined && !/^[A-Za-z0-9._%+@=:/\[\]-]*$/.test(x)) throw new Error(`Ghost's ${k} holds a character its settings file cannot carry.`)
   const lines = [`url=${v.url}`, `security__staffDeviceVerification=${verification ? 'true' : 'false'}`]
   if (v.smtpHost) {
     lines.push('mail__transport=SMTP', `mail__options__host=${v.smtpHost}`, `mail__options__port=${v.smtpPort || '587'}`,
@@ -153,8 +187,32 @@ add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()" always;`
 
 /**
- * The site's nginx: the only listener on the network. It logs in the hyperprox_metrics format, refuses POST to the
- * setup endpoint for good, and passes the visitor's scheme as https when the site's address is https (it always sits
+ * What nginx serves while Ghost is being set up: a 503 for everything, never a proxy to Ghost, so nobody can reach its
+ * setup before HyperProx has made the owner. Logged in the metrics format like the site itself.
+ */
+export const GHOST_HOLDING_NGINX = String.raw`server {
+  listen 80 default_server;
+  listen [::]:80 default_server;
+  server_name _;
+  server_tokens off;
+  access_log /var/log/nginx/access.log hyperprox_metrics;
+  location / {
+    default_type text/plain;
+    return 503 "This site is being set up.
+";
+  }
+}`
+
+/**
+ * Any path Ghost's router would take as its setup endpoint: Express matches case-insensitively and Ghost accepts a
+ * version segment (/ghost/api/v4/admin/...), so this is a case-insensitive regex with an optional segment. nginx has
+ * already merged slashes and resolved dot segments and percent-encoding before it matches.
+ */
+export const SETUP_LOCATION_RE = String.raw`^/ghost/api/(?:[^/]+/)?admin/authentication/setup`
+
+/**
+ * The site's nginx, turned on only after the owner exists (lib/ghost/setup.ts ghost-open). It logs in the
+ * hyperprox_metrics format, refuses every write to the setup endpoint for good, and passes the visitor's scheme as https when the site's address is https (it always sits
  * behind the HTTPS proxy then), so Ghost never redirects in a loop. @XFP@ is filled in by the script. proxy_pass sits
  * in the server block itself (not an include), so site discovery reads it as a proxied site.
  */
@@ -175,9 +233,10 @@ export const GHOST_NGINX = String.raw`server {
   proxy_set_header Connection "";
   proxy_read_timeout 120s;
 
-  # Ghost's owner is made by HyperProx over the container's loopback. Nobody on the network can claim the site.
-  location ^~ /ghost/api/admin/authentication/setup {
-    if ($request_method = POST) { return 403; }
+  # Ghost's owner is made by HyperProx over the container's loopback. Nobody on the network can write to its setup,
+  # in any case and under any API version.
+  location ~* ` + SETUP_LOCATION_RE + String.raw` {
+    limit_except GET HEAD { deny all; }
     proxy_pass http://127.0.0.1:` + GHOST_PORT + String.raw`;
   }
   location / {
@@ -225,7 +284,7 @@ if [ -z "$GHOST_ENV_FILE" ]; then echo "The installer did not pass Ghost's setti
 cd $D
 # --quiet-pull keeps progress bars out of the output, so a failure's last lines are the error.
 docker compose up -d --quiet-pull
-echo "Ghost ` + GHOST_IMAGE.split(':')[1] + String.raw` and MySQL ` + MYSQL_IMAGE.split(':')[1] + String.raw` are starting (Ghost on 127.0.0.1:` + GHOST_PORT + String.raw` only)."
+echo "Ghost ` + GHOST_VERSION + String.raw` and MySQL ` + MYSQL_VERSION + String.raw` are starting (Ghost on 127.0.0.1:` + GHOST_PORT + String.raw` only)."
 
 cat > /etc/nginx/conf.d/hyperprox-metrics-log.conf <<'NGINX'
 # HyperProx site metrics: combined + $request_time + X-Forwarded-For.
@@ -240,9 +299,13 @@ cat > /etc/nginx/sites-available/ghost <<'NGINX'
 ` + GHOST_NGINX + String.raw`
 NGINX
 sed -i "s|@XFP@|$XFP|" /etc/nginx/sites-available/ghost
-ln -sf /etc/nginx/sites-available/ghost /etc/nginx/sites-enabled/ghost
-rm -f /etc/nginx/sites-enabled/default
+# Not turned on yet: until HyperProx has made the owner, nginx serves only the holding page.
+cat > /etc/nginx/sites-available/ghost-holding <<'NGINX'
+` + GHOST_HOLDING_NGINX + String.raw`
+NGINX
+rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/ghost
+ln -sf /etc/nginx/sites-available/ghost-holding /etc/nginx/sites-enabled/ghost-holding
 nginx -t
 systemctl enable nginx
 systemctl reload-or-restart nginx
-echo "nginx is serving Ghost on port 80, with its setup closed to the network."`).replace('@COMPOSE@', () => ghostCompose())
+echo "nginx is serving a holding page on port 80; Ghost is not reachable from the network until its owner exists."`).replace('@COMPOSE@', () => ghostCompose())

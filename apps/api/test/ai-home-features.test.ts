@@ -363,8 +363,8 @@ test("pull now: applied once, through the same script, audited, with no address 
 test("the ask-for-missing loop: kind, then name, then title, then email; a wrong name is asked again; cancel drops it", async () => {
   const a = app()
   let r = (await a.plan("I want a new website")).json()
-  assert.match(r.message, /static site .* or WordPress/)
-  assert.deepEqual(r.choices.map((c: any) => c.label), ["A static site", "WordPress"])
+  assert.match(r.message, /static site .*, WordPress, or Ghost/)
+  assert.deepEqual(r.choices.map((c: any) => c.label), ["A static site", "WordPress", "Ghost"])
   r = (await a.plan("WordPress")).json()
   assert.match(r.message, /What name should it answer on\? It must be under one of your domains: example\.com/)
   r = (await a.plan("blog.other.org")).json()

@@ -23,7 +23,7 @@ import { ARR_RECIPE } from './arr/recipe'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
-import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_IMAGE, MYSQL_IMAGE, checkGhostOptions } from './ghost/recipe'
+import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
 
 /** What a person does the first time they open the service. */
 export type FirstRun =
@@ -918,8 +918,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     wizard: false,
     firstLogin: 'Sign in at /ghost with the owner email you gave. Its password is generated, kept in the vault and shown once after the install; the database passwords and HyperProx’s Admin API key are in the same vault item.',
     notes: [
-      `Pinned: ${GHOST_IMAGE} and ${MYSQL_IMAGE}, in /opt/ghost/docker-compose.yml. An upgrade is a changed tag and \`docker compose up -d\`.`,
-      'Ghost listens on 127.0.0.1 only; the container’s nginx serves it on port 80 and refuses its setup page from the network for good. HyperProx makes the owner over the container’s loopback.',
+      `Pinned by tag and digest: Ghost ${GHOST_VERSION} and MySQL ${MYSQL_VERSION}, in /opt/ghost/docker-compose.yml. An upgrade is a changed tag and digest, then \`docker compose up -d\`.`,
+      'Ghost listens on 127.0.0.1 only; the container’s nginx shows only a holding page until HyperProx has made the owner over the container’s loopback, then serves Ghost on port 80 and refuses every write to its setup endpoint for good.',
       'Its url is the public https:// address when it is published, or the container’s own address on your network only.',
       'Mail is optional. Without an SMTP server Ghost cannot send staff invites, password resets, member sign-in links or newsletters.',
       'The database passwords are files only root can open, read by Ghost and MySQL as Docker secrets; never in a settings file or on a command line.',

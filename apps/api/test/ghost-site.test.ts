@@ -7,11 +7,12 @@ import { createHmac } from "node:crypto"
 import { CATALOGUE, findRecipe, checkOptions, healthProblem, wizardRecipes } from "../src/lib/catalogue"
 import { installScript, manualCommands } from "../src/lib/install-script"
 import {
-  GHOST_IMAGE, MYSQL_IMAGE, GHOST_SCRIPT, GHOST_NGINX, NO_MAIL, ghostCompose, ghostEnvFile, checkGhostOptions,
+  GHOST_IMAGE, MYSQL_IMAGE, GHOST_SCRIPT, GHOST_NGINX, GHOST_HOLDING_NGINX, GHOST_OPEN_SCRIPT, SETUP_LOCATION_RE, NO_MAIL,
+  ghostCompose, ghostEnvFile, checkGhostOptions,
 } from "../src/lib/ghost/recipe"
 import {
   runGhostSetup, requestScript, parseAnswer, ghostOverShell, adminToken, ghostPreview, ghostInstallEnv, pendingSmtpItem,
-  SETUP, type GhostHttp, type GhostRequest, type StepRef,
+  SETUP, SETUP_VARIANTS, openReadbackScript, parseOpenReadback, type GhostHttp, type GhostRequest, type StepRef,
 } from "../src/lib/ghost/setup"
 import { ghostStats, clearGhostStatsCache } from "../src/lib/ghost/stats"
 import { DETECT } from "../src/lib/catalogue-detect"
@@ -47,7 +48,7 @@ test("recipe: a first-class website next to WordPress, sized like it, env-admin 
   assert.ok(!wizardRecipes().includes(g))
   assert.ok(g.detect?.length)
   assert.ok(g.notes!.some(n => /^Not automatic yet: a backup job/.test(n)))
-  assert.ok(g.notes!.some(n => n.includes(GHOST_IMAGE) && n.includes(MYSQL_IMAGE)))
+  assert.ok(g.notes!.some(n => n.includes(GHOST_IMAGE.split(/[:@]/)[1]) && n.includes(MYSQL_IMAGE.split(/[:@]/)[1]) && /digest/.test(n)))
   assert.match(g.firstLogin!, /\/ghost/)
 })
 
@@ -88,8 +89,8 @@ test("options: owner and title required; SMTP host, user and sender checked; the
 
 test("compose: pinned images, Ghost on loopback only, MySQL healthy first, every password a secret file", () => {
   const c = ghostCompose()
-  assert.match(GHOST_IMAGE, /^ghost:\d+\.\d+\.\d+$/)
-  assert.match(MYSQL_IMAGE, /^mysql:8\.\d+\.\d+$/)
+  assert.match(GHOST_IMAGE, /^ghost:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/)
+  assert.match(MYSQL_IMAGE, /^mysql:8\.\d+\.\d+@sha256:[0-9a-f]{64}$/)
   assert.ok(c.includes(`image: ${GHOST_IMAGE}`) && c.includes(`image: ${MYSQL_IMAGE}`))
   assert.doesNotMatch(c, /:latest|image: ghost\s*$|image: mysql\s*$/m)
   assert.match(c, /ports:\n\s+- "127\.0\.0\.1:2368:2368"/)
@@ -139,7 +140,7 @@ test("script: secrets once, in an export, unset at once and written by the shell
   assert.match(GHOST_SCRIPT, /chmod 700 \$D\/secrets/)
   assert.match(GHOST_SCRIPT, /log_format hyperprox_metrics /)
   assert.match(GHOST_NGINX, /access_log \/var\/log\/nginx\/access\.log hyperprox_metrics;/)
-  assert.match(GHOST_NGINX, /location \^~ \/ghost\/api\/admin\/authentication\/setup \{\n\s+if \(\$request_method = POST\) \{ return 403; \}/)
+  assert.match(GHOST_NGINX, /location ~\* \S+authentication\/setup \{\n\s+limit_except GET HEAD \{ deny all; \}/)
   assert.equal((GHOST_NGINX.match(/proxy_pass http:\/\/127\.0\.0\.1:2368;/g) ?? []).length, 2, "proxy_pass in the server block, where discovery reads it")
   assert.match(GHOST_SCRIPT, /case "\$GHOST_URL" in https:\/\/\*\) XFP=https ;; \*\) XFP='\$scheme' ;; esac/)
   assert.ok(sh.includes(ghostCompose().trim()), "the compose file goes in whole")
@@ -210,14 +211,46 @@ const INPUT_G = (o: any = {}) => ({
   url: "https://blog.example.com", owner: { name: "Alex", email: "alex@example.com", password: OWNER_PW },
   title: "News", description: "From the team", mail: false, vault: { category: "apps", provider: "ghost-102" }, ...o,
 })
+/**
+ * nginx in the container, as far as the setup sees it: the holding page until the Ghost site is turned on, then the
+ * real config's rules (the setup regex, matched as nginx does: slashes merged, case-insensitive).
+ */
+class FakeNginx {
+  ghostOn = false
+  refuseConfig = false
+  answer(method: string, path: string): number {
+    if (!this.ghostOn) return 503
+    const p = path.replace(/\/{2,}/g, "/")
+    if (new RegExp(SETUP_LOCATION_RE, "i").test(p) && !["GET", "HEAD"].includes(method)) return 403
+    return 200
+  }
+}
+/** The container's shell for the setup: stop, mail, the nginx switch and its read-back. Every script is kept. */
+function fakeShell(n: FakeNginx, scripts: string[], o: { stopOk?: boolean } = {}) {
+  return async (s: string) => {
+    scripts.push(s)
+    if (/docker compose stop/.test(s)) { if (o.stopOk === false) return { code: 1, output: "" }; n.ghostOn = false; return { code: 0, output: "@@ghost stopped\n" } }
+    if (/staffDeviceVerification=true/.test(s)) return { code: 0, output: "@@ghost mail on\n" }
+    if (s === GHOST_OPEN_SCRIPT) { if (n.refuseConfig) return { code: 1, output: "@@ghost nginx refused\n" }; n.ghostOn = true; return { code: 0, output: "@@ghost open\n" } }
+    if (/^echo "HPXO site /m.test(s)) {
+      const codes = [...s.matchAll(/-X (\w+) .*?'http:\/\/127\.0\.0\.1([^']*)'/g)].map(m => n.answer(m[1], m[2]))
+      return { code: 0, output: `HPXO site ${codes[0]} setup ${codes.slice(1).join(" ")}\n` }
+    }
+    return { code: 0, output: "" }
+  }
+}
+/** The scripts that change something (not the read-back). */
+const acts = (scripts: string[]) => scripts.filter(x => !/^echo "HPXO site /m.test(x))
+
 function setupDeps(g: FakeGhost, o: any = {}) {
   const saved: Array<[string, string, Record<string, string>]> = [], scripts: string[] = []
+  const nginx: FakeNginx = o.nginx ?? new FakeNginx()
   return {
-    saved, scripts,
+    saved, scripts, nginx,
     d: {
       http: g.http, wait: async () => {}, now: Date.now,
       saveSecrets: async (c: string, p: string, v: Record<string, string>) => { saved.push([c, p, v]) },
-      sh: async (s: string) => { scripts.push(s); return { code: 0, output: /docker compose stop/.test(s) ? "@@ghost stopped\n" : /staffDeviceVerification/.test(s) ? "@@ghost mail on\n" : "" } },
+      sh: fakeShell(nginx, scripts),
       ...o,
     },
   }
@@ -238,14 +271,14 @@ test("setup: waits for Ghost, makes the owner, reads it back, makes the key, rea
     "GET /ghost/api/admin/settings/ +token",                  // read back with the key itself
     "DELETE /ghost/api/admin/session/ +cookie",
   ])
-  assert.deepEqual([...st.all.keys()], ["ghost-start", "ghost-owner", "ghost-key", "ghost-mail"])
-  assert.deepEqual([...st.all.values()].map(s => s.status), ["done", "done", "done", "skipped"])
+  assert.deepEqual([...st.all.keys()], ["ghost-start", "ghost-owner", "ghost-open", "ghost-key", "ghost-mail"])
+  assert.deepEqual([...st.all.values()].map(s => s.status), ["done", "done", "done", "done", "skipped"])
   assert.equal(st.all.get("ghost-mail")!.detail, NO_MAIL)
   assert.deepEqual(g.owner, { name: "Alex", email: "alex@example.com", password: OWNER_PW })
   assert.equal(g.settings.title, "News"); assert.equal(g.settings.description, "From the team")
   assert.deepEqual(saved, [["apps", "ghost-102", { admin_api_key: KEY }]])
   assert.equal(g.sessions.size, 0, "the owner's session was ended")
-  assert.deepEqual(scripts, [], "nothing was stopped and no mail change was made")
+  assert.deepEqual(acts(scripts), [GHOST_OPEN_SCRIPT], "only the nginx switch: nothing was stopped and no mail change was made")
   for (const s of st.all.values()) assert.ok(!String(s.detail ?? "").includes(KEY_SECRET) && !String(s.detail ?? "").includes(OWNER_PW))
 })
 
@@ -257,9 +290,10 @@ test("setup: an admin secret sent on its own is joined to its id into the same k
 })
 
 test("setup with mail: sign-in codes go back on after the session ends, and Ghost must come back", async () => {
-  const g = new FakeGhost(), { scripts, d } = setupDeps(g), st = steps()
+  const g = new FakeGhost(), { scripts: all, d } = setupDeps(g), st = steps()
   await runGhostSetup(INPUT_G({ mail: true }), st.step, d)
   assert.equal(st.all.get("ghost-mail")!.status, "done")
+  const scripts = acts(all).filter(x => x !== GHOST_OPEN_SCRIPT)
   assert.equal(scripts.length, 1)
   assert.match(scripts[0], /sed -i 's\/\^security__staffDeviceVerification=false\$\/security__staffDeviceVerification=true\/' ghost\.env/)
   assert.match(scripts[0], /docker compose up -d --quiet-pull ghost/)
@@ -269,7 +303,7 @@ test("setup with mail: sign-in codes go back on after the session ends, and Ghos
 test("never leave setup open: a refused owner stops Ghost and nginx, says why, and hides the password", async () => {
   const g = new FakeGhost()
   g.refuseOwner = { status: 422, body: JSON.stringify({ errors: [{ message: `Password ${OWNER_PW} is too weak.` }] }) }
-  const { scripts, d } = setupDeps(g), st = steps()
+  const { scripts, nginx, d } = setupDeps(g), st = steps()
   await assert.rejects(runGhostSetup(INPUT_G(), st.step, d), (e: any) => {
     assert.match(e.message, /Ghost refused the owner account \(422\): Password \[hidden\] is too weak\. Ghost and nginx were stopped/)
     assert.ok(!e.message.includes(OWNER_PW))
@@ -278,6 +312,8 @@ test("never leave setup open: a refused owner stops Ghost and nginx, says why, a
   assert.equal(scripts.length, 1)
   assert.match(scripts[0], /^cd \/opt\/ghost && docker compose stop >\/dev\/null 2>&1 && systemctl stop nginx && echo "@@ghost stopped"/)
   assert.ok(!g.calls.some(c => c.includes("session")), "no sign-in after a failed owner")
+  assert.ok(!scripts.includes(GHOST_OPEN_SCRIPT) && !nginx.ghostOn, "nginx never proxied to Ghost: the owner does not exist")
+  assert.equal(st.all.get("ghost-open"), undefined)
 })
 
 test("never leave setup open: an owner HyperProx did not make is not touched; no answer stops Ghost; a failed stop stops the container", async () => {
@@ -288,7 +324,7 @@ test("never leave setup open: an owner HyperProx did not make is not touched; no
 
   const silent = new FakeGhost(); silent.answering = false
   let stopped = false
-  const b = setupDeps(silent, { sh: async () => ({ code: 1, output: "" }), stopContainer: async () => { stopped = true; return true } })
+  const b = setupDeps(silent, { sh: fakeShell(new FakeNginx(), [], { stopOk: false }), stopContainer: async () => { stopped = true; return true } })
   await assert.rejects(runGhostSetup(INPUT_G(), steps().step, b.d), /did not answer.*within five minutes.*the whole container was stopped/)
   assert.ok(stopped)
 
@@ -306,6 +342,57 @@ test("never leave setup open: a key that does not read back stops Ghost, and the
     return true
   })
   assert.equal(g.sessions.size, 0, "the session ends even when a step after sign-in fails")
+})
+
+test("nginx: the install serves only a holding page; Ghost is proxied only by the switch after the owner exists", () => {
+  assert.doesNotMatch(GHOST_HOLDING_NGINX, /proxy_pass/)
+  assert.match(GHOST_HOLDING_NGINX, /return 503/)
+  assert.match(GHOST_HOLDING_NGINX, /access_log \/var\/log\/nginx\/access\.log hyperprox_metrics;/)
+  assert.match(GHOST_SCRIPT, /^ln -sf \/etc\/nginx\/sites-available\/ghost-holding \/etc\/nginx\/sites-enabled\/ghost-holding$/m)
+  assert.match(GHOST_SCRIPT, /^rm -f \/etc\/nginx\/sites-enabled\/default \/etc\/nginx\/sites-enabled\/ghost$/m)
+  assert.ok(!GHOST_SCRIPT.split("\n").some(l => /^ln /.test(l) && /sites-enabled\/ghost$/.test(l)), "the install never turns the Ghost site on")
+  assert.match(GHOST_OPEN_SCRIPT, /ln -sf \/etc\/nginx\/sites-available\/ghost \/etc\/nginx\/sites-enabled\/ghost/)
+  assert.match(GHOST_OPEN_SCRIPT, /nginx -t/)
+  assert.ok(GHOST_OPEN_SCRIPT.indexOf('systemctl reload nginx') < GHOST_OPEN_SCRIPT.indexOf('[ "$C" != 503 ]'), "waits for the reload to take over before saying it is open")
+  assert.match(GHOST_OPEN_SCRIPT, /ghost-holding \/etc\/nginx\/sites-enabled\/ghost-holding\n  echo "@@ghost nginx refused"/, "a refused config puts the holding page back")
+})
+
+test("nginx: the setup regex catches upper case, versioned, slash-less and doubled-slash forms; nothing else", () => {
+  const re = new RegExp(SETUP_LOCATION_RE, "i")
+  for (const p of SETUP_VARIANTS) assert.ok(re.test(p.replace(/\/{2,}/g, "/")), p)
+  for (const p of ["/ghost/api/admin/site/", "/ghost/api/admin/session/", "/ghost/api/content/posts/", "/blog/authentication/setup/", "/ghost/"]) assert.ok(!re.test(p), p)
+  assert.ok(GHOST_NGINX.includes(`location ~* ${SETUP_LOCATION_RE} {\n    limit_except GET HEAD { deny all; }`))
+  assert.ok(SETUP_VARIANTS.some(p => /v4/.test(p)) && SETUP_VARIANTS.some(p => p === p.toUpperCase()) && SETUP_VARIANTS.some(p => !p.endsWith("/")))
+})
+
+test("ghost-open: read back through nginx; one write that is not refused, or a refused config, stops Ghost", async () => {
+  assert.equal(parseOpenReadback("HPXO site 200 setup 403 403\n")!.site, 200)
+  assert.equal(parseOpenReadback("nothing"), null)
+  const sh = openReadbackScript("https://blog.example.com")
+  for (const p of SETUP_VARIANTS) for (const m of ["POST", "PUT"]) assert.ok(sh.includes(`-X ${m} `) && sh.includes(`'http://127.0.0.1${p}'`), `${m} ${p}`)
+  assert.match(sh, /-H 'Host: blog\.example\.com' -H 'X-Forwarded-Proto: https'/)
+
+  // Before the switch nginx answers 503 to all of it.
+  const n = new FakeNginx()
+  assert.deepEqual(SETUP_VARIANTS.map(p => n.answer("POST", p)), SETUP_VARIANTS.map(() => 503))
+
+  // An nginx whose rule missed the versioned form: Ghost is stopped and the job says which form.
+  class Leaky extends FakeNginx { answer(m: string, p: string) { return /\/v4\//.test(p) && this.ghostOn ? 201 : super.answer(m, p) } }
+  const leaky = new Leaky(), a = setupDeps(new FakeGhost(), { nginx: leaky })
+  a.d.sh = fakeShell(leaky, a.scripts)
+  await assert.rejects(runGhostSetup(INPUT_G(), steps().step, a.d), /a write to \/ghost\/api\/v4\/admin\/authentication\/setup\/ answered 201, not 403.*Ghost and nginx were stopped/)
+  assert.equal(leaky.ghostOn, false)
+
+  const refused = new FakeNginx(); refused.refuseConfig = true
+  const b = setupDeps(new FakeGhost(), { nginx: refused }); b.d.sh = fakeShell(refused, b.scripts)
+  await assert.rejects(runGhostSetup(INPUT_G(), steps().step, b.d), /nginx refused the Ghost site's configuration, so the holding page was kept/)
+})
+
+test("ghost.env refuses a $ or quote in any value; the sender address kind already refuses $", () => {
+  assert.throws(() => ghostEnvFile({ url: "https://blog.example.com", smtpHost: "smtp.example.com", smtpFrom: "a$b@example.com" }), /smtpFrom holds a character/)
+  assert.throws(() => ghostEnvFile({ url: "https://blog.example.com", smtpHost: "smtp.example.com", smtpUser: "a'b" }), /smtpUser/)
+  const g = findRecipe("ghost")!
+  assert.match(checkOptions(g, { GHOST_TITLE: "N", GHOST_OWNER_NAME: "A", GHOST_OWNER_EMAIL: "a@example.com", GHOST_SMTP_HOST: "smtp.example.com", GHOST_SMTP_FROM: "x${HOME}@example.com" }).errors.join(), /Send mail from.*not an email/)
 })
 
 // ── Requests over the node login ────────────────────────────────────────────
@@ -453,12 +540,13 @@ const GHOST_INPUT = (o: any = {}) => INPUT({ recipeId: "ghost", hostname: "blog"
 test("wizard: the plan holds no SMTP password; the run sets url to the public https name, sets Ghost up, publishes, and lists the site", async () => {
   const f = new FakePve(), vault = new MemVault(), g = new FakeGhost()
   const scripts: string[] = []
+  const nginx = new FakeNginx(), shell = fakeShell(nginx, scripts)
   let logged = ""
   const d = deps(f, {
     publish: publishFake(), saveSecrets: vault.saveSecrets, readSecrets: vault.readSecrets, deleteSecrets: vault.deleteSecrets,
     exec: async (o: any) => {
-      scripts.push(o.script); o.onData("Ghost 6.77.0 and MySQL 8.4.13 are starting\n")
-      return { code: 0, output: /staffDeviceVerification=true/.test(o.script) ? "@@ghost mail on\n" : "", timedOut: false } as any
+      if (/^set -e\nexport DEBIAN_FRONTEND/.test(o.script)) { scripts.push(o.script); o.onData("Ghost 6.77.0 and MySQL 8.4.13 are starting\n"); return { code: 0, output: "", timedOut: false } as any }
+      return { ...(await shell(o.script)), timedOut: false } as any
     },
     probe: async () => ({ status: 200, body: '{"site":{"title":"News","version":"6.77"}}' }),
     ghostHttp: (url: string) => { logged = url; return g.http },
@@ -473,7 +561,7 @@ test("wizard: the plan holds no SMTP password; the run sets url to the public ht
 
   const job = await settled((await applyPreview(r.preview!.id, "a@example.com", d)).jobId)
   assert.equal(job.status, "completed", job.error)
-  assert.deepEqual(job.steps.map(s => s.id), ["container", "network", "install", "ghost-start", "ghost-owner", "ghost-key", "ghost-mail",
+  assert.deepEqual(job.steps.map(s => s.id), ["container", "network", "install", "ghost-start", "ghost-owner", "ghost-open", "ghost-key", "ghost-mail",
     "verify", "wire", "proxy", "dns", "propagate", "cert", "public"])
   assert.equal(job.url, "https://blog.example.com")
   assert.equal(logged, "https://blog.example.com", "Ghost's requests carry the public name")
@@ -496,6 +584,8 @@ test("wizard: the plan holds no SMTP password; the run sets url to the public ht
   assert.match(job.log, /are starting/)
   const site = (await listSites()).find(s => s.jobId === job.jobId)!
   assert.deepEqual([site.recipeId, site.url, site.adminUser, site.vault], ["ghost", "https://blog.example.com", "alex@example.com", { category: "apps", provider: "ghost-102" }])
+  assert.equal(site.localUrl, "http://192.0.2.50:80", "a published site keeps its own address, which the card reads")
+  assert.ok(nginx.ghostOn)
 })
 
 test("wizard: a failed setup stops Ghost, fails the job before anything is published, and hides the password", async () => {
@@ -507,7 +597,7 @@ test("wizard: a failed setup stops Ghost, fails the job before anything is publi
   const d = deps(f, {
     publish: { ...pub, proxy: { ...pub.proxy, createHost: async () => { proxied++; return { hostId: "77" } } } },
     saveSecrets: vault.saveSecrets, readSecrets: vault.readSecrets, deleteSecrets: vault.deleteSecrets,
-    exec: async (o: any) => { scripts.push(o.script); return { code: 0, output: /docker compose stop/.test(o.script) ? "@@ghost stopped\n" : "", timedOut: false } as any },
+    exec: async (o: any) => ({ ...(await fakeShell(new FakeNginx(), scripts)(o.script)), timedOut: false }) as any,
     ghostHttp: () => g.http,
   })
   const r = await previewInstall(GHOST_INPUT({ options: { GHOST_TITLE: "News", GHOST_OWNER_NAME: "Alex", GHOST_OWNER_EMAIL: "alex@example.com" }, ghostSmtpPassword: undefined }), "a@example.com", d)
@@ -537,4 +627,32 @@ test("SMTP password: required with a user, kept only in the vault, and an instal
   const lan = await ghostInstallEnv({ options: { ...v, GHOST_SMTP_HOST: "", GHOST_SMTP_USER: "" }, ip: "192.0.2.50" }, vault)
   assert.equal(lan.env.GHOST_URL, "http://192.0.2.50", "on the LAN only, url is the container's own address")
   await assert.rejects(ghostInstallEnv({ options: v }, vault), /needs its address/)
+})
+
+// ── The AI assistant's website template ─────────────────────────────────────
+
+test("assistant: Ghost is a kind it offers, asks for the owner's email and name, and plans the Ghost options", async () => {
+  const { isWebsiteRequest, extractWebsite, nextQuestion, mergeWebsite, planWebsite } = await import("../src/lib/ai/templates/website")
+  assert.ok(isWebsiteRequest("Create a Ghost blog at news.example.com"))
+  assert.match(nextQuestion({}, { domains: ["example.com"] })!.question, /static site.*WordPress, or Ghost/)
+  assert.ok(nextQuestion({}, { domains: ["example.com"] })!.choices.includes("Ghost"))
+  let f = extractWebsite('Create a Ghost blog called "News" at news.example.com')
+  assert.deepEqual([f.kind, f.domain, f.title], ["ghost", "news.example.com", "News"])
+  assert.equal(nextQuestion(f, { domains: ["example.com"] })!.field, "adminEmail")
+  f = mergeWebsite(f, extractWebsite("alex@example.com", "adminEmail"))
+  assert.equal(nextQuestion(f, { domains: ["example.com"] })!.field, "ownerName")
+  f = mergeWebsite(f, extractWebsite("Alex Doe", "ownerName"))
+  assert.equal(f.ownerName, "Alex Doe")
+  assert.equal(nextQuestion(f, { domains: ["example.com"] }), null)
+  let sent: any = null
+  const r = await planWebsite(f as any, "a@example.com", ["example.com"], {
+    recipe: id => findRecipe(id), domains: async () => ["example.com"],
+    proxies: async () => [{ id: "npm-1", name: "Edge", kind: "npm", certificates: "request" }],
+    place: async () => ({ node: "node-a", storage: "pool", bridge: "vmbr0", vmid: 102, reason: "" }),
+    preview: async input => { sent = input; return { preview: { id: "p1", plan: { vmid: 102, hostname: "news", node: "node-a", cores: 2, memoryMb: 2048, diskGb: 10, storage: "pool" }, checks: [], warnings: [], expiresAt: 0 }, errors: [], warnings: [] } },
+  })
+  assert.equal(r.kind, "card")
+  assert.equal(sent.recipeId, "ghost")
+  assert.deepEqual(sent.options, { GHOST_TITLE: "News", GHOST_OWNER_EMAIL: "alex@example.com", GHOST_OWNER_NAME: "Alex Doe" })
+  assert.deepEqual([sent.cores, sent.memoryMb, sent.diskGb], [2, 2048, 10])
 })

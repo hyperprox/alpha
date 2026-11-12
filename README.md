@@ -842,8 +842,8 @@ alerts are firing", "why is the fan loud on node2", "is my website up", "when do
 "which lights are on in the living room", "how many visitors did blog.example.com get this week".
 
 **New website, pull now, SMART test.** "Create a WordPress website at blog.example.com" asks for whatever
-is missing, one question at a time (static site or WordPress, the public name or LAN only, the site title,
-and for WordPress the admin email), then plans it with the New website wizard's own code: the name is
+is missing, one question at a time (static site, WordPress or Ghost, the public name or LAN only, the site title,
+for WordPress the admin email, and for Ghost the owner's email and name; Ghost's mail is set in the wizard), then plans it with the New website wizard's own code: the name is
 checked against your DNS provider and proxy, the node, storage, bridge and ID are the wizard's
 recommendation, and the plan is held for you for 10 minutes. The assistant installs nothing: **Review in
 New website** opens that plan in the wizard, and Install there asks for your master password, as it does by
@@ -1120,17 +1120,20 @@ opens its own Metrics tab). A site's own page is `/sites/<id>`. The three recipe
   core releases update themselves, the salts are generated and XML-RPC is blocked. Health check:
   `/wp-login.php` must show the login form, which needs PHP and the database.
 - **Ghost**: a blog and newsletter. The official `ghost` Docker image with MySQL 8 beside it, in Compose
-  (`/opt/ghost`), both pinned to one release (Ghost 6.77.0, MySQL 8.4.13; an upgrade is a changed tag and
-  `docker compose up -d`). Docker is used because Ghost supports only MySQL 8 in production, which Debian 13
+  (`/opt/ghost`), both pinned to one release by tag and digest (Ghost 6.77.0, MySQL 8.4.13; an upgrade is a
+  changed tag and digest, then `docker compose up -d`). Docker is used because Ghost supports only MySQL 8 in production, which Debian 13
   does not ship, and Ghost-CLI expects Ubuntu, a non-root user and prompts. Ghost listens on `127.0.0.1` only;
-  the container's own nginx serves it on port 80 and refuses `POST` to Ghost's setup endpoint for good, so
-  nobody on the network can ever claim the site. Its `url` is the public `https://` name when the site is
+  until HyperProx has made the owner and read it back, the container's nginx serves only a 503 holding page and
+  does not reach Ghost at all. Only then is the Ghost site turned on in nginx (checked with `nginx -t` and read
+  back over port 80), and from then on nginx refuses every write to Ghost's setup endpoint in any form (any case,
+  any API version, with or without a trailing slash), so nobody on the network can ever claim the site. Its `url` is the public `https://` name when the site is
   published, or the container's own address when it is on your network only. The wizard asks for the site
   title, an optional description and the owner's name and email; the owner password and both database
   passwords are generated and saved in the vault before anything installs. The database passwords are files
   only root can open, read by Ghost and MySQL as Docker secrets (never in a settings file or on a command
   line). After the install HyperProx finishes Ghost's first run itself, over the container's loopback: it
-  creates the owner through Ghost's setup API (with the title and description) and reads it back, signs in
+  creates the owner through Ghost's setup API (with the title and description) and reads it back, opens the site
+  in nginx and reads that back (the site answers; `POST` and `PUT` to every form of the setup endpoint get 403), signs in
   once to make a "HyperProx" integration whose Admin API key goes into the same vault item (read back by
   fetching the title with it), and ends that session. If any step fails, Ghost and nginx are stopped and the
   job says why. **Mail** is optional: give an SMTP server (and its user and password, which goes straight into

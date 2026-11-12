@@ -9,6 +9,9 @@
 //                 HyperProx did not make is never touched);
 //    ghost-owner  the owner account, with the title and description, through
 //                 Ghost's own setup API; read back as "setup done";
+//    ghost-open   only now is Ghost put behind the site's nginx (until then it
+//                 serves a 503 holding page); read back over nginx: the site
+//                 answers, and every form of the setup endpoint refuses writes;
 //    ghost-key    one sign-in as the owner, to make the "HyperProx" custom
 //                 integration; its Admin API key goes into the vault, and the
 //                 title is read back with that key; then the session is ended;
@@ -16,8 +19,8 @@
 //                 turned on (Ghost's default) once nothing needs to sign in.
 //
 //  Every request goes to 127.0.0.1:2368 inside the container, through the node
-//  (pct exec): Ghost never listens beyond loopback, and nginx refuses the setup
-//  POST from the network for good. If any step fails, Ghost and nginx are
+//  (pct exec): Ghost never listens beyond loopback, and nginx does not proxy to
+//  it at all until the owner exists. If any step fails, Ghost and nginx are
 //  stopped and the error says so, so a half-made site is never left running.
 //
 //  Secrets: the owner password, the session cookie and the Admin API key are in
@@ -27,11 +30,12 @@
 // =============================================================================
 
 import { createHmac, randomUUID } from 'node:crypto'
-import { GHOST_DIR, GHOST_PORT, NO_MAIL, ghostEnvFile } from './recipe'
+import { GHOST_DIR, GHOST_PORT, NO_MAIL, GHOST_OPEN_SCRIPT, ghostEnvFile } from './recipe'
 
 export const GHOST_SETUP_STEPS = [
   { id: 'ghost-start', label: 'Wait for Ghost to start' },
   { id: 'ghost-owner', label: 'Create the owner account' },
+  { id: 'ghost-open',  label: 'Open the site in nginx' },
   { id: 'ghost-key',   label: 'Make HyperProx\'s Admin API key' },
   { id: 'ghost-mail',  label: 'Turn on mail' },
 ] as const
@@ -168,6 +172,32 @@ export interface GhostSetupDeps {
 
 export const SETUP = '/ghost/api/admin/authentication/setup/'
 
+/** Forms of the setup endpoint a write must never reach through nginx: plain, versioned, upper case, no slash. */
+export const SETUP_VARIANTS = [
+  '/ghost/api/admin/authentication/setup/', '/ghost/api/v4/admin/authentication/setup/', '/ghost/api/v6.0/admin/authentication/setup/',
+  '/GHOST/API/ADMIN/AUTHENTICATION/SETUP/', '/ghost/api/admin/authentication/setup', '/ghost//api/admin/authentication/Setup/',
+]
+
+/**
+ * Read the site back through nginx (port 80, as the network sees it): Ghost's site endpoint answers, and a POST and a
+ * PUT to every form of the setup endpoint are refused. Prints one line: `HPXO site <code> setup <code>...`.
+ */
+export function openReadbackScript(siteUrl: string): string {
+  const { host, proto } = siteParts(siteUrl)
+  const curl = (method: string, path: string) =>
+    `$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' -X ${method} -H 'Host: ${host}' -H 'X-Forwarded-Proto: ${proto}' -H 'Content-Type: application/json' ${method === 'GET' ? '' : `--data '{"setup":[{}]}' `}'http://127.0.0.1${path}' || echo 000)`
+  return [
+    'set -u',
+    `echo "HPXO site ${curl('GET', '/ghost/api/admin/site/')} setup ${SETUP_VARIANTS.flatMap(p => [curl('POST', p), curl('PUT', p)]).join(' ')}"`,
+  ].join('\n')
+}
+
+/** The read-back's codes, or null when it did not answer. */
+export function parseOpenReadback(out: string): { site: number; setup: number[] } | null {
+  const m = /^HPXO site (\d{3}) setup ((?:\d{3} ?)+)$/m.exec(out)
+  return m ? { site: Number(m[1]), setup: m[2].trim().split(' ').map(Number) } : null
+}
+
 /** Whether Ghost says it has an owner: true, false, or null when it did not say. */
 async function isSetUp(d: GhostSetupDeps): Promise<{ answered: boolean; setup: boolean | null }> {
   const a = await d.http({ method: 'GET', path: SETUP })
@@ -201,7 +231,7 @@ async function setup(input: GhostSetupInput, step: (id: string) => StepRef, d: G
   }
   if (!state.answered || state.setup === null) throw new Error('Ghost did not answer on the container\'s loopback within five minutes. See `docker compose logs ghost` in /opt/ghost.')
   if (state.setup) throw new Error('Ghost already has an owner that HyperProx did not make, so nothing was changed.')
-  s.status = 'done'; s.detail = 'Ghost answers on 127.0.0.1 only; nginx refuses its setup page from the network'
+  s.status = 'done'; s.detail = 'Ghost answers on 127.0.0.1 only; nginx serves a holding page and does not reach it'
 
   // 2. The owner, the title and the description, in Ghost's own setup call; then read back.
   s = step('ghost-owner')
@@ -215,7 +245,22 @@ async function setup(input: GhostSetupInput, step: (id: string) => StepRef, d: G
   if (after.setup !== true) throw new Error('Ghost did not read back as set up after the owner account was made.')
   s.status = 'done'; s.detail = `owner ${input.owner.email}; the setup is closed`
 
-  // 3. One sign-in as the owner, to make HyperProx's integration. Its Admin API key goes into the vault first,
+  // 3. Only now does nginx proxy to Ghost (it served a 503 holding page until here). Read back as the network sees it.
+  s = step('ghost-open')
+  const opened = await d.sh(GHOST_OPEN_SCRIPT, 60_000).catch(() => null)
+  if (!opened || !/@@ghost open/.test(opened.output)) {
+    throw new Error(/@@ghost nginx refused/.test(opened?.output ?? '') ? 'nginx refused the Ghost site\'s configuration, so the holding page was kept.' : 'The Ghost site could not be turned on in nginx.')
+  }
+  const back = parseOpenReadback((await d.sh(openReadbackScript(input.url), 120_000).catch(() => null))?.output ?? '')
+  if (!back) throw new Error('nginx did not answer when the Ghost site was read back.')
+  if (back.site !== 200) throw new Error(`Through nginx, Ghost's site answered ${back.site}, not 200.`)
+  const open = back.setup.findIndex(c => c !== 403)
+  if (open >= 0 || back.setup.length !== SETUP_VARIANTS.length * 2) {
+    throw new Error(`Through nginx, a write to ${SETUP_VARIANTS[Math.floor(Math.max(open, 0) / 2)]} answered ${back.setup[open] ?? 'nothing'}, not 403.`)
+  }
+  s.status = 'done'; s.detail = `nginx serves Ghost; writes to its setup (${SETUP_VARIANTS.length} forms) are refused with 403`
+
+  // 4. One sign-in as the owner, to make HyperProx's integration. Its Admin API key goes into the vault first,
   //    then the title is read back with that key, and the session is ended.
   s = step('ghost-key')
   const login = await d.http({ method: 'POST', path: '/ghost/api/admin/session/', body: { username: input.owner.email, password: input.owner.password } })
@@ -248,7 +293,7 @@ async function setup(input: GhostSetupInput, step: (id: string) => StepRef, d: G
   }
   s.status = 'done'; s.detail = `integration "${name}" made; its Admin API key is in the vault, and the title reads back`
 
-  // 4. Mail: with an SMTP server, Ghost's new-device sign-in codes go back on (its default), now nothing signs in.
+  // 5. Mail: with an SMTP server, Ghost's new-device sign-in codes go back on (its default), now nothing signs in.
   await mailStep(input, step, d)
   return { integration: name }
 }
