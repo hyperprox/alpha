@@ -59,7 +59,14 @@ export const PROBES: Probe[] = [
     needs: ['prowlarr_key'],
   },
   {
-    pluginId: 'plex', setting: 'url', label: 'Tautulli',
+    pluginId: 'plex', setting: 'plex_url', label: 'Plex',
+    port: 32400, path: '/identity',
+    // Plex answers /identity without a token, with its machine identifier.
+    match: (s, b) => s === 200 && /machineIdentifier/.test(b),
+    needs: ['plex_token'],
+  },
+  {
+    pluginId: 'plex', setting: 'url', label: 'Tautulli (optional, for richer Plex stats)',
     port: 8181, path: '/status',
     // Tautulli answers /status without a key; the login page also names itself.
     match: (s, b) => s < 500 && /tautulli/i.test(b),

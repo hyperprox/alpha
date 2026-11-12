@@ -141,6 +141,11 @@ const HA_CONTROL_RECONFIRM = /^\/api\/plugins\/home-assistant\/instances(\/(?!pr
 // login) are admin and re-confirmed, which keeps API tokens off them too.
 const QNAP_ACT = /^\/api\/plugins\/qnap\/instances\/[^/]+\/actions$/
 const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
+// Plex clear-out (routes/plex-clearout.ts). The lists are a read (viewer). Previewing a removal is operator; removing
+// through Sonarr or Radarr deletes files, so it is operator with the master password re-entered, which keeps API
+// tokens out too.
+const PLEX_CLEAROUT_ACT = /^\/api\/plugins\/plex\/clearout\/(preview|remove)$/
+const PLEX_CLEAROUT_RECONFIRM = /^\/api\/plugins\/plex\/clearout\/remove$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -260,6 +265,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (m === 'POST' && POWER.test(p)) return 'operator'
   if (m === 'POST' && HA_CONTROL_ACT.test(p)) return 'operator'
   if (m === 'POST' && QNAP_ACT.test(p)) return 'operator'
+  if (m === 'POST' && PLEX_CLEAROUT_ACT.test(p)) return 'operator'
   for (const [tm, re] of TERMINAL_OPERATOR) if (m === tm && re.test(p)) return 'operator'
 
   return 'admin'
@@ -286,6 +292,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
+  if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
   if (m === 'POST' && SETTINGS_TEST.test(p)) return true
   // Creating or revoking an API token.

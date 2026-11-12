@@ -789,6 +789,9 @@ more than one, gets a question back listing your clusters.
   are not collected; the source plugs into the site-metrics module when it is added.
 - **Plug-in pages**: for Plex, the Arr Stack, Unmanic, MikroTik and MeshCentral, the figures their pages
   show (now playing, the download pipeline, encoding workers, the router's traffic), in words.
+- **Plex Clear-out**: what nobody watches, read only. How far back Plex's history goes, how much of each
+  library has never been played, what the never-watched and idle lists add up to, the largest items on
+  them, and what the keep rules held back. It cannot remove anything.
 
 Using the assistant needs the admin role, and its sources also follow each page's own viewer rules (no
 serial numbers or security device states for a viewer, and notification channels, websites and
@@ -1056,7 +1059,7 @@ otherwise every file is put back. Nothing in a site is ever changed without this
 | Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent as one pipeline (search, grabbed, downloading, import, library) with live counts; imports that need a person as alert cards; download progress; indexer status dots and health warnings |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
-| Plex activity | What is streaming now (progress, direct or transcode), internet and local bandwidth gauges, who watches most, what is watched most, and recent history, read through Tautulli |
+| Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches) and an optional message when something new is added (see below) |
 | Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
 | QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
@@ -1069,7 +1072,68 @@ the router (DHCP leases, ARP comments) and, where it has none, from HyperProx's 
 guest has which address. On the Arr Stack page, an import blocked because the filenames carry no season
 and episode offers **Map by filename**, the same rescue as before.
 
-**Scan for services** finds qBittorrent, Sonarr, Radarr, Prowlarr, Unmanic and Tautulli on running
+**Plex** needs only your Plex server. In the plug-in's settings, enter its address and token. The token
+goes into the vault and is only ever sent to that address. To find the token, open any item in Plex Web,
+choose Get Info, then View XML: it is the `X-Plex-Token` at the end of the address. **Scan for
+services** finds a Plex server on your cluster and fills in the address for you. Use https if Plex is on
+another network.
+
+- From Plex itself: who is watching what, on which player, whether it plays directly, streams directly
+  or transcodes, local and remote bandwidth, and how far through it they are. Also plays from Plex's own
+  history (who watches most, what is watched most, recently watched) and how big each library is.
+- Plex keeps no watch time, so "who watches most" counts plays. **Add Tautulli for richer stats
+  (optional)**: with its address and API key, the page shows hours watched instead, and Tautulli's
+  wording for stream quality. Everything else still comes from Plex.
+- An install set up before this, with only Tautulli, keeps working and shows everything it showed
+  before. Its card says **Needs attention: add your Plex server for live data** until a Plex address and
+  token are saved. Nothing has to be entered again.
+- **Tell me when something new is added** is a switch in the settings, off by default. When it is on,
+  HyperProx checks Plex's recently added list every 5 minutes and sends one message per batch, with each
+  title and year, to the notification channels that take **Plex: new in the library** at the
+  "Everything" level. Nothing is ever announced twice, and turning it on does not announce what is
+  already there. Covers are not attached: they would need a public picture address, and HyperProx's
+  covers need a sign-in. If Tautulli already sends you these, you will get them twice.
+
+**Plex Clear-out** shows what nobody watches. It reads your Plex server itself, because Plex's own play
+history covers every account. That history only goes back as far as Plex's records, so the page says "history since"
+that date. Plays count by title as well as by Plex's item number, so a film you downloaded again still
+has its old plays. A show counts every episode's plays.
+
+- **Never watched**: no plays at all, and in Plex longer than 6 months. **Idle**: played before, but not
+  in 6 months. Both numbers are settings.
+- Each row shows the size, plays, how many people watched it, when it was last played and when it was
+  added, with its cover. Tick rows to see roughly how much space they would free. Movies and TV have their
+  own tabs, with filters for the list, the library and a title search.
+- Sizes come from Plex. If the Arr Stack plug-in is set up, they come from Sonarr and Radarr instead,
+  which also add genres, the folder and whether a show is anime.
+- **Keep rules** take things off the lists, and **Kept off this list** counts what each rule held back.
+  By default it keeps anything released before 2000, anime, anything in a folder whose path contains
+  "complete series", the Science Fiction genre, and anything added in the last 90 days. You can also list
+  folders to keep and names to keep. A name keeps every title that starts with it, so "Night Desk" keeps
+  every Night Desk show. A name of three letters or fewer must match the whole title. Change the rules in the
+  plug-in's settings. Leave a setting blank for the default, or write "none" to turn that rule off.
+- In a library that is mostly films, most films are watched once. So the Movies tab says what share of
+  your films has never been played, and lists the largest files first.
+- **Removing** is done only through Sonarr or Radarr. HyperProx never deletes a file itself. The show or
+  film is deleted there with its files, and added to the import-list exclusions so it is not downloaded
+  again. You see a preview first, with exactly what will go and how big it is. Then you need the
+  operator role or higher, and your master password again. API tokens can never remove anything.
+  Afterwards HyperProx asks Sonarr or Radarr again, and reports something as removed only once it is
+  really gone. Every removal is written to the audit log. Without the Arr Stack plug-in there is no
+  remove button, only **Copy list**.
+
+The Plex page updates itself. What is streaming and the bandwidth gauges refresh about every 5 seconds,
+and the rest of the page, Clear-out included, about every minute, or straight away when someone starts
+or stops watching. Updates pause while the tab is hidden and start again as soon as you come back. The
+dot at the top says **live**; if updates stop it turns grey and says when the page last updated.
+**Pause** stops the updates, and **Refresh** is still there to read everything at once.
+
+Covers on the Plex page come through HyperProx. The browser only ever gets a HyperProx address, and the
+API fetches the picture from Plex with the token from the vault, so the token never reaches the browser.
+It only fetches Plex's own cover pictures, at a fixed size, and keeps them for a short while. If a cover
+cannot be loaded, the page shows the title card instead.
+
+**Scan for services** finds qBittorrent, Sonarr, Radarr, Prowlarr, Unmanic, Plex and Tautulli on running
 guests and offers to configure them; nothing is saved until you press **Use this**, and API keys are
 never guessed. A plug-in declares the settings it needs and HyperProx makes its HTTP calls for it, so
 the plug-in never reads a credential. The page also lists plug-ins that do not exist yet, each with a
@@ -1264,7 +1328,7 @@ not protected, are in [docs/security.md](docs/security.md).
   minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming or verifying its
   certificate, verifying its node keys, saving or removing a node login, deleting a guest, installing or removing monitoring,
   changing a server's address, node addresses, copy folders or "never look inside" list, setting up a sending key (including
-  the first-time setup of Send files), and saving a Plex address or token. The AI assistant asks for it in exactly the same cases.
+  the first-time setup of Send files), and saving a Plex address or token. Removing media with Plex Clear-out asks for it too. The AI assistant asks for it in exactly the same cases.
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one

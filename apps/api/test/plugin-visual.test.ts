@@ -17,8 +17,10 @@ test('plex: sessions with progress, mode and the show split from the episode', (
     total_bandwidth: 21900, lan_bandwidth: 20000, wan_bandwidth: 1900,
     sessions: [
       { media_type: 'episode', grandparent_title: 'Space Show', title: 'The Pilot', parent_media_index: '2', media_index: '5',
-        friendly_name: 'alex', player: 'Phone', quality_profile: '2 Mbps 720p', transcode_decision: 'transcode', state: 'playing', progress_percent: '63' },
-      { media_type: 'movie', title: 'A Film', year: 1999, user: 'sam', player: 'TV', transcode_decision: 'direct play', state: 'paused', progress_percent: 140 },
+        friendly_name: 'alex', player: 'Phone', quality_profile: '2 Mbps 720p', transcode_decision: 'transcode', state: 'playing', progress_percent: '63',
+        thumb: '/library/metadata/501/thumb/1700000001', grandparent_thumb: '/library/metadata/77/thumb/1700000002' },
+      { media_type: 'movie', title: 'A Film', year: 1999, user: 'sam', player: 'TV', transcode_decision: 'direct play', state: 'paused', progress_percent: 140,
+        thumb: 'http://198.51.100.7:32400/library/metadata/9/thumb/1?X-Plex-Token=leak' },
     ],
   }, [], [])
   assert.equal(v.kind, 'plex')
@@ -29,6 +31,15 @@ test('plex: sessions with progress, mode and the show split from the episode', (
   assert.equal(ep.progress, 63); assert.equal(ep.mode, 'transcode'); assert.equal(ep.user, 'alex')
   assert.equal(film.title, 'A Film'); assert.equal(film.episode, null); assert.equal(film.year, 1999)
   assert.equal(film.progress, 100, 'clamped'); assert.equal(film.state, 'paused'); assert.equal(film.quality, '—')
+  assert.equal(ep.art, '/api/plugins/plex/art/77/thumb/1700000002', "an episode shows its show's poster, through HyperProx")
+  assert.equal(film.art, null, 'anything but a bare Plex metadata path is dropped, so no address or token reaches the page')
+})
+
+test('plex: who watches most is sorted by hours, not by plays', () => {
+  const v = buildPlexVisual({ sessions: [] }, [], [
+    { stat_id: 'top_users', rows: [{ user: 'a', total_duration: 36 * 3600, total_plays: 90 }, { user: 'b', total_duration: 79 * 3600, total_plays: 40 }, { user: 'c', total_duration: 50 * 3600, total_plays: 60 }] },
+  ])
+  assert.deepEqual(v.topWatchers.map(w => [w.user, w.minutes / 60]), [['b', 79], ['c', 50], ['a', 36]])
 })
 
 test('plex: watchers in minutes, titles by plays across TV and films, history newest first in ms', () => {

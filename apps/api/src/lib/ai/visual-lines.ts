@@ -24,7 +24,13 @@ export function visualLines(v: PluginVisual): string[] {
         const what = `${s.title}${s.number ? ` ${s.number}` : ''}${s.episode ? ` "${s.episode}"` : ''}`
         out.push(`${s.user} is watching ${what} on ${s.player}: ${s.mode}, ${s.state}, ${Math.round(s.progress)}%, ${s.quality}.`)
       }
-      if (v.topWatchers.length) out.push(`Most watching in 30 days: ${v.topWatchers.slice(0, 5).map(w => `${w.user} ${Math.round(w.minutes / 60)} h`).join(', ')}.`)
+      if (v.needsPlex) out.push('Only Tautulli is set up: add the Plex server address and token to the Plex plug-in for live data straight from Plex.')
+      if (v.topWatchers.length) {
+        out.push(v.topBy === 'plays'
+          ? `Most watching in 30 days, by plays (Plex keeps no watch time): ${v.topWatchers.slice(0, 5).map(w => `${w.user} ${plural(w.plays, 'play')}`).join(', ')}.`
+          : `Most watching in 30 days: ${v.topWatchers.slice(0, 5).map(w => `${w.user} ${Math.round(w.minutes / 60)} h`).join(', ')}.`)
+      }
+      if (v.libraries?.length) out.push(`Libraries: ${v.libraries.map(l => `${l.title} ${l.count}`).join(', ')}.`)
       if (v.topTitles.length) out.push(`Most played in 30 days: ${v.topTitles.slice(0, 5).map(t => `${t.title} (${t.plays})`).join(', ')}.`)
       break
     }

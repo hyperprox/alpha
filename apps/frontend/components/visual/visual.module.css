@@ -73,12 +73,13 @@
 .arc { fill: none; stroke-linecap: round; transition: stroke-dasharray .6s; }
 .spin { transform-box: fill-box; transform-origin: center; animation: hxSpin 18s linear infinite; }
 @keyframes hxSpin { to { transform: rotate(360deg); } }
-.semi { position: relative; width: 150px; height: 96px; }
-.semi svg { width: 150px; height: 96px; }
-.semi div { position: absolute; left: 0; right: 0; bottom: 4px; text-align: center; }
-.semi b { display: block; font: 700 1.6rem/1 var(--font-display); color: var(--text-bright); }
+.semi { position: relative; width: 150px; display: flex; flex-direction: column; align-items: center; }
+.semi svg { width: 150px; height: 96px; display: block; }
+/* The figure sits inside the arc, between its two end caps; the label goes underneath the arc. */
+.semiValue { position: absolute; left: 22px; right: 22px; top: 54px; text-align: center; }
+.semi b { display: block; font: 700 1.6rem/1 var(--font-display); color: var(--text-bright); white-space: nowrap; }
 .semi b small { font-size: .8rem; color: var(--text-muted); }
-.semi span { font: 500 .6rem var(--font-mono); letter-spacing: .12em; color: var(--text-muted); text-transform: uppercase; }
+.semiLabel { display: block; margin-top: 6px; max-width: 150px; text-align: center; font: 500 .6rem/1.35 var(--font-mono); letter-spacing: .12em; color: var(--text-muted); text-transform: uppercase; overflow-wrap: anywhere; }
 .gauges { display: flex; gap: 18px; justify-content: space-around; flex-wrap: wrap; }
 .rings { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 12px; }
 

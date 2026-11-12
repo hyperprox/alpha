@@ -3,7 +3,7 @@
 //
 //  HyperProx integrates with things you already run. This is the answer to
 //  "what if I do not run one?" — a reverse proxy for the proxy features, an
-//  Ollama for the AI wizard, a Tautulli for Plex history. Each recipe knows
+//  Ollama for the AI wizard, a Tautulli for richer Plex stats. Each recipe knows
 //  what it satisfies, so once it is up the integration is configured rather
 //  than left as an address to copy.
 //
@@ -563,9 +563,10 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     id: 'tautulli',
     detect: DETECT['tautulli'],
     name: 'Tautulli',
-    summary: 'Watch history and statistics for Plex. The Plex plug-in reads it for who watched what, and when.',
+    summary: 'Optional extra for the Plex plug-in, which reads Plex itself: adds hours watched and stream quality detail.',
     category: 'media',
-    satisfies: { kind: 'plugin', id: 'plex', setting: 'tautulli_url' },
+    // The Plex plug-in's optional Tautulli address (its key, `url`, predates Plex being read directly).
+    satisfies: { kind: 'plugin', id: 'plex', setting: 'url' },
     port: 8181,
     healthPath: '/auth/login',
     expectStatus: [200],

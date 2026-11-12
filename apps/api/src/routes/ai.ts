@@ -48,6 +48,8 @@ import { deployService, toDeployFields, type DeployFields } from '../lib/ai/temp
 import type { Fields, TaskTemplate, TemplateFacts, TemplateSettings } from '../lib/ai/templates/types'
 import { wizardRecipes }      from '../lib/catalogue'
 import { zoneFor }            from '../lib/dns-zones'
+import { clearoutSource }     from '../lib/ai/plex-clearout-source'
+import { clearoutService }    from './plex-clearout'
 import { qnapSource, alertsSource, notifySource, housesSource, sitesSource, siteMetricsSource, toChannelLite, type NasEntry, type HouseRead, type SiteLite } from '../lib/ai/home-sources'
 import { type SiteMetricsSource } from '../lib/ai/site-metrics'
 import { parseHomeAction, prepareHomeAction, applyHomeAction, isTokenSid, type HomePlan, type HomePrepareDeps, type HomeApplyDeps, type HomeSite, type HomeNas } from '../lib/ai/home-actions'
@@ -347,6 +349,8 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
       certs: async () => (isUnlocked() ? certs() : null),
     }),
     siteMetricsSource({ metrics: siteMetrics, sites: siteLites, role }),
+    // Read-only: the Plex Clear-out page's lists (cached for ten minutes, as the page reads them).
+    clearoutSource({ unlocked: isUnlocked, report: async () => (await clearoutService().report()).report }),
   ]
   // Home's own sources (cluster, DNS, proxy, certificates, backups, plug-ins) are read in home's context whatever
   // cluster this request is for: a certificate inventory built while a remote is open must still be home's.

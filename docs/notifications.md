@@ -27,7 +27,9 @@ Each channel has:
 - **Send me**: critical only, warnings and critical (the default), or everything (including reports
   that all went well).
 - **About**: everything, or chosen families: lock alerts, updates, certificates, cluster health, Home
-  Assistant security actions (the others are for later phases).
+  Assistant security actions, Plex: new in the library (the others are for later phases).
+  Plex: new in the library (`plex.added`) is sent only when the Plex plug-in's "Tell me when something new
+  is added" switch is on. It is an ordinary message, so the channel must be set to everything.
   Cluster health is Prometheus's alerts (`alert.firing`, `alert.resolved`): one message when an alert
   starts, one when it clears, and one if Prometheus stops answering for 5 minutes. See
   [Storage and Monitoring](../README.md#storage-and-monitoring) for the rules and the not-forwarded list.

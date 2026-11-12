@@ -20,10 +20,12 @@ export const PLUGIN_CATEGORY = 'plugin'
 export interface PluginSetting {
   key:      string
   label:    string
-  /** `secret` values are encrypted and never returned to the browser. */
-  type:     'text' | 'secret' | 'url'
+  /** `secret` values are encrypted and never returned to the browser. `toggle` stores "yes" or "no". */
+  type:     'text' | 'secret' | 'url' | 'toggle'
   required: boolean
   hint?:    string
+  /** A heading the settings form shows above this setting and the ones after it. */
+  section?: string
 }
 
 /** How the host authenticates this plug-in's HTTP calls on its behalf. */
@@ -79,6 +81,11 @@ export interface PluginManifest {
   /** Setting holding the base URL every request is resolved against. */
   baseUrlSetting: string
   auth:        PluginAuth
+  /**
+   * Set up when any one of these groups of settings is complete, rather than when every `required` setting is:
+   * Plex works with its own server, or (as installs from before did) with Tautulli alone.
+   */
+  requiredAny?: string[][]
   /** Additional endpoints beyond the default one above. */
   endpoints?:  PluginEndpoint[]
   /** Ignore TLS errors — routers and media servers routinely use self-signed certs. */
@@ -505,7 +512,13 @@ export async function describeSettings(manifest: PluginManifest) {
 }
 
 export function missingSettings(manifest: PluginManifest, stored: Record<string, string>): string[] {
-  return manifest.settings.filter(s => s.required && !stored[s.key]).map(s => s.label)
+  const missing = manifest.settings.filter(s => s.required && !stored[s.key]).map(s => s.label)
+  const groups = manifest.requiredAny ?? []
+  if (groups.length && !groups.some(g => g.every(k => stored[k]))) {
+    // Name what the first (preferred) group still needs.
+    for (const k of groups[0]) if (!stored[k]) missing.push(manifest.settings.find(x => x.key === k)?.label ?? k)
+  }
+  return missing
 }
 
 // ---------------------------------------------------------------------------
@@ -547,23 +560,19 @@ class BrokerContext implements PluginContext {
     return this.request('POST', path, body, opts?.timeoutMs)
   }
 
-  private async request(
-    method: 'GET' | 'POST',
-    path: string,
-    body?: Record<string, unknown>,
-    timeoutMs?: number,
-  ): Promise<any> {
-    if (this.manifest.coreTransport) {
-      const t = transports.get(this.manifest.id)
-      if (!t) throw new Error(`${this.manifest.name} is not connected yet.`)
-      return t(method, path, timeoutMs)
-    }
+  /** Host-only (pluginEndpointClient): PluginContext has no delete, so a plug-in itself can never send one. */
+  del(path: string, opts?: { timeoutMs?: number }) {
+    return this.request('DELETE', path, undefined, opts?.timeoutMs)
+  }
+
+  /** The address and credential for one call. The credential never leaves this class. */
+  private prepare(path: string, json: boolean): { url: URL; headers: Record<string, string> } {
     const base = (this.settings[this.endpoint.baseUrlSetting] ?? '').replace(/\/+$/, '')
     if (!base) throw new Error(`${this.manifest.name}: no address configured for ${this.endpoint.label}`)
 
     const url = new URL(base + (path.startsWith('/') ? path : `/${path}`))
     const headers: Record<string, string> = { Accept: 'application/json' }
-    if (body) headers['Content-Type'] = 'application/json'
+    if (json) headers['Content-Type'] = 'application/json'
     const auth = this.endpoint.auth
 
     if (auth.kind === 'header') {
@@ -580,6 +589,39 @@ class BrokerContext implements PluginContext {
       if (!v) throw new Error(`${this.manifest.name} is missing its credential`)
       url.searchParams.set(auth.param, v)
     }
+    return { url, headers }
+  }
+
+  /**
+   * Host-only (pluginEndpointClient): an image's bytes, for HyperProx's own image proxy (Plex cover art). The
+   * caller chooses the path from a fixed shape; the answer must be an image and at most `maxBytes`.
+   */
+  async image(path: string, timeoutMs = 10_000, maxBytes = 4 * 1024 * 1024): Promise<{ contentType: string; body: Buffer }> {
+    if (this.manifest.coreTransport) throw new Error(`${this.manifest.name} serves no images.`)
+    const { url, headers } = this.prepare(path, false)
+    headers.Accept = 'image/*'
+    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, 'GET', undefined, timeoutMs)
+    if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
+    const contentType = String(res.contentType ?? '').split(';')[0].trim().toLowerCase()
+    if (!/^image\/(jpeg|png|webp|gif)$/.test(contentType)) throw new Error(`${this.manifest.name} did not return an image`)
+    const body = await res.buffer()
+    if (body.length > maxBytes) throw new Error(`${this.manifest.name} returned an image larger than allowed`)
+    return { contentType, body }
+  }
+
+  private async request(
+    method: 'GET' | 'POST' | 'DELETE',
+    path: string,
+    body?: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<any> {
+    if (this.manifest.coreTransport) {
+      const t = transports.get(this.manifest.id)
+      if (!t) throw new Error(`${this.manifest.name} is not connected yet.`)
+      if (method === 'DELETE') throw new Error(`${this.manifest.name} takes no deletes.`)
+      return t(method, path, timeoutMs)
+    }
+    const { url, headers } = this.prepare(path, !!body)
 
     // Routers and media servers ship self-signed certs. A plug-in cannot turn
     // this on for itself — only its manifest can, and only for its own host.
@@ -587,6 +629,8 @@ class BrokerContext implements PluginContext {
     if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
 
     const text = await res.text()
+    // Sonarr and Radarr answer a delete with 200 and no body.
+    if (method === 'DELETE' && !text.trim()) return null
     try { return JSON.parse(text) }
     catch { throw new Error(`${this.manifest.name} did not return JSON`) }
   }
@@ -612,12 +656,12 @@ export function fetchWithTimeout(
   url: string,
   headers: Record<string, string>,
   insecure?: boolean,
-  method: 'GET' | 'POST' = 'GET',
+  method: 'GET' | 'POST' | 'DELETE' = 'GET',
   body?: Record<string, unknown>,
   // Eight seconds is right for a tile and far too short for a search that fans
   // out to a dozen indexers, several of them behind FlareSolverr.
   timeoutMs = 8000,
-): Promise<{ ok: boolean; status: number; text: () => Promise<string> }> {
+): Promise<{ ok: boolean; status: number; contentType?: string | null; text: () => Promise<string>; buffer: () => Promise<Buffer> }> {
   const payload = body ? JSON.stringify(body) : undefined
 
   // Never followed: a redirect would carry the plug-in's credential (its headers) to wherever the device, or
@@ -628,7 +672,10 @@ export function fetchWithTimeout(
     return fetch(url, { method, headers, body: payload, signal: controller.signal, redirect: 'manual' })
       .then(res => {
         if (res.status >= 300 && res.status < 400) throw new PluginRedirectError(res.status)
-        return res
+        return {
+          ok: res.ok, status: res.status, contentType: res.headers.get('content-type'),
+          text: () => res.text(), buffer: async () => Buffer.from(await res.arrayBuffer()),
+        }
       })
       .finally(() => clearTimeout(timer)) as any
   }
@@ -638,14 +685,18 @@ export function fetchWithTimeout(
       const req = https.request(url, { method, headers, rejectUnauthorized: false, timeout: timeoutMs }, res => {
         const code = res.statusCode ?? 500
         if (code >= 300 && code < 400) { res.resume(); return reject(new PluginRedirectError(code)) }
-        let body = ''
-        res.setEncoding('utf8')
-        res.on('data', c => { body += c })
-        res.on('end', () => resolve({
-          ok:     (res.statusCode ?? 500) < 400,
-          status: res.statusCode ?? 500,
-          text:   async () => body,
-        }))
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => { chunks.push(c) })
+        res.on('end', () => {
+          const all = Buffer.concat(chunks)
+          resolve({
+            ok:     (res.statusCode ?? 500) < 400,
+            status: res.statusCode ?? 500,
+            contentType: (res.headers['content-type'] as string | undefined) ?? null,
+            text:   async () => all.toString('utf8'),
+            buffer: async () => all,
+          })
+        })
       })
       req.on('timeout', () => { req.destroy(new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`)) })
       req.on('error', reject)
@@ -682,6 +733,31 @@ async function contextFor(plugin: Plugin): Promise<BrokerContext> {
  */
 export async function pluginRead(plugin: Plugin, path: string, timeoutMs?: number): Promise<any> {
   return (await contextFor(plugin)).get(path, { timeoutMs })
+}
+
+/** One endpoint of a plug-in, as a core feature uses it. The credential stays inside this module. */
+export interface CoreEndpointClient {
+  get(path: string, timeoutMs?: number): Promise<any>
+  delete(path: string, timeoutMs?: number): Promise<any>
+  /** An image's bytes and type (Plex cover art); refuses anything that is not an image. */
+  image(path: string, timeoutMs?: number): Promise<{ contentType: string; body: Buffer }>
+}
+
+/**
+ * A core feature building on a plug-in's connection, with delete as well as read (the Plex clear-out removes a
+ * show through the Arr Stack's Sonarr). Null when the plug-in is not set up or that endpoint has no address.
+ * Never handed to a plug-in: PluginContext stays read-only.
+ */
+export async function pluginEndpointClient(plugin: Plugin, endpointKey = 'default'): Promise<CoreEndpointClient | null> {
+  let ctx: BrokerContext
+  try { ctx = await contextFor(plugin) } catch { return null }
+  if (!ctx.has(endpointKey)) return null
+  const c = (endpointKey === 'default' ? ctx : ctx.from(endpointKey)) as BrokerContext
+  return {
+    get:    (path, timeoutMs) => c.get(path, { timeoutMs }),
+    delete: (path, timeoutMs) => c.del(path, { timeoutMs }),
+    image:  (path, timeoutMs) => c.image(path, timeoutMs),
+  }
 }
 
 /** A plug-in's address and TLS rule (both non-secret), for a write client that brings its own credential. */
