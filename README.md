@@ -319,6 +319,19 @@ you sign in with this vault account from now on.
 
 > There is no recovery for a lost owner master password or two-factor device. Store both safely.
 
+### When an install only half works
+
+Run the diagnostics script and read what it finds. It changes nothing, and it blanks passwords, tokens and keys:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/scripts/diagnose.sh | sudo bash
+```
+
+It checks the services and containers, the local health endpoints, DNS and HTTPS to everything the install
+downloads from (GitHub, Docker Hub, npm, NodeSource, Debian), whether HTTPS is being intercepted by a corporate
+proxy or firewall, proxy settings, Proxmox reachability, the firewall, and the install log. The report is saved
+to `/tmp/hyperprox-diagnose-<time>.txt`; read it before you share it.
+
 ### Updating HyperProx
 
 **From the app.** Updates → **HyperProx** shows the version you run (also in Settings and at the foot of the
