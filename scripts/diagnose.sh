@@ -9,6 +9,26 @@
 set -u
 DIR=${HYPERPROX_DIR:-/opt/hyperprox}
 OUT=/tmp/hyperprox-diagnose-$(date -u +%Y%m%dT%H%M%SZ).txt
+
+# On a Proxmox host with no install here: find the container(s) HyperProx was installed into and run inside them.
+if [ ! -d "$DIR" ] && command -v pct >/dev/null 2>&1 && [ -z "${HPX_DIAG_INNER:-}" ]; then
+  self=$(readlink -f "$0" 2>/dev/null); found=0
+  for id in $(pct list 2>/dev/null | awk 'NR>1{print $1}'); do
+    st=$(pct status "$id" 2>/dev/null | awk '{print $2}')
+    if [ "$st" = running ] && pct exec "$id" -- test -d "$DIR" 2>/dev/null; then
+      found=1; echo "HyperProx found in container $id: running the diagnostics inside it..."
+      if [ -f "$self" ]; then pct push "$id" "$self" /tmp/hyperprox-diagnose.sh >/dev/null
+      else curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/scripts/diagnose.sh -o /tmp/hpx-diag.sh && pct push "$id" /tmp/hpx-diag.sh /tmp/hyperprox-diagnose.sh && rm -f /tmp/hpx-diag.sh; fi
+      pct exec "$id" -- env HPX_DIAG_INNER=1 bash /tmp/hyperprox-diagnose.sh | tail -3
+      f=$(pct exec "$id" -- sh -c 'ls -t /tmp/hyperprox-diagnose-*.txt 2>/dev/null | head -1')
+      [ -n "$f" ] && pct pull "$id" "$f" "/tmp/ct$id-$(basename "$f")" && chmod 600 "/tmp/ct$id-$(basename "$f")" && echo "Copied to this host: /tmp/ct$id-$(basename "$f")"
+    elif [ "$st" != running ]; then
+      echo "container $id is $st (not checked)"
+    fi
+  done
+  [ "$found" = 1 ] && exit 0
+  echo "No running container on this host has $DIR. Continuing with host checks only."
+fi
 T=6   # seconds per network probe
 
 redact() {
@@ -57,7 +77,8 @@ else echo "no .env at $DIR/.env"; fi
 
 sec "Services"
 for u in hyperprox-api hyperprox-frontend hyperprox-setup hyperprox-keyholder docker nginx; do
-  printf '%-22s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || echo missing) / $(systemctl is-enabled "$u" 2>/dev/null || echo -)"
+  a=$(systemctl is-active "$u" 2>/dev/null); e=$(systemctl is-enabled "$u" 2>/dev/null)
+  printf '%-22s %s / %s\n' "$u" "${a:-missing}" "${e:-not installed}"
 done
 for u in hyperprox-api hyperprox-frontend hyperprox-setup; do
   systemctl cat "$u" >/dev/null 2>&1 || continue
