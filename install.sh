@@ -396,7 +396,10 @@ EOF
 
   info "Starting Docker daemon..."
   systemctl enable docker --quiet
-  systemctl start docker
+  # Installing docker-ce starts the daemon with its defaults (Docker 29: the containerd image store). It must be
+  # RESTARTED so the daemon.json above is in force before anything is pulled; otherwise every image and container
+  # lands in a store the daemon stops reading at the next reboot, and HyperProx comes back with no containers.
+  systemctl restart docker
 
   info "Running smoke test (hello-world)..."
   docker run --rm hello-world >>"${LOG_FILE}" 2>&1 \
