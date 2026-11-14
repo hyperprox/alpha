@@ -299,18 +299,26 @@ test('trusted keys in .env lock "require signed releases" on; the page cannot tu
   assert.deepEqual(rig().svc.locks(), {})
 })
 
-test('a move to a commit that does not contain the installed one needs the label typed, and never automatically', async () => {
-  const unrelated: Upstream = { ...upstreamWith(B, 'alpha'), async compare() { return { status: 'unknown' as const, commits: [], files: null, total: 0 } } }
-  const r = rig({}, {}, [unrelated])
+test('a commit that does not contain the installed one is never offered, so an older commit is never an update', async () => {
+  for (const status of ['unknown', 'diverged'] as const) {
+    const unrelated: Upstream = { ...upstreamWith(B, 'alpha'), async compare() { return { status, commits: [], files: null, total: 0 } } }
+    const r = rig({}, {}, [unrelated])
+    await r.svc.saveSettings({ channel: 'alpha' }, 'x')
+    const c = await r.svc.check()
+    assert.equal(c.available, null, status)
+    await assert.rejects(r.svc.install('admin@example.com', B))
+    assert.equal(r.launched.length, 0)
+  }
+})
+
+test('the alpha channel follows the branch the install came from (HYPERPROX_UPDATE_BRANCH), not always main', async () => {
+  const asked: string[] = []
+  const up: Upstream = { ...upstreamWith(B, 'alpha'), async head(branch: string) { asked.push(branch); return upstreamWith(B, 'alpha').head(branch) } }
+  const r = rig({ config: { repoUrl: 'https://github.com/example/hyperprox.git', mirrorUrl: null, trustedKeys: null, allowInsecure: false, branch: 'feat/thing' } }, {}, [up])
   await r.svc.saveSettings({ channel: 'alpha' }, 'x')
   const c = await r.svc.check()
-  assert.equal(c.available?.flags.unknownBase, true)
-  const pv = await r.svc.preview()
-  assert.equal(pv.confirmUnrelated, c.available!.label)
-  await assert.rejects(r.svc.install('admin@example.com', B), (e: any) => e.refusals.some((x: any) => x.code === 'confirm_unrelated'))
-  await assert.rejects(r.svc.install('admin@example.com', B, 'manual', { confirmUnrelated: 'main' }), (e: any) => e.refusals.some((x: any) => x.code === 'confirm_unrelated'))
-  await r.svc.install('admin@example.com', B, 'manual', { confirmUnrelated: c.available!.label })
-  assert.equal(r.launched[0].allowUnrelated, true)
+  assert.deepEqual(asked, ['feat/thing'])
+  assert.equal(c.available?.ref, 'feat/thing')
 })
 
 // --- the routes, behind the real gate -----------------------------------------------------------------------------

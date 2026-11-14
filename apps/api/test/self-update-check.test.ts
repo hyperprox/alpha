@@ -11,6 +11,7 @@ import { findUpdate, flagsFrom, plainCommit, tagVersion, type Installed } from '
 import { GitHubUpstream, GitLabUpstream, HttpCache, RateLimitedError, githubRepo, gitlabProject, type Fetcher, type FetchResponse, type Upstream } from '../src/lib/self-update/upstream'
 import { inWindow, mergeSettings, DEFAULT_SETTINGS, SettingsError } from '../src/lib/self-update/settings'
 import { readVersionFile, resolveVersion } from '../src/lib/version'
+import { selfUpdateConfig, updateBranch } from '../src/routes/self-update'
 
 const SHA_A = 'a'.repeat(40), SHA_B = 'b'.repeat(40), SHA_C = 'c'.repeat(40), SHA_T = 'd'.repeat(40)
 const installed = (over: Partial<Installed> = {}): Installed => ({ version: '0.2.0-alpha', sha: SHA_A, describe: 'v0.1.0-alpha-12-gaaaaaaa', branch: 'main', git: true, ...over })
@@ -175,6 +176,40 @@ test('alpha: the newest commit on main, the commits since, and nothing when up t
   const ahead = gh({ [`${R}/commits/main`]: { body: commit(SHA_B, 'x') }, [`${R}/compare/${SHA_A}...${SHA_B}`]: { body: { status: 'behind', commits: [], files: [] } } })
   const a = await findUpdate(installed(), 'alpha', ahead.up)
   assert.equal(a.available, null); assert.match(a.note, /ahead of main/)
+})
+
+test('alpha: diverged or unknown history is never offered (it may be older); only "ahead" is an update', async () => {
+  for (const status of ['diverged', 'unknown']) {
+    const routes = {
+      [`${R}/commits/main`]: { body: commit(SHA_B, 'older commit') },
+      [`${R}/compare/${SHA_A}...${SHA_B}`]: status === 'unknown' ? { status: 404, body: {} } : { body: { status, total_commits: 1, commits: [commit(SHA_B, 'x')], files: [] } },
+    }
+    const r = await findUpdate(installed(), 'alpha', gh(routes).up)
+    assert.equal(r.available, null, status)
+    assert.match(r.note, /not offered|nothing to offer/)
+  }
+})
+
+test('alpha: a branch other than main is asked for by name', async () => {
+  const routes = {
+    [`${R}/commits/feat%2Fthing`]: { body: commit(SHA_B, 'y') },
+    [`${R}/commits/feat/thing`]: { body: commit(SHA_B, 'y') },
+    [`${R}/compare/${SHA_A}...${SHA_B}`]: { body: { status: 'ahead', total_commits: 1, commits: [commit(SHA_B, 'y')], files: [] } },
+  }
+  const r = await findUpdate(installed(), 'alpha', gh(routes).up, { branch: 'feat/thing' })
+  assert.equal(r.available?.ref, 'feat/thing')
+  assert.equal(r.available?.label, 'feat/thing @ bbbbbbb')
+})
+
+test('the update branch comes from the install (HYPERPROX_UPDATE_BRANCH); anything odd falls back to main', () => {
+  assert.equal(updateBranch('feat/installer-polish'), 'feat/installer-polish')
+  assert.equal(updateBranch(undefined), 'main')
+  assert.equal(updateBranch(''), 'main')
+  assert.equal(updateBranch('-x'), 'main')
+  assert.equal(updateBranch('a..b'), 'main')
+  assert.equal(updateBranch('a b'), 'main')
+  assert.equal(selfUpdateConfig({ HYPERPROX_UPDATE_REPO: 'https://gitlab.example.com/me/hyperprox.git', HYPERPROX_UPDATE_BRANCH: 'dev' }, '/x').branch, 'dev')
+  assert.equal(selfUpdateConfig({ HYPERPROX_UPDATE_REPO: 'https://gitlab.example.com/me/hyperprox.git' }, '/x').repoUrl, 'https://gitlab.example.com/me/hyperprox.git')
 })
 
 test('ETags: the second request carries If-None-Match, and a 304 answers from the cache', async () => {

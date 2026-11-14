@@ -743,13 +743,23 @@ clone_repo() {
   checkout_ref
 }
 
-# --ref: put main at that tag, branch or commit. Staying on a branch (not a detached HEAD) keeps a later
-# install.sh, a `git pull` and the in-app updater working.
+# --ref: a branch is checked out as that branch, tracking origin, so the in-app updater follows it; a tag or
+# commit puts main at it. Staying on a branch (not a detached HEAD) keeps a later install.sh, a `git pull` and
+# the in-app updater working.
+INSTALL_BRANCH=""
 checkout_ref() {
   [[ -n "${INSTALL_REF}" ]] || return 0
   [[ "${INSTALL_REF}" =~ ^[A-Za-z0-9._/-]{1,100}$ && "${INSTALL_REF}" != *..* && "${INSTALL_REF}" != -* ]] \
     || die "--ref must be a tag, branch or commit id"
   git -C "${HYPERPROX_DIR}" fetch --quiet --tags origin >>"${LOG_FILE}" 2>&1 || true
+  if [[ "${INSTALL_REF}" != main ]] && git -C "${HYPERPROX_DIR}" show-ref --verify --quiet "refs/remotes/origin/${INSTALL_REF}" \
+     && ! git -C "${HYPERPROX_DIR}" show-ref --verify --quiet "refs/tags/${INSTALL_REF}"; then
+    git -C "${HYPERPROX_DIR}" checkout --quiet -B "${INSTALL_REF}" --track "origin/${INSTALL_REF}" >>"${LOG_FILE}" 2>&1 \
+      || die "Could not check out ${INSTALL_REF}"
+    INSTALL_BRANCH="${INSTALL_REF}"
+    ok "On branch ${INSTALL_REF} ($(git -C "${HYPERPROX_DIR}" rev-parse --short=7 HEAD))"
+    return 0
+  fi
   local sha
   sha="$(git -C "${HYPERPROX_DIR}" rev-parse --verify --quiet "${INSTALL_REF}^{commit}" \
       || git -C "${HYPERPROX_DIR}" rev-parse --verify --quiet "origin/${INSTALL_REF}^{commit}" || true)"
@@ -943,6 +953,34 @@ EOF
   chmod 600 "${ENV_FILE}"
   ok "Generated .env at ${ENV_FILE}"
   info "Proxmox credentials will be configured through the setup wizard"
+}
+
+# ── Where updates come from ───────────────────────────────────────────────────
+# The in-app updater (Updates page) follows the source this install came from: HYPERPROX_REPO_URL's mirror or
+# fork, and the branch --ref named (a tag or commit follows main). Written when missing, and replaced when this
+# run was told a source; a re-run with neither keeps what is there.
+set_env_line() {  # set_env_line <file> <KEY> <value>: replace the KEY= line, or append it
+  local f="$1" k="$2" v="$3"
+  if grep -qE "^${k}=" "$f" 2>/dev/null; then
+    local tmp; tmp="$(mktemp "${f}.XXXX")"
+    awk -v k="$k" -v v="$v" 'BEGIN{FS=OFS="="} $1==k{print k "=" v; next} {print}' "$f" > "$tmp" && cat "$tmp" > "$f"; rm -f "$tmp"
+  else
+    printf '%s=%s\n' "$k" "$v" >> "$f"
+  fi
+}
+
+configure_update_source() {
+  local f="${ENV_FILE:-${HYPERPROX_DIR}/.env}" branch
+  [[ -f "$f" ]] || return 0
+  branch="${INSTALL_BRANCH:-$(git -C "${HYPERPROX_DIR}" symbolic-ref --short -q HEAD 2>/dev/null || echo main)}"
+  [[ -n "$branch" ]] || branch=main
+  if [[ -n "${HYPERPROX_REPO_URL:-}" ]] || ! grep -qE '^HYPERPROX_UPDATE_REPO=' "$f"; then
+    set_env_line "$f" HYPERPROX_UPDATE_REPO "${REPO_URL}"
+  fi
+  if [[ -n "${HYPERPROX_REF:-}" ]] || ! grep -qE '^HYPERPROX_UPDATE_BRANCH=' "$f"; then
+    set_env_line "$f" HYPERPROX_UPDATE_BRANCH "${branch}"
+  fi
+  ok "Updates follow $(grep -m1 '^HYPERPROX_UPDATE_REPO=' "$f" | cut -d= -f2-) ($(grep -m1 '^HYPERPROX_UPDATE_BRANCH=' "$f" | cut -d= -f2-))"
 }
 
 # ── Vault gate settings ───────────────────────────────────────────────────────
@@ -1497,6 +1535,7 @@ main() {
   clone_repo
   configure_env
   configure_vault_env
+  configure_update_source
   apply_install_config
   ui_step "Building"
   ui_plan "Installing npm packages" "Generating Prisma client" "Building API" "Building Frontend"

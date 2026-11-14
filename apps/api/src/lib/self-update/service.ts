@@ -32,6 +32,8 @@ export interface SelfUpdateConfig {
   mirrorUrl:   string | null
   trustedKeys: string | null
   allowInsecure: boolean
+  /** The branch the alpha channel follows: the one this install came from (HYPERPROX_UPDATE_BRANCH), else main. */
+  branch?:     string
 }
 
 export interface SelfUpdateDeps {
@@ -174,7 +176,7 @@ export class SelfUpdateService {
     } else {
       for (const up of this.d.upstreams()) {
         try {
-          const r = await findUpdate(inst, s.channel, up, { includePrereleases: s.includePrereleases })
+          const r = await findUpdate(inst, s.channel, up, { includePrereleases: s.includePrereleases, branch: this.d.config.branch || 'main' })
           result = { checkedAt: this.now().toISOString(), source: up.where, fromMirror: !!up.mirror, available: r.available, note: r.note, error: null }
           break
         } catch (e: any) {

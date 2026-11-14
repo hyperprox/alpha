@@ -36,6 +36,12 @@ export interface SelfUpdateRouteDeps {
 export const INSTALL_DIR = process.env.HYPERPROX_DIR || path.resolve(__dirname, '..', '..', '..', '..')
 export const DEFAULT_REPO = 'https://github.com/hyperprox/alpha.git'
 
+/** A branch name the alpha channel may follow (install.sh writes the one it installed from); main otherwise. */
+export function updateBranch(raw: string | undefined): string {
+  const b = (raw || '').trim()
+  return /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/.test(b) && !b.includes('..') && !b.endsWith('.lock') ? b : 'main'
+}
+
 export function selfUpdateConfig(env: NodeJS.ProcessEnv = process.env, dir = INSTALL_DIR): SelfUpdateConfig {
   const keys = env.HYPERPROX_UPDATE_TRUSTED_KEYS || ''
   return {
@@ -43,6 +49,7 @@ export function selfUpdateConfig(env: NodeJS.ProcessEnv = process.env, dir = INS
     mirrorUrl: (env.HYPERPROX_UPDATE_MIRROR || '').trim() || null,
     trustedKeys: keys ? path.resolve(dir, keys) : null,
     allowInsecure: env.HYPERPROX_UPDATE_INSECURE_UPSTREAM === '1',
+    branch: updateBranch(env.HYPERPROX_UPDATE_BRANCH),
   }
 }
 

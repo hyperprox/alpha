@@ -123,6 +123,13 @@ export async function findUpdate(installed: Installed, channel: Channel, up: Ups
     const cmp = await up.compare(installed.sha, head.sha)
     if (cmp.status === 'identical') return { available: null, note: `You are on the newest commit on ${branch}.` }
     if (cmp.status === 'behind') return { available: null, note: `This install is ahead of ${branch} upstream (${installed.sha.slice(0, 7)} has commits ${branch} does not).` }
+    // Only a head that contains this install is an update, as on the stable channel. Diverged or unknown history
+    // (local commits, a rewritten branch, an install from another source) could be older: never offered.
+    if (cmp.status !== 'ahead') {
+      return { available: null, note: cmp.status === 'diverged'
+        ? `This install (${installed.sha.slice(0, 7)}) and ${branch} upstream (${head.sha.slice(0, 7)}) have each moved on separately, so there is nothing to offer as an update.`
+        : `Upstream ${branch} (${head.sha.slice(0, 7)}) does not contain this install's commit ${installed.sha.slice(0, 7)}, so it is not offered as an update.` }
+    }
     const { list, total } = commitsFrom(cmp)
     return {
       available: {
