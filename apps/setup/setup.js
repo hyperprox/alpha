@@ -597,15 +597,21 @@ const WIZARD_HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HyperProx Setup</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<script>try{var t=localStorage.getItem('hyperprox-theme');if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--cyan:#2fd6e8;--bg:#0a111c;--surface:#0f1b2b;--border:#22344a;--text:#c9d4e2;--muted:#9fb0c4;--green:#4ade80;--red:#f05252;--amber:#f5a524}
+:root{--cyan:#2fd6e8;--bg:#0a111c;--surface:#0f1b2b;--border:#22344a;--text:#c9d4e2;--muted:#9fb0c4;--green:#4ade80;--red:#f05252;--amber:#f5a524;--title:#fff;--input:#0d1624;--deep:#0a111c;--accent-ink:#2fd6e8;color-scheme:dark}
+/* The wizard follows the theme, as /login does: the system's, or the choice made in HyperProx (hyperprox-theme). */
+@media (prefers-color-scheme: light){:root:not([data-theme=dark]){--cyan:#0e8fa0;--bg:#f3f6fa;--surface:#ffffff;--border:#d3dde8;--text:#1c2736;--muted:#55657b;--green:#15803d;--red:#c81e1e;--amber:#a16207;--title:#0a111c;--input:#f7f9fc;--deep:#eef3f8;--accent-ink:#0b7280;color-scheme:light}}
+:root[data-theme=light]{--cyan:#0e8fa0;--bg:#f3f6fa;--surface:#ffffff;--border:#d3dde8;--text:#1c2736;--muted:#55657b;--green:#15803d;--red:#c81e1e;--amber:#a16207;--title:#0a111c;--input:#f7f9fc;--deep:#eef3f8;--accent-ink:#0b7280;color-scheme:light}
 body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem}
 .wrap{width:100%;max-width:560px}
-.logo{font-family:'Barlow Condensed',sans-serif;font-size:2.4rem;font-weight:700;letter-spacing:.12em;margin-bottom:4px;color:#fff}
+.logo{font-family:'Barlow Condensed',sans-serif;font-size:2.4rem;font-weight:700;letter-spacing:.12em;margin-bottom:4px;color:var(--title)}
 .eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--cyan);margin-bottom:6px}
-.card-title{font-family:'Barlow Condensed',sans-serif!important;font-weight:700!important;font-size:1.9rem!important;color:#fff!important}
+.card-title{font-family:'Barlow Condensed',sans-serif!important;font-weight:700!important;font-size:1.9rem!important;color:var(--title)!important}
 .field-hint{font-size:12.5px;color:var(--muted);margin-top:6px}
 .adv{margin:.5rem 0 1rem;border:1px solid var(--border);border-radius:6px;padding:.6rem .9rem}
 .adv summary{cursor:pointer;color:var(--muted);font-size:13px}
@@ -625,7 +631,7 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-
 .card-desc{font-size:14px;color:var(--muted);margin-bottom:1.5rem;line-height:1.6}
 .field{margin-bottom:1rem}
 .field label{display:block;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;font-family:'IBM Plex Mono',monospace}
-.field input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:#0d1624;color:var(--text);font-size:14px;font-family:'IBM Plex Mono',monospace;outline:none;transition:.15s}
+.field input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text);font-size:14px;font-family:'IBM Plex Mono',monospace;outline:none;transition:.15s}
 .field input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(0,200,224,.12)}
 .row{display:flex;gap:8px}
 .row .field{flex:1}
@@ -637,17 +643,19 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-
 .btn-ghost:hover{border-color:var(--text);color:var(--text)}
 .btn-row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:1.5rem}
 .btn-row .hint{min-width:0}
-.steps-box{background:#0f1b2b;border:1px solid rgba(47,214,232,.13);border-radius:8px;padding:1.25rem;margin-bottom:1.25rem}
+/* A phone: the note under the button row gets the whole width, not a sliver beside the button. */
+@media (max-width:520px){.btn-row{flex-wrap:wrap}.btn-row .hint{flex:1 1 100%;order:2}body{padding:1rem}.card{padding:1.25rem}}
+.steps-box{background:var(--surface);border:1px solid rgba(47,214,232,.13);border-radius:8px;padding:1.25rem;margin-bottom:1.25rem}
 .steps-title{color:#2fd6e8;font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:1rem}
 .steps-method{margin-bottom:1rem}
 .steps-method:last-child{margin-bottom:0}
 .steps-method-label{color:#9ca3af;font-size:.8rem;margin-bottom:.5rem;font-weight:500}
-.code-block{background:#0a111c;border:1px solid rgba(47,214,232,.19);border-radius:4px;padding:.5rem .75rem;font-family:'IBM Plex Mono',monospace;font-size:.8rem;color:#2fd6e8;user-select:all;cursor:pointer}
+.code-block{background:var(--deep);border:1px solid rgba(47,214,232,.19);border-radius:4px;padding:.5rem .75rem;font-family:'IBM Plex Mono',monospace;font-size:.8rem;color:var(--accent-ink);user-select:all;cursor:pointer}
 .steps-note{color:#6b7280;font-size:.75rem;margin-top:.4rem}
 .steps-list{color:#d1d5db;font-size:.82rem;padding-left:1.25rem;margin:0}
 .steps-list li{margin-bottom:.35rem}
 .steps-list strong{color:#f9fafb}
-.steps-list code{background:#0a111c;padding:.1rem .3rem;border-radius:3px;font-size:.8rem;color:#2fd6e8}
+.steps-list code{background:var(--deep);padding:.1rem .3rem;border-radius:3px;font-size:.8rem;color:var(--accent-ink)}
 .hint{font-size:12px;color:var(--muted)}
 .detect-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:14px}
 .detect-row:last-child{border:none}
@@ -657,7 +665,7 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-
 .badge-off{background:rgba(100,116,139,.1);color:var(--muted);border:1px solid var(--border)}
 .badge-scan{background:rgba(0,200,224,.1);color:var(--cyan);border:1px solid rgba(0,200,224,.25)}
 .node-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:1rem}
-.node-card{background:#0d1624;border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.node-card{background:var(--input);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
 .node-name{font-size:13px;font-weight:600;font-family:'IBM Plex Mono',monospace;color:var(--cyan)}
 .node-sub{font-size:11px;color:var(--muted);margin-top:2px}
 .svc-card{border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;transition:.15s}
@@ -666,14 +674,14 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-
 .svc-card:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
 .svc-name{font-size:14px;font-weight:600}
 .svc-detail{font-size:12px;color:var(--muted);font-family:'IBM Plex Mono',monospace;margin-top:2px}
-.toggle{width:36px;height:20px;border-radius:10px;border:1px solid var(--border);background:#0d1624;position:relative;transition:.2s;flex-shrink:0}
+.toggle{width:36px;height:20px;border-radius:10px;border:1px solid var(--border);background:var(--input);position:relative;transition:.2s;flex-shrink:0}
 .toggle.on{background:var(--cyan);border-color:var(--cyan)}
 .toggle::after{content:'';position:absolute;width:14px;height:14px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.2s}
 .toggle.on::after{transform:translateX(16px)}
 .err{color:var(--red);font-size:13px;margin-top:.75rem;padding:10px 12px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:8px;display:none}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(0,200,224,.3);border-top-color:var(--cyan);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
-.link-row{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#0d1624;border-radius:8px;margin-bottom:8px;font-size:13px}
+.link-row{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--input);border-radius:8px;margin-bottom:8px;font-size:13px}
 .link-url{font-family:'IBM Plex Mono',monospace;color:var(--cyan);font-size:12px}
 .success-icon{width:52px;height:52px;border-radius:50%;background:rgba(34,197,94,.12);border:1.5px solid rgba(34,197,94,.3);display:flex;align-items:center;justify-content:center;font-size:22px;margin:0 auto 1.5rem}
 </style>
@@ -772,7 +780,7 @@ function stepProxmox(){
     <details class="adv">
       <summary>Advanced</summary>
       <div class="row"><div class="field"><label>Port</label><input id="px-port" value="\${S.proxmox.port}" style="width:90px"></div></div>
-      <div class="field"><label>Public URL (optional — for consoles outside your network)</label><input id="px-pub" placeholder="https://pve.yourdomain.com" value="\${S.proxmox.publicUrl}"></div>
+      <div class="field"><label>Public URL (optional — for consoles outside your network)</label><input id="px-pub" placeholder="https://pve.example.com" value="\${S.proxmox.publicUrl}"></div>
       <div class="field"><label>Already have an API token? Token ID</label><input id="px-tid" placeholder="root@pam!hyperprox" value="\${S.proxmox.tokenId}"></div>
       <div class="field"><label>Token secret</label><input id="px-sec" type="password" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="\${S.proxmox.tokenSecret}"></div>
     </details>

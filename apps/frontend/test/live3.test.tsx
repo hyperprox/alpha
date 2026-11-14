@@ -29,3 +29,13 @@ test('the row menu opens below its button, flips above near the bottom, and stay
   const narrow = placeMenu(btn(100, 40), { width: 200, height: 240 }, { width: 390, height: 800 })
   assert.equal(narrow.left, 8, 'never off the left edge')
 })
+
+test('sign-in, owner creation and join scroll on a small phone: the stage scrolls, the card is never pushed out of reach', () => {
+  const css = src('app/login/login.module.css')
+  const stage = /\.stage \{([^}]*)\}/.exec(css)![1]
+  assert.match(stage, /height: 100dvh/)
+  assert.match(stage, /overflow-y: auto/)
+  assert.doesNotMatch(stage, /align-items: center/, 'a centred card taller than the screen loses its top')
+  assert.match(/\.card \{([^}]*)\}/.exec(css)![1], /margin: auto/)
+  assert.ok(src('app/join/page.tsx').includes("import s from '../login/login.module.css'"), 'join uses the same stage')
+})

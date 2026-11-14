@@ -4,11 +4,15 @@
    theme token; the motion stops under prefers-reduced-motion.
    ============================================================================= */
 
-.stage { position: relative; display: flex; min-height: 100vh; min-height: 100dvh; align-items: center; justify-content: center; padding: 56px 16px 32px;
+/* The sign-in, owner-creation and join pages scroll on their own, inside the visible height (100dvh, not 100vh,
+   which on a phone includes the part behind the browser's bar). The card is centred with margin: auto rather than
+   align-items: center, which pushed a card taller than the screen out of reach at the top. */
+.stage { position: relative; display: flex; height: 100vh; height: 100dvh; min-height: 100dvh; overflow-y: auto; overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch; align-items: flex-start; justify-content: center; padding: 56px 16px 32px;
   background: radial-gradient(60rem 30rem at 50% 30%, var(--accent-wash), transparent 70%); }
 .theme { position: absolute; top: max(14px, env(safe-area-inset-top, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); }
 
-.card { position: relative; overflow: hidden; width: 100%; max-width: 24.5rem; display: flex; flex-direction: column; gap: 18px;
+.card { position: relative; overflow: hidden; width: 100%; max-width: 24.5rem; display: flex; flex-direction: column; gap: 18px; margin: auto;
   padding: 26px 22px 24px; border-radius: 16px; border: 1px solid var(--border);
   background: linear-gradient(160deg, var(--surface), var(--surface-hi)); box-shadow: var(--shadow); }
 @media (min-width: 480px) { .card { padding: 30px 30px 28px; } }

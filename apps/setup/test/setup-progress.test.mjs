@@ -300,3 +300,13 @@ test('the wizard service toggles are keyboard switches: focusable, announced on 
   assert.equal(sw.length, 2, 'the found-service cards and the install cards')
   assert.match(html, /\.svc-card:focus-visible\{outline/)
 })
+
+test('the wizard follows the theme, fits a phone, and asks for no missing icon', () => {
+  const html = setup.WIZARD_HTML
+  assert.match(html, /@media \(prefers-color-scheme: light\)\{:root:not\(\[data-theme=dark\]\)\{/)
+  assert.match(html, /localStorage\.getItem\('hyperprox-theme'\)/, 'the choice made in HyperProx counts too')
+  assert.doesNotMatch(html.slice(html.indexOf('<style>'), html.indexOf('</style>')), /color:#fff[;}!]|background:#0d1624|background:#0f1b2b/, 'no colour fixed to the dark theme')
+  assert.match(html, /<link rel="icon" href="\/icon\.svg"/, 'its own icon, not a /favicon.ico that 404s')
+  assert.match(html, /@media \(max-width:520px\)\{\.btn-row\{flex-wrap:wrap\}\.btn-row \.hint\{flex:1 1 100%/)
+  assert.match(html, /placeholder="https:\/\/pve\.example\.com"/)
+})

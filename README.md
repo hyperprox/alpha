@@ -270,7 +270,10 @@ bash /opt/hyperprox/install.sh
 
 **A version, a branch or a mirror.** `install.sh --ref=<tag|branch|commit>` (or `HYPERPROX_REF=...`) installs
 that instead of `main`: a branch is checked out as that branch, a tag or commit puts `main` at it.
-`HYPERPROX_REPO_URL=<git URL>` clones a mirror or fork instead of GitHub. The installer writes both into `.env`
+`HYPERPROX_REPO_URL=<git URL>` clones a mirror or fork instead of GitHub, but only when `/opt/hyperprox` is not a
+clone yet: an existing clone keeps fetching from its own origin, and the installer says so. To install a mirror
+or fork the way above, clone it yourself first: `git clone -b <branch> <mirror URL> /opt/hyperprox`, then run
+`bash /opt/hyperprox/install.sh`. The installer writes both into `.env`
 as `HYPERPROX_UPDATE_REPO` and `HYPERPROX_UPDATE_BRANCH`, so the in-app updater follows the same source: a
 branch install is offered that branch's new commits on the alpha channel, a mirror install updates from the
 mirror. A re-run that names neither keeps what `.env` already says.
@@ -303,14 +306,17 @@ with an overlay error:
 ```bash
 pct create <ctid> <template-storage>:vztmpl/<debian-template>.tar.zst \
   --hostname hyperprox --cores 4 --memory 8192 --rootfs <storage>:100 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.0.2.50/24,gw=192.0.2.1 \
+  --net0 name=eth0,bridge=vmbr0,ip=192.0.2.50/24,gw=192.0.2.1 --nameserver 1.1.1.1 \
   --unprivileged 0 --features keyctl=1,nesting=1 --onboot 1 --start 1
 ```
 
 Use your own free address and gateway in `ip=…/24,gw=…`: a fixed address set in Proxmox is the one that stays
-(with `ip=dhcp` the installer shows the `pct set` line that pins the address it got).
+(with `ip=dhcp` the installer shows the `pct set` line that pins the address it got). Give `--nameserver` a DNS
+server the container can reach: without it the container copies the node's resolver, which may be one it cannot
+reach (Tailscale's, or a local stub).
 
-No API token is needed for this path: the setup wizard makes one from your Proxmox login. Re-running
+No API token is needed for this path: the setup wizard makes one from your Proxmox login. If you would rather
+not sign in there, paste an existing token under **Advanced** in the wizard instead. Re-running
 `install.sh` is safe, also after an install that was interrupted: it first finishes any package installs left
 half-done (`dpkg --configure -a`), and it keeps an existing `.env`, certificates and data.
 
