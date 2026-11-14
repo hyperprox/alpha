@@ -1547,9 +1547,13 @@ main() {
     ALL_HAVE="$ALL_HAVE${HAVE[$s]:+${HAVE[$s]}$'\n'}"
   done
   CANDIDATES="$(printf '%s\n%s\n' "$AVAIL" "$ALL_HAVE" | grep . | sort -u || true)"
-  TEMPLATE="$(grep '^debian-13-standard_' <<< "$CANDIDATES" | newest || true)"
+  # A Debian 13 template already on the template storage is used as it is (apt brings it up to date inside the
+  # container); a newer point release is downloaded only when there is none there.
+  TEMPLATE="$(grep '^debian-13-standard_' <<< "$ALL_HAVE" | newest || true)"
+  [ -n "$TEMPLATE" ] || TEMPLATE="$(grep '^debian-13-standard_' <<< "$CANDIDATES" | newest || true)"
   if [ -z "$TEMPLATE" ]; then
-    TEMPLATE="$(grep -E '^debian-(1[2-9]|[2-9][0-9])-standard_' <<< "$CANDIDATES" | newest || true)"
+    TEMPLATE="$(grep -E '^debian-(1[2-9]|[2-9][0-9])-standard_' <<< "$ALL_HAVE" | newest || true)"
+    [ -n "$TEMPLATE" ] || TEMPLATE="$(grep -E '^debian-(1[2-9]|[2-9][0-9])-standard_' <<< "$CANDIDATES" | newest || true)"
     [ -n "$TEMPLATE" ] || die "No Debian container template for $ARCH is available from Proxmox or on this node's storage."
     warn "No Debian 13 template for $ARCH; using $TEMPLATE"
   fi
@@ -2196,7 +2200,7 @@ summary_box() {
   else ui_table_row "DNS" "the node's own"; fi
   ui_table_row "Size" "${CORES} cores · ${MEMORY} MB RAM · ${DISK} GB on ${STORAGE}"
   ui_table_row "Features" "privileged · nesting · keyctl · tun · on boot"
-  ui_table_row "Template" "${TEMPLATE}$([ "$NEED_DOWNLOAD" -eq 1 ] && echo ' (downloaded first)')"
+  ui_table_row "Template" "${TEMPLATE} on ${TEMPLATE_STORAGE}$([ "$NEED_DOWNLOAD" -eq 1 ] && echo ' (downloaded first)')"
   ui_table_row "Monitoring" "$( [ "${#mon[@]}" -gt 0 ] && join_list "${mon[@]}" | sed 's/, / · /g' || echo none)"
   ui_table_row "VPN" "$(vpn_words)"
   if [ "$TOKEN_EXISTED" -eq 1 ]; then ui_table_row "Token" "root@pam!${TOKEN_NAME} exists: kept (setup page asks for its secret)"

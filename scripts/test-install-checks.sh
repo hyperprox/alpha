@@ -45,4 +45,6 @@ mkdir -p "${tmp}/sys"
 out="$(lxc_static_advice eth0 192.0.2.50/24 192.0.2.1)"
 check "address advice: the exact pct set line"  'grep -q "pct set <ID> --net0 name=eth0,bridge=vmbr0,hwaddr=.*,ip=192.0.2.50/24,gw=192.0.2.1" <<< "$out"'
 check "install.sh writes no /etc/network/interfaces any more" '! grep -q "> /etc/network/interfaces" "${here}/install.sh"'
+# A re-run after an interrupted install: dpkg is finished before the first apt-get.
+check "install.sh runs dpkg --configure -a before its first apt-get" '[[ "$(sed -n "/^install_prerequisites() {/,/^}/p" "${here}/install.sh" | grep -v "^ *#" | grep -n -m1 -E "finish_interrupted_dpkg|apt-get" | cut -d: -f2)" == *finish_interrupted_dpkg* ]] && grep -q "dpkg --configure -a" "${here}/install.sh"'
 exit "${fail}"

@@ -293,7 +293,7 @@ test('the shell asks exactly the words the wizard asks', () => {
 // ── Template: only ever one built for this host's CPU ──────────────────────────────────────────────────
 
 test('an arm64 template already downloaded on an amd64 host is ignored; the newest amd64 one is fetched', () => {
-  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_ARM, T13_OLD_AMD] })
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_ARM] })
   try {
     const r = c.run(['-y', '--no-pve-metrics'])
     const out = plain(r.stdout)
@@ -307,6 +307,16 @@ test('an arm64 template already downloaded on an amd64 host is ignored; the newe
     assert.match(create, /--arch amd64/)
     assert.ok(!create.includes(T13_ARM), 'never the arm64 one')
     assert.ok(c.templates().includes(T13_ARM), 'the other template is left where it was')
+  } finally { c.cleanup() }
+})
+
+test('a Debian 13 template already on the storage is used, even when a newer point release is offered', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_OLD_AMD, T13_ARM] })
+  try {
+    const out = plain(c.run(['-y', '--dry-run']).stdout)
+    assert.match(out, new RegExp(`Template: ${T13_OLD_AMD.replace(/\./g, '\\.')} \\(amd64\\), already on local`))
+    assert.match(out, new RegExp(`Template\\s+${T13_OLD_AMD.replace(/\./g, '\\.')} \\(amd64\\) on local, already there`))
+    assert.doesNotMatch(c.calls(), /pveam download/)
   } finally { c.cleanup() }
 })
 
@@ -659,9 +669,9 @@ test('the root password is saved root-only and not printed; a link in its place 
 
 test('template storage: one that already keeps a Debian 13 template, else a file store that is not CephFS; --template-storage wins', () => {
   const stores = ['media cephfs active 99000000000 0 99000000000 1%', 'nas cifs active 5000000000 0 5000000000 1%', 'local dir active 900000000 1000 899999000 1%']
-  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [], vztmpl: stores, storeHas: { media: [], nas: [], local: [T13_OLD_AMD] } })
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_OLD_AMD], vztmpl: stores, storeHas: { media: [], nas: [], local: [T13_OLD_AMD] } })
   try {
-    assert.match(plain(c.run(['-y', '--dry-run']).stdout), new RegExp(`Template: ${T13_AMD.replace(/\./g, '\\.')} \\(amd64\\), to be downloaded to local`))
+    assert.match(plain(c.run(['-y', '--dry-run']).stdout), new RegExp(`Template: ${T13_OLD_AMD.replace(/\./g, '\\.')} \\(amd64\\), already on local`), 'the one already there is used')
   } finally { c.cleanup() }
   const d = cluster({ 'node-a': 'server-no-gpu' }, { have: [], vztmpl: stores, storeHas: { media: [], nas: [], local: [] } })
   try {

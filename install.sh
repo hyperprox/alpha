@@ -614,9 +614,17 @@ lxc_static_advice() {
 }
 
 # ── System Update + Prerequisites ─────────────────────────────────────────────
+finish_interrupted_dpkg() {
+  DEBIAN_FRONTEND=noninteractive dpkg --configure -a >>"${LOG_FILE}" 2>&1 \
+    || warn "dpkg --configure -a did not finish cleanly (see ${LOG_FILE}); apt may refuse until it does"
+}
+
 install_prerequisites() {
   step "Installing system prerequisites"
 
+  # A run that was interrupted mid-install leaves dpkg half-configured, and every apt-get after it refuses
+  # ("dpkg was interrupted, you must manually run 'dpkg --configure -a'"). Finish that first, so re-running is safe.
+  finish_interrupted_dpkg
   run_with_spinner "Updating apt" apt-get update -qq
 
   local pkgs=(curl wget git gnupg lsb-release ca-certificates
