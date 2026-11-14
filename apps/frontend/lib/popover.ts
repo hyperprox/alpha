@@ -15,3 +15,13 @@ export function placeMenu(anchor: Rect, menu: { width: number; height: number },
   left = Math.max(margin, Math.min(left, view.width - margin - menu.width))
   return { top, left, above: useAbove }
 }
+
+/** Whether an answer that just arrived is for what is chosen now (not for an earlier choice still in flight). */
+export function isCurrentAnswer(current: string, askedFor: string): boolean {
+  return current === askedFor
+}
+
+/** Where focus goes when a menu opens: its first item. */
+export function firstMenuItem(menu: { querySelector(sel: string): { focus(): void } | null } | null): { focus(): void } | null {
+  return menu?.querySelector('[role="menuitem"]') ?? null
+}

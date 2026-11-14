@@ -5,7 +5,7 @@
 
 import { useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { placeMenu } from '@/lib/popover'
+import { firstMenuItem, placeMenu } from '@/lib/popover'
 import { formatBytes, formatUptime } from '@/lib/utils'
 import { PreviewDialog } from './PreviewDialog'
 import { VENDOR_LABEL, type GuestRow, type VpnStatus } from './types'
@@ -85,8 +85,10 @@ function RowMenu({ row, canOperate, canAdmin, onPower, onOpen, onRefresh, onBack
       setPos(placeMenu(b, { width: m.offsetWidth, height: m.offsetHeight }, { width: window.innerWidth, height: window.innerHeight }))
     }
     place()
+    // Focus moves into the menu when it opens; Escape closes it and gives focus back to the button.
+    firstMenuItem(menu.current)?.focus()
     const outside = (e: MouseEvent) => { if (!menu.current?.contains(e.target as Node) && !btn.current?.contains(e.target as Node)) setOpen(false) }
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); btn.current?.focus() } }
     const away = () => setOpen(false)
     document.addEventListener('mousedown', outside)
     document.addEventListener('keydown', key)

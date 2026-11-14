@@ -39,3 +39,16 @@ test('sign-in, owner creation and join scroll on a small phone: the stage scroll
   assert.match(/\.card \{([^}]*)\}/.exec(css)![1], /margin: auto/)
   assert.ok(src('app/join/page.tsx').includes("import s from '../login/login.module.css'"), 'join uses the same stage')
 })
+
+test('review m5-m7: the old-setup-link note, stale module answers dropped, the row menu takes focus', async () => {
+  const { SETUP_GONE_NOTE } = await import('../lib/setup-gone')
+  assert.equal(SETUP_GONE_NOTE, "Setup isn't answering. If you already finished it, sign in here.")
+  const { isCurrentAnswer, firstMenuItem } = await import('../lib/popover')
+  assert.equal(isCurrentAnswer('lxc-121', 'lxc-120'), false, 'an answer for the machine chosen before is dropped')
+  assert.equal(isCurrentAnswer('lxc-121', 'lxc-121'), true)
+  let focused = false
+  firstMenuItem({ querySelector: (sel: string) => (sel === '[role="menuitem"]' ? { focus: () => { focused = true } } : null) })?.focus()
+  assert.equal(focused, true)
+  const list = src('components/guest-config/GuestList.tsx')
+  assert.match(list, /if \(e\.key === 'Escape'\) \{ setOpen\(false\); btn\.current\?\.focus\(\) \}/, 'Escape gives focus back to the button')
+})

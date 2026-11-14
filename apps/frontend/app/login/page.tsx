@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import QRCode from 'qrcode'
 import { apiJson, type AuthStatus } from '@/lib/api'
 import { safeNext } from '@/lib/safe-next'
+import { SETUP_GONE_NOTE } from '@/lib/setup-gone'
 import { alpha } from '@/lib/theme'
 import { BusyNote, GhostButton, INPUT, LABEL, Notice, PrimaryButton, passwordStrength } from '@/components/vault/ui'
 import { ThemeToggle } from '@/components/layout/ThemeToggle'
@@ -297,7 +298,7 @@ function LoginForm() {
     <div className={s.stack}>
       {status?.demo && <div className="flex justify-center"><DemoBadge /></div>}
       {params.get('from') === 'setup' && (
-        <Notice kind="info">Setup is finished, so the setup link no longer opens anything. Sign in here.</Notice>
+        <Notice kind="info">{SETUP_GONE_NOTE}</Notice>
       )}
       {params.get('locked') && (
         <Notice kind="warn">{lockedNotice(params.get('reason'))}</Notice>

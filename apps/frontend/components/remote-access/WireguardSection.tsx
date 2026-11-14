@@ -3,7 +3,8 @@
 // WireGuard on the VPN page: HyperProx servers and their peers, machines connected as clients, and the
 // MikroTik router's WireGuard (read through the plug-in; peers written only with the limited login).
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { isCurrentAnswer } from '@/lib/popover'
 import QRCode from 'qrcode'
 import type { RemoteMachineRow } from '@hyperprox/types'
 import { apiJson, type ApiResult } from '@/lib/api'
@@ -51,10 +52,14 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
   const [router, setRouter] = useState<RouterView | null>(null)
   // Whether WireGuard can run in the machine chosen for a new server (a container needs its node's module).
   const [wgMod, setWgMod] = useState<{ ok: boolean | null; reason: string | null; fix: string | null } | null>(null)
+  // The machine the check is for: an answer for a machine chosen before (a slow node) is dropped, never shown.
+  const moduleFor = useRef('')
   const checkModule = async (machineId: string) => {
+    moduleFor.current = machineId
     setWgMod(null)
     if (!machineId) return
     const r = await apiJson<{ ok: boolean | null; reason: string | null; fix: string | null }>(`/api/vpn/wg/module?machineId=${encodeURIComponent(machineId)}`)
+    if (!isCurrentAnswer(moduleFor.current, machineId)) return
     setWgMod(r.ok && r.body ? r.body : { ok: null, reason: r.error ?? null, fix: null })
   }
   const [routerErr, setRouterErr] = useState<string | null>(null)
