@@ -110,7 +110,7 @@ esac; exit 0`)
         [[ "$*" == *install.sh* ]] && [ -n "\${FAKE_INSTALL_FAIL:-}" ] && exit 1
         [[ "$*" == *"hostname -I"* ]] && echo 10.9.9.50; exit 0;;
   push) cp "$3" "${root}/pushed-\${4##*/}"; exit 0;;
-  set) [ -n "\${FAKE_SET_FAIL:-}" ] && exit 1; exit 0;;
+  set) [ -n "\${FAKE_SET_FAIL:-}" ] && { echo "\${FAKE_SET_FAIL}" >&2; exit 255; }; exit 0;;
   *) exit 0;;
 esac`)
   w('pveum', `t=${root}/tokens
@@ -147,6 +147,10 @@ step="$(grep -m1 -oE '^# (Undo|node_exporter|Power|Intel GPU|NVIDIA GPU|AMD GPU|
 echo "$node $step" >> ${root}/steps.log
 printf 'HPX-RESULT\\tdone\\tset up (%s)\\n' "$step"`)
   fs.mkdirSync(path.join(root, 'sys/module/wireguard'), { recursive: true })
+  // Proxmox's own config code, as bootstrap.sh's perl calls it: under the lock, the lxc lines go in before any section.
+  w('perl', `grep -q lock_config <<< "$*" || exit 2
+id="\${@: -1}"; c="$HPX_PVE_ETC/lxc/$id.conf"
+awk 'BEGIN { l = "lxc.cgroup2.devices.allow: c 10:200 rwm\\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file" } /^\\[/ && !d { print l; d = 1 } { print } END { if (!d) print l }' "$c" > "$c.new" && mv "$c.new" "$c"`)
   const env = extra => ({ PATH: `${bin}:/usr/bin:/bin`, HPX_PW_DIR: root, HPX_SYSFS: path.join(root, 'sys'), HPX_PVE_ETC: path.join(root, 'pve'), HPX_RESOLV_CONF: path.join(root, 'resolv.conf'), HOME: root, TMPDIR: tmp, LANG: 'C', TERM: 'dumb', ...extra })
   // A file of answers standing in for the keyboard (HPX_TTY).
   const tty = answers => { const f = path.join(root, `tty-${Math.random().toString(36).slice(2)}`); fs.writeFileSync(f, answers); return f }
@@ -655,13 +659,23 @@ test('tun: pct set --dev0 when PVE takes it; else the lines go before a [pve:pen
   } finally { c.cleanup() }
   const d = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
   try {
-    const r = d.run(['-y', '--no-pve-metrics'], '', { FAKE_SET_FAIL: '1', FAKE_PENDING: '1' })
+    const r = d.run(['-y', '--no-pve-metrics'], '', { FAKE_SET_FAIL: "400 Parameter verification failed. dev0: property is not defined in schema and the schema does not allow additional properties", FAKE_PENDING: '1' })
     assert.equal(r.status, 0, r.stdout + r.stderr)
     const conf = fs.readFileSync(path.join(d.root, 'pve/lxc/900.conf'), 'utf8')
     const at = conf.indexOf('lxc.cgroup2.devices.allow: c 10:200 rwm'), pend = conf.indexOf('[pve:pending]')
     assert.ok(at >= 0 && pend > at, conf)
     assert.match(conf, /lxc\.mount\.entry: \/dev\/net\/tun dev\/net\/tun none bind,create=file\n\[pve:pending\]/)
+    assert.match(d.calls(), /^perl -e .*lock_config.*write_config/ms, 'through Proxmox\'s own config code, under its lock')
   } finally { d.cleanup() }
+  const e = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = e.run(['-y', '--no-pve-metrics'], '', { FAKE_SET_FAIL: "CT 900 is locked (backup)" })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    assert.match(out, /Could not give container 900 \/dev\/net\/tun \(pct set: CT 900 is locked \(backup\)\)/)
+    assert.doesNotMatch(e.calls(), /^perl /m, 'another refusal is reported, never worked around')
+    assert.doesNotMatch(fs.readFileSync(path.join(e.root, 'pve/lxc/900.conf'), 'utf8'), /10:200/)
+  } finally { e.cleanup() }
 })
 
 test('token name: a taken one is asked about at a terminal (Enter makes a free one); --token-name; host and port always written', () => {
@@ -685,8 +699,9 @@ test('token name: a taken one is asked about at a terminal (Enter makes a free o
   try {
     const out = plain(e.run(['-y', '--no-pve-metrics']).stdout)
     assert.doesNotMatch(e.calls(), /pveum user token add root@pam hyperprox /)
-    assert.match(e.calls(), /pct exec 900 -- env HPX_HOST=\S+ HPX_TOKEN_ID= bash -c/, 'the address is still written')
-    assert.match(out, /Proxmox address configured/)
+    assert.match(e.calls(), /pct exec 900 -- env HPX_HOST=\S+ HPX_TOKEN_ID=hyperprox bash -c/, 'the address and the kept token\'s name are written')
+    assert.match(out, /Proxmox address and token name configured/)
+    assert.equal(e.run(['-y', '--dry-run', '--token-name', 'a']).status, 1, 'a one-letter name is refused')
   } finally { e.cleanup() }
 })
 
@@ -696,7 +711,7 @@ test('the end: one card with the setup link and its key, no yes pipe, the run ma
     const r = c.run(['-y', '--no-pve-metrics'])
     const out = plain(r.stdout + r.stderr)
     assert.equal(r.status, 0, out)
-    assert.match(out, /Open\s+https:\/\/10\.9\.9\.50\/setup\?k=0123456789abcdef0123456789abcdef/)
+    assert.match(out, /Open\s+https:\/\/10\.9\.9\.50\/setup#k=0123456789abcdef0123456789abcdef/)
     assert.match(out, /finish the wizard; it already has your answers from here/)
     assert.doesNotMatch(c.calls(), /yes \|/)
     assert.match(c.calls(), /bash \/tmp\/install\.sh < \/dev\/null/)

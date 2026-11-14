@@ -16,34 +16,34 @@ const SOURCE: ScanSource = {
     { vmid: 104, name: 'off', node: 'node-b', type: 'lxc', status: 'stopped' },
   ],
   config: async (_n, vmid) => ({
-    101: { net0: 'name=eth0,bridge=vmbr0,ip=192.0.2.11/24,gw=192.0.2.1' },
+    101: { net0: 'name=eth0,bridge=vmbr0,ip=10.0.2.11/24,gw=10.0.2.1' },
     102: { net0: 'virtio=BC:24:11:00:00:01,bridge=vmbr0' },
     103: { net0: 'name=eth0,bridge=vmbr0,ip=dhcp' },
-    104: { net0: 'name=eth0,bridge=vmbr0,ip=192.0.2.14/24' },
+    104: { net0: 'name=eth0,bridge=vmbr0,ip=10.0.2.14/24' },
   } as Record<number, Record<string, unknown>>)[vmid] ?? null,
   live: async (_n, vmid) => ({
-    102: { result: [{ name: 'lo', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': '127.0.0.1' }] }, { name: 'eth0', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': '192.0.2.12' }] }] },
-    103: [{ name: 'eth0', inet: '192.0.2.13/24' }],
+    102: { result: [{ name: 'lo', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': '127.0.0.1' }] }, { name: 'eth0', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': '10.0.2.12' }] }] },
+    103: [{ name: 'eth0', inet: '10.0.2.13/24' }],
   } as Record<number, unknown>)[vmid] ?? null,
-  nodes: async () => [{ name: 'node-a', ip: '192.0.2.2' }, { name: 'node-b', ip: '192.0.2.3' }],
+  nodes: async () => [{ name: 'node-a', ip: '10.0.2.2' }, { name: 'node-b', ip: '10.0.2.3' }],
 }
 
 const ok = (body: unknown, status = 200): ProbeAnswer => ({ status, body: typeof body === 'string' ? body : JSON.stringify(body) })
 /** What each address answers; anything else is no answer at all. */
 const ANSWERS: Record<string, ProbeAnswer> = {
-  'http://192.0.2.11:81/': ok('<html><head><title>Nginx Proxy Manager</title></head></html>'),
-  'https://192.0.2.12:8007/': ok('<html><head><title>Proxmox Backup Server</title></head><script src="/js/proxmox-backup-gui.js"></script></html>'),
-  'http://192.0.2.13:8989/ping': ok({ status: 'OK' }),
-  'http://192.0.2.13:7878/ping': ok({ status: 'OK' }),
-  'http://192.0.2.13:9696/api/v1/system/status': ok('Unauthorized', 401),
-  'http://192.0.2.13:8888/unmanic/api/v2/workers/status': ok({ workers_status: [] }),
-  'http://192.0.2.2:8888/unmanic/api/v2/workers/status': ok({ workers_status: [{ id: 'w0' }] }),
+  'http://10.0.2.11:81/': ok('<html><head><title>Nginx Proxy Manager</title></head></html>'),
+  'https://10.0.2.12:8007/': ok('<html><head><title>Proxmox Backup Server</title></head><script src="/js/proxmox-backup-gui.js"></script></html>'),
+  'http://10.0.2.13:8989/ping': ok({ status: 'OK' }),
+  'http://10.0.2.13:7878/ping': ok({ status: 'OK' }),
+  'http://10.0.2.13:9696/api/v1/system/status': ok('Unauthorized', 401),
+  'http://10.0.2.13:8888/unmanic/api/v2/workers/status': ok({ workers_status: [] }),
+  'http://10.0.2.2:8888/unmanic/api/v2/workers/status': ok({ workers_status: [{ id: 'w0' }] }),
   // Tautulli's /status sends a browser to its sign-in page first: followed, because it stays on its own origin.
-  'http://192.0.2.13:8181/status': { status: 302, body: '', location: '/auth/login' },
-  'http://192.0.2.13:8181/auth/login': ok('<html><head><title>Tautulli - Login</title></head></html>'),
+  'http://10.0.2.13:8181/status': { status: 302, body: '', location: '/auth/login' },
+  'http://10.0.2.13:8181/auth/login': ok('<html><head><title>Tautulli - Login</title></head></html>'),
   // A redirect off its own origin is a miss, and the other address is never asked.
-  'http://192.0.2.11:32400/identity': { status: 302, body: '', location: 'http://192.0.2.99:32400/identity' },
-  'http://192.0.2.99:32400/identity': ok('<MediaContainer machineIdentifier="x"/>'),
+  'http://10.0.2.11:32400/identity': { status: 302, body: '', location: 'http://10.0.2.99:32400/identity' },
+  'http://10.0.2.99:32400/identity': ok('<MediaContainer machineIdentifier="x"/>'),
 }
 function fakeGet(asked: string[] = []): ProbeGetter {
   return async url => { asked.push(url); return ANSWERS[url] ?? null }
@@ -51,9 +51,9 @@ function fakeGet(asked: string[] = []): ProbeGetter {
 
 test('scan targets: running guests by config and live address, and the nodes; stopped guests and loopback are not asked', async () => {
   const t = await scanTargets(SOURCE)
-  assert.deepEqual(t.map(x => x.address), ['192.0.2.11', '192.0.2.12', '192.0.2.13', '192.0.2.2', '192.0.2.3'].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })))
-  assert.equal(t.find(x => x.address === '192.0.2.12')?.guest?.vmid, 102)
-  assert.equal(t.find(x => x.address === '192.0.2.2')?.guest, null)
+  assert.deepEqual(t.map(x => x.address), ['10.0.2.11', '10.0.2.12', '10.0.2.13', '10.0.2.2', '10.0.2.3'].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })))
+  assert.equal(t.find(x => x.address === '10.0.2.12')?.guest?.vmid, 102)
+  assert.equal(t.find(x => x.address === '10.0.2.2')?.guest, null)
 })
 
 test('one scan, three consumers: Plug-ins Scan, Catalogue and the wizard verdicts agree on every service', async () => {
@@ -67,7 +67,7 @@ test('one scan, three consumers: Plug-ins Scan, Catalogue and the wizard verdict
   // The wizard's three, and what the install test saw the Catalogue miss.
   for (const key of ['npm', 'pbs', 'sonarr', 'radarr', 'prowlarr', 'unmanic', 'tautulli']) assert.equal(v[key].found, true, key)
   for (const key of ['ollama', 'plex', 'lidarr', 'qbittorrent']) assert.equal(v[key].found, false, key)
-  assert.equal(asked.includes('http://192.0.2.99:32400/identity'), false, 'an off-origin redirect is not followed')
+  assert.equal(asked.includes('http://10.0.2.99:32400/identity'), false, 'an off-origin redirect is not followed')
 
   for (const p of PROBES) {
     const found = v[p.key].found
@@ -76,7 +76,7 @@ test('one scan, three consumers: Plug-ins Scan, Catalogue and the wizard verdict
   }
   // The Catalogue's verdicts the install test got wrong.
   for (const id of ['nginx-proxy-manager', 'proxmox-backup-server', 'arr-stack', 'unmanic', 'tautulli']) assert.ok(catalogue[id]?.length, id)
-  assert.equal(catalogue['proxmox-backup-server'][0].url, 'https://192.0.2.12:8007')
+  assert.equal(catalogue['proxmox-backup-server'][0].url, 'https://10.0.2.12:8007')
   assert.equal(catalogue['proxmox-backup-server'][0].guest?.vmid, 102)
   // Unmanic may run on several hosts; Scan lists each.
   assert.equal(plugins.filter(f => f.key === 'unmanic').length, 2)
@@ -105,7 +105,7 @@ test('scanHosts: the same inputs give the same findings in the same order', asyn
 test('the Catalogue route merges proxy fingerprints and the scan, without counting one guest twice', async () => {
   const scan = await new ServiceScanCache(() => SOURCE, fakeGet()).result()
   const fingerprints = {
-    apps: { 'nginx-proxy-manager': [{ guest: { vmid: 101, name: 'proxy', node: 'node-a', type: 'lxc' as const, status: 'running' }, target: '192.0.2.11:81', publicUrl: 'https://npm.example.com', domains: ['npm.example.com'], version: '2.12.1', via: 'probe' as const }] },
+    apps: { 'nginx-proxy-manager': [{ guest: { vmid: 101, name: 'proxy', node: 'node-a', type: 'lxc' as const, status: 'running' }, target: '10.0.2.11:81', publicUrl: 'https://npm.example.com', domains: ['npm.example.com'], version: '2.12.1', via: 'probe' as const }] },
     builtAt: 5, probed: 1, errors: [],
   }
   const merged = mergeDetection(fingerprints, scan)
@@ -132,4 +132,29 @@ test('the setup wizard\'s three services are in the one list, on the ports the w
   assert.equal(by.npm.match(200, '<title>Nginx Proxy Manager</title>'), true)
   assert.equal(by.pbs.match(200, '<title>Proxmox Backup Server</title>'), true)
   assert.equal(by.npm.match(404, 'Nginx Proxy Manager'), false)
+})
+
+test('scan targets: only private unicast addresses; config beats the agent; one entry per address', async () => {
+  const src: ScanSource = {
+    guests: async () => [
+      { vmid: 201, name: 'a', node: 'node-a', type: 'lxc', status: 'running' },
+      { vmid: 202, name: 'b', node: 'node-a', type: 'qemu', status: 'running' },
+      { vmid: 203, name: 'c', node: 'node-a', type: 'qemu', status: 'running' },
+    ],
+    config: async (_n, vmid) => ({
+      201: { net0: 'name=eth0,ip=10.0.2.21/24' },
+      202: { net0: 'virtio=BC,bridge=vmbr0' },
+      203: { net0: 'virtio=BC,bridge=vmbr0' },
+    } as Record<number, Record<string, unknown>>)[vmid] ?? null,
+    live: async (_n, vmid) => ({
+      201: [{ name: 'eth0', inet: '10.0.2.21/24' }, { name: 'docker0', inet: '172.17.0.1/16' }],
+      202: { result: [{ name: 'eth0', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': '169.254.9.9' }, { 'ip-address-type': 'ipv4', 'ip-address': '0.0.0.0' }, { 'ip-address-type': 'ipv4', 'ip-address': '224.0.0.1' }, { 'ip-address-type': 'ipv4', 'ip-address': '255.255.255.255' }, { 'ip-address-type': 'ipv4', 'ip-address': '8.8.8.8' }, { 'ip-address-type': 'ipv4', 'ip-address': '10.0.2.22' }] }] },
+      203: { result: [{ name: 'eth0', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': '10.0.2.22' }] }] },
+    } as Record<number, unknown>)[vmid] ?? null,
+    nodes: async () => [{ name: 'node-a', ip: '10.0.2.21' }, { name: 'node-b', ip: '203.0.113.9' }],
+  }
+  const t = await scanTargets(src)
+  assert.deepEqual(t.map(x => x.address), ['10.0.2.21', '10.0.2.22'])
+  assert.equal(t[0].guest?.vmid, 201, 'the guest, not the node, owns the shared address')
+  assert.equal(t[1].guest?.vmid, 202)
 })

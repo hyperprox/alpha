@@ -31,15 +31,31 @@ async function retryAsync(fn, opts) {
 }
 
 /**
- * The step-3 "Existing services" map from a scan. A toggle starts ON only for a service the scan found;
- * `saved` ({ key: boolean }) is what the owner chose earlier, and can only switch off or on a found one.
+ * The addresses a scanned service was found at: `candidates` ([{ host, port, detail }]) when the scan lists them,
+ * else the single host an older scan result carries.
  */
-function servicesFromScan(list, saved) {
+function serviceCandidates(s) {
+  if (s && Array.isArray(s.candidates)) return s.candidates.filter(function (c) { return c && c.host })
+  return s && s.found && s.host ? [{ host: s.host, port: s.port, detail: s.detail || (s.host + ':' + s.port) }] : []
+}
+
+/**
+ * The step-3 "Existing services" map from a scan. Exactly one address found: the toggle starts ON (unless the
+ * owner saved it off). Several found: nothing is picked for the owner, `chosen` is '' and the toggle is off
+ * until they pick one. `saved` ({ key: boolean }) and `savedHosts` ({ key: host }) are what the owner chose
+ * earlier; a saved address that the scan did not find is ignored.
+ */
+function servicesFromScan(list, saved, savedHosts) {
   const out = {}
   for (const s of list || []) {
     if (!s || !s.key) continue
+    const cands = serviceCandidates(s)
     const choice = saved && typeof saved[s.key] === 'boolean' ? saved[s.key] : true
-    out[s.key] = Object.assign({}, s, { enabled: Boolean(s.found) && choice })
+    const want = savedHosts && typeof savedHosts[s.key] === 'string' ? savedHosts[s.key] : ''
+    let chosen = ''
+    if (cands.length === 1) chosen = cands[0].host
+    else if (cands.length > 1 && cands.some(function (c) { return c.host === want })) chosen = want
+    out[s.key] = Object.assign({}, s, { candidates: cands, chosen: chosen, enabled: cands.length > 0 && Boolean(chosen) && choice })
   }
   return out
 }
@@ -49,6 +65,27 @@ function serviceToggles(services) {
   const out = {}
   for (const k of Object.keys(services || {})) out[k] = Boolean(services[k] && services[k].enabled)
   return out
+}
+
+/** The address picked for each switched-on service, as the server receives it: { key: host }. */
+function serviceHosts(services) {
+  const out = {}
+  for (const k of Object.keys(services || {})) if (services[k] && services[k].enabled && services[k].chosen) out[k] = String(services[k].chosen)
+  return out
+}
+
+/**
+ * The setup key from the page's address. The installer's link carries it in the fragment (/setup#k=...), which a
+ * browser never sends to the server, so it stays out of access logs. An older link has it in the query (?k=...).
+ * Returns { key, fromQuery }; key is '' when there is none.
+ */
+function setupKeyFromLocation(search, hash) {
+  function dec(v) { try { return decodeURIComponent(v) } catch (e) { return v } }
+  const h = /(?:^#|&)k=([^&]*)/.exec(String(hash || ''))
+  if (h && h[1]) return { key: dec(h[1]), fromQuery: false }
+  const q = /(?:^\?|&)k=([^&]*)/.exec(String(search || ''))
+  if (q && q[1]) return { key: dec(q[1]), fromQuery: true }
+  return { key: '', fromQuery: false }
 }
 
 /** "taken 3 hours ago" from an ISO time; empty when the time is unknown. */
@@ -95,4 +132,4 @@ function stepLabel(index, total) {
   return 'Step ' + (index + 1) + ' of ' + total
 }
 
-module.exports = { retryAsync, servicesFromScan, serviceToggles, takenLabel, bootstrapSummary, statusLabel, stepLabel }
+module.exports = { retryAsync, serviceCandidates, servicesFromScan, serviceToggles, serviceHosts, setupKeyFromLocation, takenLabel, bootstrapSummary, statusLabel, stepLabel }

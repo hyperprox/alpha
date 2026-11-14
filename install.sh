@@ -1361,6 +1361,7 @@ start_services() {
   fi
 
   # The containers too, and what they are for: a crash-looping one is a failed install, not a success.
+  docker info >/dev/null 2>&1 || die "Docker is not running (systemctl status docker); HyperProx's containers cannot start."
   ui_try ui_run "Waiting for the containers to settle" wait_containers
   local bad
   bad="$(container_problems)"
@@ -1379,17 +1380,25 @@ start_services() {
   fi
 }
 
-# container_problems: one line per hyperprox container that is restarting, exited, dead or unhealthy: "name state".
+# compose_rows: "name state status…" for each container of this install's compose project whose service is in
+# the active profiles (a container left from a profile switched off is not this install's concern).
+compose_rows() {
+  local services
+  services="$(cd "${HYPERPROX_DIR}" && docker compose config --services 2>/dev/null)"
+  docker ps -a --filter "label=com.docker.compose.project=$(basename "${HYPERPROX_DIR}")" \
+      --format '{{.Label "com.docker.compose.service"}} {{.Names}} {{.State}} {{.Status}}' 2>/dev/null \
+    | S="${services}" awk 'BEGIN { n = split(ENVIRON["S"], a, "\n"); for (i = 1; i <= n; i++) on[a[i]] = 1 }
+                           !n || on[$1] { $1 = ""; sub(/^ /, ""); print }'
+}
+# container_problems: one line per container that is restarting, exited, dead or unhealthy: "name state".
 container_problems() {
-  docker ps -a --filter 'name=^hyperprox-' --format '{{.Names}} {{.State}} {{.Status}}' 2>/dev/null \
-    | awk '$2 == "restarting" || $2 == "exited" || $2 == "dead" || /\(unhealthy\)/ { s = $2; if (/\(unhealthy\)/) s = "unhealthy"; print $1, s }'
+  compose_rows | awk '$2 == "restarting" || $2 == "exited" || $2 == "dead" || /\(unhealthy\)/ { s = $2; if (/\(unhealthy\)/) s = "unhealthy"; print $1, s }'
 }
 # wait_containers: until no container is still starting (health "starting", or restarting), at most 2 minutes.
 wait_containers() {
   local i
   for i in $(seq 1 60); do
-    docker ps -a --filter 'name=^hyperprox-' --format '{{.State}} {{.Status}}' 2>/dev/null \
-      | grep -qE '^restarting|\(health: starting\)' || return 0
+    compose_rows | awk '{ $1 = ""; print }' | grep -qE '^ restarting|\(health: starting\)' || return 0
     sleep 2
   done
   return 0
@@ -1411,7 +1420,7 @@ print_summary() {
   SETUP_SECRET="$(grep -oP '^SETUP_SECRET=\K.*' "${ENV_FILE}" 2>/dev/null || true)"
   local done_already=false link
   grep -q '^SETUP_COMPLETE=true' "${ENV_FILE}" 2>/dev/null && done_already=true
-  link="https://${HOST_IP}/setup?k=${SETUP_SECRET}"; [[ "${done_already}" == true ]] && link="https://${HOST_IP}/login"
+  link="https://${HOST_IP}/setup#k=${SETUP_SECRET}"; [[ "${done_already}" == true ]] && link="https://${HOST_IP}/login"
   # Run by bootstrap.sh: its own card is the one summary (it reads the setup link from .env), so nothing here.
   if [[ -n "${NESTED}" ]]; then ok "HyperProx is installed"; return 0; fi
 

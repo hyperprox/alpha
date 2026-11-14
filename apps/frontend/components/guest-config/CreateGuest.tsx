@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
-import { defaultNode, hostArch, pickRootStorage, storagesFor, templatesForArch, type FormNode } from '@/lib/lxc-form'
+import { applyProposal, defaultNode, hostArch, pickRootStorage, storagesFor, templatesForArch, type FormNode } from '@/lib/lxc-form'
 import { ConfirmOverride, confirmNeeded, type NamingSettingsView, type Proposal } from '@/components/catalogue/NamingProposal'
 
 type PVENode = FormNode & { status: string }
@@ -13,7 +13,7 @@ type PVENode = FormNode & { status: string }
 export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: 'lxc' | 'qemu'; nodes: PVENode[]; viewedNode?: string | null; onClose: () => void }) {
   const [showCreate, setShow] = useState(true)
   const setShowCreate = (v: boolean) => { setShow(v); if (!v) onClose() }
-  const [createType, setCreateType] = useState<'lxc'|'qemu'>('lxc')
+  const [createType, setCreateType] = useState<'lxc'|'qemu'>(type)   // not 'lxc' first: loadNodeData filters storages by it
   const [templates, setTemplates] = useState<any[]>([])
   const [nextId, setNextId] = useState<number>(100)
   const [createForm, setCreateForm] = useState({
@@ -36,7 +36,9 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
   // first), and DHCP under "never" or an address outside the range needs a typed confirmation. The API enforces it.
   const [savedNaming, setSavedNaming] = useState<NamingSettingsView | null>(null)
   const [proposal, setProposal] = useState<Proposal | null>(null)
-  const [touchedNet, setTouchedNet] = useState(false)
+  // What the person typed themselves is never overwritten by a proposal; the ID and the network are tracked apart.
+  const [touched, setTouched] = useState({ id: false, net: false })
+  const [proposalError, setProposalError] = useState('')
   const [namingConfirm, setNamingConfirm] = useState('')
   useEffect(() => {
     void apiJson<{ data: { settings: NamingSettingsView | null } }>('/api/catalogue/wizard/naming').then(r => { if (r.ok) setSavedNaming(r.body?.data?.settings ?? null) })
@@ -44,21 +46,20 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
   useEffect(() => {
     if (createType !== 'lxc' || !createForm.node) return
     let gone = false
-    setProposal(null); setProposing(true)
+    setProposal(null); setProposing(true); setProposalError('')
     void apiJson<{ data: Proposal }>('/api/catalogue/wizard/propose', 'POST', { node: createForm.node }).then(r => {
       if (gone) return
       setProposing(false)
-      if (!r.ok || !r.body?.data) return
+      // Said out loud: a silent failure leaves the first free ID and DHCP in the form, which looks like "no numbering".
+      if (!r.ok || !r.body?.data) { setProposalError(r.error ?? 'No ID and address could be proposed.'); return }
       setProposal(r.body.data)
     })
     return () => { gone = true }
   }, [createType, createForm.node])
   useEffect(() => {
-    if (!proposal || touchedNet) return
-    const p = proposal
-    const net0 = `name=eth0,bridge=${p.bridge || 'vmbr0'},ip=${p.ip}${p.ip !== 'dhcp' && p.gateway ? `,gw=${p.gateway}` : ''}${p.vlan ? `,tag=${p.vlan}` : ''}`
-    setCreateForm(f => ({ ...f, vmid: String(p.vmid), net0 }))
-  }, [proposal, touchedNet])
+    if (!proposal) return
+    setCreateForm(f => applyProposal(f, proposal, touched))
+  }, [proposal, touched])
   const net0Ip = /(?:^|,)ip=([^,]+)/.exec(createForm.net0)?.[1] ?? 'dhcp'
   const overrideNeed = createType === 'lxc' ? confirmNeeded(savedNaming, net0Ip === 'dhcp' ? 'dhcp' : 'static', net0Ip) : null
   useEffect(() => { setNamingConfirm('') }, [createForm.net0])
@@ -89,6 +90,10 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
     setCreateError('')
     setCreateSuccess('')
     setShowCreate(true)
+    // The node, and with it the numbering proposal, starts at once: not after the template and next-ID reads,
+    // which can be slow or fail and used to leave the form with no node and so no proposal.
+    const firstNode = defaultNode(nodes, viewedNode)
+    if (firstNode) { setCreateForm(f => ({ ...f, node: f.node || firstNode })); void loadNodeData(firstNode) }
     try {
       fetch('/api/proxmox/isos').then(r=>r.json()).then(r=>{ if(r.success) setISOs(r.data) }).catch(()=>{})
     const [tplRes, idRes] = await Promise.all([
@@ -97,10 +102,9 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
       ])
       if (tplRes.success) setTemplates(tplRes.data)
       if (idRes.success) {
-        const firstNode = defaultNode(nodes, viewedNode)
         setNextId(Number(idRes.data))
-        setCreateForm(f=>({...f, vmid: String(idRes.data), node: firstNode}))
-        if (firstNode) loadNodeData(firstNode)
+        // Only a starting value: a proposal that has already arrived (or one the person typed) is kept.
+        setCreateForm(f=>({...f, vmid: f.vmid || String(idRes.data)}))
       }
     } catch {}
   }
@@ -189,7 +193,7 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
               {/* VM ID */}
               <div>
                 <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>VM ID</label>
-                <input style={FIELD} value={createForm.vmid} onChange={e=>{ setTouchedNet(true); setCreateForm(f=>({...f,vmid:e.target.value})) }} placeholder="100"/>
+                <input style={FIELD} value={createForm.vmid} onChange={e=>{ setTouched(t => ({ ...t, id: true })); setCreateForm(f=>({...f,vmid:e.target.value})) }} placeholder="100"/>
               </div>
 
               {/* Hostname / Name */}
@@ -267,12 +271,13 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
                   {/* Network */}
                   <div>
                     <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Network (net0)</label>
-                    <input style={FIELD} value={createForm.net0} onChange={e=>{ setTouchedNet(true); setCreateForm(f=>({...f,net0:e.target.value})) }}/>
+                    <input style={FIELD} value={createForm.net0} onChange={e=>{ setTouched(t => ({ ...t, net: true })); setCreateForm(f=>({...f,net0:e.target.value})) }}/>
                     {proposing && <p className="text-xs mt-1" style={{color:'var(--text-muted)'}}>Looking for an ID and address that fit your numbering, and that nothing answers on…</p>}
+                    {proposalError && !proposing && <p className="text-xs mt-1" style={{color:'var(--warn)'}}>{proposalError}</p>}
                     {proposal && (
                       <p className="text-xs mt-1" style={{color: proposal.ip === 'dhcp' ? 'var(--warn)' : 'var(--text-muted)'}}>
                         {proposal.ip === 'dhcp' ? `Proposed: CT ${proposal.vmid}, DHCP. ${proposal.warnings[0] ?? ''}` : `Proposed: CT ${proposal.vmid} · ${proposal.ip.split('/')[0]} (${proposal.label})`}
-                        {touchedNet && <> · <button type="button" className="underline" onClick={() => setTouchedNet(false)}>use it</button></>}
+                        {(touched.id || touched.net) && <> · <button type="button" className="underline" onClick={() => setTouched({ id: false, net: false })}>use it</button></>}
                       </p>
                     )}
                   </div>

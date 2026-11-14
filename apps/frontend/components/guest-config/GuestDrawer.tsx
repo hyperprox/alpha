@@ -163,7 +163,7 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
             </select>
             <GhostButton style={{ height: 42 }} disabled={!target || busy} onClick={() => call('Migration', `/api/infra/vms/${row.node}/${row.vmid}/${row.type}/migrate`, 'POST', { target })}>Migrate to {target || '…'}</GhostButton>
           </div>
-          <p className="text-[12px]" style={{ color: 'var(--text-dimmer)' }}>{row.type === 'qemu' ? 'Live migration: the VM keeps running.' : 'A container migrates with a restart. A plain bind mount blocks it.'}</p>
+          <p className="text-[12px]" style={{ color: 'var(--text-dimmer)' }}>{row.type === 'qemu' ? 'Live migration: the VM keeps running.' : (running ? 'This container is running: it will be restarted on the target node. A plain bind mount blocks migration.' : 'A container migrates with a restart. A plain bind mount blocks it.')}</p>
         </Section>
       )}
 

@@ -120,7 +120,7 @@ from Windows PowerShell, macOS Terminal or Linux. Then run:
 curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh | bash
 ```
 
-When it finishes, open the setup link it prints (`https://<container-ip>/setup?k=<setup key>`), finish
+When it finishes, open the setup link it prints (`https://<container-ip>/setup#k=<setup key>`), finish
 the wizard, then create the owner account at `https://<container-ip>/login` (the wizard's last button takes
 the setup key with it; the owner account cannot be created without it).
 
@@ -334,7 +334,7 @@ header to the `:443` server in `config/nginx/conf.d/hyperprox.conf`.
 
 ### First-run setup
 
-The installer prints a wizard link with a setup key: `https://<container-ip>/setup?k=<key>`. Keep it
+The installer prints a wizard link with a setup key: `https://<container-ip>/setup#k=<key>`. Keep it
 private. If you lose it before setup is done, run `grep SETUP_SECRET /opt/hyperprox/.env` on the
 HyperProx machine. The same key is needed to create the owner account, so it stays until the owner's first
 sign-in removes it. The wizard saves its progress, so reloading it resumes at the step you reached.
@@ -2467,7 +2467,7 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 | Install fails with an overlay error | The container must be privileged with `nesting=1` and `keyctl=1`: `pct set <ctid> --features keyctl=1,nesting=1`, set **Unprivileged** to No, and reboot it. |
 | Every page says HyperProx is locked | Expected after a reboot or idle timeout. Sign in at `/login`. `hyperprox status` shows the vault and keyholder state. |
 | HyperProx will not start | The API waits for the vault. Check `docker logs hyperprox-vault` and `journalctl -u hyperprox-api -n 50`. |
-| The setup page says a key is required | Use the link with `?k=`. Until the owner account exists, get the key with `grep SETUP_SECRET /opt/hyperprox/.env`. Once the owner has signed in there is no key and no setup page: sign in at `/login`. |
+| The setup page says a key is required | Use the link with `#k=` (an older `?k=` link also works). Until the owner account exists, get the key with `grep SETUP_SECRET /opt/hyperprox/.env`. Once the owner has signed in there is no key and no setup page: sign in at `/login`. |
 | Creating the owner says "This install has no setup key" | Add one on the HyperProx machine: `echo "SETUP_SECRET=$(openssl rand -hex 32)" >> /opt/hyperprox/.env`, then enter that value as the setup key on `/login`. |
 | HA shows `n/a` | The Proxmox token needs `Sys.Audit` on `/` to read HA status. |
 | A node shows `no meter` | Open **Settings → Setup checklist**: it shows, per node, whether health and power monitoring are on and why not. Some CPUs and all VMs have no power counters. |

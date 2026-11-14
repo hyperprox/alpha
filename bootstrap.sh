@@ -890,7 +890,7 @@ vpn_marker() {
   printf '{"version":1,"source":"bootstrap","entries":[%s]}\n' "${e[*]}" > "$1"
 }
 
-check_token_name_shape() { [[ "$1" =~ ^[A-Za-z][A-Za-z0-9._-]{0,31}$ ]]; }
+check_token_name_shape() { [[ "$1" =~ ^[A-Za-z][A-Za-z0-9._-]{1,31}$ ]]; }
 check_token_name() {   # a new token's name: well formed and free, or the taken one kept on purpose
   check_token_name_shape "$1" || { echo "$1 is not a token name: letters, digits, '.', '_' or '-', starting with a letter."; return 1; }
   [ "$1" = "$TOKEN_TAKEN" ] && return 0
@@ -908,6 +908,12 @@ ask_token_name() {
   ask_value TOKEN_NAME "$free" "Proxmox API token" "A token named ${TOKEN_TAKEN} exists already; its secret was shown only once, so HyperProx cannot use it. Which name should the new one get?" \
     "Enter makes ${free}. Type ${TOKEN_TAKEN} to leave it as it is; the setup page then asks for its secret." check_token_name Name "$TOKEN_TAKEN"
 }
+# ENV_SET_KV: set_kv KEY VALUE for the container's .env ($f), as a shell function to run in it. The new file is
+# written root-only beside the old one and moved over it, so .env is never half-written or briefly readable.
+# shellcheck disable=SC2016  # expanded in the container, not here
+ENV_SET_KV='set_kv() { local t; t="$(umask 077; mktemp "$f.XXXXXX")" || return 1
+  K="$1" V="$2" awk '"'"'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; d = 0 } !d && index($0, k "=") == 1 { print k "=" v; d = 1; next } { print } END { if (!d) print k "=" v }'"'"' "$f" > "$t" \
+    && chmod 600 "$t" && mv -f "$t" "$f" || { rm -f "$t"; return 1; }; }'
 # save_password FILE: the root password into FILE, mode 600, owned by root; never through a link.
 save_password() {
   [ ! -L "$1" ] || { warn "$1 is a symbolic link; the root password is not written there."; return 1; }
@@ -1203,16 +1209,32 @@ for_arch() { grep -E "_${1}\.tar\.zst\$" || true; }
 newest() { sort -V | tail -1; }
 
 # add_tun CTID: /dev/net/tun in the container, for Tailscale. `pct set --dev0` (PVE 8.1 and later) writes it the
-# way Proxmox expects. Without it, the two lxc lines go in by writing the whole config with them placed before its
-# first [section]: lines appended after a [pve:pending] or snapshot block belong to that block, and PVE drops them.
-TUN_LINES=$'lxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file'
+# way Proxmox expects. On an older Proxmox the two lxc lines are added through Proxmox's own config code, under its
+# lock: never appended (lines after a [pve:pending] or snapshot block belong to that block, and PVE drops them).
 add_tun() {
-  local conf="$PVE_ETC/lxc/$1.conf" tmp
+  local conf="$PVE_ETC/lxc/$1.conf" err
   grep -qE '^dev[0-9]+:.*/dev/net/tun|c 10:200 rwm' "$conf" 2>/dev/null && return 0
-  pct set "$1" --dev0 /dev/net/tun >/dev/null 2>&1 && return 0
-  tmp="$(mktemp)"; TMP_PATHS+=("$tmp")
-  L="$TUN_LINES" awk 'BEGIN { l = ENVIRON["L"] } /^\[/ && !done { print l; done = 1 } { print } END { if (!done) print l }' "$conf" > "$tmp" \
-    && cat "$tmp" > "$conf" || warn "Could not add /dev/net/tun to container $1."
+  err="$(pct set "$1" --dev0 /dev/net/tun 2>&1 >/dev/null)" && return 0
+  # Only a Proxmox that does not know devN gets the old lines; any other refusal is reported, and nothing is forced.
+  if ! grep -qiE "dev0.*(not defined in schema|unknown|does not exist)|unknown option.*dev0" <<< "$err"; then
+    warn "Could not give container $1 /dev/net/tun (pct set: ${err:-no reason given}). Tailscale will not run there until it has it."
+    return 0
+  fi
+  # Under Proxmox's own config lock, through its own reader and writer: pending and snapshot sections stay whole,
+  # and the file is replaced, never edited in place on the cluster filesystem.
+  # shellcheck disable=SC2016  # Perl, not shell
+  perl -e '
+    use strict; use warnings; use PVE::LXC::Config;
+    my $id = shift;
+    PVE::LXC::Config->lock_config($id, sub {
+      my $c = PVE::LXC::Config->load_config($id);
+      my $l = ($c->{lxc} //= []);
+      my %have = map { "$_->[0] $_->[1]" => 1 } @$l;
+      for my $p (["lxc.cgroup2.devices.allow", "c 10:200 rwm"], ["lxc.mount.entry", "/dev/net/tun dev/net/tun none bind,create=file"]) {
+        push @$l, $p unless $have{"$p->[0] $p->[1]"};
+      }
+      PVE::LXC::Config->write_config($id, $c);
+    });' "$1" 2>/dev/null || warn "Could not add /dev/net/tun to container $1."
 }
 
 # pick_template_storage: where a template to download goes. One that already keeps a Debian 13 template for this
@@ -1957,20 +1979,17 @@ main() {
   # This node's address in the cluster: `hostname -I` lists every address, and the first is not always it.
   HOST_IP="$(node_ip "$THIS_NODE")"
   [ -n "$HOST_IP" ] || HOST_IP="$(hostname -I | awk '{print $1}')"
-  if printf '%s\n' "$TOKEN_SECRET" | pct exec "$CTID" -- env HPX_HOST="$HOST_IP" HPX_TOKEN_ID="$([ -n "$TOKEN_SECRET" ] && echo "$TOKEN_NAME")" bash -c '
-      f=/opt/hyperprox/.env
-      set_kv() { if grep -q "^$1=" "$f" 2>/dev/null; then K="$1" V="$2" awk "BEGIN{k=ENVIRON[\"K\"];v=ENVIRON[\"V\"]} index(\$0,k\"=\")==1{print k\"=\"v;next}{print}" "$f" > "$f.tmp" && cat "$f.tmp" > "$f" && rm -f "$f.tmp"; else printf "%s=%s\n" "$1" "$2" >> "$f"; fi; }
+  # A token that was there already and kept: its name is written too, so the wizard asks only for its secret.
+  if printf '%s\n' "$TOKEN_SECRET" | pct exec "$CTID" -- env HPX_HOST="$HOST_IP" HPX_TOKEN_ID="$TOKEN_NAME" bash -c "f=/opt/hyperprox/.env; $ENV_SET_KV"'
       IFS= read -r secret || true
       set_kv PROXMOX_HOST "$HPX_HOST"
       set_kv PROXMOX_PORT 8006
-      if [ -n "$secret" ]; then
-        set_kv PROXMOX_USER root@pam
-        set_kv PROXMOX_TOKEN_ID "$HPX_TOKEN_ID"
-        set_kv PROXMOX_TOKEN_SECRET "$secret"
-      fi
+      set_kv PROXMOX_USER root@pam
+      set_kv PROXMOX_TOKEN_ID "$HPX_TOKEN_ID"
+      [ -z "$secret" ] || set_kv PROXMOX_TOKEN_SECRET "$secret"
       systemctl restart hyperprox-api 2>/dev/null || true'; then
     if [ -n "$TOKEN_SECRET" ]; then ok "Proxmox connection configured — the setup wizard will not ask again"
-    else ok "Proxmox address configured (${HOST_IP}:8006); the setup wizard asks only for the token's secret"; fi
+    else ok "Proxmox address and token name configured (${HOST_IP}:8006, ${TOKEN_NAME}); the setup wizard asks only for its secret"; fi
   else
     warn "Could not write the Proxmox connection; the setup wizard will ask for it"
   fi
@@ -2006,13 +2025,10 @@ PVEYML
   # -------------------------------------------------------------------------
   say "Handing your answers to HyperProx"
   _inst_prom=false; [ "$A_CHARTS" = yes ] && _inst_prom=true
-  pct exec "$CTID" -- bash -c "
-    f=/opt/hyperprox/.env
-    set_kv() { grep -q \"^\$1=\" \"\$f\" 2>/dev/null && sed -i \"s|^\$1=.*|\$1=\$2|\" \"\$f\" || echo \"\$1=\$2\" >> \"\$f\"; }
-    set_kv INSTALL_PROMETHEUS '$_inst_prom'
-    set_kv INSTALL_GRAFANA '$_inst_prom'
-    set_kv INSTALL_OLLAMA '$([ "$A_AI" = yes ] && echo true || echo false)'
-  " && ok "Charts: ${A_CHARTS} · local AI: ${A_AI}"
+  pct exec "$CTID" -- env HPX_PROM="$_inst_prom" HPX_AI="$([ "$A_AI" = yes ] && echo true || echo false)" bash -c "f=/opt/hyperprox/.env; $ENV_SET_KV"'
+    set_kv INSTALL_PROMETHEUS "$HPX_PROM"
+    set_kv INSTALL_GRAFANA "$HPX_PROM"
+    set_kv INSTALL_OLLAMA "$HPX_AI"' && ok "Charts: ${A_CHARTS} · local AI: ${A_AI}"
 
   # The cluster's own record of every node's SSH host key, and this node's own key files, read HERE, as root on a
   # node: public keys only. HyperProx takes it as the anchor for verifying its nodes' keys by itself, so nobody has to
@@ -2082,7 +2098,8 @@ PVEYML
   # The setup link carries the setup key (install.sh made it); this card is the one place it is shown.
   SETUP_KEY="$(pct exec "$CTID" -- sed -n 's/^SETUP_SECRET=//p' /opt/hyperprox/.env 2>/dev/null | head -1 || true)"
   [[ "$SETUP_KEY" =~ ^[0-9a-f]{32,128}$ ]] || SETUP_KEY=""
-  SETUP_URL="https://${CT_IP}/setup${SETUP_KEY:+?k=${SETUP_KEY}}"
+  # In the fragment (#k=), which a browser never sends: the key stays out of every access log.
+  SETUP_URL="https://${CT_IP}/setup${SETUP_KEY:+#k=${SETUP_KEY}}"
   # The root password, kept where only root on this node reads it; the summary names the file, not the password.
   PW_FILE=""; save_password "${HPX_PW_DIR:-/root}/hyperprox-${CTID}.txt" && PW_FILE="${HPX_PW_DIR:-/root}/hyperprox-${CTID}.txt"
   if [ "$UI_FANCY" -eq 1 ]; then success_card; return 0; fi

@@ -33,7 +33,8 @@ const FORM = 'application/x-www-form-urlencoded'
 const writes: Array<[string, (c: ProxmoxClient) => Promise<unknown>, string, string, string | null]> = [
   ['createSnapshot', c => c.createSnapshot('node-a', 100, 'lxc', 'pre change', 'a note'), 'POST', '/api2/json/nodes/node-a/lxc/100/snapshot', 'snapname=pre+change&description=a+note'],
   ['createSnapshot without description', c => c.createSnapshot('node-a', 100, 'qemu', 'snap1'), 'POST', '/api2/json/nodes/node-a/qemu/100/snapshot', 'snapname=snap1'],
-  ['migrateVM', c => c.migrateVM('node-a', 100, 'lxc', 'node-b', true), 'POST', '/api2/json/nodes/node-a/lxc/100/migrate', 'target=node-b&online=1'],
+  ['migrateVM', c => c.migrateVM('node-a', 100, 'lxc', 'node-b', true), 'POST', '/api2/json/nodes/node-a/lxc/100/migrate', 'target=node-b&restart=1'],
+  ['migrateVM qemu online', c => c.migrateVM('node-a', 100, 'qemu', 'node-b', true), 'POST', '/api2/json/nodes/node-a/qemu/100/migrate', 'target=node-b&online=1'],
   ['migrateVM offline', c => c.migrateVM('node-a', 100, 'qemu', 'node-b', false), 'POST', '/api2/json/nodes/node-a/qemu/100/migrate', 'target=node-b&online=0'],
   ['setHAState', c => c.setHAState('ct:100', 'stopped'), 'PUT', '/api2/json/cluster/ha/resources/ct%3A100', 'state=stopped'],
   ['vmAction', c => c.vmAction('node-a', 100, 'lxc', 'start'), 'POST', '/api2/json/nodes/node-a/lxc/100/status/start', null],

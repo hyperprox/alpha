@@ -9,6 +9,7 @@
 // =============================================================================
 
 import * as hardware from '@hyperprox/hardware'
+import { isUnicastV4 } from '@hyperprox/hardware/service-probes'
 
 export interface NodeInfo { node: string; status: string; maxmem: number; mem: number }
 
@@ -539,7 +540,7 @@ export interface IpSighting {
   source: 'config' | 'live' | 'node' | 'ping'
 }
 
-/** IPv4 addresses from an LXC `/interfaces` answer or a QEMU agent `network-get-interfaces` answer. */
+/** Usable unicast IPv4 addresses from an LXC `/interfaces` answer or a QEMU agent `network-get-interfaces` answer. */
 export function liveAddresses(answer: unknown): string[] {
   const list: any[] = Array.isArray(answer) ? answer : Array.isArray((answer as any)?.result) ? (answer as any).result : []
   const out: string[] = []
@@ -549,7 +550,8 @@ export function liveAddresses(answer: unknown): string[] {
       if (a?.['ip-address-type'] === 'ipv4' && typeof a['ip-address'] === 'string') out.push(a['ip-address'])
     }
   }
-  return out.filter(ip => parseCidr(`${ip}/32`) && !ip.startsWith('127.'))
+  // Never loopback, 0.0.0.0/8, link-local, multicast or broadcast: those are no one's address.
+  return out.filter(ip => parseCidr(`${ip}/32`) && isUnicastV4(ip))
 }
 
 /** Everyone already using `ip`: guest configs, addresses guests report while running, and the nodes themselves. */

@@ -35,3 +35,9 @@ export function scanHosts<G = unknown>(hosts: ScanHost<G>[], get: ProbeGetter, o
 export function verdicts(findings: Array<{ key: string; address: string }>, probes?: ServiceProbe[]): Record<string, { found: boolean; addresses: string[] }>
 /** The real GET (http/https, no redirects followed, 2.5 s, 64 KiB). */
 export const realGet: ProbeGetter
+/** RFC1918 IPv4 or unique-local IPv6 only: the only addresses ever probed. */
+export function isProbeAddress(addr: string): boolean
+/** IPv4 that is not 0/8, loopback, link-local, multicast or broadcast (public allowed). */
+export function isUnicastV4(addr: string): boolean
+/** A guest's addresses to probe: config's when it has any, else the agent's; private only, deduplicated. */
+export function guestAddresses(fromConfig: string[], fromLive: string[]): string[]

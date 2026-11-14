@@ -6,7 +6,7 @@ import { atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { HudHeader, Icon, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
 import ss from './settings.module.css'
-import { APP_VERSION, GIT_SHA, GIT_DESCRIBE } from '@/components/layout/version'
+import { APP_VERSION, GIT_SHA, GIT_DESCRIBE, versionLabel } from '@/components/layout/version'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 // ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ export default function SettingsPage() {
         <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
           <dt style={{ color: 'var(--text-muted)' }}>Version</dt><dd className="font-mono">{APP_VERSION === 'unknown' ? 'dev' : `v${APP_VERSION}`}</dd>
           <dt style={{ color: 'var(--text-muted)' }}>Commit</dt><dd className="font-mono">{GIT_SHA || 'unknown'}</dd>
-          <dt style={{ color: 'var(--text-muted)' }}>Build</dt><dd className="font-mono">{GIT_DESCRIBE || 'unknown'}</dd>
+          <dt style={{ color: 'var(--text-muted)' }}>Build</dt><dd className="font-mono" title={GIT_DESCRIBE ? `git describe: ${GIT_DESCRIBE}` : undefined}>{versionLabel()}</dd>
         </dl>
       </Panel>
 

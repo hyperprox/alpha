@@ -62,3 +62,18 @@ export function pickRootStorage(storages: FormStorage[]): string | null {
   const rank = (s: FormStorage) => (Number(s.shared) === 1 || s.shared === true ? 1 : 0)
   return [...storages].sort((a, b) => rank(b) - rank(a) || (b.avail ?? 0) - (a.avail ?? 0) || a.storage.localeCompare(b.storage))[0]?.storage ?? null
 }
+
+export interface FormProposal { vmid: number; ip: string; gateway?: string; bridge?: string; vlan?: number }
+
+/** The net0 value a proposal stands for: its bridge, a fixed address (with gateway and VLAN) or DHCP. */
+export function proposedNet0(p: FormProposal): string {
+  return `name=eth0,bridge=${p.bridge || 'vmbr0'},ip=${p.ip}${p.ip !== 'dhcp' && p.gateway ? `,gw=${p.gateway}` : ''}${p.vlan ? `,tag=${p.vlan}` : ''}`
+}
+
+/**
+ * The form after the server's proposal arrives: its ID and network, except for the field the person already
+ * typed in. (Typing the ID used to freeze the network too, and the reverse.)
+ */
+export function applyProposal<F extends { vmid: string; net0: string }>(f: F, p: FormProposal, touched: { id: boolean; net: boolean }): F {
+  return { ...f, ...(touched.id ? {} : { vmid: String(p.vmid) }), ...(touched.net ? {} : { net0: proposedNet0(p) }) }
+}

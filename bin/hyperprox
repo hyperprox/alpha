@@ -75,19 +75,26 @@ cmd_status() {
 # ten minutes) or a stop is named, with the command that shows why. Prints one line when all are well.
 containers_status() {
   command -v docker >/dev/null 2>&1 || return 0
-  local n st count health started age bad=0 total=0 now
+  if ! docker info >/dev/null 2>&1; then
+    echo "docker: DOWN  (systemctl status docker; no HyperProx container can run)"; return 1
+  fi
+  local n st count health started age bad=0 total=0 now services
   now="$(date +%s)"
+  # This install's compose project, and only the services its active profiles run.
+  services="$(cd "${HYPERPROX_DIR}" 2>/dev/null && docker compose config --services 2>/dev/null)"
   while IFS= read -r n; do
     [[ -n "$n" ]] || continue
     total=$((total + 1))
     read -r st count health started < <(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}} {{.State.StartedAt}}' "$n" 2>/dev/null || echo "unknown 0 - -")
     age=$(( now - $(date -d "${started}" +%s 2>/dev/null || echo "$now") ))
     if [[ "$st" == restarting ]] || [[ "$health" == unhealthy ]] || { [[ "${count:-0}" -ge 3 ]] && [[ "$age" -lt 600 ]]; }; then
-      echo "container: ${n} CRASH-LOOPING (${st}, restarted ${count} times${health:+, health ${health}}; docker logs --tail 30 ${n})"; bad=1
+      echo "container: ${n} CRASH-LOOPING (${st}, restarted ${count} times$([[ "$health" != - ]] && echo ", health ${health}"); docker logs --tail 30 ${n})"; bad=1
     elif [[ "$st" != running ]]; then
       echo "container: ${n} ${st^^}  (docker logs --tail 30 ${n})"; bad=1
     fi
-  done < <(docker ps -a --filter 'name=^hyperprox-' --format '{{.Names}}' 2>/dev/null | sort)
+  done < <(docker ps -a --filter "label=com.docker.compose.project=$(basename "${HYPERPROX_DIR}")" \
+             --format '{{.Label "com.docker.compose.service"}} {{.Names}}' 2>/dev/null \
+           | S="$services" awk 'BEGIN { n = split(ENVIRON["S"], a, "\n"); for (i = 1; i <= n; i++) on[a[i]] = 1 } !n || on[$1] { print $2 }' | sort)
   [[ "$bad" -eq 1 ]] && return 1
   [[ "$total" -gt 0 ]] && echo "containers: all ${total} running"
   return 0

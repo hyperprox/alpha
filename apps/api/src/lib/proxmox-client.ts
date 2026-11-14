@@ -218,7 +218,10 @@ export class ProxmoxClient {
   }
 
   async migrateVM(node: string, vmid: number, type: 'qemu' | 'lxc', target: string, online = true) {
-    const body = new URLSearchParams({ target, online: online ? '1' : '0' })
+    // PVE rejects `online` for containers; a running LXC moves with `restart=1` (stop, move, start on the target).
+    const body = new URLSearchParams({ target })
+    if (type === 'lxc') body.set('restart', '1')
+    else body.set('online', online ? '1' : '0')
     return this.fetchStrict<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/migrate`, 'POST', body.toString())
   }
 

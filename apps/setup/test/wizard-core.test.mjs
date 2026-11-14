@@ -83,6 +83,38 @@ test('stepLabel: every step is labelled, 1-based', () => {
 test('the helpers run inside the page: every function in the injected source is self-contained', () => {
   const src = Object.values(core).map((f) => f.toString()).join('\n')
   const ctx = vm.createContext({ setTimeout, Date })
-  vm.runInContext(src + '\nthis.out = [stepLabel(0, 5), serviceToggles(servicesFromScan([{key:"npm",found:true}], null))]', ctx)
+  vm.runInContext(src + '\nthis.out = [stepLabel(0, 5), serviceToggles(servicesFromScan([{key:"npm",found:true,host:"10.0.2.30",port:81}], null))]', ctx)
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.out)), ['Step 1 of 5', { npm: true }])
+})
+
+const cand = (host) => ({ host, port: 81, detail: host + ':81' })
+test('servicesFromScan: exactly one candidate starts on, with that address chosen', () => {
+  const s = core.servicesFromScan([{ key: 'npm', found: true, candidates: [cand('10.0.2.30')] }], null)
+  assert.equal(s.npm.enabled, true); assert.equal(s.npm.chosen, '10.0.2.30')
+})
+
+test('servicesFromScan: several candidates start off with none chosen; a saved pick is restored only if it was found', () => {
+  const list = [{ key: 'npm', found: true, candidates: [cand('10.0.2.30'), cand('10.0.2.31')] }]
+  const a = core.servicesFromScan(list, null)
+  assert.equal(a.npm.enabled, false); assert.equal(a.npm.chosen, ''); assert.equal(a.npm.candidates.length, 2)
+  const b = core.servicesFromScan(list, { npm: true }, { npm: '10.0.2.31' })
+  assert.equal(b.npm.enabled, true); assert.equal(b.npm.chosen, '10.0.2.31')
+  const c = core.servicesFromScan(list, { npm: true }, { npm: '10.0.2.99' })
+  assert.equal(c.npm.enabled, false); assert.equal(c.npm.chosen, '')
+  assert.deepEqual(core.serviceHosts(b), { npm: '10.0.2.31' })
+  assert.deepEqual(core.serviceHosts(a), {})
+})
+
+test('servicesFromScan: no candidates is not found, off', () => {
+  const s = core.servicesFromScan([{ key: 'pbs', found: false, candidates: [] }], null)
+  assert.equal(s.pbs.enabled, false)
+})
+
+test('setupKeyFromLocation: the fragment first, the old query still works, nothing is nothing', () => {
+  assert.deepEqual(core.setupKeyFromLocation('', '#k=abc123'), { key: 'abc123', fromQuery: false })
+  assert.deepEqual(core.setupKeyFromLocation('', '#x=1&k=abc%2B1'), { key: 'abc+1', fromQuery: false })
+  assert.deepEqual(core.setupKeyFromLocation('?k=old', ''), { key: 'old', fromQuery: true })
+  assert.deepEqual(core.setupKeyFromLocation('?a=1&k=old', '#k=new'), { key: 'new', fromQuery: false })
+  assert.deepEqual(core.setupKeyFromLocation('', ''), { key: '', fromQuery: false })
+  assert.deepEqual(core.setupKeyFromLocation('?k=', '#k='), { key: '', fromQuery: false })
 })

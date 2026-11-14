@@ -25,7 +25,9 @@ EOF
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/bash
 case "$1" in
-  ps) tr ' ' '\n' <<< "$FAKE_PS";;
+  info) [ -z "${FAKE_DOCKER_DOWN:-}" ];;
+  compose) tr ' ' '\n' <<< "${FAKE_SERVICES-api prometheus grafana redis}";;
+  ps) for n in $FAKE_PS; do echo "${n#hyperprox-} $n"; done;;
   inspect) v="FAKE_${!#//-/_}"; echo "${!v}";;
 esac
 EOF
@@ -45,4 +47,10 @@ out="$(st FAKE_PS="hyperprox-grafana" FAKE_hyperprox_grafana="running 0 unhealth
 check "an unhealthy container is named"                     '[[ "$out" == *"hyperprox-grafana CRASH-LOOPING"* ]]'
 out="$(st FAKE_PS="hyperprox-redis" FAKE_hyperprox_redis="exited 0 - ${old}")" || true
 check "a stopped container is named"                        '[[ "$out" == *"hyperprox-redis EXITED"* ]]'
+out="$(st FAKE_PS="hyperprox-api hyperprox-ollama" FAKE_hyperprox_api="running 0 - ${old}" FAKE_hyperprox_ollama="exited 0 - ${old}" FAKE_SERVICES="api")" || true
+check "a container of a profile that is off is not this install's concern" '[[ "$out" == *"containers: all 1 running"* && "$out" != *ollama* ]]'
+out="$(st FAKE_PS="hyperprox-prometheus" FAKE_hyperprox_prometheus="restarting 9 - ${now}")" || true
+check "no healthcheck: no \"health -\" in the line"            '[[ "$out" == *"CRASH-LOOPING (restarting, restarted 9 times;"* ]]'
+out="$(st FAKE_DOCKER_DOWN=1 FAKE_PS="")" && rc=0 || rc=$?
+check "docker down: said, and the status fails"            '[[ "$out" == *"docker: DOWN"* && "$rc" -ne 0 ]]'
 exit "${fail}"

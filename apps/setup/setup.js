@@ -418,22 +418,38 @@ function sanitizeServices(input) {
   return out
 }
 
+/** Keep only { npm|pbs|ollama: address-looking string } from what a client sent. serviceEnv checks it against the scan. */
+function sanitizeServiceHosts(input) {
+  const out = {}
+  if (input && typeof input === 'object') for (const k of ['npm', 'pbs', 'ollama']) {
+    if (typeof input[k] === 'string' && serviceProbes.isProbeAddress(input[k])) out[k] = input[k]
+  }
+  return out
+}
+
 /**
  * What the "Existing services" toggles switch, given the scan that found them. A service is connected only
- * when it was found AND its toggle is on (no toggle given: on for a found service, which is the page's default).
+ * when it was found AND its toggle is on (no toggle given: on for a found service, which is the page's default)
+ * AND there is one address to connect: the only one found, or the one the owner picked among several. `hosts`
+ * ({ key: address }) is that pick; an address the scan did not find is refused, and with several found and none
+ * picked nothing is connected.
  *   npm    -> NPM_ENABLED, NPM_HOST, NPM_PORT, and NPM_URL when none is set yet (the Proxy page's address)
  *   pbs    -> PBS_ENABLED, PBS_HOST, PBS_PORT (the address is recorded for HyperProx's backup views)
  *   ollama -> OLLAMA_URL, and the local Ollama install is skipped (a second one would compete for the port)
  * Returns { env, applied: [{ key, name, found, enabled, host, port }], ollamaExisting }.
  */
-function serviceEnv(toggles, scan, currentEnv) {
-  const t = toggles || {}
+function serviceEnv(toggles, scan, currentEnv, hosts) {
+  const t = toggles || {}, h = hosts || {}
   const env = {}, applied = []
   let ollamaExisting = false
-  for (const svc of scan || []) {
+  for (let svc of scan || []) {
     if (!svc || !['npm', 'pbs', 'ollama'].includes(svc.key)) continue
-    const on = Boolean(svc.found) && (typeof t[svc.key] === 'boolean' ? t[svc.key] : true)
-    const port = String(svc.port)
+    const cands = Array.isArray(svc.candidates) ? svc.candidates.filter(c => c && c.host)
+      : (svc.found && svc.host ? [{ host: svc.host, port: svc.port }] : [])
+    const pick = cands.length === 1 ? cands[0] : cands.find(c => c.host === h[svc.key])
+    const on = Boolean(svc.found) && Boolean(pick) && (typeof t[svc.key] === 'boolean' ? t[svc.key] : true)
+    const port = String(pick ? pick.port : svc.port)
+    svc = { ...svc, host: pick ? pick.host : svc.host }
     applied.push({ key: svc.key, name: svc.name, found: Boolean(svc.found), enabled: on, host: on ? svc.host : null, port })
     if (svc.key === 'npm') {
       env.NPM_ENABLED = on ? 'true' : 'false'
@@ -450,9 +466,9 @@ function serviceEnv(toggles, scan, currentEnv) {
 }
 
 /** Write the toggles' effect to .env; returns serviceEnv's answer. Uses the scan that was really run. */
-function applyServices(toggles) {
+function applyServices(toggles, hosts) {
   const scan = (readProgress().scan || {}).services || []
-  const r = serviceEnv(toggles, scan, readEnv())
+  const r = serviceEnv(toggles, scan, readEnv(), hosts)
   if (Object.keys(r.env).length) writeEnv(r.env)
   return r
 }
@@ -535,9 +551,13 @@ async function scanServices(hosts) {
   const findings = await serviceProbes.scanHosts(hosts.map(h => ({ address: h, source: h })), serviceProbes.realGet, { probes })
   return WIZARD_SERVICES.map(key => {
     const p = probes.find(x => x.key === key)
-    const f = findings.find(x => x.key === key)
+    // Every address the service answered on, none picked for the owner. `host`/`port` stay the first one for the
+    // shape older progress files and callers have.
+    const fs_ = findings.filter(x => x.key === key)
+    const f = fs_[0]
+    const candidates = fs_.map(x => ({ host: x.host, port: x.port, detail: `${x.host}:${x.port}`, source: x.source }))
     return { key, name: p ? p.label : key, port: f ? f.port : (p ? p.port : null), path: p ? p.path : '/',
-      host: f ? f.host : null, found: !!f, detail: f ? `${f.host}:${f.port}` : null }
+      host: f ? f.host : null, found: !!f, detail: f ? `${f.host}:${f.port}` : null, candidates }
   })
 }
 
@@ -680,12 +700,14 @@ function escHtml(v){
   return String(v).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]))
 }
 
-// The installer prints the wizard link with the setup key (?k=...). It is kept for this tab only and
-// taken out of the address bar, so it does not linger in history or get copied into a screenshot.
+// The installer prints the wizard link with the setup key in the fragment (/setup#k=...), which the browser never
+// sends, so it stays out of the web server's access log. A link from an older installer has it in the query
+// (?k=...), still accepted. Either way the key is kept for this tab only and taken out of the address bar, so it
+// does not linger in history or get copied into a screenshot.
 const SETUP_KEY = (function(){
-  const q = new URLSearchParams(location.search).get('k')
-  if (q) { try { sessionStorage.setItem('hpx-setup-key', q) } catch {} ; history.replaceState(null, '', location.pathname) }
-  try { return q || sessionStorage.getItem('hpx-setup-key') || '' } catch { return q || '' }
+  const f = setupKeyFromLocation(location.search, location.hash)
+  if (f.key) { try { sessionStorage.setItem('hpx-setup-key', f.key) } catch {} ; history.replaceState(null, '', location.pathname) }
+  try { return f.key || sessionStorage.getItem('hpx-setup-key') || '' } catch { return f.key || '' }
 })()
 
 async function api(method, path, body, timeoutMs){
@@ -706,8 +728,8 @@ async function api(method, path, body, timeoutMs){
   if (r.status === 401) {
     document.body.innerHTML = '<div style="max-width:560px;margin:12vh auto;font:15px/1.6 system-ui;color:#e6edf3;background:#0a111c;padding:28px;border:1px solid #2fd6e8;border-radius:10px">' +
       '<h2 style="margin-top:0;color:#2fd6e8">Open the setup link from the installer</h2>' +
-      '<p>For safety, the setup wizard only accepts requests that carry the setup key. Use the link the installer printed &mdash; it ends in <code>?k=&hellip;</code>.</p>' +
-      '<p>Lost it? On the HyperProx host run:<br><code>grep SETUP_SECRET /opt/hyperprox/.env</code><br>and open <code>https://&lt;host&gt;/setup?k=&lt;that value&gt;</code>.</p></div>'
+      '<p>For safety, the setup wizard only accepts requests that carry the setup key. Use the link the installer printed &mdash; it ends in <code>#k=&hellip;</code>.</p>' +
+      '<p>Lost it? On the HyperProx host run:<br><code>grep SETUP_SECRET /opt/hyperprox/.env</code><br>and open <code>https://&lt;host&gt;/setup#k=&lt;that value&gt;</code>.</p></div>'
     throw new Error('setup key required')
   }
   return r.json()
@@ -791,11 +813,27 @@ function stepServices(){
   if (S.scan.status === 'running') return '<div class="card"><div class="eyebrow">' + stepLabel(2, STEPS.length) + '</div><div class="card-title">Existing services</div><div class="card-desc"><span class="spinner"></span>Looking for services that already run on your cluster...</div></div>'
   if (S.scan.status === 'failed') return '<div class="card"><div class="eyebrow">' + stepLabel(2, STEPS.length) + '</div><div class="card-title">Existing services</div><div class="err" style="display:block">The scan did not finish: ' + escHtml(S.scan.error || 'no answer') + '</div><div class="btn-row"><button class="btn btn-ghost" onclick="go(1)">← Back</button><button class="btn btn-primary" id="btn-scan-retry">Retry</button></div></div>'
   const cards = Object.values(svcs).length
-    ? Object.values(svcs).map(s =>
-        \`<div class="svc-card \${s.enabled?'on':''}" onclick="toggleSvc('\${s.key}')">
+    ? Object.values(svcs).map(s => (s.candidates || []).length > 1
+      // Several addresses answered: show each, pick none for the owner.
+      ? \`<div class="svc-card svc-multi \${s.enabled?'on':''}" style="display:block;cursor:default">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div class="svc-name">\${escHtml(s.name)}</div>
+              <div class="svc-detail">Found at \${s.candidates.length} addresses. Pick the one to connect, or none.</div>
+            </div>
+            <span class="badge badge-ok">found</span>
+          </div>
+          \${s.candidates.map(c => \`<label class="svc-opt" style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
+            <input type="radio" name="svc-\${escHtml(s.key)}" \${s.chosen === c.host ? 'checked' : ''} onclick="chooseSvc('\${escHtml(s.key)}','\${escHtml(c.host)}')">
+            <span class="svc-detail" style="margin:0">\${escHtml(c.detail)}\${c.source && c.source !== c.host ? ' (' + escHtml(c.source) + ')' : ''}</span></label>\`).join('')}
+          <label class="svc-opt" style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
+            <input type="radio" name="svc-\${escHtml(s.key)}" \${s.chosen ? '' : 'checked'} onclick="chooseSvc('\${escHtml(s.key)}','')">
+            <span class="svc-detail" style="margin:0">None of these</span></label>
+        </div>\`
+      : \`<div class="svc-card \${s.enabled?'on':''}" onclick="toggleSvc('\${escHtml(s.key)}')">
           <div>
-            <div class="svc-name">\${s.name}</div>
-            <div class="svc-detail">\${s.found ? s.detail : 'Not detected on this cluster'}</div>
+            <div class="svc-name">\${escHtml(s.name)}</div>
+            <div class="svc-detail">\${s.found ? escHtml(s.detail) : 'Not detected on this cluster'}</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span class="badge \${s.found?'badge-ok':'badge-off'}">\${s.found?'found':'not found'}</span>
@@ -986,7 +1024,7 @@ function bind(){
   if(btnInst) btnInst.onclick = async () => {
     btnInst.disabled = true
     btnInst.innerHTML = '<span class="spinner"></span>Saving...'
-    try { await api('POST','/api/setup/save-installs', { installs: S.installs, services: serviceToggles(S.services) }) }
+    try { await api('POST','/api/setup/save-installs', { installs: S.installs, services: serviceToggles(S.services), serviceHosts: serviceHosts(S.services) }) }
     catch (e) { btnInst.disabled = false; btnInst.textContent = 'Continue →'; return alert('Could not save: ' + e.message) }
     go(3)
   }
@@ -1005,7 +1043,7 @@ function bind(){
     S.login.password = ''; S.login.privateKey = ''
     S.loginRows = t.nodes || null
     if(!t.ok){ render(); setErr('prov-err', t.error || 'That login did not work on any node.'); return }
-    await api('POST','/api/setup/apply', { answers: S.answers, services: serviceToggles(S.services) })
+    await api('POST','/api/setup/apply', { answers: S.answers, services: serviceToggles(S.services), serviceHosts: serviceHosts(S.services) })
     S.apply = { status: 'running', results: [], checks: [] }
     render()
     for(let i = 0; i < 600; i++){
@@ -1023,7 +1061,7 @@ function bind(){
     if(!(await saveDns())) return
     btnProv.disabled = true
     btnProv.innerHTML = '<span class="spinner"></span>Finishing...'
-    const res = await api('POST','/api/setup/complete',{ answers: S.answers, services: serviceToggles(S.services) })
+    const res = await api('POST','/api/setup/complete',{ answers: S.answers, services: serviceToggles(S.services), serviceHosts: serviceHosts(S.services) })
     if(!res.ok){
       setErr('prov-err', (res.errors || [res.error]).join(' '))
       btnProv.disabled = false; btnProv.textContent = 'Finish setup →'; return
@@ -1058,7 +1096,16 @@ async function saveDns(){
 }
 
 function toggleSvc(key){
-  if(S.services[key] && S.services[key].found) S.services[key].enabled = !S.services[key].enabled   // nothing to connect when not found
+  const s = S.services[key]
+  if(s && s.found && s.chosen) s.enabled = !s.enabled   // nothing to connect when not found or no address picked
+  render()
+}
+// Several addresses were found: the owner picks one (switches it on) or none (switches it off).
+function chooseSvc(key, host){
+  const s = S.services[key]
+  if(!s || !(s.candidates || []).some(c => c.host === host) && host !== '') return
+  s.chosen = host
+  s.enabled = Boolean(host)
   render()
 }
 function toggleInstall(key){
@@ -1102,7 +1149,7 @@ async function init(){
     const pr = st.progress || {}
     if (pr.answers) Object.assign(S.answers, pr.answers)
     if (pr.scan && Array.isArray(pr.scan.services)) {
-      S.services = servicesFromScan(pr.scan.services, pr.services)
+      S.services = servicesFromScan(pr.scan.services, pr.services, pr.serviceHosts)
       S.scan = { status: 'done', error: '' }
     }
     cur = st.step
@@ -1283,7 +1330,7 @@ function setupSecret() {
   if (!secret) {
     secret = crypto.randomBytes(32).toString('hex')
     writeEnv({ SETUP_SECRET: secret })
-    console.log('[setup] generated a setup key - open the wizard at http://<host>:' + PORT + '/?k=' + secret)
+    console.log('[setup] generated a setup key - open the wizard at http://<host>:' + PORT + '/#k=' + secret)
   }
   SETUP_KEY_MEM = secret
   return secret
@@ -1347,7 +1394,7 @@ const server = http.createServer(async (req, res) => {
   // anyone who could reach it — or any page the owner opened meanwhile — could replace the admin or
   // repoint Proxmox. The installer generates the key and prints it in the wizard link.
   if (!setupKeyOk(req)) {
-    return sendJson(res, 401, { error: 'setup_key_required', message: 'Open the setup link printed by the installer (it ends in ?k=...).' })
+    return sendJson(res, 401, { error: 'setup_key_required', message: 'Open the setup link printed by the installer (it ends in #k=...).' })
   }
 
   const route = url.replace('/api/setup/', '')
@@ -1449,54 +1496,35 @@ const server = http.createServer(async (req, res) => {
     // ── scan-services ─────────────────────────────────────────────────────────
     if (req.method === 'GET' && route === 'scan-services') {
       const env = readEnv()
+      // Where to look: each running guest's address from its config; only when the config names none, the
+      // addresses its guest agent reports. Only private addresses are ever probed (scanHosts drops the rest).
       const hosts = new Set()
       if (env.PROXMOX_HOST) hosts.add(env.PROXMOX_HOST)
+      const staticIps = cfg => Object.entries(cfg || {})
+        .filter(([k, v]) => /^(net|ipconfig)\d+$/.test(k) && typeof v === 'string')
+        .map(([, v]) => (/(?:^|,)ip=(\d{1,3}(?:\.\d{1,3}){3})(?:\/\d+)?(?:,|$)/.exec(v) || [])[1]).filter(Boolean)
+      const mod = ['lxc', 'qemu']
 
       try {
         const fullTokenId = env.PROXMOX_USER + '!' + env.PROXMOX_TOKEN_ID
-        // Get all running CTs and VMs across cluster
-        const resources = await pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006',
-          fullTokenId, env.PROXMOX_TOKEN_SECRET, '/cluster/resources?type=vm')
+        const pve = (p) => pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006', fullTokenId, env.PROXMOX_TOKEN_SECRET, p)
+        const resources = await pve('/cluster/resources?type=vm')
 
         await Promise.all(resources
-          .filter(r => r.status === 'running')
+          .filter(r => r.status === 'running' && mod.includes(r.type))
           .map(async r => {
             try {
-              if (r.type === 'lxc') {
-                // LXC: IP is in config net0 field
-                const cfg = await pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006',
-                  fullTokenId, env.PROXMOX_TOKEN_SECRET, `/nodes/${r.node}/lxc/${r.vmid}/config`)
-                for (const [k, v] of Object.entries(cfg)) {
-                  if (k.startsWith('net') && typeof v === 'string') {
-                    const m = v.match(/ip=([\d.]+)/)
-                    if (m) hosts.add(m[1])
-                  }
-                }
-              } else if (r.type === 'qemu') {
-                // VM: try guest agent first, fall back to config
-                try {
-                  const ifaces = await pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006',
-                    fullTokenId, env.PROXMOX_TOKEN_SECRET,
-                    `/nodes/${r.node}/qemu/${r.vmid}/agent/network-get-interfaces`)
-                  for (const iface of (ifaces.result || [])) {
-                    for (const addr of (iface['ip-addresses'] || [])) {
-                      if (addr['ip-address-type'] === 'ipv4' && !addr['ip-address'].startsWith('127.')) {
-                        hosts.add(addr['ip-address'])
-                      }
-                    }
-                  }
-                } catch {
-                  // No guest agent — try config for static IP
-                  const cfg = await pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006',
-                    fullTokenId, env.PROXMOX_TOKEN_SECRET, `/nodes/${r.node}/qemu/${r.vmid}/config`)
-                  for (const [k, v] of Object.entries(cfg)) {
-                    if (k.startsWith('net') && typeof v === 'string') {
-                      const m = v.match(/ip=([\d.]+)/)
-                      if (m) hosts.add(m[1])
-                    }
-                  }
+              const fromConfig = staticIps(await pve(`/nodes/${r.node}/${r.type}/${r.vmid}/config`).catch(() => null))
+              let live = []
+              if (!fromConfig.some(serviceProbes.isProbeAddress)) {
+                const ifaces = await pve(r.type === 'lxc' ? `/nodes/${r.node}/lxc/${r.vmid}/interfaces` : `/nodes/${r.node}/qemu/${r.vmid}/agent/network-get-interfaces`).catch(() => null)
+                const list = Array.isArray(ifaces) ? ifaces : Array.isArray(ifaces && ifaces.result) ? ifaces.result : []
+                for (const iface of list) {
+                  if (typeof iface.inet === 'string') live.push(iface.inet.split('/')[0])
+                  for (const addr of (iface['ip-addresses'] || [])) if (addr['ip-address-type'] === 'ipv4') live.push(addr['ip-address'])
                 }
               }
+              for (const a of serviceProbes.guestAddresses(fromConfig, live)) hosts.add(a)
             } catch {}
           })
         )
@@ -1525,7 +1553,7 @@ const server = http.createServer(async (req, res) => {
         INSTALL_PROMETHEUS: installs.prometheus ? 'true' : 'false',
       })
       // Step 3 is done only now: the choices (and the existing-service toggles, applied at /apply and /complete) are saved.
-      writeProgress({ installsSaved: true, services: sanitizeServices(body.services) })
+      writeProgress({ installsSaved: true, services: sanitizeServices(body.services), serviceHosts: sanitizeServiceHosts(body.serviceHosts) })
       return sendJson(res, 200, { ok: true })
     }
 
@@ -1580,8 +1608,9 @@ const server = http.createServer(async (req, res) => {
       if (!ctx) return sendJson(res, 400, { ok: false, error: 'Connect your Proxmox first.' })
       const answers = sanitizeAnswers(body.answers)
       const services = sanitizeServices(body.services)
-      const svc = applyServices(services)   // the Existing-services toggles take effect here, not only at the end
-      writeProgress({ answers, services })
+      const serviceHosts = sanitizeServiceHosts(body.serviceHosts)
+      const svc = applyServices(services, serviceHosts)   // the Existing-services toggles take effect here, not only at the end
+      writeProgress({ answers, services, serviceHosts })
       void onboard.applyAnswers(answers, ctx, nodeRunner())
       return sendJson(res, 200, { ok: true, services: svc.applied })
     }
@@ -1611,10 +1640,11 @@ const server = http.createServer(async (req, res) => {
       if (finish && finish.status === 'running') return sendJson(res, 200, { ok: true })
       const answers = { ...(onboard.bootstrapAnswers(HPX_DIR) || {}).answers, ...sanitizeAnswers(body.answers) }
       const services = sanitizeServices(body.services)
-      const svc = applyServices(services)
+      const serviceHosts = sanitizeServiceHosts(body.serviceHosts)
+      const svc = applyServices(services, serviceHosts)
       // An Ollama that already runs on the cluster is used as it is: a second, local one would not be wanted.
       if (svc.ollamaExisting) answers.ai = false
-      writeProgress({ answers: sanitizeAnswers(body.answers), services })
+      writeProgress({ answers: sanitizeAnswers(body.answers), services, serviceHosts })
       finish = { status: 'running', checklist: [] }
       sendJson(res, 200, { ok: true })
       void finishSetup(answers, svc).catch(e => {
@@ -1632,7 +1662,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-module.exports = { verifyPrometheus, annotateQuestions, summaryLines, applyServices, serviceEnv, sanitizeServices, readProgress, writeProgress, progressPath, bootstrapTakenAt, tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, setupExporter, pveAdapter, WIZARD_HTML }
+module.exports = { sanitizeServiceHosts, verifyPrometheus, annotateQuestions, summaryLines, applyServices, serviceEnv, sanitizeServices, readProgress, writeProgress, progressPath, bootstrapTakenAt, tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, setupExporter, pveAdapter, WIZARD_HTML }
 
 if (require.main === module) {
   setupSecret()
@@ -1640,7 +1670,7 @@ if (require.main === module) {
   // left it on every interface, which is still the default for a unit that does not say.
   const BIND = process.env.SETUP_BIND || '0.0.0.0'
   server.listen(PORT, BIND, () => {
-    if (BIND === '127.0.0.1') { console.log(`[hyperprox-setup] listening on 127.0.0.1:${PORT} - open https://<host>/setup?k=<SETUP_SECRET>`); return }
+    if (BIND === '127.0.0.1') { console.log(`[hyperprox-setup] listening on 127.0.0.1:${PORT} - open https://<host>/setup#k=<SETUP_SECRET>`); return }
     const ip = Object.values(require('os').networkInterfaces())
       .flat()
       .find(i => i && i.family === 'IPv4' && !i.internal)

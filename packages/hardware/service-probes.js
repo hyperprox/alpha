@@ -69,7 +69,49 @@ const PROBES = [
 ]
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
-const HOSTNAME = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/
+
+/** A dotted IPv4 as four numbers, or null. */
+function v4(addr) {
+  const a = String(addr || '').trim()
+  return IPV4.test(a) ? a.split('.').map(Number) : null
+}
+
+/**
+ * A usable unicast IPv4: not 0.0.0.0/8, loopback, link-local (169.254/16), multicast/reserved (224/4 and up,
+ * which includes the 255.255.255.255 broadcast). Public addresses pass (an address conflict check wants them).
+ */
+function isUnicastV4(addr) {
+  const o = v4(addr)
+  return Boolean(o) && o[0] !== 0 && o[0] !== 127 && !(o[0] === 169 && o[1] === 254) && o[0] < 224
+}
+
+/** An RFC1918 IPv4 (10/8, 172.16/12, 192.168/16) or a unique-local IPv6 (fc00::/7). Nothing else is ever probed. */
+function isProbeAddress(addr) {
+  const a = String(addr || '').trim()
+  const o = v4(a)
+  if (o) return isUnicastV4(a) && (o[0] === 10 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168))
+  // IPv6: only fc00::/7. fe80::/10 (link-local), ff00::/8 (multicast), ::1, :: and zone ids never match.
+  if (!/^[0-9a-fA-F:]+$/.test(a) || !a.includes(':')) return false
+  const first = a.split(':')[0]
+  return /^[0-9a-fA-F]{1,4}$/.test(first) && (parseInt(first, 16) & 0xfe00) === 0xfc00
+}
+
+/** The host part of a URL: IPv6 literals need brackets. */
+const urlHost = (host) => (String(host).includes(':') ? `[${host}]` : host)
+
+/**
+ * The addresses to probe for one guest: those from its config; only when the config names none (DHCP) the
+ * ones its guest agent reported. Deduplicated, private only. Config wins because the agent also reports
+ * container-bridge and other internal addresses that belong to no service of the guest.
+ * @param {string[]} fromConfig
+ * @param {string[]} fromLive
+ * @returns {string[]}
+ */
+function guestAddresses(fromConfig, fromLive) {
+  const keep = (l) => [...new Set((l || []).map(a => String(a).trim()).filter(isProbeAddress))]
+  const c = keep(fromConfig)
+  return c.length ? c : keep(fromLive)
+}
 
 /**
  * @typedef {{ status: number, body: string, location?: string|null }} Answer
@@ -84,7 +126,7 @@ const HOSTNAME = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/
  * @param {ServiceProbe} probe
  */
 async function probeHost(get, host, probe) {
-  let url = `${probe.scheme}://${host}:${probe.port}${probe.path}`
+  let url = `${probe.scheme}://${urlHost(host)}:${probe.port}${probe.path}`
   for (let hops = 0; hops <= 2; hops++) {
     let a = null
     try { a = await get(url) } catch { a = null }
@@ -122,7 +164,7 @@ async function scanHosts(hosts, get, opts = {}) {
   const clean = []
   for (const h of hosts || []) {
     const address = String(h && h.address || '').trim()
-    if (!(IPV4.test(address) || HOSTNAME.test(address)) || address.startsWith('127.') || seen.has(address)) continue
+    if (!isProbeAddress(address) || seen.has(address)) continue
     seen.add(address)
     clean.push({ ...h, address })
   }
@@ -131,7 +173,7 @@ async function scanHosts(hosts, get, opts = {}) {
   await mapLimit(jobs, opts.concurrency || 16, async ({ h, p }) => {
     if (await probeHost(get, h.address, p)) {
       found.push({ key: p.key, label: p.label, recipeId: p.recipeId, pluginId: p.pluginId, setting: p.setting, needs: p.needs.slice(),
-        multiple: p.multiple, address: `${p.scheme}://${h.address}:${p.port}`, host: h.address, port: p.port, source: h.source, guest: h.guest ?? null })
+        multiple: p.multiple, address: `${p.scheme}://${urlHost(h.address)}:${p.port}`, host: h.address, port: p.port, source: h.source, guest: h.guest ?? null })
     }
   })
   return found.sort((a, b) => a.label.localeCompare(b.label) || a.host.localeCompare(b.host, undefined, { numeric: true }))
@@ -190,4 +232,4 @@ function realGet(url) {
   })
 }
 
-module.exports = { PROBES, probeHost, scanHosts, verdicts, realGet }
+module.exports = { PROBES, probeHost, scanHosts, verdicts, realGet, isProbeAddress, isUnicastV4, guestAddresses }

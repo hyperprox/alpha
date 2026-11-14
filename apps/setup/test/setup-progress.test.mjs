@@ -245,3 +245,28 @@ test('page: the Step 1 hint names both keys; summary is per node', () => {
   assert.match(setup.WIZARD_HTML, /two new access keys/)
   assert.match(setup.WIZARD_HTML, /function hwLines/)
 })
+
+// ── several addresses for one service: the owner picks, the server checks the pick against the scan ───────
+const multi = [{ key: 'npm', name: 'Nginx Proxy Manager', host: '10.0.2.30', port: 81, found: true,
+  candidates: [{ host: '10.0.2.30', port: 81 }, { host: '10.0.2.31', port: 81 }] }]
+
+test('services: several addresses and none picked connects nothing', () => {
+  const r = setup.serviceEnv({ npm: true }, multi, {}, {})
+  assert.deepEqual(r.env, { NPM_ENABLED: 'false' })
+  assert.equal(r.applied[0].host, null)
+})
+
+test('services: the picked address is the one connected', () => {
+  const r = setup.serviceEnv({ npm: true }, multi, {}, { npm: '10.0.2.31' })
+  assert.deepEqual(r.env, { NPM_ENABLED: 'true', NPM_HOST: '10.0.2.31', NPM_PORT: '81', NPM_URL: 'http://10.0.2.31:81' })
+})
+
+test('services: an address the scan did not find is refused', () => {
+  const r = setup.serviceEnv({ npm: true }, multi, {}, { npm: '10.0.2.99' })
+  assert.deepEqual(r.env, { NPM_ENABLED: 'false' })
+})
+
+test('services: sanitizeServiceHosts keeps only private addresses for known keys', () => {
+  assert.deepEqual(setup.sanitizeServiceHosts({ npm: '10.0.2.31', pbs: '8.8.8.8', ollama: 'evil.example', x: '10.0.0.1' }), { npm: '10.0.2.31' })
+  assert.deepEqual(setup.sanitizeServiceHosts(null), {})
+})

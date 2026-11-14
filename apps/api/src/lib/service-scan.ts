@@ -13,7 +13,7 @@
 //  So the Catalogue can no longer say "not found" for something Scan just found: they read the same result.
 // =============================================================================
 
-import { PROBES, scanHosts, realGet, type ProbeGetter, type ScanHost, type ServiceFinding } from '@hyperprox/hardware/service-probes'
+import { PROBES, scanHosts, realGet, guestAddresses, isProbeAddress, type ProbeGetter, type ScanHost, type ServiceFinding } from '@hyperprox/hardware/service-probes'
 import { configAddresses, liveAddresses } from './wizard-placement'
 import type { DetectResult, Running } from './catalogue-detect'
 import { homePve } from './pve-env'
@@ -40,14 +40,17 @@ export async function scanTargets(src: ScanSource): Promise<Array<ScanHost<Guest
   await Promise.all(guests.map(async g => {
     const type = g.type as 'lxc' | 'qemu'
     const ref: GuestRef = { vmid: Number(g.vmid), name: String(g.name ?? g.vmid), node: String(g.node), type, status: g.status }
-    const addrs = new Set<string>()
-    for (const a of configAddresses(await src.config(ref.node, ref.vmid, type).catch(() => null))) addrs.add(a)
-    for (const a of liveAddresses(await src.live(ref.node, ref.vmid, type).catch(() => null))) addrs.add(a)
+    const fromConfig = configAddresses(await src.config(ref.node, ref.vmid, type).catch(() => null))
+    // The agent is only asked when the config names no address of its own (it reports bridge addresses too).
+    const addrs = fromConfig.some(isProbeAddress)
+      ? guestAddresses(fromConfig, [])
+      : guestAddresses([], liveAddresses(await src.live(ref.node, ref.vmid, type).catch(() => null)))
     for (const a of addrs) out.push({ address: a, source: `${ref.name} (${ref.vmid})`, guest: ref })
   }))
-  for (const n of (await src.nodes().catch(() => [])) ?? []) if (n.ip) out.push({ address: n.ip, source: `node ${n.name}`, guest: null })
-  // Same order every time, whatever order Proxmox answered in.
-  return out.sort((a, b) => a.address.localeCompare(b.address, undefined, { numeric: true }))
+  for (const n of (await src.nodes().catch(() => [])) ?? []) if (n.ip && isProbeAddress(n.ip)) out.push({ address: n.ip, source: `node ${n.name}`, guest: null })
+  // Same order every time, whatever order Proxmox answered in; one entry per address (a guest wins over a node).
+  const sorted = out.sort((a, b) => a.address.localeCompare(b.address, undefined, { numeric: true }) || (a.guest ? 0 : 1) - (b.guest ? 0 : 1) || (a.guest?.vmid ?? 0) - (b.guest?.vmid ?? 0))
+  return sorted.filter((t, i) => i === 0 || sorted[i - 1].address !== t.address)
 }
 
 /** The real probe: the shared one (no credentials or cookies, redirects decided by the scan, capped body). */
