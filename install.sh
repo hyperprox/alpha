@@ -190,9 +190,14 @@ ui_bad() {   # a refused answer or a failed line: red ✗
   if [ "$UI_FANCY" -ne 1 ]; then printf '[ no ] %s\n' "$1"; return; fi
   printf '  %s✗ %s%s\n' "$C_ERR" "$1" "$C_OFF"
 }
-ui_note() {
+ui_note() {     # wrapped to the layout's width between words, every line indented
+  local l
   if [ "$UI_FANCY" -ne 1 ]; then printf '       %s\n' "$1"; return; fi
-  printf '    %s%s%s\n' "$C_DIM" "$1" "$C_OFF"
+  while IFS= read -r l; do printf '    %s%s%s\n' "$C_DIM" "$l" "$C_OFF"; done < <(ui_wrap $(( UI_W - 6 )) "$1")
+}
+ui_command() {  # a command to copy, on a line of its own, never wrapped
+  if [ "$UI_FANCY" -ne 1 ]; then printf '       %s\n' "$1"; return; fi
+  printf '      %s%s%s\n' "$C_KEY" "$1" "$C_OFF"
 }
 
 # ── Spinners. ui_run and ui_wait run a command in the background (stdin from /dev/null, all output to
@@ -311,18 +316,27 @@ ui_prompt() {
 ui_choices() {
   local def="$1" i=0 it row; shift
   [ "$UI_FANCY" -ne 1 ] || ui_box_put "" 0 "$UI_BW"
+  local w=$(( UI_BW - 8 )) l first
   for it in "$@"; do
     i=$(( i + 1 )); row=" $i  $it "
-    if [ "$UI_FANCY" -ne 1 ]; then printf '    %s\n' "$row"
-    elif [ "$i" = "$def" ]; then ui_box_put "  $C_INV$row$C_OFF" $(( 2 + ${#row} )) "$UI_BW"
-    else ui_box_put "  $row" $(( 2 + ${#row} )) "$UI_BW"; fi
+    if [ "$UI_FANCY" -ne 1 ]; then printf '    %s\n' "$row"; continue; fi
+    # A row longer than the box wraps inside it, its later lines under its text, so it never runs past the border.
+    first=1
+    while IFS= read -r l; do
+      if [ "$first" -eq 1 ]; then l=" ${l# }"; else l="     $l"; fi
+      if [ "$i" = "$def" ]; then ui_box_put "  $C_INV$l $C_OFF" $(( 3 + ${#l} )) "$UI_BW"
+      else ui_box_put "  $l " $(( 3 + ${#l} )) "$UI_BW"; fi
+      first=0
+    done < <(if [ "${#row}" -le "$w" ]; then printf '%s\n' "${row% }"; else ui_wrap $(( w - 4 )) "$row"; fi)
   done
 }
-# ui_yn_row LABEL HINT [EXPLANATION]: the explanation dim, then "◆ Label   [Y/n]  " with the cursor left after the
+# ui_yn_row LABEL HINT [EXPLANATION]: a blank line, the explanation dim, then "◆ Label   [Y/n]  " with the cursor left after the
 #    hint. ui_yn_answer TEXT STYLE READ_A_NEWLINE then writes the answer on that row (one line up, after Enter).
 ui_yn_row() {
   local l
   if [ -n "${3:-}" ]; then
+    # A blank line first: the explanation and the "◆" line under it are one item, apart from the one above.
+    printf '\n'
     while IFS= read -r l; do printf '      %s%s%s\n' "$C_DIM" "$l" "$C_OFF"; done < <(ui_wrap $(( UI_W - 8 )) "$3")
   fi
   printf '  %s◆%s %s%s%s%s  ' "$C_ACC" "$C_OFF" "$(ui_pad "$1" 38)" "$C_KEY" "$2" "$C_OFF"
@@ -648,11 +662,12 @@ disable_apparmor() {
   if systemctl is-active --quiet apparmor 2>/dev/null || systemctl is-enabled --quiet apparmor 2>/dev/null; then
     step "Disabling AppArmor"
     info "AppArmor is not supported in LXC containers — disabling to allow Docker to run..."
-    systemctl stop apparmor 2>/dev/null || true
-    systemctl disable apparmor 2>/dev/null || true
+    # Their own lines ("Removed /etc/systemd/...", "Unloading AppArmor profiles") go to the log, not the screen.
+    systemctl stop apparmor >>"${LOG_FILE}" 2>&1 || true
+    systemctl disable apparmor >>"${LOG_FILE}" 2>&1 || true
     # Unload all AppArmor profiles
     if command -v aa-teardown &>/dev/null; then
-      aa-teardown 2>/dev/null || true
+      aa-teardown >>"${LOG_FILE}" 2>&1 || true
     fi
     ok "AppArmor disabled"
   fi
@@ -759,6 +774,13 @@ clone_repo() {
       ok "Installing from this clone (${HYPERPROX_DIR})"
     else
       ok "Found the HyperProx code at ${HYPERPROX_DIR}; bringing it up to date"
+    fi
+    # An existing clone keeps fetching from its own origin: HYPERPROX_REPO_URL is for a fresh clone only. Say so
+    # when they differ, and name the origin in every message that follows (it is what is really fetched).
+    local origin; origin="$(git -C "${HYPERPROX_DIR}" remote get-url origin 2>/dev/null || true)"
+    if [[ -n "${origin}" && "${origin}" != "${REPO_URL}" ]]; then
+      [[ -z "${HYPERPROX_REPO_URL:-}" ]] || warn "HYPERPROX_REPO_URL applies to a fresh clone only; ${HYPERPROX_DIR} fetches from its origin, ${origin}"
+      REPO_URL="${origin}"
     fi
     if [[ -n "${INSTALL_REF}" ]]; then
       if [[ -z "$(git -C "${HYPERPROX_DIR}" status --porcelain --untracked-files=no)" ]]; then checkout_ref

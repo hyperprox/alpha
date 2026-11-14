@@ -3,7 +3,9 @@
 // The guest list: one row per guest with status, type, node, CPU/RAM/disk mini bars, uptime, IP, tags
 // (Proxmox tags, GPU, and the VPN slot) and HA state. A table on wide screens, cards on a phone.
 
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { placeMenu } from '@/lib/popover'
 import { formatBytes, formatUptime } from '@/lib/utils'
 import { PreviewDialog } from './PreviewDialog'
 import { VENDOR_LABEL, type GuestRow, type VpnStatus } from './types'
@@ -72,6 +74,26 @@ function pct(a: number, b: number) { return b ? Math.round(a / b * 100) : 0 }
 function RowMenu({ row, canOperate, canAdmin, onPower, onOpen, onRefresh, onBackup }: { row: GuestRow; canOperate: boolean; canAdmin: boolean; onPower: (row: GuestRow, a: string) => void; onOpen: () => void; onRefresh: () => void; onBackup?: (row: GuestRow) => void }) {
   const [open, setOpen] = useState(false)
   const [change, setChange] = useState<null | { change: any; title: string }>(null)
+  const btn = useRef<HTMLButtonElement>(null)
+  const menu = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  useLayoutEffect(() => {
+    if (!open) { setPos(null); return }
+    const place = () => {
+      const b = btn.current?.getBoundingClientRect(), m = menu.current
+      if (!b || !m) return
+      setPos(placeMenu(b, { width: m.offsetWidth, height: m.offsetHeight }, { width: window.innerWidth, height: window.innerHeight }))
+    }
+    place()
+    const outside = (e: MouseEvent) => { if (!menu.current?.contains(e.target as Node) && !btn.current?.contains(e.target as Node)) setOpen(false) }
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    const away = () => setOpen(false)
+    document.addEventListener('mousedown', outside)
+    document.addEventListener('keydown', key)
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', away, true)
+    return () => { document.removeEventListener('mousedown', outside); document.removeEventListener('keydown', key); window.removeEventListener('resize', place); window.removeEventListener('scroll', away, true) }
+  }, [open])
   const running = row.status === 'running'
   const items: Array<[string, () => void]> = [['Details', onOpen]]
   if (canOperate && !row.ha.managed) items.push(...(running ? [['Shut down', () => onPower(row, 'shutdown')], ['Reboot', () => onPower(row, 'reboot')]] as Array<[string, () => void]> : [['Start', () => onPower(row, 'start')]] as Array<[string, () => void]>))
@@ -81,12 +103,15 @@ function RowMenu({ row, canOperate, canAdmin, onPower, onOpen, onRefresh, onBack
   if (canAdmin && row.type === 'lxc' && row.gpu.toggle === 'off') items.push(['GPU access: turn back on', () => setChange({ change: { kind: 'gpu-on' }, title: `Turn GPU access back on for ${row.name}` })])
   return (
     <div className="relative" onClick={e => e.stopPropagation()}>
-      <button aria-label={`Actions for ${row.name}`} onClick={() => setOpen(o => !o)} className="px-2 rounded-md" style={{ height: 32, color: 'var(--text-dim)', border: '1px solid var(--border-dim)' }}>⋯</button>
-      {open && (
-        <div className="absolute right-0 mt-1 z-30 min-w-[200px] rounded-md border py-1 shadow-lg" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)' }} onMouseLeave={() => setOpen(false)}>
-          {items.map(([l, f]) => <button key={l} className="block w-full text-left px-3 py-2 text-sm hover:opacity-80" style={{ color: 'var(--text)' }} onClick={() => { setOpen(false); f() }}>{l}</button>)}
-        </div>
-      )}
+      <button ref={btn} aria-label={`Actions for ${row.name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)} className="px-2 rounded-md" style={{ height: 32, color: 'var(--text-dim)', border: '1px solid var(--border-dim)' }}>⋯</button>
+      {open && typeof document !== 'undefined' && createPortal(
+        // On document.body, placed by the button and flipped above it near the bottom of the window: the table's
+        // own scroller (overflow-x) clipped it. It stays open until a choice, a click outside, Escape or a scroll.
+        <div ref={menu} role="menu" className="fixed z-[60] min-w-[200px] rounded-md border py-1 shadow-lg"
+             style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999, background: 'var(--surface-raised)', borderColor: 'var(--border-soft)' }}
+             onClick={e => e.stopPropagation()}>
+          {items.map(([l, f]) => <button key={l} role="menuitem" className="block w-full text-left px-3 py-2 text-sm hover:opacity-80" style={{ color: 'var(--text)' }} onClick={() => { setOpen(false); f() }}>{l}</button>)}
+        </div>, document.body)}
       {change && <PreviewDialog guest={{ node: row.node, type: row.type, vmid: row.vmid, name: row.name }} change={change.change} title={change.title} onClose={() => setChange(null)} onApplied={onRefresh} />}
     </div>
   )

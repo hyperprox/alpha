@@ -25,7 +25,7 @@ const powerWords: Record<string, { verb: string; impact: string }> = {
 
 export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, onDone }: { g: GuestRow; act: GuestAction; clusterId: string; clusterName: string; kind: Kind; onClose: () => void; onDone: () => void }) {
   const [snapName, setSnapName] = useState(`hpx-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`)
-  const [storages, setStorages] = useState<Array<{ storage: string; type: string; availBytes: number }> | null>(null)
+  const [storages, setStorages] = useState<Array<{ storage: string; type: string; availBytes: number; preferred?: boolean; note?: string }> | null>(null)
   const [storage, setStorage] = useState('')
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
@@ -39,7 +39,8 @@ export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, on
     if (act.kind !== 'backup') return
     apiJson<{ data: typeof storages }>(`/api/clusters/${clusterId}/nodes/${encodeURIComponent(g.node)}/backup-storages`).then(r => {
       const list = r.ok ? r.body!.data ?? [] : []
-      setStorages(list); if (list[0]) setStorage(list[0].storage)
+      // Listed best first by the API (PBS, then a directory or share, CephFS last); CephFS is never pre-selected.
+      setStorages(list); setStorage(list.find(s => s.preferred !== false && s.type !== 'cephfs')?.storage ?? '')
       if (!r.ok) setResult({ ok: false, text: r.error ?? 'Could not list backup storage' })
     })
   }, [act.kind, clusterId, g.node])
@@ -87,7 +88,8 @@ export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, on
       {act.kind === 'backup' && (storages === null ? <BusyNote>Reading backup storage…</BusyNote> : storages.length === 0 ? <Notice kind="warn">No storage on {g.node} takes backups.</Notice> : (
         <div><label style={LABEL}>Back up to</label>
           <select style={INPUT} value={storage} onChange={e => setStorage(e.target.value)}>
-            {storages.map(s => <option key={s.storage} value={s.storage}>{s.storage} ({s.type}, {bytes(s.availBytes)} free)</option>)}
+            {!storage && <option value="">Choose where the backup goes…</option>}
+            {storages.map(s => <option key={s.storage} value={s.storage}>{s.storage} ({s.type}, {bytes(s.availBytes)} free){s.type === 'cephfs' ? ': check its replication first' : ''}</option>)}
           </select>
         </div>
       ))}

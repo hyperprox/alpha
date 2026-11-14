@@ -51,6 +51,13 @@ card() {
   ui_link "Setup link (private):" "https://192.0.2.10/setup#k=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   ui_warn "A fairly long warning that goes on past the width of an eighty column terminal so it has to be wrapped somewhere"
 }
+choices() {
+  ui_ask_box "VPN" "How do you want to reach HyperProx?"
+  ui_choices 3 "Tailscale   short" "WireGuard   a row that is far too long to fit inside the question box and has to wrap onto a second line" "Not now"
+  ui_ask_end
+  ui_note "Browsers will warn once. To use your own, replace /opt/hyperprox/certs/cert.pem and key.pem, then: docker restart hyperprox-nginx"
+  ui_command "modprobe wireguard && echo wireguard > /etc/modules-load.d/wireguard.conf"
+}
 EOF
 
 out="$(plain demo)"
@@ -85,6 +92,11 @@ check "  and no box line holds any of it"            '! grep "│" <<< "$out" | 
 check "a wrapped numbered card line hangs under its text" 'grep -qE "^  │ +1  The setup" <<< "$out" && grep -qE "^  │ {8}[a-z]" <<< "$out"'
 check "every card line has straight sides"           '[[ "$(grep -E "^  [╭│╰]" <<< "$out" | while IFS= read -r l; do echo "${#l}"; done | sort -u | wc -l)" -eq 1 ]]'
 check "a long warning is wrapped to 80 columns, its second line indented" '[[ "$(grep -A1 "A fairly long" <<< "$out" | while IFS= read -r l; do echo "${#l}"; done | sort -n | tail -1)" -le 80 ]] && grep -A1 "A fairly long" <<< "$out" | tail -1 | grep -qE "^    [a-z]"'
+# shellcheck disable=SC2034  # read by the checks below, inside the strings eval runs
+out2="$(fancy choices | sed $'s/\x1b\\[[0-9;?]*[A-Za-z]//g' | tr -d '\r')"
+check "a choice row too long for the box wraps inside it: straight sides" '[[ "$(grep -E "^  [╭│╰]" <<< "$out2" | while IFS= read -r l; do echo "${#l}"; done | sort -u | wc -l)" -eq 1 ]] && grep -q "has to wrap" <<< "$out2"'
+check "a long note wraps between words, never inside a name"         '! grep -q "hy$" <<< "$out2" && grep -qE "^    .*docker restart hyperprox-nginx$|^    hyperprox-nginx$" <<< "$out2" && [[ "$(grep -E "^    [^ ]" <<< "$out2" | while IFS= read -r l; do echo "${#l}"; done | sort -n | tail -1)" -le 80 ]]'
+check "a command is printed whole on its own line"                    'grep -qxF "      modprobe wireguard && echo wireguard > /etc/modules-load.d/wireguard.conf" <<< "$out2"'
 check "install.sh prints the setup link with ui_link, not inside the card" 'grep -qF "ui_link \"Setup link (private):\" \"\${link}\"" "${here}/install.sh" && ! grep -qF "Open   \${link}" "${here}/install.sh"'
 check "bootstrap.sh does the same"                   'grep -qF "ui_link \"Setup link (private):\" \"\$SETUP_URL\"" "${here}/bootstrap.sh" && ! grep -qF "Open   \${SETUP_URL}" "${here}/bootstrap.sh"'
 check "per-install config, bind and keyholder lines are indented as notes" 'grep -qF "log()  { printf '"'"'    %s" "${here}/bin/hyperprox-config" && grep -qF "printf '"'"'    %s: %s=%s (drop-in" "${here}/bin/hyperprox-bind" && grep -qF "echo \"    keyholder started" "${here}/bin/install-keyholder"'

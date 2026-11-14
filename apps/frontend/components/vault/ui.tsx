@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useFocusTrap } from '@/lib/focus-trap'
 import v from './vault.module.css'
 
@@ -68,12 +69,18 @@ export function BusyNote({ children }: { children: React.ReactNode }) {
  * A dialog that never grows past the screen: the title stays at the top, `footer` (the action buttons) stays at the
  * bottom, and only what is between them scrolls. Without `footer` the buttons scroll with the body.
  */
-export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode }) {
+/** The stacking layers: a page's dialogs, and the master-password prompt, which always sits above all of them. */
+export const Z_DIALOG = 50
+export const Z_RECONFIRM = 70
+
+export function Modal({ title, onClose, children, footer, top }: { title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode
+  /** The master-password prompt: drawn on document.body above every other dialog, whichever was rendered first. */
+  top?: boolean }) {
   // Escape closes it; Tab stays inside it; focus goes back where it was (lib/focus-trap.ts).
   const box = useRef<HTMLDivElement>(null)
   useFocusTrap(box, onClose)
-  return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
+  const frame = (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center p-4" style={{ zIndex: top ? Z_RECONFIRM : Z_DIALOG, background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
          onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div ref={box} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} className={v.dialog}>
         <div className={v.head}>
@@ -85,6 +92,8 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
       </div>
     </div>
   )
+  // On document.body, so no dialog or drawer around it (and its own stacking) can cover it.
+  return top && typeof document !== 'undefined' ? createPortal(frame, document.body) : frame
 }
 
 export function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {

@@ -80,10 +80,29 @@ export async function snapshot(d: ActionDeps, g: { node: string; type: GuestType
 }
 
 /** Storages on the node that take backups. */
-export async function backupStorages(pve: ProxmoxClient, node: string): Promise<Array<{ storage: string; type: string; availBytes: number }>> {
+/**
+ * Where a backup should go, best first: a Proxmox Backup Server, then a plain directory or file share (dir, NFS,
+ * CIFS), then anything else; CephFS last and never the default, because a CephFS pool is often bulk storage kept
+ * with a single copy (one disk lost, the backup with it). Within a rank, the most free space first.
+ */
+export function backupStorageRank(type: string): number {
+  if (type === 'pbs') return 0
+  if (/^(dir|nfs|cifs|btrfs|zfs)$/.test(type)) return 1
+  if (type === 'cephfs') return 3
+  return 2
+}
+export const CEPHFS_BACKUP_NOTE = 'CephFS: often a bulk pool with a single copy; check its replication before keeping backups here.'
+
+export async function backupStorages(pve: ProxmoxClient, node: string): Promise<Array<{ storage: string; type: string; availBytes: number; preferred: boolean; note?: string }>> {
   if (!NODE_RE.test(node)) throw new GuestActionRefusal('That is not a node name.', 'not-found')
   const rows = await pve.fetchStrict<any[]>(`/nodes/${encodeURIComponent(node)}/storage?content=backup&enabled=1`)
-  return (rows ?? []).filter(s => Number(s.active ?? 1) === 1).map(s => ({ storage: String(s.storage), type: String(s.type), availBytes: Number(s.avail ?? 0) }))
+  return sortBackupStorages((rows ?? []).filter(s => Number(s.active ?? 1) === 1).map(s => ({ storage: String(s.storage), type: String(s.type), availBytes: Number(s.avail ?? 0) })))
+}
+
+export function sortBackupStorages(list: Array<{ storage: string; type: string; availBytes: number }>) {
+  return [...list]
+    .sort((a, b) => backupStorageRank(a.type) - backupStorageRank(b.type) || b.availBytes - a.availBytes || a.storage.localeCompare(b.storage))
+    .map(s => ({ ...s, preferred: s.type !== 'cephfs', ...(s.type === 'cephfs' ? { note: CEPHFS_BACKUP_NOTE } : {}) }))
 }
 
 /** Start a backup now. It can take hours, so this returns the task; the caller reads it back with taskStatus. */

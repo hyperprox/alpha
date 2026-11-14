@@ -187,9 +187,14 @@ ui_bad() {   # a refused answer or a failed line: red ✗
   if [ "$UI_FANCY" -ne 1 ]; then printf '[ no ] %s\n' "$1"; return; fi
   printf '  %s✗ %s%s\n' "$C_ERR" "$1" "$C_OFF"
 }
-ui_note() {
+ui_note() {     # wrapped to the layout's width between words, every line indented
+  local l
   if [ "$UI_FANCY" -ne 1 ]; then printf '       %s\n' "$1"; return; fi
-  printf '    %s%s%s\n' "$C_DIM" "$1" "$C_OFF"
+  while IFS= read -r l; do printf '    %s%s%s\n' "$C_DIM" "$l" "$C_OFF"; done < <(ui_wrap $(( UI_W - 6 )) "$1")
+}
+ui_command() {  # a command to copy, on a line of its own, never wrapped
+  if [ "$UI_FANCY" -ne 1 ]; then printf '       %s\n' "$1"; return; fi
+  printf '      %s%s%s\n' "$C_KEY" "$1" "$C_OFF"
 }
 
 # ── Spinners. ui_run and ui_wait run a command in the background (stdin from /dev/null, all output to
@@ -308,18 +313,27 @@ ui_prompt() {
 ui_choices() {
   local def="$1" i=0 it row; shift
   [ "$UI_FANCY" -ne 1 ] || ui_box_put "" 0 "$UI_BW"
+  local w=$(( UI_BW - 8 )) l first
   for it in "$@"; do
     i=$(( i + 1 )); row=" $i  $it "
-    if [ "$UI_FANCY" -ne 1 ]; then printf '    %s\n' "$row"
-    elif [ "$i" = "$def" ]; then ui_box_put "  $C_INV$row$C_OFF" $(( 2 + ${#row} )) "$UI_BW"
-    else ui_box_put "  $row" $(( 2 + ${#row} )) "$UI_BW"; fi
+    if [ "$UI_FANCY" -ne 1 ]; then printf '    %s\n' "$row"; continue; fi
+    # A row longer than the box wraps inside it, its later lines under its text, so it never runs past the border.
+    first=1
+    while IFS= read -r l; do
+      if [ "$first" -eq 1 ]; then l=" ${l# }"; else l="     $l"; fi
+      if [ "$i" = "$def" ]; then ui_box_put "  $C_INV$l $C_OFF" $(( 3 + ${#l} )) "$UI_BW"
+      else ui_box_put "  $l " $(( 3 + ${#l} )) "$UI_BW"; fi
+      first=0
+    done < <(if [ "${#row}" -le "$w" ]; then printf '%s\n' "${row% }"; else ui_wrap $(( w - 4 )) "$row"; fi)
   done
 }
-# ui_yn_row LABEL HINT [EXPLANATION]: the explanation dim, then "◆ Label   [Y/n]  " with the cursor left after the
+# ui_yn_row LABEL HINT [EXPLANATION]: a blank line, the explanation dim, then "◆ Label   [Y/n]  " with the cursor left after the
 #    hint. ui_yn_answer TEXT STYLE READ_A_NEWLINE then writes the answer on that row (one line up, after Enter).
 ui_yn_row() {
   local l
   if [ -n "${3:-}" ]; then
+    # A blank line first: the explanation and the "◆" line under it are one item, apart from the one above.
+    printf '\n'
     while IFS= read -r l; do printf '      %s%s%s\n' "$C_DIM" "$l" "$C_OFF"; done < <(ui_wrap $(( UI_W - 8 )) "$3")
   fi
   printf '  %s◆%s %s%s%s%s  ' "$C_ACC" "$C_OFF" "$(ui_pad "$1" 38)" "$C_KEY" "$2" "$C_OFF"
@@ -710,10 +724,13 @@ ask_vpn() {
   [ -n "$VPN" ] || [ -z "$TS_KEY" ] || VPN=tailscale
   # Checked before it is offered: the menu says why WireGuard cannot be had here, and how to fix it.
   if wg_module_loaded; then wg_row="WireGuard   own small VPN container, forward UDP ${WG_PORT}"
-  else wg_row="WireGuard   not available: the wireguard module is not loaded on ${THIS_NODE}"; fi
+  else wg_row="WireGuard   not available here: no wireguard module (see below)"; fi
   if [ -z "$VPN" ]; then
     if [ "$ASK_PLACEMENT" -eq 1 ]; then
-      wg_module_loaded || note "To offer WireGuard, run on ${THIS_NODE} first (HyperProx never loads it for you): ${WG_MODULE_FIX}"
+      if ! wg_module_loaded; then
+        note "WireGuard needs the wireguard kernel module, which is not loaded on ${THIS_NODE}. HyperProx never loads it for you; to offer it, run this on ${THIS_NODE} first:"
+        ui_command "$WG_MODULE_FIX"
+      fi
       while :; do
         ask_choice pick 3 "VPN" "How do you want to reach HyperProx when you are away from home?" 3 \
           "Tailscale   sign in with a link, nothing to open on router" \
@@ -722,7 +739,7 @@ ask_vpn() {
         case "${pick,,}" in
           1|tailscale) VPN=tailscale; break;;
           2|wireguard) if wg_module_loaded; then VPN=wireguard; break; fi
-                       bad_answer "WireGuard needs the wireguard module on ${THIS_NODE}: ${WG_MODULE_FIX}. Choose 1 or 3.";;
+                       bad_answer "WireGuard needs the wireguard module on ${THIS_NODE}; choose 1 or 3 (or load it first with: ${WG_MODULE_FIX})";;
           3|none|no|not*) VPN=none; break;;
           *) bad_answer "$pick is not one of the choices: type 1, 2 or 3.";;
         esac
@@ -738,7 +755,8 @@ ask_vpn() {
   [ "$VPN" = wireguard ] || return 0
   if ! wg_module_loaded; then
     warn "The WireGuard kernel module is not loaded on ${THIS_NODE}, and HyperProx never changes a node to load it: WireGuard skipped."
-    note "To use it, run on ${THIS_NODE}: ${WG_MODULE_FIX}; then add it on the VPN page, or choose Tailscale."
+    note "To use it, run this on ${THIS_NODE}, then add it on the VPN page (or choose Tailscale):"
+    ui_command "$WG_MODULE_FIX"
     VPN=none; return 0
   fi
   [ -n "$WG_SUBNET" ] || WG_SUBNET="$(wg_subnet_default)"

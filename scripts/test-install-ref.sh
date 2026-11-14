@@ -11,11 +11,13 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "${tmp}"' EXIT
 fail=0
 ok()   { :; }
+step() { :; }
+warn() { echo "warn: $*"; }
 die()  { echo "die: $*"; return 1; }
 pass() { echo "ok    $1"; }
 bad()  { echo "FAIL  $1${2:+ ($2)}"; fail=1; }
 check() { if eval "$2"; then pass "$1"; else bad "$1" "$2"; fi; }
-for f in env_lock env_unlock checkout_ref set_env_line configure_update_source; do
+for f in env_lock env_unlock checkout_ref set_env_line configure_update_source clone_repo; do
   eval "$(sed -n "/^${f}() {/,/^}/p" "${here}/install.sh")"
   declare -F "$f" >/dev/null || { echo "FAIL  ${f} not found in install.sh"; exit 1; }
 done
@@ -61,5 +63,12 @@ HYPERPROX_REPO_URL="https://git.example.com/other/hyperprox.git"; REPO_URL="$HYP
 configure_update_source
 check "a re-run with a new source replaces it in place"            '[[ "$(envval HYPERPROX_UPDATE_REPO)" == https://git.example.com/other/hyperprox.git && "$(grep -c "^HYPERPROX_UPDATE_REPO=" "$ENV_FILE")" == 1 ]]'
 check "install.sh runs configure_update_source in main"           'sed -n "/^main() {/,/^}/p" "${here}/install.sh" | grep -q configure_update_source'
+
+# An existing clone keeps its origin: HYPERPROX_REPO_URL is for a fresh clone, and the messages name the origin.
+HYPERPROX_DIR="${tmp}/existing"; git clone -q "$up" "$HYPERPROX_DIR"
+INSTALL_REF=""; HYPERPROX_REF=""; HYPERPROX_REPO_URL="https://git.example.com/fork/hyperprox.git"; REPO_URL="$HYPERPROX_REPO_URL"
+out="$(clone_repo 2>&1; echo "REPO_URL=$REPO_URL")"
+check "an existing clone with another HYPERPROX_REPO_URL says it applies to a fresh clone only" '[[ "$out" == *"applies to a fresh clone only"*"fetches from its origin, $up"* ]]'
+check "  and names the origin it really fetches from"             '[[ "$(clone_repo >/dev/null 2>&1; echo "$REPO_URL")" == "$up" ]]'
 
 exit "$fail"

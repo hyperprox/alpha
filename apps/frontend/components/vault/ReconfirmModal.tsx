@@ -18,7 +18,7 @@ export function ReconfirmModal({ onDone, onClose }: { onDone: (until: number) =>
     onDone(isNaN(until) ? Date.now() + 5 * 60_000 : until)
   }
   return (
-    <Modal title="Confirm it's you" onClose={onClose}>
+    <Modal title="Confirm it's you" onClose={onClose} top>
       <form onSubmit={submit} className="space-y-4">
         <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Enter your master password to continue. It is checked, never stored.</p>
         <input type="password" autoFocus autoComplete="current-password" aria-label="Master password" value={password}

@@ -47,4 +47,5 @@ check "address advice: the exact pct set line"  'grep -q "pct set <ID> --net0 na
 check "install.sh writes no /etc/network/interfaces any more" '! grep -q "> /etc/network/interfaces" "${here}/install.sh"'
 # A re-run after an interrupted install: dpkg is finished before the first apt-get.
 check "install.sh runs dpkg --configure -a before its first apt-get" '[[ "$(sed -n "/^install_prerequisites() {/,/^}/p" "${here}/install.sh" | grep -v "^ *#" | grep -n -m1 -E "finish_interrupted_dpkg|apt-get" | cut -d: -f2)" == *finish_interrupted_dpkg* ]] && grep -q "dpkg --configure -a" "${here}/install.sh"'
+check "AppArmor's own output goes to the log, not the styled screen" '[[ "$(sed -n "/^disable_apparmor() {/,/^}/p" "${here}/install.sh" | grep -E "^ *(systemctl (stop|disable) apparmor|aa-teardown )" | grep -vc LOG_FILE)" == 0 ]]'
 exit "${fail}"
