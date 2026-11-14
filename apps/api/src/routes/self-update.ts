@@ -149,13 +149,12 @@ export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPl
 
     fastify.get('/preview', { preHandler: admin }, async () => svc.preview())
 
-    fastify.post<{ Body: { sha?: unknown; confirmUnrelated?: unknown } }>('/install', { preHandler: admin }, async (req, reply) => {
+    fastify.post<{ Body: { sha?: unknown } }>('/install', { preHandler: admin }, async (req, reply) => {
       if (!personReconfirmed(req, reply)) return
       const sha = req.body?.sha
       if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha)) return reply.status(400).send({ ok: false, error: 'sha must be the full commit id of the update on offer' })
       try {
-        const confirm = typeof req.body?.confirmUnrelated === 'string' ? req.body.confirmUnrelated.slice(0, 100) : undefined
-        const job = await svc.install(req.session!.email, sha, 'manual', { confirmUnrelated: confirm })
+        const job = await svc.install(req.session!.email, sha, 'manual')
         return reply.status(202).send({ job })
       } catch (e: any) {
         if (e instanceof RefusedError) return reply.status(409).send({ ok: false, code: 'refused', error: e.message, refusals: e.refusals })

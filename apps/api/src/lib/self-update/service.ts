@@ -274,7 +274,6 @@ export class SelfUpdateService {
     const need = this.d.minFreeMiB ?? 3072
     if (free !== null && free < need) refusals.push({ code: 'disk', text: `Only ${free} MiB free; an update needs ${need} MiB.` })
     if (available) {
-      if (available.flags.unknownBase) warnings.push(`Upstream does not contain this install's commit ${inst.sha.slice(0, 7)} (local commits, or upstream rewrote its history). The update would move ${inst.branch ?? 'the checkout'} to ${available.label}, which may be older; type its name to confirm. The commit being left is kept as refs/hyperprox-update/previous.`)
       if (available.flags.migrations.length) warnings.push(`${available.flags.migrations.length} database migration${available.flags.migrations.length === 1 ? '' : 's'} will run. Migrations only go forward: if the update then fails, the database is restored from the backup taken first, and anything written in between is lost.`)
       else if (available.flags.filesUnknown) warnings.push('Upstream did not say which files change; whether migrations run is checked after fetching.')
       if (available.flags.keyholder) warnings.push('This version changes the keyholder, so HyperProx locks once when it restarts: someone has to sign in again.')
@@ -296,8 +295,7 @@ export class SelfUpdateService {
       `${STEP_LABELS.health}`,
       'If anything after the checkout fails: back to the previous commit, rebuilt and restarted; the database is restored from the backup only if its record of applied migrations changed',
     ]
-    return { installed: inst, target: available, refusals, warnings, steps, disk: { freeMiB: free, needMiB: need }, untracked,
-             confirmUnrelated: available?.flags.unknownBase ? available.label : null }
+    return { installed: inst, target: available, refusals, warnings, steps, disk: { freeMiB: free, needMiB: need }, untracked }
   }
 
   private async freeMiB(): Promise<number | null> {
@@ -307,7 +305,7 @@ export class SelfUpdateService {
   }
 
   /** Start an update to `sha`, which must be the update the last check offered. */
-  async install(by: string, sha: string, how: 'manual' | 'auto' = 'manual', opts: { confirmUnrelated?: string } = {}): Promise<UpdateState> {
+  async install(by: string, sha: string, how: 'manual' | 'auto' = 'manual'): Promise<UpdateState> {
     const check = this.lastCheck()
     const available = check?.available ?? null
     const settings = await this.effectiveSettings()
@@ -320,12 +318,10 @@ export class SelfUpdateService {
       if ((check as any)?.fromMirror) refusals.push({ code: 'auto_mirror', text: 'This update was found on the mirror, not the configured upstream; automatic install never takes it from a mirror.' })
       if (this.autoAttemptRefused(sha)) refusals.push({ code: 'auto_attempted', text: 'Automatic install already tried this version and it did not succeed; it is not tried again on its own.' })
     }
-    // A move to a commit that does not contain the installed one: a person types the label, and never automatically.
-    const unrelated = !!available?.flags.unknownBase
-    if (unrelated && how === 'auto') refusals.push({ code: 'auto_unrelated', text: 'This update does not contain the installed commit; automatic install never makes that move.' })
-    else if (unrelated && opts.confirmUnrelated !== available!.label) {
-      refusals.push({ code: 'confirm_unrelated', text: `Upstream does not contain this install's commit ${inst.sha.slice(0, 7)} (other history, or local commits). To move to ${available!.label} anyway, type "${available!.label}" to confirm.` })
-    }
+    // A commit that does not contain the installed one is never an update: neither channel offers one (check.ts
+    // offers only "ahead"), and should one ever be on offer it is refused here, never moved to with a typed
+    // confirmation. (The old "type its name" step could no longer be reached, so it is gone.)
+    if (available?.flags.unknownBase) refusals.push({ code: 'not_ahead', text: `Upstream does not contain this install's commit ${inst.sha.slice(0, 7)}, so ${available.label} may be older; it is not installed as an update.` })
     const free = await this.freeMiB()
     const need = this.d.minFreeMiB ?? 3072
     if (free !== null && free < need) refusals.push({ code: 'disk', text: `Only ${free} MiB free; an update needs ${need} MiB.` })
@@ -338,7 +334,7 @@ export class SelfUpdateService {
       repoUrl: this.d.config.repoUrl, mirrorUrl: this.d.config.mirrorUrl, requireSigned: settings.requireSigned, trustedKeys: this.d.config.trustedKeys,
       stateFile: this.p.state, logFile: path.join(this.p.logs, `${id}.log`), backupDir: this.d.backupDir, keepBackups: 3, minFreeMiB: need,
       health: this.d.health ?? { api: 'http://127.0.0.1:3002/health', frontend: 'http://127.0.0.1:3000/login', nginx: 'https://127.0.0.1/login', timeoutMs: 180_000 },
-      lockHeld: true, createdAt: this.now().toISOString(), how, allowUnrelated: unrelated && how === 'manual',
+      lockHeld: true, createdAt: this.now().toISOString(), how, allowUnrelated: false,
     }
     // One automatic attempt per release, kept on disk: a release that rolled back is not retried every minute, nor
     // after a restart (autoAttemptRefused).

@@ -311,6 +311,18 @@ test('a commit that does not contain the installed one is never offered, so an o
   }
 })
 
+test('should a commit without the installed one ever be on offer, it is refused, with no typed-label way round', async () => {
+  const r = rig({}, {}, [upstreamWith(B, 'alpha')])
+  await r.svc.saveSettings({ channel: 'alpha' }, 'x')
+  const c = await r.svc.check()
+  assert.ok(c.available)
+  const offered = { ...c, available: { ...c.available!, flags: { ...c.available!.flags, unknownBase: true } } }
+  ;(r.svc as any).lastCheck = () => offered
+  await assert.rejects(r.svc.install('admin@example.com', B), (e: any) => e.refusals.some((x: any) => x.code === 'not_ahead'))
+  assert.equal(r.launched.length, 0)
+  assert.equal('confirmUnrelated' in (await r.svc.preview()), false, 'the preview offers no label to type')
+})
+
 test('the alpha channel follows the branch the install came from (HYPERPROX_UPDATE_BRANCH), not always main', async () => {
   const asked: string[] = []
   const up: Upstream = { ...upstreamWith(B, 'alpha'), async head(branch: string) { asked.push(branch); return upstreamWith(B, 'alpha').head(branch) } }

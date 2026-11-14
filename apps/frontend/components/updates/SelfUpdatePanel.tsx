@@ -38,7 +38,7 @@ interface Status {
   upstream: { repoUrl: string; mirrorUrl: string | null; trustedKeys: boolean }
 }
 interface Refusal { code: string; text: string; detail?: string[] }
-interface Preview { target: Available | null; refusals: Refusal[]; warnings: string[]; steps: string[]; disk: { freeMiB: number | null; needMiB: number }; confirmUnrelated: string | null }
+interface Preview { target: Available | null; refusals: Refusal[]; warnings: string[]; steps: string[]; disk: { freeMiB: number | null; needMiB: number } }
 
 /** Only an https page is linked; anything else upstream sends stays plain text. */
 const safeHref = (u: string | null) => { try { return u && new URL(u).protocol === 'https:' ? u : null } catch { return null } }
@@ -60,7 +60,6 @@ export function SelfUpdatePanel() {
   const [showCommits, setShowCommits] = useState(false)
   const [editing, setEditing] = useState<Settings | null>(null)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
-  const [typed, setTyped] = useState('')
   const logRef = useRef<HTMLPreElement>(null)
 
   const load = useCallback(async () => {
@@ -104,13 +103,13 @@ export function SelfUpdatePanel() {
     setBusy(true); setNotice(null)
     const r = await apiJson<Preview>('/api/self-update/preview')
     setBusy(false)
-    if (r.ok && r.body) { setTyped(''); setPreview(r.body) } else setNotice({ tone: 'crit', text: r.error ?? 'Could not build the preview.' })
+    if (r.ok && r.body) { setPreview(r.body) } else setNotice({ tone: 'crit', text: r.error ?? 'Could not build the preview.' })
   }
   const install = async () => {
     const sha = preview?.target?.sha
     if (!sha) return
     setBusy(true)
-    const r = await apiJson<{ job: Job }>('/api/self-update/install', 'POST', { sha, ...(preview?.confirmUnrelated ? { confirmUnrelated: typed } : {}) })
+    const r = await apiJson<{ job: Job }>('/api/self-update/install', 'POST', { sha })
     setBusy(false)
     if (askedAgain(r, install)) return
     if (r.ok && r.body?.job) { setPreview(null); setJob(r.body.job); return }
@@ -175,16 +174,9 @@ export function SelfUpdatePanel() {
               {r.detail && <pre className="mt-1 max-h-40 overflow-auto font-mono text-xs">{r.detail.join('\n')}</pre>}
             </Notice>
           ))}
-          {preview.confirmUnrelated && (
-            <label className="block space-y-1 text-sm">
-              <span>This version does not contain the one installed, so it may be older. To go ahead anyway, type <b className="font-mono">{preview.confirmUnrelated}</b>:</span>
-              <input value={typed} onChange={e => setTyped(e.target.value)} className="w-full font-mono" aria-label="Type the version to confirm"
-                     style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px', color: 'var(--text)' }} />
-            </label>
-          )}
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Only HyperProx is updated; nothing else on this machine or cluster is touched. You will be asked for your master password.</p>
           <div className="flex justify-end gap-2">
-            <Btn kind="primary" onClick={() => void install()} disabled={busy || preview.refusals.length > 0 || !preview.target || (!!preview.confirmUnrelated && typed !== preview.confirmUnrelated)}>Install {preview.target?.label ?? ''}</Btn>
+            <Btn kind="primary" onClick={() => void install()} disabled={busy || preview.refusals.length > 0 || !preview.target}>Install {preview.target?.label ?? ''}</Btn>
             <Btn onClick={() => setPreview(null)}>Cancel</Btn>
           </div>
         </ConfirmDialog>
