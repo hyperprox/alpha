@@ -127,6 +127,11 @@ export interface VaultBroker {
    */
   removePendingMember?(sid: string, email: string): Promise<boolean>
   /**
+   * Take someone who joined (or was confirmed) out of the organization: they can no longer sign in. Never the
+   * owner, never yourself. An operator's or admin's removal is the vault owner's (VaultOwnerOnlyError).
+   */
+  removeMember?(sid: string, memberId: string): Promise<{ email: string }>
+  /**
    * The join page, step 1: register an invited email with its master password. No session involved.
    * `onRegistered` runs as soon as the account exists (before the sign-in that follows can fail), so a retry
    * skips registering; an account the vault says already exists counts as registered and the sign-in checks it.
@@ -575,6 +580,19 @@ export class CliVaultBroker implements VaultBroker {
       await ownerOnly(v.orgRemove(String(m.id)))
       try { memberRoles().remove(e) } catch { /* nothing recorded */ }
       return true
+    })
+  }
+
+  async removeMember(sid: string, memberId: string): Promise<{ email: string }> {
+    return this.withFast(sid, async (v, s) => {
+      const m = (await v.orgMembers()).find(x => String(x.id) === memberId)
+      if (!m) throw new Error('no such member')
+      if (Number(m.type) === MEMBER_TYPE.Owner) throw new Error('the owner cannot be removed')
+      if (String(m.userId ?? '') === s.userId) throw new Error('you cannot remove yourself')
+      const email = normalizeEmail(String(m.email ?? ''))
+      await ownerOnly(v.orgRemove(memberId))
+      try { memberRoles().remove(email) } catch { /* nothing recorded */ }
+      return { email }
     })
   }
 

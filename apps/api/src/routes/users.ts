@@ -10,6 +10,8 @@
 //    POST /api/users/:id/confirm     admin + re-entered; the fingerprint the admin compared must still match;
 //                                    confirming an operator or admin needs the owner
 //    PUT  /api/users/:id/role        owner + re-entered: role changes are role management
+//    DELETE /api/users/:id           admin + re-entered: remove someone who joined (a viewer; anyone but the owner
+//                                    for the owner); never the owner, never yourself; audited
 //    DELETE /api/users/invitations/:hash   admin + re-entered: withdraw a link that was not used, and take the
 //                                    invited membership back out of the vault (an operator's or admin's: owner)
 //
@@ -158,6 +160,27 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       if (!(await audited(reply, 'users.role', `member:${id}`, { by: req.session!.email, role }))) return
       try { await b.setMemberRole(req.session!.sid, id, role as GrantableRole) } catch (e) { return failed(reply, e) }
       return { ok: true, data: { id, role } }
+    })
+
+    // Remove someone who joined: admin (a viewer) or owner (anyone but the owner), master password re-entered
+    // (roles.ts), audited before the vault is changed. Their open invitation, if any, goes too.
+    fastify.delete<{ Params: { id: string } }>('/:id', { preHandler: needs('admin') }, async (req, reply) => {
+      const id = req.params.id
+      if (!VAULT_ID.test(id)) return reply.status(404).send({ ok: false, error: 'No such member' })
+      const b = broker()
+      if (!b.removeMember || !b.members) return unsupported(reply)
+      let member
+      try { member = (await b.members(req.session!.sid)).find(m => m.id === id) } catch (e) { return failed(reply, e) }
+      if (!member) return reply.status(404).send({ ok: false, error: 'No such member' })
+      if (member.role === 'owner') return reply.status(403).send({ ok: false, code: 'forbidden', error: 'The owner cannot be removed.' })
+      if (member.email === req.session!.email) return reply.status(400).send({ ok: false, error: 'You cannot remove yourself.' })
+      if (needsVaultOwner(member.role) && !isOwner(req)) return ownerRequired(reply)
+      const details = { by: req.session!.email, email: member.email, role: member.role }
+      if (!(await audited(reply, 'users.remove', `member:${id}`, details))) return
+      try { await b.removeMember(req.session!.sid, id) }
+      catch (e) { return failed(reply, e, { action: 'users.remove', resource: `member:${id}`, details }) }
+      for (const i of store.list()) if (i.email === member.email) store.remove(i.hash)
+      return { ok: true, data: { id, removed: true } }
     })
 
     fastify.delete<{ Params: { hash: string } }>('/invitations/:hash', { preHandler: needs('admin') }, async (req, reply) => {

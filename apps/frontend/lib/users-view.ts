@@ -29,6 +29,16 @@ export function managesRole(me: Role | null | undefined, role: Role): boolean {
   return me === 'admin' && role === 'viewer'
 }
 
+/**
+ * Whether this person may remove a member who joined: never the owner, never yourself, and only a role they
+ * manage (an admin removes viewers; the owner anyone else), the vault's own rule. Pending ones are withdrawn
+ * as invitations instead.
+ */
+export function canRemove(me: Role | null | undefined, m: Pick<Member, 'role' | 'status'>, self: boolean): boolean {
+  if (self || m.role === 'owner' || m.status === 'invited') return false
+  return managesRole(me, m.role)
+}
+
 /** What the row says and offers. */
 export function memberState(m: Member): { words: string; tone: 'good' | 'warn' | undefined; canConfirm: boolean } {
   if (m.status === 'confirmed') return { words: 'active', tone: 'good', canConfirm: false }

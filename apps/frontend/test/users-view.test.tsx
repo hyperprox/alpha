@@ -2,7 +2,7 @@
 // fingerprint check before confirming, and reading the join link's token from its fragment.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { grantableBy, managesRole, memberState, sameFingerprint, joinToken, type Member } from '../lib/users-view'
+import { canRemove, grantableBy, managesRole, memberState, sameFingerprint, joinToken, type Member } from '../lib/users-view'
 
 const m = (over: Partial<Member>): Member => ({ id: 'x', email: 'a@example.com', name: null, role: 'viewer', status: 'confirmed', twoFactor: true, fingerprint: null, ...over })
 const FP = '0a1b-2c3d-4e5f-6a7b-8c9d-0e1f-2a3b-4c5d'
@@ -43,4 +43,16 @@ test('confirming or withdrawing an operator or admin is the owner\'s; an admin h
   assert.equal(managesRole('admin', 'admin'), false)
   assert.equal(managesRole('operator', 'viewer'), false)
   assert.equal(managesRole(undefined, 'viewer'), false)
+})
+
+test('who can remove whom: never the owner or yourself; an admin removes viewers, the owner anyone else', () => {
+  const v = { role: 'viewer', status: 'confirmed' } as const
+  const op = { role: 'operator', status: 'confirmed' } as const
+  assert.equal(canRemove('owner', op, false), true)
+  assert.equal(canRemove('owner', { role: 'owner', status: 'confirmed' }, false), false)
+  assert.equal(canRemove('admin', v, false), true)
+  assert.equal(canRemove('admin', op, false), false)
+  assert.equal(canRemove('admin', v, true), false, 'never yourself')
+  assert.equal(canRemove('viewer', v, false), false)
+  assert.equal(canRemove('owner', { role: 'viewer', status: 'invited' }, false), false, 'an invitation is withdrawn instead')
 })

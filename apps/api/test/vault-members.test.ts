@@ -243,3 +243,18 @@ test('an invitation records the role it was made with; withdrawing it removes th
   assert.equal(await pending.b.removePendingMember(SID, 'new@example.com'), true)
   assert.equal(new RoleStore(rolesFile).get('new@example.com'), null)
 })
+
+test('broker removeMember: takes a joined member out of the org and its role record; never the owner or yourself', async () => {
+  resetRoles()
+  new RoleStore(rolesFile).set('acc@example.com', 'viewer')
+  const { b, calls } = brokerWith([
+    { id: MEMBER, userId: USER, email: 'acc@example.com', status: 2, type: 2 },
+    { id: ORG, userId: 'owner-id', email: 'owner@example.com', status: 2, type: 0 },
+    { id: INVITED, userId: 'someone', email: 'x@example.com', status: 2, type: 0 },
+  ])
+  assert.deepEqual(await b.removeMember!(SID, MEMBER), { email: 'acc@example.com' })
+  assert.deepEqual(calls(), [['remove', MEMBER]])
+  assert.equal(new RoleStore(rolesFile).get('acc@example.com'), null)
+  await assert.rejects(b.removeMember!(SID, INVITED), /owner cannot be removed/)
+  await assert.rejects(b.removeMember!(SID, ORG), /owner cannot be removed|cannot remove yourself/)
+})

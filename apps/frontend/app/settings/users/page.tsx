@@ -12,7 +12,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
 import ss from '../settings.module.css'
-import { ROLE_WORDS, grantableBy, managesRole, memberState, sameFingerprint, type Grantable, type Member, type Role } from '@/lib/users-view'
+import { ROLE_WORDS, canRemove, grantableBy, managesRole, memberState, sameFingerprint, type Grantable, type Member, type Role } from '@/lib/users-view'
 
 interface Invitation { id: string; email: string; role: Grantable; by: string; expiresAt: string; joined: boolean }
 
@@ -143,6 +143,12 @@ export default function UsersPage() {
   const changeRole = (m: Member, next: Grantable) => run(() => apiJson(`/api/users/${m.id}/role`, 'PUT', { role: next }), r => {
     if (!r.ok) setError(r.error ?? 'Could not change the role'); else { setToast(`${m.email} is now ${next}.`); void load() }
   })
+  // Removing someone who joined: confirmed in words, then the master password again (useReconfirmed), audited.
+  const [removing, setRemoving] = useState<Member | null>(null)
+  const remove = (m: Member) => run(() => apiJson(`/api/users/${m.id}`, 'DELETE'), r => {
+    setRemoving(null)
+    if (!r.ok) setError(r.error ?? 'Could not remove them'); else { setToast(`${m.email} was removed and can no longer sign in.`); void load() }
+  })
   const withdraw = (i: Invitation) => run(() => apiJson(`/api/users/invitations/${i.id}`, 'DELETE'), r => {
     if (!r.ok) setError(r.error ?? 'Could not withdraw it'); else { setToast(`The link for ${i.email} no longer works.`); void load() }
   })
@@ -189,6 +195,7 @@ export default function UsersPage() {
                   <p className={ss.meta}>{ROLE_WORDS[m.role]}{m.twoFactor ? ' · two-step login on' : ''}</p>
                   <div className={ss.acts}>
                     {st.canConfirm && managesRole(role, m.role) && <button type="button" className={ss.mini} data-tone="accent" onClick={() => setConfirmFor(m)}>Confirm</button>}
+                    {canRemove(role, m, self) && <button type="button" className={ss.mini} data-tone="bad" onClick={() => setRemoving(m)}>Remove</button>}
                     {role === 'owner' && m.role !== 'owner' && !self && m.status !== 'revoked' && (
                       <select aria-label={`Role for ${m.email}`} value={m.role} onChange={e => changeRole(m, e.target.value as Grantable)} style={{ ...INPUT, width: 'auto', padding: '4px 8px', fontSize: 13 }}>
                         {(['admin', 'operator', 'viewer'] as Grantable[]).map(r => <option key={r} value={r}>{r}</option>)}
@@ -217,6 +224,20 @@ export default function UsersPage() {
       )}
 
       {inviting && role && <InviteModal me={role} onClose={() => setInviting(false)} onDone={() => void load()} />}
+      {removing && (
+        <Modal title={`Remove ${removing.email}?`} onClose={() => setRemoving(null)}>
+          <div className="space-y-4">
+            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
+              They are taken out of HyperProx&apos;s vault organisation and can no longer sign in. Their own vault account stays,
+              and nothing they made is deleted. You will be asked for your master password, and the removal is audited.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <GhostButton type="button" onClick={() => setRemoving(null)}>Cancel</GhostButton>
+              <PrimaryButton type="button" onClick={() => remove(removing)}>Remove</PrimaryButton>
+            </div>
+          </div>
+        </Modal>
+      )}
       {confirmFor && <ConfirmModal member={confirmFor} onClose={() => setConfirmFor(null)} onDone={m => { setConfirmFor(null); setToast(m); void load() }} />}
     </Page>
   )

@@ -35,6 +35,7 @@ function fakeBroker(faults: Faults = {}) {
     confirmMember: async (sid, id, fp) => { calls.push(['confirm', sid, id, fp]); if (faults.ownerOnly) throw new VaultOwnerOnlyError() },
     setMemberRole: async (sid, id, role) => { calls.push(['role', sid, id, role]) },
     removePendingMember: async (sid, email) => { calls.push(['remove', sid, email]); if (faults.removeFails) throw new Error('vault down'); return true },
+    removeMember: async (sid, id) => { calls.push(['remove-member', sid, id]); if (faults.ownerOnly) throw new VaultOwnerOnlyError(); return { email: members.find(m => m.id === id)!.email } },
     registerInvitee: async (email, pw, opts) => {
       calls.push(['register', email, pw.length, !!opts?.alreadyRegistered])
       if (!opts?.alreadyRegistered) opts?.onRegistered?.()
@@ -325,4 +326,41 @@ test('the store skips a malformed stored hash instead of throwing', () => {
   ]))
   assert.equal(store.find(token)?.email, 'ok@example.com')
   assert.equal(store.find('B'.repeat(43)), null)
+})
+
+// ---- removing someone who joined ---------------------------------------------------------------------------
+
+test('remove a member: owner removes anyone but the owner; admin only a viewer; never yourself; audited first', async () => {
+  const owner = rig('owner')
+  let r = await owner.app.inject({ method: 'DELETE', url: `/api/users/${M3}` })
+  assert.equal(r.statusCode, 200, r.body)
+  assert.deepEqual(owner.calls.at(-1), ['remove-member', 'a'.repeat(32), M3])
+  assert.equal(owner.audits.at(-1)![0], 'users.remove')
+  r = await owner.app.inject({ method: 'DELETE', url: `/api/users/${M1}` })
+  assert.equal(r.statusCode, 403, 'never the owner')
+
+  const admin = rig('admin')
+  r = await admin.app.inject({ method: 'DELETE', url: `/api/users/${M3}` })
+  assert.equal(r.statusCode, 403, 'an operator is the owner\'s to remove')
+  assert.ok(!admin.calls.some(c => c[0] === 'remove-member'))
+  r = await admin.app.inject({ method: 'DELETE', url: `/api/users/${M2}` })
+  assert.equal(r.statusCode, 200, 'a viewer: an admin may')
+
+  const viewer = rig('viewer')
+  r = await viewer.app.inject({ method: 'DELETE', url: `/api/users/${M2}` })
+  assert.equal(r.statusCode, 403)
+})
+
+test('remove a member: no audit row, no change; an API token cannot', async () => {
+  const x = rig('owner', { auditFails: true })
+  const r = await x.app.inject({ method: 'DELETE', url: `/api/users/${M2}` })
+  assert.equal(r.statusCode, 503)
+  assert.ok(!x.calls.some(c => c[0] === 'remove-member'))
+  const t = rig('owner', { token: true })
+  assert.equal((await t.app.inject({ method: 'DELETE', url: `/api/users/${M2}` })).statusCode, 403)
+})
+
+test('removing a member is admin at least, with the master password re-entered', () => {
+  assert.equal(requiredRole('DELETE', `/api/users/${M2}`), 'admin')
+  assert.equal(needsReconfirm('DELETE', `/api/users/${M2}`), true)
 })
