@@ -14,6 +14,7 @@ test('an adopted WireGuard server renders with its tunnel, its endpoint and the 
   assert.match(html, /Add phone or laptop/)
   assert.match(html, /data-testid="add-first-phone"/)
   assert.match(html, /forward UDP 51820/)
+  assert.match(html, /reaches HyperProx/)
 })
 
 test('a server with peers does not ask for the first phone again', () => {

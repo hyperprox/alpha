@@ -235,13 +235,17 @@ ui_abort() {
   ui_spin_stop
 }
 
-# ui_wait MSG CMD...: a spinner on a terminal, nothing in plain output; the caller reports the outcome.
+# ui_wait MSG CMD...: a spinner on a terminal, nothing in plain output; the caller reports the outcome. The command
+# runs with errexit on (a function stops at its first failing command), as long as ui_wait is not itself called
+# inside `||`, `&&`, `!` or `if`: bash ignores set -e there, even in subshells. Call it, and ui_run, through
+# ui_try, which keeps them out of such a context and leaves the status in UI_RC.
 ui_wait() {
-  local msg="$1" rc=0; shift
-  "$@" < /dev/null >> "${UI_OUT:-$UI_LOG}" 2>&1 &
+  local msg="$1" rc=0 e=0; shift
+  case $- in *e*) e=1;; esac
+  ( set -e; "$@" ) < /dev/null >> "${UI_OUT:-$UI_LOG}" 2>&1 &
   UI_RUN_PID=$!
   ui_spin_start "$msg" "$UI_RUN_PID"
-  wait "$UI_RUN_PID" || rc=$?
+  set +e; wait "$UI_RUN_PID"; rc=$?; [ "$e" -eq 0 ] || set -e
   UI_RUN_PID=""
   ui_spin_stop
   [ "${UI_NEXT[0]:-}" != "$msg" ] || UI_NEXT=("${UI_NEXT[@]:1}")
@@ -250,9 +254,10 @@ ui_wait() {
 # ui_run MSG CMD...: as ui_wait, then a ✓ line with the time taken, or a ✗ line and the last 20 lines of
 # the command's output, so a failure is never hidden behind the spinner.
 ui_run() {
-  local msg="$1" rc=0 t0=$SECONDS out="${UI_OUT:-$UI_LOG}"; shift
+  local msg="$1" rc=0 e=0 t0=$SECONDS out="${UI_OUT:-$UI_LOG}"; shift
+  case $- in *e*) e=1;; esac
   [ "$UI_FANCY" -eq 1 ] || printf '[ .. ] %s\n' "$msg"
-  ui_wait "$msg" "$@" || rc=$?
+  set +e; ui_wait "$msg" "$@"; rc=$?; [ "$e" -eq 0 ] || set -e
   if [ "$rc" -eq 0 ]; then ui_ok "$msg" "$(ui_secs $(( SECONDS - t0 )))"; return 0; fi
   ui_bad "$msg (failed after $(ui_secs $(( SECONDS - t0 ))), exit $rc)"
   if [ -s "$out" ] && [ "$out" != /dev/null ]; then
@@ -262,6 +267,11 @@ ui_run() {
   fi
   return "$rc"
 }
+
+# ui_try CMD...: CMD (ui_run or ui_wait) called outside any `||`, `&&`, `!` or `if`, so the job's set -e holds.
+# The status lands in UI_RC; ui_try itself always succeeds. Use: ui_try ui_run "msg" cmd; [ "$UI_RC" -eq 0 ] || …
+UI_RC=0
+ui_try() { local e=0; case $- in *e*) e=1;; esac; set +e; "$@"; UI_RC=$?; [ "$e" -eq 0 ] || set -e; return 0; }
 
 # ── Questions. ui_ask_box TITLE QUESTION [EXPLANATION]: a rounded box (plain: the question, the explanation
 #    indented below). ui_prompt LABEL DEFAULT: "› ID [160]: " under it (plain: "[160] ").
@@ -422,7 +432,8 @@ confirm() {
 # failure the last 20 lines of that output, before this stops the install.
 run_with_spinner() {
   local msg="$1"; shift
-  ui_run "${msg}" "$@" || die "${msg} failed. See ${LOG_FILE} for full output."
+  ui_try ui_run "${msg}" "$@"
+  [[ "${UI_RC}" -eq 0 ]] || die "${msg} failed. See ${LOG_FILE} for full output."
 }
 
 # ── Environment Detection ─────────────────────────────────────────────────────
@@ -699,8 +710,8 @@ EOF
   # lands in a store the daemon stops reading at the next reboot, and HyperProx comes back with no containers.
   systemctl restart docker
 
-  ui_run "Docker smoke test (hello-world)" docker run --rm hello-world \
-    || die "Docker installed but test container failed. Check LXC nesting settings."
+  ui_try ui_run "Docker smoke test (hello-world)" docker run --rm hello-world
+  [[ "${UI_RC}" -eq 0 ]] || die "Docker installed but test container failed. Check LXC nesting settings."
   ok "Docker CE installed and working"
 }
 
@@ -1004,7 +1015,8 @@ configure_vault_env() {
   if ! env_has VAULT_ADMIN_TOKEN_HASH; then
     local token hash
     token="$(openssl rand -hex 24)"
-    ui_run "Pulling the pinned Vaultwarden image" docker pull --quiet "${VAULT_IMAGE}" || die "Could not pull ${VAULT_IMAGE}"
+    ui_try ui_run "Pulling the pinned Vaultwarden image" docker pull --quiet "${VAULT_IMAGE}"
+    [[ "${UI_RC}" -eq 0 ]] || die "Could not pull ${VAULT_IMAGE}"
     hash="$(vault_token_hash "${token}")"
     [[ "${hash}" == \$argon2id\$* ]] || die "Could not generate the vault admin token hash (see ${LOG_FILE})"
     {
@@ -1299,7 +1311,8 @@ wait_postgres() {   # at most a minute
 run_migrations() {
   step "Running database migrations"
 
-  ui_run "Waiting for PostgreSQL" wait_postgres || die "PostgreSQL did not become ready in time"
+  ui_try ui_run "Waiting for PostgreSQL" wait_postgres
+  [[ "${UI_RC}" -eq 0 ]] || die "PostgreSQL did not become ready in time"
 
   cd "${HYPERPROX_DIR}/apps/api"
   source "${HYPERPROX_DIR}/.env"
@@ -1326,8 +1339,8 @@ start_services() {
   run_with_spinner "Starting the vault" \
     docker compose up -d --quiet-pull vault
   VAULT_URL=https://127.0.0.1:8222 VAULT_CA_CERT="${HYPERPROX_DIR}/config/vault-tls/cert.pem" VAULT_WAIT_SECONDS=90 \
-    ui_run "Waiting for the vault to answer" "${HYPERPROX_DIR}/bin/wait-for-vault" \
-    || die "The vault did not start. HyperProx cannot run without it. See: docker logs hyperprox-vault"
+    ui_try ui_run "Waiting for the vault to answer" "${HYPERPROX_DIR}/bin/wait-for-vault"
+  [[ "${UI_RC}" -eq 0 ]] || die "The vault did not start. HyperProx cannot run without it. See: docker logs hyperprox-vault"
   ok "Vault is up on https://127.0.0.1:8222"
 
   step "Starting Docker stack"

@@ -98,13 +98,13 @@ function router(o: { write?: boolean } = {}) {
   return { api, state, routerPub: rif.pub }
 }
 
-function rig(o: { write?: boolean; now?: () => number } = {}) {
+function rig(o: { write?: boolean; now?: () => number; lan?: { address: string; network: string } } = {}) {
   const f = fleet()
   const v = vault()
   const r = router(o)
   const store = new MemoryWgStore()
   const remote = new RemoteAccessService({ store: new MemoryRemoteStore(), exec: f.exec, provider: async () => null, providerSettings: async () => ({ tags: [] }), settleMs: 0, sleep: async () => undefined })
-  const svc = new WireguardService({ remote, exec: f.exec, store, vault: v, router: async () => r.api, now: o.now })
+  const svc = new WireguardService({ remote, exec: f.exec, store, vault: v, router: async () => r.api, now: o.now, lan: o.lan ? () => o.lan! : undefined })
   return { f, v, r, store, svc }
 }
 
@@ -351,4 +351,16 @@ test('the REST writer refuses any path but WireGuard peers before it sends anyth
   await assert.rejects(w.del('/rest/ip/route/*1'), /only writes WireGuard peers/)
   await assert.rejects(w.put('/rest/interface/wireguard', {}), /only writes WireGuard peers/)
   await assert.rejects(w.del('/rest/interface/wireguard/peers/../../ip/route/*1'), /only writes WireGuard peers/)
+})
+
+test('a phone reaches the tunnel and HyperProx itself by default; the whole home network only when asked', async () => {
+  const x = rig({ lan: { address: '192.0.2.30', network: '192.0.2.0/24' } })
+  const s = await server(x)
+  const k1 = keypair(), k2 = keypair()
+  const one = await x.svc.addDevice(s.id, { name: 'phone', publicKey: k1.pub, privateKey: k1.priv }, 'a')
+  assert.match(one.config, /AllowedIPs = 100\.64\.10\.0\/24, 192\.0\.2\.30\/32\n/)
+  const two = await x.svc.addDevice(s.id, { name: 'laptop', publicKey: k2.pub, privateKey: k2.priv, reach: 'home' }, 'a')
+  assert.match(two.config, /AllowedIPs = 100\.64\.10\.0\/24, 192\.0\.2\.0\/24\n/)
+  // Server side, each peer is still only its own address: this is the client's config, not a node's.
+  assert.deepEqual(two.peer.allowedIps, [two.peer.address])
 })

@@ -41,6 +41,8 @@ demo() {
   ui_table_top "Ready to install"; ui_table_row "Container" "160  hyperprox  on pve1"; ui_table_bottom
   ui_box_top "" "$UI_CW" "$C_OK"; ui_card_line "✓  HyperProx is running" "" "total 1m 02s"; ui_box_bottom "$UI_CW"
 }
+two_steps() { false; echo SHOULD-NOT-RUN; }
+errexit() { set -e; ui_try ui_run "Two steps" two_steps; echo "rc=$UI_RC"; }
 spinner_gone() { ui_run "Job" sleep 0.5; if [ -z "$(jobs -pr)" ]; then echo GONE; else echo LEFT; fi; }
 EOF
 
@@ -61,6 +63,9 @@ check "NO_COLOR on a terminal: plain"                '! grep -q $'"'"'\e\['"'"' 
 # shellcheck disable=SC2034  # read by the check below, inside the string eval runs
 out="$(env -i PATH="$PATH" TERM=xterm-256color LANG=C.UTF-8 COLUMNS=60 script -qec "bash ${tmp}/run.sh demo" /dev/null 2>&1)"
 check "a terminal under 72 columns: plain"           'grep -q "^\[step 1/10\] Docker" <<< "$(tr -d "\r" <<< "$out")"'
+# shellcheck disable=SC2034  # read by the check below, inside the string eval runs
+out="$(plain errexit)"
+check "a job stops at its first failing command (set -e holds)" '! grep -q SHOULD-NOT-RUN <<< "$out" && grep -q "^rc=1$" <<< "$out"'
 check "the spinner process ends with its command"    '[[ "$(fancy spinner_gone | tr -d "\r" | tail -1)" == *GONE ]]'
 
 exit "${fail}"

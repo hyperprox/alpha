@@ -55,6 +55,11 @@ export interface WgDeps {
   /** The router: reads through the MikroTik plug-in, writes only with the limited login. Null: no router. */
   router?: () => Promise<RouterApi | null>
   now?:    () => number
+  /**
+   * HyperProx's own LAN address and its network (e.g. 192.0.2.30 in 192.0.2.0/24). A phone's default AllowedIPs
+   * are the tunnel network plus HyperProx's address only; "the whole home network" adds the network instead.
+   */
+  lan?:    () => { address: string; network: string } | null
 }
 
 const ROTATION_KEEP_MS = 7 * 86400_000
@@ -154,16 +159,31 @@ export class WireguardService {
     return { ...(await this.server(server.id)), log: job.log }
   }
 
-  /** Record a server the Catalogue recipe set up (its key was made in the container; only the public half is read). */
-  async adoptServer(o: { machineId: string; iface?: string; address: string; endpoint: string }, by: string): Promise<WgServer> {
+  /**
+   * Record a server the Catalogue recipe set up (its key was made in the container; only the public half is read).
+   * The address passes the same checks as a server HyperProx makes (checkSpec, and no overlap with the cluster's
+   * networks). With `expect` (what the installer saw made), the interface must report that key, that port and
+   * that address, or nothing is recorded.
+   */
+  async adoptServer(o: { machineId: string; iface?: string; address: string; endpoint: string; expect?: { publicKey: string; listenPort: number } }, by: string): Promise<WgServer> {
     const m = await this.machine(o.machineId)
+    if (m.kind === 'node') throw new WgInputError('A WireGuard server runs in a container or VM, never on a Proxmox node.')
     const iface = o.iface ?? 'hp-wg0'
     if (!IFACE_RE.test(iface)) throw new WgInputError('The interface name must look like hp-wg0')
+    const bad = checkSpec({ iface, address: o.address, listenPort: o.expect?.listenPort ?? 51820, peers: [] })
+      ?? checkAllowedIps([o.address], { node: false, clusterNets: await this.d.remote.clusterNetworksFor(m) })
+    if (bad) throw new WgInputError(bad)
     const job = this.job('adopt server', by)
     const st = await this.d.remote.run(job, m, wgStatusScript(iface), { timeoutMs: 60_000 })
     const publicKey = parsePublicKey(st.output)
     const port = Number(/^HP_WG_PORT=(\d+)$/m.exec(st.output)?.[1])
     if (!publicKey || !port) throw new WgInputError(`${iface} is not up on ${m.name}`)
+    const addr = /^HP_WG_ADDR=(\S+)$/m.exec(st.output)?.[1]
+    if (o.expect) {
+      if (publicKey !== o.expect.publicKey) throw new WgInputError(`${iface} on ${m.name} reports another public key than the one recorded when it was made; not adopted`)
+      if (port !== o.expect.listenPort) throw new WgInputError(`${iface} on ${m.name} listens on port ${port}, not ${o.expect.listenPort}; not adopted`)
+      if (addr !== o.address) throw new WgInputError(`${iface} on ${m.name} has the address ${addr ?? 'none'}, not ${o.address}; not adopted`)
+    }
     const server = await this.d.store.addServer({ machineId: m.id, iface, listenPort: port, address: o.address, endpoint: o.endpoint, publicKey, keyBackedUp: false })
     await this.d.store.audit('wireguard.server.adopt', m.id, { by, iface })
     return server
@@ -201,10 +221,14 @@ export class WireguardService {
    * Add a phone or laptop to a server. Its keypair and config go into one vault item; the config is returned
    * once, for the QR code or download.
    */
-  async addDevice(serverId: string, o: { name: string; allowedIps?: string[]; keepalive?: number; dns?: string } & ClientKeys, by: string): Promise<{ peer: WgPeer; config: string }> {
+  async addDevice(serverId: string, o: { name: string; allowedIps?: string[]; keepalive?: number; dns?: string; reach?: 'hyperprox' | 'home' } & ClientKeys, by: string): Promise<{ peer: WgPeer; config: string }> {
     if (!NAME_RE.test(o.name ?? '')) throw new WgInputError('Give the peer a name (letters, numbers, spaces, dots, dashes)')
     const s = await this.server(serverId)
-    const clientAllowed = o.allowedIps?.length ? o.allowedIps : [s.address.replace(/\.\d+\//, '.0/')]
+    // By default a phone reaches the tunnel and HyperProx itself; "home" adds HyperProx's whole LAN instead.
+    const tunnel = s.address.replace(/\.\d+\//, '.0/')
+    const lan = this.d.lan?.() ?? null
+    const clientAllowed = o.allowedIps?.length ? o.allowedIps
+      : lan ? [tunnel, o.reach === 'home' ? lan.network : `${lan.address}/32`] : [tunnel]
     if (!clientAllowed.every(validCidr)) throw new WgInputError('Allowed IPs must be addresses with prefixes')
     if (o.dns && !/^[0-9A-Fa-f.:, ]{2,100}$/.test(o.dns)) throw new WgInputError('DNS must be one or more addresses')
     const job = this.job('add device', by)

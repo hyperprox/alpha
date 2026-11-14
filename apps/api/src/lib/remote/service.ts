@@ -205,6 +205,8 @@ function need(p: RemoteProvider | null): RemoteProvider {
   return p
 }
 const MAX_MACHINES = 100
+/** How long a record's own last check may stand in for a probe (no provider key, nothing probed). */
+const REC_FRESH_MS = 24 * 3600_000
 const NB_GROUP_RE = /^[A-Za-z0-9 _.-]{1,64}$/
 /** A marker in the known-device table: the provider has been looked at once, so what is new from now on is announced. */
 const SEEDED = '__seeded__'
@@ -477,10 +479,15 @@ export class RemoteAccessService {
           cells[id] = dc?.installed ? detectedCell(id, dc, at!) : { ...emptyCell(windows ? 'manual' : 'not-installed'), detected: dc, detectedText: dc ? 'not installed' : null, checkedAt: at }
           continue
         }
-        // Without the provider's list (no key), the machine's own report decides: probed now, or else what the
-        // record kept from its last check (an install HyperProx adopted, such as the installer's own Tailscale).
+        // Without the provider's list (no key), the machine's own report decides. Only when nothing was probed and
+        // the guest is running does the record's own last check stand in (an install HyperProx adopted, such as the
+        // installer's Tailscale), with that check's time; older than a day, it is only "last known".
+        const fromRec = !dev && !list && dc == null && !!rec && rec.connected != null && m.running && !!rec.checkedAt
+        const recAge = fromRec ? this.now() - new Date(rec!.checkedAt!).getTime() : Infinity
+        const recFresh = fromRec && recAge >= 0 && recAge <= REC_FRESH_MS
         const state: CellState = dev ? (dev.online ? 'connected' : 'offline') : list ? 'missing' : dc?.installed ? detectedState(dc)
-          : rec?.connected === true ? 'connected' : rec?.connected === false ? 'offline' : 'unknown'
+          : recFresh ? (rec!.connected ? 'connected' : 'offline') : 'unknown'
+        const recText = fromRec ? `${recFresh ? 'last checked' : 'last known, over a day ago'}: ${rec!.connected ? 'connected' : 'not connected'}` : null
         cells[id] = {
           state, managed: !!rec,
           ip: dev?.addresses[0] ?? rec?.address ?? dc?.ip ?? null,
@@ -497,7 +504,8 @@ export class RemoteAccessService {
           tags: dev?.tags ?? [],
           prefs: rec?.prefs ?? null,
           loginPending: this.loginFor(m.id, id) !== null,
-          detected: dc, detectedText: dc ? describeDetected(id, dc) : null, checkedAt: at,
+          detected: dc, detectedText: dc ? describeDetected(id, dc) : recText,
+          checkedAt: at ?? (fromRec ? new Date(rec!.checkedAt!).toISOString() : null),
         }
       }
       return { ...m, cells, self: m.id === this.selfMachineId() || !!probed?.self }

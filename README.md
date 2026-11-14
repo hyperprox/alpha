@@ -153,7 +153,8 @@ Then it asks, in this order:
      paste. The container keeps its own DNS settings (Tailscale's DNS is not switched on in it).
    - **WireGuard**: a small container of its own runs the server. It asks for the tunnel network (the one
      offered does not overlap your network or the cluster's) and the address phones connect to. Forward the
-     UDP port it names on your router to that container.
+     UDP port it names on your router to that container. A phone added later reaches HyperProx through it;
+     tick "Reach my whole home network" when you add it to reach everything else at home too.
    - **Not now** (the default): add either later on the VPN page.
 
    Either way it shows up on HyperProx's VPN page after your first sign-in, as an entry HyperProx manages.
@@ -188,7 +189,7 @@ Then it does the work:
   checks them over the network from the node you ran it on: each exporter answers, and power reads above
   zero.
 - It installs HyperProx in the container, then prints the address (and the Tailscale address, if you chose
-  it), where it saved the root password (a root-only file on the node), and what was done, skipped or failed
+  it), where it saved the root password (`/root/hyperprox-<ID>.txt` on the node, root only), and what was done, skipped or failed
   on your nodes, with the reason for each.
 - Remote access never changes a Proxmox node: Tailscale goes into HyperProx's container, WireGuard into its
   own. WireGuard needs the `wireguard` kernel module loaded on the node; if it is not, the installer says so
@@ -234,7 +235,7 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 | `--ai`, `--no-ai` | | Answer yes or no to a local AI assistant |
 | `--igpu`, `--no-igpu` | | Answer yes or no to letting containers use the nodes' built-in graphics |
 | `--vpn KIND` | asked; `none` with `-y` | Remote access: `tailscale`, `wireguard` or `none` |
-| `--tailscale-authkey KEY` | | Join Tailscale without a browser sign-in, for unattended installs. Better: set `TS_AUTHKEY` in the environment, which keeps the key off the command line. Never printed or written to a log |
+| `--tailscale-authkey file:PATH` | | Join Tailscale without a browser sign-in, for unattended installs, with the auth key in that file. Or set `TS_AUTHKEY` in the environment. A key typed on the command line is refused (it would show in the process list). Never printed or written to a log |
 | `--wg-subnet CIDR` | a free one, such as `10.99.0.1/24` | WireGuard tunnel network |
 | `--wg-endpoint HOST` | the VPN container's LAN address | Public address or DNS name phones connect to (change it later on the VPN page) |
 | `--dry-run` | | Look and ask, then show what would be done; change nothing |

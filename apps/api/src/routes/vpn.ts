@@ -10,6 +10,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
 import { execFile } from 'node:child_process'
+import { networkInterfaces } from 'node:os'
 import { isUnlocked, onUnlock } from '../lib/vault/state'
 import { getProviderCredentials, setCredentials } from '../lib/credentials'
 import { pluginAddress, pluginRead } from '../lib/plugin-host'
@@ -29,6 +30,22 @@ export interface VpnRouteDeps {
   service?: WireguardService; sweep?: boolean
   /** What the installer set up (lib/vpn/install-handoff.ts). Default: the real stores, taken over on unlock. */
   handoff?: InstallHandoffDeps | null
+}
+
+/** HyperProx's own LAN address and network: the first IPv4 interface that is not loopback, Tailscale or Docker. */
+export function hyperproxLan(): { address: string; network: string } | null {
+  for (const [name, list] of Object.entries(networkInterfaces())) {
+    if (/^(lo|tailscale|docker|br-|veth|wg|hp-wg)/.test(name)) continue
+    for (const a of list ?? []) {
+      if (a.family !== 'IPv4' || a.internal || !a.cidr) continue
+      const [ip, bits] = a.cidr.split('/')
+      const n = Number(bits)
+      const int = ip.split('.').reduce((x, o) => x * 256 + Number(o), 0)
+      const base = n === 0 ? 0 : int - (int % 2 ** (32 - n))
+      return { address: a.address, network: `${[24, 16, 8, 0].map(s => Math.floor(base / 2 ** s) % 256).join('.')}/${n}` }
+    }
+  }
+  return null
 }
 
 /** This container's own Tailscale client, read with remote access's own status script. */
@@ -93,7 +110,7 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
         store: remoteStore, exec: productionRemoteExecutor(livePve()),
         provider: id => providerFromVault(id), providerSettings: id => providerSettingsFromVault(id), log: m => fastify.log.info(m),
       })
-      const wg = new WireguardService({ remote, exec: productionRemoteExecutor(livePve()), store: wgStore, vault: vaultWg, router: productionRouter })
+      const wg = new WireguardService({ remote, exec: productionRemoteExecutor(livePve()), store: wgStore, vault: vaultWg, router: productionRouter, lan: hyperproxLan })
       if (deps.handoff === undefined) {
         handoff = { wg: { listServers: () => wgStore.listServers(), adoptServer: (o, by) => wg.adoptServer(o, by) },
           remote: remoteStore, tailscaleStatus: localTailscaleStatus, log: m => fastify.log.info(m) }
@@ -147,7 +164,7 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
       try {
         const b: any = req.body ?? {}
         noStore(reply)
-        return reply.status(201).send(await service.addDevice(id(req.params.id), { name: b.name, allowedIps: b.allowedIps, keepalive: b.keepalive, dns: b.dns, publicKey: b.publicKey, privateKey: b.privateKey, keygen: b.keygen }, by(req)))
+        return reply.status(201).send(await service.addDevice(id(req.params.id), { name: b.name, allowedIps: b.allowedIps, keepalive: b.keepalive, dns: b.dns, reach: b.reach === 'home' ? 'home' : 'hyperprox', publicKey: b.publicKey, privateKey: b.privateKey, keygen: b.keygen }, by(req)))
       } catch (e) { return sendError(reply, e) }
     })
     fastify.patch<{ Params: { id: string }; Body: any }>('/wg/peers/:id', async (req, reply) => {

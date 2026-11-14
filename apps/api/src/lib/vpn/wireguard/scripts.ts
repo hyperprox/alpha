@@ -104,6 +104,7 @@ export function wgStatusScript(i: string): string {
     `if ! ip link show ${n} >/dev/null 2>&1; then echo HP_WG_DOWN; else`,
     `  echo "HP_WG_PUB=$(wg show ${n} public-key)"`,
     `  echo "HP_WG_PORT=$(wg show ${n} listen-port)"`,
+    `  echo "HP_WG_ADDR=$(ip -4 -o addr show dev ${n} | awk '{ print $4; exit }')"`,
     '  echo HP_WG_DUMP_BEGIN',
     `  wg show ${n} dump | tail -n +2 | awk '{ print $1, $3, $4, $5, $6, $7, $8 }'`,
     '  echo HP_WG_DUMP_END',

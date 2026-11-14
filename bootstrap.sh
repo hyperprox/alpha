@@ -41,7 +41,7 @@ REF=""             # a tag, branch or commit to install instead of main (--ref)
 DNS=""             ; DNS_FROM=""        ; DNS_NOTE=""      # the container's nameservers (--dns, or chosen below)
 # Remote access: VPN is tailscale, wireguard or none (--vpn, or asked). The Tailscale auth key comes from
 # TS_AUTHKEY (preferred: it stays off the command line) or --tailscale-authkey, and is never printed.
-VPN=""             ; TS_KEY="${TS_AUTHKEY:-}"; unset TS_AUTHKEY
+VPN=""             ; TS_KEY="${TS_AUTHKEY:-}"; TS_KEY_ARG=""; unset TS_AUTHKEY
 WG_SUBNET=""       ; WG_SUBNET_GIVEN=0  ; WG_ENDPOINT=""   ; WG_PORT=51820
 TS_IP=""           ; TS_DNS=""          ; TS_URL=""        ; TS_PID=""
 WG_CTID=""         ; WG_CT_TRY=0        ; WG_PUB=""        ; WG_IP=""        ; WG_EP=""     ; WG_LINE=""   ; WG_HOSTNAME=""
@@ -231,13 +231,17 @@ ui_abort() {
   ui_spin_stop
 }
 
-# ui_wait MSG CMD...: a spinner on a terminal, nothing in plain output; the caller reports the outcome.
+# ui_wait MSG CMD...: a spinner on a terminal, nothing in plain output; the caller reports the outcome. The command
+# runs with errexit on (a function stops at its first failing command), as long as ui_wait is not itself called
+# inside `||`, `&&`, `!` or `if`: bash ignores set -e there, even in subshells. Call it, and ui_run, through
+# ui_try, which keeps them out of such a context and leaves the status in UI_RC.
 ui_wait() {
-  local msg="$1" rc=0; shift
-  "$@" < /dev/null >> "${UI_OUT:-$UI_LOG}" 2>&1 &
+  local msg="$1" rc=0 e=0; shift
+  case $- in *e*) e=1;; esac
+  ( set -e; "$@" ) < /dev/null >> "${UI_OUT:-$UI_LOG}" 2>&1 &
   UI_RUN_PID=$!
   ui_spin_start "$msg" "$UI_RUN_PID"
-  wait "$UI_RUN_PID" || rc=$?
+  set +e; wait "$UI_RUN_PID"; rc=$?; [ "$e" -eq 0 ] || set -e
   UI_RUN_PID=""
   ui_spin_stop
   [ "${UI_NEXT[0]:-}" != "$msg" ] || UI_NEXT=("${UI_NEXT[@]:1}")
@@ -246,9 +250,10 @@ ui_wait() {
 # ui_run MSG CMD...: as ui_wait, then a ✓ line with the time taken, or a ✗ line and the last 20 lines of
 # the command's output, so a failure is never hidden behind the spinner.
 ui_run() {
-  local msg="$1" rc=0 t0=$SECONDS out="${UI_OUT:-$UI_LOG}"; shift
+  local msg="$1" rc=0 e=0 t0=$SECONDS out="${UI_OUT:-$UI_LOG}"; shift
+  case $- in *e*) e=1;; esac
   [ "$UI_FANCY" -eq 1 ] || printf '[ .. ] %s\n' "$msg"
-  ui_wait "$msg" "$@" || rc=$?
+  set +e; ui_wait "$msg" "$@"; rc=$?; [ "$e" -eq 0 ] || set -e
   if [ "$rc" -eq 0 ]; then ui_ok "$msg" "$(ui_secs $(( SECONDS - t0 )))"; return 0; fi
   ui_bad "$msg (failed after $(ui_secs $(( SECONDS - t0 ))), exit $rc)"
   if [ -s "$out" ] && [ "$out" != /dev/null ]; then
@@ -258,6 +263,11 @@ ui_run() {
   fi
   return "$rc"
 }
+
+# ui_try CMD...: CMD (ui_run or ui_wait) called outside any `||`, `&&`, `!` or `if`, so the job's set -e holds.
+# The status lands in UI_RC; ui_try itself always succeeds. Use: ui_try ui_run "msg" cmd; [ "$UI_RC" -eq 0 ] || …
+UI_RC=0
+ui_try() { local e=0; case $- in *e*) e=1;; esac; set +e; "$@"; UI_RC=$?; [ "$e" -eq 0 ] || set -e; return 0; }
 
 # ── Questions. ui_ask_box TITLE QUESTION [EXPLANATION]: a rounded box (plain: the question, the explanation
 #    indented below). ui_prompt LABEL DEFAULT: "› ID [160]: " under it (plain: "[160] ").
@@ -412,8 +422,8 @@ Usage: bootstrap.sh [options]
   --vpn KIND          Remote access: tailscale, wireguard or none (default: asked at a terminal; else none).
                       Tailscale goes in HyperProx's own container; WireGuard gets a small container of
                       its own. Either shows on HyperProx's VPN page after the first sign-in.
-  --tailscale-authkey KEY  Join Tailscale with this key, unattended (or file:/path). Better: set TS_AUTHKEY in
-                      the environment, which keeps the key off the command line. It is never printed.
+  --tailscale-authkey file:PATH  Join Tailscale unattended with the auth key in that file. Or set TS_AUTHKEY in
+                      the environment. A key typed on the command line is refused. It is never printed.
   --wg-subnet CIDR    WireGuard tunnel network (default: a free one, e.g. 10.99.0.1/24)
   --wg-endpoint HOST  Public address or DNS name phones connect to (default: the VPN container's LAN address)
   --ref REF           Install this release tag, branch or commit instead of main (e.g. v0.3.0);
@@ -600,7 +610,13 @@ ask_network() {
   done
   gw_def="$GATEWAY"; [ "$NET" = "${CONV_IP:-}" ] && gw_def="$CONV_GW"
   [ -n "$gw_def" ] || gw_def="$(ip route show default 2>/dev/null | awk '/via/ {for (i = 1; i < NF; i++) if ($i == "via") {print $(i+1); exit}}')"
-  ask_value GATEWAY "$gw_def" "Gateway" "Which gateway should ${NET} use?" "Usually your router's address on that network." check_gw Gateway
+  GW_NET="$NET"
+  ask_value GATEWAY "$gw_def" "Gateway" "Which gateway should ${NET} use?" "Usually your router's address on that network." check_gw_in Gateway
+}
+GW_NET=""
+check_gw_in() {   # a gateway inside the chosen network (GW_NET)
+  check_gw "$1" || return 1
+  cidr_overlaps "$GW_NET" "$1/32" || { echo "$1 is not inside ${GW_NET}; the gateway must be on that network."; return 1; }
 }
 bad_answer() { if [ "$UI_FANCY" -eq 1 ]; then ui_bad "$1"; else warn "$1"; fi; }
 
@@ -621,11 +637,14 @@ cidr_overlaps() {
   [ $(( ai & mask )) -eq $(( bi & mask )) ]
 }
 # The IPv4 networks in use here: this node's own, the cluster's nodes, every guest config's static addresses,
-# and Tailscale's 100.64.0.0/10. A WireGuard tunnel network must overlap none of them (the same rule as
-# checkAllowedIps in lib/vpn/wireguard/config.ts, which the API applies again when it adopts the server).
+# every route this node has (connected and static), and Tailscale's 100.64.0.0/10. A WireGuard tunnel network must
+# overlap none of them. This is checked here, as you answer; then by the installed copy's checkSpec and
+# checkAllowedIps against these networks (wg_check_rules); and once more by the API when it adopts the server,
+# against the cluster's own networks read from a node (corosync, Ceph): an overlap there leaves it pending, refused.
 used_networks() {
   local n x
   { ip -4 -o addr show 2>/dev/null | awk '{print $4}'
+    ip -4 route show 2>/dev/null | awk '$1 ~ /^[0-9.]+\/[0-9]+$/ {print $1} $1 ~ /^[0-9.]+$/ {print $1 "/32"}'
     for n in "${NODES[@]}"; do x="$(node_ip "$n")"; [[ "$x" =~ $IPV4_RE ]] && echo "$x/32"; done
     cat "$PVE_ETC"/nodes/*/lxc/*.conf "$PVE_ETC"/nodes/*/qemu-server/*.conf 2>/dev/null | grep -oE 'ip=[0-9.]+/[0-9]+' | cut -d= -f2
     echo 100.64.0.0/10
@@ -635,6 +654,10 @@ check_wg_subnet() {
   local net
   [[ "${1%%/*}" =~ $IPV4_RE ]] && [[ "$1" =~ /(1[6-9]|2[0-9]|30)$ ]] \
     || { echo "$1 is not a tunnel network with its prefix (/16 to /30), e.g. 10.99.0.1/24."; return 1; }
+  local n="${1#*/}" host size
+  size=$(( 1 << (32 - n) )); host=$(( $(ip2int "${1%/*}") % size ))
+  [ "$host" -ne 0 ] && [ "$host" -ne $(( size - 1 )) ] \
+    || { echo "${1%/*} is the network's $([ "$host" -eq 0 ] && echo network || echo broadcast) address; give the server a host address, e.g. 10.99.0.1/24."; return 1; }
   while IFS= read -r net; do
     cidr_overlaps "$1" "$net" && { echo "$1 overlaps $net, which is already in use here: LAN and cluster traffic must stay off the tunnel."; return 1; }
   done < <(used_networks)
@@ -696,8 +719,13 @@ ask_vpn() {
 #    --accept-dns=false: the container keeps its own resolver, so the MagicDNS checks (choose_dns here,
 #    resolv_uses_magicdns in install.sh) see what they saw before. An auth key goes in through a root-only
 #    file in the container that is removed straight after: never on a command line, never in a log.
-ts_install() {
-  pct exec "$CTID" -- bash -c 'command -v tailscale >/dev/null 2>&1 || curl -fsSL https://tailscale.com/install.sh | sh'
+ts_install() {   # Tailscale's own install script, downloaded first (a failed download is a failure, not an empty script)
+  pct exec "$CTID" -- bash -c 'set -eo pipefail
+    command -v tailscale >/dev/null 2>&1 && exit 0
+    curl -fsSL https://tailscale.com/install.sh -o /tmp/hpx-tailscale-install.sh
+    sh /tmp/hpx-tailscale-install.sh
+    rm -f /tmp/hpx-tailscale-install.sh
+    command -v tailscale >/dev/null 2>&1'
 }
 ts_up_key() {
   printf '%s' "$TS_KEY" | pct exec "$CTID" -- bash -c 'umask 077; cat > /run/hpx-ts.key'
@@ -715,9 +743,12 @@ ts_wait_ip() {   # until the container has a tailnet address (someone signed in)
 setup_tailscale() {
   local out url st t0
   TS_IP=""; TS_DNS=""; TS_URL=""
-  ui_run "Installing Tailscale in container $CTID" ts_install || { warn "Tailscale could not be installed; add it later on the VPN page."; return 0; }
+  # Nothing here may stop the install: every failure warns, says where to finish it, and returns.
+  ui_try ui_run "Installing Tailscale in container $CTID" ts_install
+  [ "$UI_RC" -eq 0 ] || { warn "Tailscale could not be installed; add it later on the VPN page."; return 0; }
   if [ -n "$TS_KEY" ]; then
-    ui_run "Joining your tailnet with the auth key" ts_up_key || { warn "Tailscale did not accept the auth key; add it later on the VPN page."; return 0; }
+    ui_try ui_run "Joining your tailnet with the auth key" ts_up_key
+    [ "$UI_RC" -eq 0 ] || { warn "Tailscale did not accept the auth key; add it later on the VPN page."; return 0; }
   else
     out="$(mktemp)"; TMP_PATHS+=("$out")
     pct exec "$CTID" -- tailscale up --hostname="${HOSTNAME%%.*}" --accept-dns=false --qr > "$out" 2>&1 &
@@ -729,6 +760,13 @@ setup_tailscale() {
       kill -0 "$TS_PID" 2>/dev/null || break
       sleep 1
     done
+    if [ -z "$url" ] && ! pct exec "$CTID" -- tailscale ip -4 >/dev/null 2>&1; then
+      # It stopped (or hung) without a sign-in link and is not on a tailnet: say why, and go on without waiting.
+      ui_kill_tree "$TS_PID"; TS_PID=""
+      warn "Tailscale did not give a sign-in link; add it later on the VPN page. Its last words:"
+      tail -n 5 "$out" | sed $'s/\e\\[[0-9;?]*[A-Za-z]//g; s/^/      /' || true
+      return 0
+    fi
     if [ -n "$url" ]; then
       sleep 1   # the QR code follows the link
       if [ "$UI_FANCY" -eq 1 ]; then printf '    %sOpen%s  %s%s%s   or scan:\n' "$C_BOLD" "$C_OFF" "$C_ACC" "$url" "$C_OFF"
@@ -736,7 +774,8 @@ setup_tailscale() {
       grep -E '[█▀▄]' "$out" | sed 's/^/      /' || true
     fi
     t0=$SECONDS
-    if ! ui_wait "Waiting for you to sign in to Tailscale…" ts_wait_ip; then
+    ui_try ui_wait "Waiting for you to sign in to Tailscale…" ts_wait_ip
+    if [ "$UI_RC" -ne 0 ]; then
       ui_kill_tree "$TS_PID"; TS_PID=""
       warn "Nobody signed in to Tailscale within 15 minutes; finish it later on the VPN page."
       return 0
@@ -754,8 +793,10 @@ setup_tailscale() {
 
 # ── WireGuard, in a small unprivileged container of its own. Created here (with this run's mark, so the undo
 #    removes it); set up after HyperProx is installed, by the Catalogue recipe's own script
-#    (WIREGUARD_SERVER_RECIPE in apps/api/src/lib/vpn/wireguard/recipe.ts, read from the installed copy), which
-#    makes the server key inside that container: it never leaves it. No client key is made here.
+#    (WIREGUARD_SERVER_RECIPE in apps/api/src/lib/vpn/wireguard/recipe.ts, read from the installed copy). It makes
+#    the server key inside that container (only the public half is printed), brings hp-wg0 up, and masquerades the
+#    tunnel network out of the container's LAN interface so phones reach HyperProx. No client key is made here:
+#    phones are added on the VPN page once HyperProx has adopted the server from the marker.
 create_wg_ct() {
   pct create "$WG_CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
     --arch "$ARCH" --ostype debian --description "$RUN_MARK" --hostname "$WG_HOSTNAME" \
@@ -782,7 +823,8 @@ wait_dns_in() {   # CTID: until the container can resolve names, at most two min
   done
   return 1
 }
-# The tunnel network checked again by the API's own rules (checkSpec, checkAllowedIps), from the installed copy.
+# The tunnel network checked by the API's own rules (checkSpec, checkAllowedIps), run from the installed copy,
+# against this node's networks (used_networks). The cluster-wide check happens at adoption (see above).
 wg_check_rules() {
   local nets
   nets="$(used_networks | tr '\n' ' ')"
@@ -808,16 +850,19 @@ setup_wireguard() {
   if ! why="$(wg_check_rules 2>&1)"; then
     warn "HyperProx's WireGuard rules refuse ${WG_SUBNET}: ${why}"; wg_give_up; return 0
   fi
-  if ! UI_OUT="$out" ui_run "Setting up WireGuard in container $WG_CTID (recipe)" wg_recipe; then
-    wg_give_up; return 0
-  fi
+  UI_OUT="$out" ui_try ui_run "Setting up WireGuard in container $WG_CTID (recipe)" wg_recipe
+  if [ "$UI_RC" -ne 0 ]; then wg_give_up; return 0; fi
   WG_PUB="$(sed -n 's/^HP_WG_PUB=//p' "$out" | tail -1)"
   [[ "$WG_PUB" =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]] || { warn "The WireGuard container did not report its public key."; wg_give_up; return 0; }
-  WG_IP="$(pct exec "$WG_CTID" -- hostname -I 2>/dev/null | awk '{print $1}')"
+  WG_IP="$(first_ipv4 "$WG_CTID")"
   if [ "${WG_ENDPOINT:-lan}" = lan ]; then WG_EP="${WG_IP}:${WG_PORT}"; else WG_EP="${WG_ENDPOINT}:${WG_PORT}"; fi
-  WG_LINE="UDP ${WG_PORT} → ${WG_IP} (forward it on your router)"
+  WG_LINE="forward UDP ${WG_PORT} to ${WG_IP} on your router; add your phone on the VPN page"
   ui_ok "WireGuard server up in container $WG_CTID · tunnel $WG_SUBNET"
-  note "On your router, forward UDP ${WG_PORT} to ${WG_IP}. Then add your phone on the VPN page: it shows a QR code."
+  note "On your router, forward UDP ${WG_PORT} to ${WG_IP}. After your first sign-in, add your phone on the VPN page: it shows a QR code."
+  note "The phone then reaches HyperProx (and, if you tick it there, your whole home network) through that container."
+}
+first_ipv4() {   # CTID: the container's first IPv4 address (hostname -I can list an IPv6 one first)
+  pct exec "$1" -- hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true
 }
 wg_give_up() {
   warn "WireGuard was not set up; add it later on the VPN page."
@@ -840,6 +885,14 @@ vpn_marker() {
   printf '{"version":1,"source":"bootstrap","entries":[%s]}\n' "${e[*]}" > "$1"
 }
 
+# save_password FILE: the root password into FILE, mode 600, owned by root; never through a link.
+save_password() {
+  [ ! -L "$1" ] || { warn "$1 is a symbolic link; the root password is not written there."; return 1; }
+  install -m 600 -o root -g root /dev/null "$1" 2>/dev/null || return 1
+  [ ! -L "$1" ] || return 1
+  printf 'HyperProx container %s (%s)\nroot password: %s\n' "$CTID" "$HOSTNAME" "$PASSWORD" > "$1" || return 1
+  chmod 600 "$1"
+}
 vpn_words() {   # the plan's VPN line
   case "$VPN" in
     tailscale) if [ -n "$TS_KEY" ]; then echo "Tailscale in this container, joined with the auth key given"
@@ -1256,7 +1309,7 @@ main() {
       --ref) REF="${2:-}"; shift 2;;
       --dns) DNS="${2:-}"; DNS_FROM="--dns"; shift 2;;
       --vpn) VPN="${2:-}"; shift 2;;
-      --tailscale-authkey) TS_KEY="${2:-}"; shift 2;;
+      --tailscale-authkey) TS_KEY_ARG="${2:-}"; shift 2;;
       --wg-subnet) WG_SUBNET="${2:-}"; WG_SUBNET_GIVEN=1; shift 2;;
       --wg-endpoint) WG_ENDPOINT="${2:-}"; shift 2;;
       -y|--yes) ASSUME_YES=1; shift;;
@@ -1280,9 +1333,11 @@ main() {
     dns_list_ok "$DNS" || die "--dns must be one to three IPv4 or IPv6 addresses, separated by commas."
   fi
   case "$VPN" in ""|tailscale|wireguard|none) ;; *) die "--vpn must be tailscale, wireguard or none.";; esac
-  if [[ "$TS_KEY" == file:* ]]; then
-    [ -r "${TS_KEY#file:}" ] || die "--tailscale-authkey file: cannot read ${TS_KEY#file:}."
-    TS_KEY="$(tr -d '[:space:]' < "${TS_KEY#file:}")"
+  if [ -n "$TS_KEY_ARG" ]; then
+    # A key on the command line is in the process list and the shell history: only file:PATH is taken here.
+    [[ "$TS_KEY_ARG" == file:* ]] || die "--tailscale-authkey takes file:/path/to/key only, so the key stays off the command line. Or set TS_AUTHKEY=tskey-… in the environment."
+    [ -r "${TS_KEY_ARG#file:}" ] || die "--tailscale-authkey: cannot read ${TS_KEY_ARG#file:}."
+    TS_KEY="$(tr -d '[:space:]' < "${TS_KEY_ARG#file:}")"
   fi
   # Checked by shape only, and never echoed: a wrong key is reported without it.
   [ -z "$TS_KEY" ] || [[ "$TS_KEY" =~ ^tskey-[A-Za-z0-9_-]{8,200}$ ]] || die "The Tailscale auth key does not look like one (tskey-…)."
@@ -1347,8 +1402,10 @@ main() {
   #  3. Template — the newest Debian 13 built for this CPU. A template for
   #     another CPU is never used, even when it is the only one downloaded.
   # -------------------------------------------------------------------------
-  [ "$DRY_RUN" -eq 1 ] || ui_wait "Refreshing Proxmox's template list" pveam update \
-    || warn "Could not refresh the template list; using what is cached."
+  if [ "$DRY_RUN" -ne 1 ]; then
+    ui_try ui_wait "Refreshing Proxmox's template list" pveam update
+    [ "$UI_RC" -eq 0 ] || warn "Could not refresh the template list; using what is cached."
+  fi
   TPL_STORES=($(pvesm status -content vztmpl 2>/dev/null | awk 'NR>1 && $3=="active" {print $6, $1}' | sort -k1,1nr | awk '{print $2}'))
   [ "${#TPL_STORES[@]}" -gt 0 ] || die "No active storage on this node accepts container templates."
   AVAIL="$(pveam available --section system 2>/dev/null | debian_templates | for_arch "$ARCH")"
@@ -1395,7 +1452,7 @@ main() {
   for node in "${NODES[@]}"; do
     # The probe only reads (packages/hardware/node/probe.sh); its output lands in a file while the spinner turns.
     probe_out="$(mktemp)"; TMP_PATHS+=("$probe_out")
-    probe_rc=0; UI_OUT="$probe_out" ui_wait "Looking at $node" probe_node "$node" || probe_rc=$?
+    UI_OUT="$probe_out" ui_try ui_wait "Looking at $node" probe_node "$node"; probe_rc="$UI_RC"
     out="$(cat "$probe_out")"; rm -f "$probe_out"
     if [ "$probe_rc" -ne 0 ] || ! grep -q '^arch' <<< "$out"; then
       HW_OK[$node]=0
@@ -1633,7 +1690,8 @@ main() {
   if [ "$NEED_DOWNLOAD" -eq 1 ]; then
     note "This is the slow part, usually a minute or two."
     TPL_TRY=1
-    ui_run "Downloading $TEMPLATE" pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" || die "Template download failed."
+    ui_try ui_run "Downloading $TEMPLATE" pveam download "$TEMPLATE_STORAGE" "$TEMPLATE"
+    [ "$UI_RC" -eq 0 ] || die "Template download failed."
   fi
   TEMPLATE_PATH="$(template_path)"
   [ -n "$TEMPLATE_PATH" ] && [ -r "$TEMPLATE_PATH" ] && [ -s "$TEMPLATE_PATH" ] \
@@ -1660,7 +1718,8 @@ main() {
       --features "keyctl=1,nesting=1" \
       --onboot 1 --start 0
   }
-  if ! UI_OUT="$create_log" ui_wait "Creating container $CTID on $STORAGE" create_ct; then
+  UI_OUT="$create_log" ui_try ui_wait "Creating container $CTID on $STORAGE" create_ct
+  if [ "$UI_RC" -ne 0 ]; then
     create_out="$(cat "$create_log")"
     # Someone else's container with this ID: not ours to remove.
     grep -q 'already exists' <<< "$create_out" && CT_TRY=0
@@ -1680,30 +1739,38 @@ main() {
   # The root password goes in on stdin, so it is on no command line (and in no process list).
   printf 'root:%s\n' "$PASSWORD" | pct exec "$CTID" -- chpasswd \
     || warn "Could not set the root password; set it with: pct exec $CTID -- passwd"
-  ui_run "Waiting for the container's network" wait_dns_in "$CTID" || true
+  ui_try ui_run "Waiting for the container's network" wait_dns_in "$CTID"
   pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1 \
     || die "The container has no working DNS. Check the bridge and gateway, then re-run."
   CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}')"
   ok "Container is up at ${CT_IP:-unknown}"
-  ui_run "Preparing the container (apt: curl, certificates)" \
-    pct exec "$CTID" -- bash -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates" \
-    || die "Could not install curl inside the container."
+  ui_try ui_run "Preparing the container (apt: curl, certificates)" \
+    pct exec "$CTID" -- bash -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates"
+  [ "$UI_RC" -eq 0 ] || die "Could not install curl inside the container."
 
   # Remote access: Tailscale now, while you are here to sign in; WireGuard's container now (the undo covers it),
   # its server once HyperProx is installed (the recipe comes from the installed copy).
   [ "$VPN" != tailscale ] || setup_tailscale
+  # WireGuard is optional: anything that goes wrong with it removes its container again and goes on without it.
   if [ "$VPN" = wireguard ]; then
-    WG_HOSTNAME="${HOSTNAME%%.*}-wg"
-    WG_CTID="$(pick_wg_ctid)" || die "Could not find a free container ID for the WireGuard container."
-    wg_log="$(mktemp)"; TMP_PATHS+=("$wg_log")
-    WG_CT_TRY=1
-    if ! UI_OUT="$wg_log" ui_run "Creating the WireGuard container $WG_CTID" create_wg_ct; then
-      grep -q 'already exists' "$wg_log" && WG_CT_TRY=0
-      die "Could not create the WireGuard container."
+    # A host name label is at most 63 characters; "-wg" takes three of them.
+    WG_HOSTNAME="${HOSTNAME%%.*}"; WG_HOSTNAME="${WG_HOSTNAME:0:60}"; WG_HOSTNAME="${WG_HOSTNAME%-}-wg"
+    if ! WG_CTID="$(pick_wg_ctid)"; then
+      WG_CTID=""; warn "No free container ID for the WireGuard container."; wg_give_up
+    else
+      wg_log="$(mktemp)"; TMP_PATHS+=("$wg_log")
+      WG_CT_TRY=1
+      UI_OUT="$wg_log" ui_try ui_run "Creating the WireGuard container $WG_CTID" create_wg_ct
+      if [ "$UI_RC" -ne 0 ]; then
+        grep -q 'already exists' "$wg_log" && WG_CT_TRY=0
+        warn "Could not create the WireGuard container."; wg_give_up
+      elif ! pct start "$WG_CTID" >/dev/null 2>&1; then
+        warn "The WireGuard container failed to start."; wg_give_up
+      else
+        ui_try ui_run "Waiting for the WireGuard container's network" wait_dns_in "$WG_CTID"
+        [ "$UI_RC" -eq 0 ] || { warn "The WireGuard container has no working DNS."; wg_give_up; }
+      fi
     fi
-    pct start "$WG_CTID" >/dev/null || die "The WireGuard container failed to start."
-    ui_run "Waiting for the WireGuard container's network" wait_dns_in "$WG_CTID" \
-      || die "The WireGuard container has no working DNS. Check the bridge, then re-run."
   fi
 
   # -------------------------------------------------------------------------
@@ -1760,7 +1827,7 @@ main() {
   for p in "${PLAN[@]}"; do
     node="${p%%$'\t'*}"; step="${p#*$'\t'}"; label="$(step_label "$step")"
     step_out="$(mktemp)"; TMP_PATHS+=("$step_out")
-    UI_OUT="$step_out" ui_wait "$node — $label" run_node_step "$step" "$node" || true
+    UI_OUT="$step_out" ui_try ui_wait "$node — $label" run_node_step "$step" "$node"
     out="$(cat "$step_out")"; rm -f "$step_out"
     res="$(grep '^HPX-RESULT' <<< "$out" | tail -1)"
     if [ -z "$res" ]; then check failed "$label" "$node" "could not run the step there"; warn "$node — $label: could not run the step there"; continue; fi
@@ -1912,7 +1979,8 @@ PVEYML
         for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3001/health && break; sleep 2; done
         curl -fsS -o /dev/null -X POST -H "Content-Type: application/json" -H "X-Setup-Key: $k" --data-binary @- http://127.0.0.1:3001/api/setup/hold-secrets'
     }
-    if ui_wait "Waiting for the setup wizard, then handing it the GoDaddy key" hand_godaddy; then
+    ui_try ui_wait "Waiting for the setup wizard, then handing it the GoDaddy key" hand_godaddy
+    if [ "$UI_RC" -eq 0 ]; then
       ok "GoDaddy key held in memory until you create the owner account, then kept in the vault"
     else
       warn "Could not hand over the GoDaddy key; add it on the setup page or under Settings → Setup checklist"
@@ -1939,19 +2007,19 @@ PVEYML
   #  Done
   # -------------------------------------------------------------------------
   CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i !~ /^100\./) {print $i; exit}}')"
-  # The root password, kept where only root on this node reads it (the card names the file, not the password).
-  PW_FILE="${HOME:-/root}/hyperprox-${CTID}.txt"
-  if ! ( umask 077; printf 'HyperProx container %s (%s)\nroot password: %s\n' "$CTID" "$HOSTNAME" "$PASSWORD" > "$PW_FILE" ) 2>/dev/null; then PW_FILE=""; fi
+  # The root password, kept where only root on this node reads it; the summary names the file, not the password.
+  PW_FILE=""; save_password "${HPX_PW_DIR:-/root}/hyperprox-${CTID}.txt" && PW_FILE="${HPX_PW_DIR:-/root}/hyperprox-${CTID}.txt"
   if [ "$UI_FANCY" -eq 1 ]; then success_card; return 0; fi
   echo
   printf '  HyperProx is ready\n'
   echo
   echo "    Open       https://${CT_IP}/   (self-signed certificate: the browser warns once)"
   [ -z "$TS_URL" ] || echo "    Away       ${TS_URL}   (Tailscale)"
-  [ -z "$WG_LINE" ] || echo "    VPN        WireGuard: ${WG_LINE}; add your phone on the VPN page"
+  [ -z "$WG_LINE" ] || echo "    VPN        WireGuard: ${WG_LINE}"
   [ "$VPN" != none ] || echo "    VPN        add remote access later on the VPN page"
   echo "    Container  $CTID  (pct enter $CTID)"
-  [ -n "$PASSWORD" ] && echo "    Root pw    $PASSWORD${PW_FILE:+   (saved in $PW_FILE)}"
+  if [ -n "$PW_FILE" ]; then echo "    Root pw    saved in $PW_FILE (root only)"
+  else echo "    Root pw    $PASSWORD"; fi
   if [ "${#CHECKLIST[@]}" -gt 0 ]; then
     echo
     echo "    What was done on your nodes:"

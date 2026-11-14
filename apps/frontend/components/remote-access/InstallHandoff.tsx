@@ -54,7 +54,8 @@ export function WgServerHeading({ name, iface, address, endpoint, keyBackedUp, p
       {peers === 0 && (
         <p className="px-3 py-2 text-sm" style={{ color: 'var(--text-soft)' }} data-testid="add-first-phone">
           Ready. Add your phone: HyperProx makes its key in your browser, keeps it in the vault and shows a QR code to scan
-          in the WireGuard app. Remember to forward UDP {endpoint.split(':').pop()} on your router to this container.
+          in the WireGuard app. The phone then reaches HyperProx (or, if you tick it, your whole home network) through
+          this server. From outside, forward UDP {endpoint.split(':').pop()} on your router to this container.
         </p>
       )}
     </>

@@ -57,7 +57,8 @@ function cluster(nodes, opts = {}) {
   // iputils arping -D: exits non-zero when something replies. Some hosts drop pings but answer ARP.
   w('arping', `[ "$1" = -V ] && { echo "arping from iputils 20240905"; exit 0; }
 for a in "$@"; do t="$a"; done; ! grep -qxF "$t" ${root}/arpable 2>/dev/null`)
-  w('ip', 'case "$1" in link) exit 0;; *) exit 0;; esac')
+  fs.writeFileSync(path.join(root, 'routes'), (opts.routes ?? []).join('\n') + '\n')
+  w('ip', `[ "$*" = "-4 route show" ] && { cat ${root}/routes; exit 0; }; exit 0`)
   fs.writeFileSync(path.join(root, 'resources'), JSON.stringify((opts.resources ?? []).map(id => ({ id: `lxc/${id}`, type: 'lxc', vmid: id }))))
   w('pvesh', `case "$2" in
   /cluster/nextid) if [ "$3" = --vmid ]; then echo "$4"; else echo 900; fi;;
@@ -80,6 +81,7 @@ esac; exit 0`)
   create) ctrl_c() { kill -INT $PPID; p=$PPID; while [ "$p" -gt 1 ]; do
             if tr '\\0' ' ' < /proc/$p/cmdline | grep -q 'bootstrap.sh'; then kill -INT $p; fi
             p=$(awk '{print $4}' /proc/$p/stat); done; }
+          [ "$2" = "\${FAKE_CREATE_FAIL_ID:-}" ] && { echo "unable to create CT $2 - no space left" >&2; exit 1; }
           h=""; d=""; prev=""; for a in "$@"; do [ "$prev" = --hostname ] && h="$a"; [ "$prev" = --description ] && d="$a"; prev="$a"; done
           c="$HPX_PVE_ETC/lxc/$2.conf"
           # Another run got there first: its container, with the same hostname but its own mark.
@@ -92,6 +94,9 @@ esac; exit 0`)
   destroy) rm -f "$HPX_PVE_ETC/lxc/$2.conf"; exit 0;;
   exec) [ -t 0 ] || cat > /dev/null   # a command that reads stdin, as pct exec does
         # Tailscale in the container: joined at once, at a fixed address. WireGuard: the recipe prints the key.
+        [[ "$*" == *"hpx-tailscale-install"* ]] && [ -n "\${FAKE_TS_INSTALL_FAIL:-}" ] && { echo 'curl: (6) Could not resolve host' >&2; exit 6; }
+        [[ "$*" == *"tailscale up"* ]] && [ -n "\${FAKE_TS_NOLOGIN:-}" ] && { echo 'backend error: no route to the control server' >&2; exit 1; }
+        [[ "$*" == *"tailscale ip -4"* ]] && [ -n "\${FAKE_TS_NOLOGIN:-}" ] && exit 1
         [[ "$*" == *"tailscale ip -4"* ]] && { echo 100.101.102.103; exit 0; }
         [[ "$*" == *"tailscale status --json"* ]] && { echo '{"Self":{"DNSName":"hyperprox.example-tailnet.ts.net.","TailscaleIPs":["100.101.102.103"]}}'; exit 0; }
         [[ "$*" == *"WIREGUARD_SERVER_RECIPE"* ]] && { echo 'echo recipe'; exit 0; }
@@ -135,7 +140,7 @@ step="$(grep -m1 -oE '^# (Undo|node_exporter|Power|Intel GPU|NVIDIA GPU|AMD GPU|
 echo "$node $step" >> ${root}/steps.log
 printf 'HPX-RESULT\\tdone\\tset up (%s)\\n' "$step"`)
   fs.mkdirSync(path.join(root, 'sys/module/wireguard'), { recursive: true })
-  const env = extra => ({ PATH: `${bin}:/usr/bin:/bin`, HPX_SYSFS: path.join(root, 'sys'), HPX_PVE_ETC: path.join(root, 'pve'), HPX_RESOLV_CONF: path.join(root, 'resolv.conf'), HOME: root, TMPDIR: tmp, LANG: 'C', TERM: 'dumb', ...extra })
+  const env = extra => ({ PATH: `${bin}:/usr/bin:/bin`, HPX_PW_DIR: root, HPX_SYSFS: path.join(root, 'sys'), HPX_PVE_ETC: path.join(root, 'pve'), HPX_RESOLV_CONF: path.join(root, 'resolv.conf'), HOME: root, TMPDIR: tmp, LANG: 'C', TERM: 'dumb', ...extra })
   // A file of answers standing in for the keyboard (HPX_TTY).
   const tty = answers => { const f = path.join(root, `tty-${Math.random().toString(36).slice(2)}`); fs.writeFileSync(f, answers); return f }
   const run = (args, input, extra = {}) => spawnSync('/bin/bash', [BOOTSTRAP, ...args], {
@@ -421,13 +426,14 @@ test('at a terminal the address is asked for: a used one is asked again, then th
   try {
     // ID Enter; address: junk, .50 (a config), .61 (answers a ping), .60; gateway: Enter (none known), then
     // 192.0.2.1; health, charts, dns, ai: no; VPN not now; create yes
-    const r = c.run([], '', { HPX_TTY: c.tty('\nfoo\n192.0.2.50/24\n192.0.2.61/24\n192.0.2.60/24\n\n192.0.2.1\nn\nn\nn\nn\n\ny\n') })
+    const r = c.run([], '', { HPX_TTY: c.tty('\nfoo\n192.0.2.50/24\n192.0.2.61/24\n192.0.2.60/24\n\n198.51.100.1\n192.0.2.1\nn\nn\nn\nn\n\ny\n') })
     const out = plain(r.stdout + r.stderr)
     assert.equal(r.status, 0, out)
     assert.match(out, /foo is not one of the choices/)
     assert.match(out, /Another guest's config already uses 192\.0\.2\.50\. Choose another\./)
     assert.match(out, /Something already answers on 192\.0\.2\.61\. Choose another\./)
     assert.match(out, /Which gateway should 192\.0\.2\.60\/24 use\?/)
+    assert.match(out, /198\.51\.100\.1 is not inside 192\.0\.2\.60\/24/)
     assert.match(out, /Network\s+192\.0\.2\.60\/24, gateway 192\.0\.2\.1, on vmbr0/)
     assert.match(createLine(c), /^pct create 900 .*--net0 name=eth0,bridge=vmbr0,ip=192\.0\.2\.60\/24,gw=192\.0\.2\.1/)
   } finally { c.cleanup() }
@@ -466,11 +472,13 @@ test('VPN at a terminal: WireGuard asks for a tunnel network that overlaps nothi
   const c = cluster({ 'node-a': 'server-no-gpu' }, { guests: { 'node-a/lxc/950': lxc('192.0.2.50/24') } })
   try {
     // ID, address: Enter; health, charts, dns, ai: no; VPN 2; tunnel: one on the LAN, then Enter; address: Enter
-    const r = c.run(['--dry-run'], '', { HPX_TTY: c.tty('\n\nn\nn\nn\nn\n2\n192.0.2.1/24\n\n\n') })
+    const r = c.run(['--dry-run'], '', { HPX_TTY: c.tty('\n\nn\nn\nn\nn\n2\n192.0.2.1/24\n10.99.0.255/24\n10.99.0.0/24\n\n\n') })
     const out = plain(r.stdout + r.stderr)
     assert.equal(r.status, 0, out)
     assert.match(out, /How do you want to reach HyperProx when you are away from home\?/)
     assert.match(out, /192\.0\.2\.1\/24 overlaps 192\.0\.2\.50\/24/)
+    assert.match(out, /10\.99\.0\.255 is the network's broadcast address/)
+    assert.match(out, /10\.99\.0\.0 is the network's network address/)
     assert.match(out, /VPN\s+WireGuard in a small container of its own \(next free ID\), tunnel 10\.99\.0\.1\/24, UDP 51820/)
     assert.doesNotMatch(c.calls(), /^pct create/m)
   } finally { c.cleanup() }
@@ -541,6 +549,78 @@ test('VPN: a failed install removes the WireGuard container too', () => {
     assert.match(c.calls(), /^pct destroy 901 --purge$/m)
     assert.match(c.calls(), /^pct destroy 900 --purge$/m)
   } finally { c.cleanup() }
+})
+
+test('VPN: a network in this node\'s routes is not offered for the tunnel', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { routes: ['10.99.0.0/16 via 192.0.2.254 dev vmbr0', 'default via 192.0.2.1 dev vmbr0'] })
+  try {
+    const out = plain(c.run(['-y', '--dry-run', '--vpn', 'wireguard']).stdout)
+    assert.match(out, /tunnel 10\.98\.0\.1\/24/)
+  } finally { c.cleanup() }
+})
+
+test('VPN: a WireGuard container that cannot be made is given up; HyperProx is still installed', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y', '--no-pve-metrics', '--vpn', 'wireguard'], '', { FAKE_CREATE_FAIL_ID: '901' })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    assert.match(out, /Could not create the WireGuard container/)
+    assert.match(out, /WireGuard was not set up; add it later on the VPN page/)
+    assert.doesNotMatch(c.calls(), /^pct destroy 900/m, 'HyperProx\'s container stays')
+    assert.equal(c.pushed('vpn-pending.json'), null)
+    assert.match(out, /HyperProx is ready/)
+  } finally { c.cleanup() }
+})
+
+test('VPN: Tailscale that cannot install, or gives no sign-in link, warns with the reason and the install goes on at once', () => {
+  for (const [extra, why] of [[{ FAKE_TS_INSTALL_FAIL: '1' }, /Tailscale could not be installed/], [{ FAKE_TS_NOLOGIN: '1' }, /did not give a sign-in link[^]*backend error: no route to the control server/]]) {
+    const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+    try {
+      const t0 = Date.now()
+      // ID, address: Enter; health, charts, dns, ai: no; VPN 1 (Tailscale); create yes
+      const r = c.run([], '', { HPX_TTY: c.tty('\n\nn\nn\nn\nn\n1\ny\n'), ...extra })
+      const out = plain(r.stdout + r.stderr)
+      assert.equal(r.status, 0, out)
+      assert.match(out, why)
+      assert.match(out, /HyperProx is ready/)
+      assert.ok(Date.now() - t0 < 45_000, 'no 15-minute wait')
+      assert.equal(c.pushed('vpn-pending.json'), null)
+    } finally { c.cleanup() }
+  }
+})
+
+test('the Tailscale auth key is refused on the command line; a file: path is taken', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' })
+  try {
+    const raw = c.run(['-y', '--dry-run', '--tailscale-authkey', 'tskey-auth-kTESTONLY0000-abcdefgh'])
+    assert.notEqual(raw.status, 0)
+    assert.match(plain(raw.stderr), /takes file:\/path\/to\/key only[^]*TS_AUTHKEY/)
+    const f = path.join(c.root, 'ts.key'); fs.writeFileSync(f, 'tskey-auth-kTESTONLY0000-abcdefgh\n')
+    const ok = plain(c.run(['-y', '--dry-run', '--tailscale-authkey', `file:${f}`]).stdout)
+    assert.match(ok, /VPN\s+Tailscale in this container, joined with the auth key given/)
+  } finally { c.cleanup() }
+})
+
+test('the root password is saved root-only and not printed; a link in its place is refused', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y', '--no-pve-metrics', '--password', 'Sekrit-Test-Pw1'])
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    const f = path.join(c.root, 'hyperprox-900.txt')
+    assert.equal(fs.statSync(f).mode & 0o777, 0o600)
+    assert.match(fs.readFileSync(f, 'utf8'), /root password: Sekrit-Test-Pw1/)
+    assert.ok(!out.includes('Sekrit-Test-Pw1'), 'not printed when it was saved')
+    assert.match(out, /Root pw\s+saved in .*hyperprox-900\.txt/)
+  } finally { c.cleanup() }
+  const d = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    fs.symlinkSync('/nonexistent-target', path.join(d.root, 'hyperprox-900.txt'))
+    const out = plain(d.run(['-y', '--no-pve-metrics', '--password', 'Sekrit-Test-Pw1']).stdout)
+    assert.match(out, /is a symbolic link; the root password is not written there/)
+    assert.match(out, /Root pw\s+Sekrit-Test-Pw1/)
+  } finally { d.cleanup() }
 })
 
 // ── The terminal, and `curl | bash` ────────────────────────────────────────────────────────────────────

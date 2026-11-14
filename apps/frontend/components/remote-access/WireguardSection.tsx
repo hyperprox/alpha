@@ -194,10 +194,14 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
         <ConfirmDialog title="Add a phone or laptop" onClose={() => setForm(null)}>
           <input style={FIELD} placeholder="Name, e.g. Pixel" value={f.name ?? ''} onChange={e => setF({ ...f, name: e.target.value })} />
           <p className="text-xs" style={{ color: 'var(--text-dim)' }}>The key is made in this browser and goes straight into the vault; if the browser cannot make one, the server container makes it.</p>
+          <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
+            <input type="checkbox" checked={!!f.home} onChange={e => setF({ ...f, home: e.target.checked })} />
+            Reach my whole home network (not only HyperProx)
+          </label>
           <div className="flex justify-end gap-2">
             <Btn kind="primary" onClick={async () => {
               const k = await keys()
-              const r = await send<{ config: string }>(`/api/vpn/wg/servers/${form.device}/devices`, 'POST', { name: f.name, ...(k ?? { keygen: 'server' }) })
+              const r = await send<{ config: string }>(`/api/vpn/wg/servers/${form.device}/devices`, 'POST', { name: f.name, reach: f.home ? 'home' : 'hyperprox', ...(k ?? { keygen: 'server' }) })
               if (done(r, `Added ${f.name}.`) && r?.body) setShown({ title: f.name, config: r.body.config })
             }}>Add</Btn>
             <Btn onClick={() => setForm(null)}>Cancel</Btn>

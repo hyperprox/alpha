@@ -38,7 +38,7 @@ export interface InstallHandoffDeps {
   file?: string
   wg: {
     listServers(): Promise<WgServer[]>
-    adoptServer(o: { machineId: string; iface?: string; address: string; endpoint: string }, by: string): Promise<WgServer>
+    adoptServer(o: { machineId: string; iface?: string; address: string; endpoint: string; expect?: { publicKey: string; listenPort: number } }, by: string): Promise<WgServer>
   }
   remote: Pick<RemoteStore, 'get' | 'upsert' | 'audit'>
   /** This container's own Tailscale client, as `tailscale status --json` reports it (parseStatus). */
@@ -104,9 +104,11 @@ async function takeOver(e: InstallVpnEntry, d: InstallHandoffDeps): Promise<'ado
   if (e.kind === 'wireguard') {
     const have = (await d.wg.listServers()).find(s => s.machineId === e.machineId && s.iface === e.iface)
     if (have) return 'already'
-    const s = await d.wg.adoptServer({ machineId: e.machineId, iface: e.iface, address: e.address, endpoint: e.endpoint }, 'installer')
-    // adoptServer read the key from the interface itself; it must be the one the installer saw made.
-    if (s.publicKey !== e.publicKey) d.log?.(`[vpn-handoff] ${label(e)}: the interface reports another public key than the installer recorded`)
+    // adoptServer checks the address (checkSpec, no overlap with the cluster's networks) and reads the interface
+    // itself: it must report the key, port and address the installer saw made, or nothing is recorded and the
+    // entry stays pending with the reason.
+    await d.wg.adoptServer({ machineId: e.machineId, iface: e.iface, address: e.address, endpoint: e.endpoint,
+      expect: { publicKey: e.publicKey, listenPort: e.listenPort } }, 'installer')
     return 'adopted'
   }
   if (await d.remote.get(e.machineId, 'tailscale')) return 'already'
@@ -135,6 +137,12 @@ export function consumeInstallMarker(d: InstallHandoffDeps): Promise<HandoffResu
     try { text = readFileSync(file, 'utf8') } catch { return res }
     const { entries, rejected } = parseMarker(text)
     for (const r of rejected) d.log?.(`[vpn-handoff] ignored: ${r}`)
+    // Nothing usable in it: kept as it is, with the reasons logged, for someone to look at. Never deleted unread.
+    if (!entries.length && rejected.length) {
+      res.failed = rejected.map(r => ({ entry: 'marker', error: r }))
+      res.left = rejected.length
+      return res
+    }
     const left: InstallVpnEntry[] = []
     for (const e of entries) {
       try {
