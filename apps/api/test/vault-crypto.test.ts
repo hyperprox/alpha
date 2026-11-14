@@ -54,7 +54,10 @@ test('role mapping follows the contract', () => {
   assert.equal(roleFromMemberType(1), 'admin')
   assert.equal(roleFromMemberType(3), 'operator')
   assert.equal(roleFromMemberType(2), 'viewer')
-  assert.equal(roleFromMemberType(4), 'viewer')
+  // Vaultwarden has no Custom role of its own: it reports a Manager as 4 ("Custom") to clients
+  // (Membership::type_manager_as_custom), so 4 is an operator too (lib/users/roles.ts).
+  assert.equal(roleFromMemberType(4), 'operator')
+  assert.equal(roleFromMemberType(7), 'viewer', 'anything unknown')
 })
 
 test('CLI messages map to contract error codes', () => {
