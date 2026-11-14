@@ -486,12 +486,12 @@ export async function verifyHomeHostKeys(by: string, o: { onlyIfNeeded?: boolean
  * The output of ANCHOR_COMMAND, run by the admin on one of their nodes and pasted here: kept as the home cluster's
  * anchor (public keys only), then verified against as usual. Re-confirmed like every change here.
  */
-export async function saveHostKeyAnchor(input: any, by: string, o: { replaceInstaller?: boolean } = {}): Promise<{ nodes: string[]; replaced: string[] }> {
+export async function saveHostKeyAnchor(input: any, by: string, o: { replaceInstaller?: boolean } = {}): Promise<{ nodes: string[]; replaced: string[]; added: string[]; skipped: Array<{ node: string; why: string }> }> {
   const output = typeof input?.output === 'string' ? input.output : ''
   if (!output.trim()) throw new ChecklistRefusal('Paste what the command printed.')
   try {
     const r = await saveAnchors('home', output, 'pasted', o)
-    await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by, source: 'pasted', nodes: r.nodes })
+    await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by, source: 'pasted', nodes: r.nodes, added: r.added, skipped: r.skipped })
     if (r.replaced.length) await anchorReplaced('Home cluster', 'cluster:home', by, r.replaced)
     return r
   } catch (e: any) {

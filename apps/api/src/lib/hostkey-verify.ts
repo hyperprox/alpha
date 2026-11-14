@@ -184,14 +184,19 @@ export function algorithmsFor(types: string[]): string[] {
  */
 /**
  * Each other node's own key files, read over the cluster's own SSH trust (root's key that Proxmox shares between
- * nodes), checked against the cluster's record (StrictHostKeyChecking, /etc/pve/priv/known_hosts, the node's name as
- * the alias): only a node that proves it holds its recorded key is read. No login of HyperProx's is involved; this
- * runs where the command runs, as root on a node. A node that does not answer in 5 s is left out.
+ * nodes), checked against the cluster's record: StrictHostKeyChecking with the node's own ssh_known_hosts (PVE 8.1
+ * and later) and the legacy /etc/pve/priv/known_hosts, the node's name as the alias, at its address from
+ * /etc/pve/.members (a node name often does not resolve). Only a node that proves it holds its recorded key is
+ * read, and only key-shaped lines of what it prints are kept, so a node can never write marker lines into the
+ * output (and so re-anchor another node). A node that is skipped says why ("@@hpx skip <node> ...").
+ * No login of HyperProx's is involved; this runs where the command runs, as root on a node.
  */
-export const PEER_KEYS_SH = `l="$(basename "$(readlink -f /etc/pve/local)")"; for d in /etc/pve/nodes/*/; do [ -d "$d" ] || continue; n="$(basename "$d")"; [ "$n" = "$l" ] && continue; k="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/pve/priv/known_hosts -o HostKeyAlias="$n" -o ConnectTimeout=5 "root@$n" 'cat /etc/ssh/ssh_host_*_key.pub' 2>/dev/null </dev/null)" && [ -n "$k" ] && { echo "${MARK} peer $n"; printf '%s\\n' "$k"; }; done;`
+export const PEER_KEYS_SH = `l="$(basename "$(readlink -f /etc/pve/local)")"; for d in /etc/pve/nodes/*/; do [ -d "$d" ] || continue; n="$(basename "$d")"; [ "$n" = "$l" ] && continue; ip="$(grep -o "\\"$n\\": *{[^}]*" /etc/pve/.members 2>/dev/null | grep -o '"ip": *"[^"]*"' | cut -d'"' -f4)"; o="$(timeout 15 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=/etc/pve/nodes/$n/ssh_known_hosts /etc/pve/priv/known_hosts" -o HostKeyAlias="$n" -o ConnectTimeout=5 "root@\${ip:-$n}" 'cat /etc/ssh/ssh_host_*_key.pub' 2>/dev/null </dev/null)"; r=$?; k="$(printf '%s\\n' "$o" | grep -E '^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-[a-z0-9@.-]+) [A-Za-z0-9+/=]+( |$)')"; if [ -n "$k" ]; then echo "${MARK} peer $n"; printf '%s\\n' "$k"; else case "$r" in 0) w="it listed no key files";; 124) w="no answer in 15 s";; 255) w="ssh refused it: its key is not in the cluster record, or it is unreachable";; *) w="ssh exited $r";; esac; echo "${MARK} skip $n \${ip:-no address in .members}: $w"; fi; done;`
 export const ANCHOR_COMMAND = `{ echo "${MARK} local $(basename "$(readlink -f /etc/pve/local)")"; for f in /etc/pve/nodes/*/ssh_known_hosts; do [ -f "$f" ] && echo "${MARK} node $(basename "$(dirname "$f")")" && cat -- "$f"; done; echo "${MARK} priv"; cat /etc/pve/priv/known_hosts 2>/dev/null; ${PEER_KEYS_SH} echo "${MARK} own"; cat /etc/ssh/ssh_host_*_key.pub; echo "${MARK} end"; } | base64 -w0; echo`
 
-export interface AnchorSet { local: string; nodes: Record<string, RecordedKey[]> }
+export interface AnchorSet { local: string; nodes: Record<string, RecordedKey[]>
+  /** Nodes whose own key files could not be read where the command ran, and why (they keep the cluster record). */
+  skipped?: Array<{ node: string; why: string }> }
 
 /** Pasting would replace anchors the installer read on the node itself; that needs a separate, fresh confirmation. */
 export class AnchorReplaceRefusal extends Error {
@@ -206,23 +211,27 @@ export class AnchorReplaceRefusal extends Error {
  * replaced by a pasted one only with `replaceInstaller` (the caller asked again for the master password). Returns the
  * nodes saved, and those whose earlier anchor held different keys (the caller audits and alerts those).
  */
-export async function saveAnchors(scope: string, output: string, source: AnchorSource, o: { replaceInstaller?: boolean } = {}): Promise<{ nodes: string[]; replaced: string[] }> {
+export async function saveAnchors(scope: string, output: string, source: AnchorSource, o: { replaceInstaller?: boolean } = {}): Promise<{ nodes: string[]; replaced: string[]; added: string[]; skipped: Array<{ node: string; why: string }> }> {
   const set = parseAnchorOutput(output)
   if (!set) throw new VerifyRefusal('That is not the whole output of the command (it starts and ends with @@hpx lines, or is one long base64 line). Copy all of it and paste it again.')
   const at = new Date().toISOString()
   const entries = Object.entries(set.nodes).filter(([, keys]) => keys.length)
-  const replaced: string[] = [], installer: string[] = []
+  const replaced: string[] = [], added: string[] = [], installer: string[] = []
   for (const [node, keys] of entries) {
     const prev = await getAnchor(scope, node)
     if (!prev) continue
-    const a = prev.keys.map(k => k.fingerprint).sort().join(','), b = keys.map(k => k.fingerprint).sort().join(',')
+    const now = new Set(keys.map(k => k.fingerprint))
+    const a = prev.keys.map(k => k.fingerprint).sort().join(','), b = [...now].sort().join(',')
     if (a === b) continue
+    // Every key it held before is still there: keys were added (the first paste after the peer-keys change reads
+    // each node's own files beside the record). Not a replacement: no alert, no fresh confirmation.
+    if (prev.keys.every(k => now.has(k.fingerprint))) { added.push(node); continue }
     replaced.push(node)
     if (prev.source === 'installer' && source !== 'installer') installer.push(node)
   }
   if (installer.length && !o.replaceInstaller) throw new AnchorReplaceRefusal(installer)
   for (const [node, keys] of entries) await saveAnchor(scope, node, { keys, source, at })
-  return { nodes: entries.map(([n]) => n), replaced }
+  return { nodes: entries.map(([n]) => n), replaced, added, skipped: set.skipped ?? [] }
 }
 
 /**
@@ -239,19 +248,38 @@ export function parseAnchorOutput(raw: string): AnchorSet | null {
   if (!NODE_RE.test(local)) return null
   const names = [...new Set(lines.filter(l => l.startsWith(`${MARK} node `)).map(l => l.slice(MARK.length + 6).trim()).filter(n => NODE_RE.test(n)))]
   if (!names.includes(local)) names.push(local)
-  const ownStart = lines.findIndex(l => l === `${MARK} own`), end = lines.findIndex(l => l === `${MARK} end`)
-  if (ownStart < 0 || end < ownStart) return null
-  // "peer <node>" sections: another node's own key files, read over SSH that checked its recorded key (PEER_KEYS_SH).
+  // Exactly one "own" and one "end", in that order: anything else is not this command's output.
+  const owns = lines.flatMap((l, i) => (l === `${MARK} own` ? [i] : [])), ends = lines.flatMap((l, i) => (l === `${MARK} end` ? [i] : []))
+  if (owns.length !== 1 || ends.length !== 1 || ends[0] < owns[0]) return null
+  const ownStart = owns[0], end = ends[0]
+  // "peer <node>" sections: another node's own key files, read over SSH that checked its recorded key (PEER_KEYS_SH,
+  // which keeps only key-shaped lines). Inside one, a marker line other than the next peer, own or end is ignored;
+  // a node named twice makes the whole output untrustworthy.
   const peers = new Map<string, string[]>()
+  const skipped: Array<{ node: string; why: string }> = []
   let peer: string | null = null
   const recordLines: string[] = []
-  lines.forEach((l, i) => {
-    if (l.startsWith(`${MARK} peer `)) { const n = l.slice(MARK.length + 6).trim(); peer = NODE_RE.test(n) ? n : null; if (peer) peers.set(peer, []); return }
-    if (l.startsWith(MARK)) peer = null
-    if (peer) { peers.get(peer)!.push(l); return }
-    if (!(i > ownStart && i < end) && l !== `${MARK} own` && !l.startsWith(`${MARK} local `)) recordLines.push(l)
-  })
-  const view = recordView(recordLines.join('\n'), names)
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]
+    if (i >= ownStart) break
+    if (l.startsWith(`${MARK} peer `)) {
+      const n = l.slice(MARK.length + 6).trim()
+      if (!NODE_RE.test(n)) { peer = null; continue }
+      if (peers.has(n)) return null
+      peer = n; peers.set(n, []); continue
+    }
+    if (peer !== null) {
+      if (l.startsWith(MARK)) continue   // not peer/own/end (those are handled above or end the loop): ignored
+      peers.get(peer)!.push(l); continue
+    }
+    if (l.startsWith(`${MARK} skip `)) {
+      const m = /^(\S+)\s+(.*)$/.exec(l.slice(MARK.length + 6).trim())
+      if (m && NODE_RE.test(m[1])) skipped.push({ node: m[1], why: m[2].slice(0, 200) })
+      continue
+    }
+    if (!l.startsWith(`${MARK} local `)) recordLines.push(l)
+  }
+  const view = recordView([...recordLines, `${MARK} end`].join('\n'), names)
   if (!view) return null
   const own = ownKeyFingerprints(lines.slice(ownStart + 1, end).join('\n'))
   if (!own.length) return null
@@ -260,11 +288,12 @@ export function parseAnchorOutput(raw: string): AnchorSet | null {
     if (n === local || !names.includes(n)) continue
     const files = ownKeyFingerprints(body.join('\n'))
     const rec = view[n] ?? []
-    // The read was checked against the record, so the files must hold every recorded key; if not, keep the record.
-    if (!files.length || !rec.every(k => files.some(f => f.fingerprint === k.fingerprint))) continue
+    // The read was checked against the record, so there must be a record, and the files must hold every key in it;
+    // if not, the record stands.
+    if (!rec.length || !files.length || !rec.every(k => files.some(f => f.fingerprint === k.fingerprint))) continue
     view[n] = files.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint))
   }
-  return { local, nodes: view }
+  return { local, nodes: view, skipped }
 }
 
 // ---------------------------------------------------------------------------

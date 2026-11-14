@@ -285,10 +285,55 @@ test('anchor output with peer sections: another node\'s own key files, read over
   const set = parseAnchorOutput(text)!
   assert.deepEqual(set.nodes.node2.map(k => k.fingerprint).sort(), [rsa2.fp, ed2.fp].sort(), 'node2 can now be verified by its ed25519 key, no login needed')
   assert.deepEqual(set.nodes.node3.map(k => k.fingerprint), [rsa3.fp])
-  assert.match(ANCHOR_COMMAND, /StrictHostKeyChecking=yes -o UserKnownHostsFile=\/etc\/pve\/priv\/known_hosts/)
+  assert.match(ANCHOR_COMMAND, /StrictHostKeyChecking=yes -o "UserKnownHostsFile=\/etc\/pve\/nodes\/\$n\/ssh_known_hosts \/etc\/pve\/priv\/known_hosts"/)
   assert.ok(ANCHOR_COMMAND.includes(PEER_KEYS_SH))
   const boot = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../../bootstrap.sh'), 'utf8') as string
   assert.ok(boot.includes(PEER_KEYS_SH), 'bootstrap.sh reads the same peer keys')
+})
+
+test('review B1: a node that prints marker lines cannot re-anchor another node or the local one (the PoC)', () => {
+  const ownA = key('ed25519'), recB = key('rsa'), recC = key('rsa'), attacker = key('ed25519'), attacker2 = key('ed25519'), cOwn = key('ed25519')
+  // Node C's own output, as an attacker on C would write it: a forged "peer B" with B's recorded RSA line plus an
+  // attacker key, then a forged "own" with another attacker key.
+  const cOutput = [`${cOwn.line} root@node3`, '@@hpx peer node2', `${recB.line} root@node2`, `${attacker.line} evil`, '@@hpx own', `${attacker2.line} evil`]
+  const head = ['@@hpx local node1', '@@hpx node node1', `node1 ${ownA.line}`, '@@hpx node node2', `node2 ${recB.line}`, '@@hpx node node3', `node3 ${recC.line}`, '@@hpx priv', '']
+  const tail = ['@@hpx own', `${ownA.line} root@node1`, '@@hpx end', '']
+  // 1. Without the shell's filter: two "own" sections, so the whole output is refused.
+  assert.equal(parseAnchorOutput([...head, '@@hpx peer node3', ...cOutput, ...tail].join('\n')), null)
+  // 2. With the shell's filter (PEER_KEYS_SH keeps key-shaped lines only), C's markers never reach the output.
+  const re = /grep -E '([^']+)'/.exec(PEER_KEYS_SH)![1]
+  const filtered = require('node:child_process').execFileSync('grep', ['-E', re], { input: cOutput.join('\n') + '\n' }).toString().trim().split('\n')
+  assert.ok(filtered.every((l: string) => !l.startsWith('@@hpx')), 'no marker line survives the filter')
+  const set = parseAnchorOutput([...head, '@@hpx peer node3', ...filtered, ...tail].join('\n'))!
+  assert.deepEqual(set.nodes.node2.map(k => k.fingerprint), [recB.fp], "B's anchor is unchanged: still only its recorded key")
+  assert.deepEqual(set.nodes.node1.map(k => k.fingerprint), [ownA.fp], 'the local anchor is unchanged')
+  // node3's section held keys that are not its recorded one: ignored too.
+  assert.deepEqual(set.nodes.node3.map(k => k.fingerprint), [recC.fp])
+})
+
+test('anchor output: a node named twice, two "own" or two "end" lines, or a peer with no record, are refused or ignored', () => {
+  const own = key('ed25519'), r2 = key('rsa'), e2 = key('ed25519')
+  const base = (mid: string[], tail = ['@@hpx own', `${own.line} root@node1`, '@@hpx end']) =>
+    ['@@hpx local node1', '@@hpx node node1', `node1 ${own.line}`, '@@hpx node node2', `node2 ${r2.line}`, '@@hpx priv', ...mid, ...tail].join('\n')
+  assert.equal(parseAnchorOutput(base(['@@hpx peer node2', r2.line, '@@hpx peer node2', e2.line])), null, 'a peer named twice')
+  assert.equal(parseAnchorOutput(base([], ['@@hpx own', `${own.line} x`, '@@hpx end', '@@hpx end'])), null, 'two ends')
+  // Inside a peer section, other marker lines are ignored, not obeyed.
+  const set = parseAnchorOutput(base(['@@hpx peer node2', r2.line, '@@hpx node node9', `${e2.line} x`]))!
+  assert.deepEqual(set.nodes.node2.map(k => k.fingerprint).sort(), [r2.fp, e2.fp].sort())
+  // A peer section for a node with no record (m2) is not taken.
+  const nore = parseAnchorOutput(['@@hpx local node1', '@@hpx node node1', `node1 ${own.line}`, '@@hpx node node2', '@@hpx priv', '@@hpx peer node2', e2.line, '@@hpx own', `${own.line} x`, '@@hpx end'].join('\n'))!
+  assert.deepEqual(nore.nodes.node2, [])
+  // A skipped node is reported with its reason.
+  const sk = parseAnchorOutput(base(['@@hpx skip node2 192.0.2.12: no answer in 15 s']))!
+  assert.deepEqual(sk.skipped, [{ node: 'node2', why: '192.0.2.12: no answer in 15 s' }])
+})
+
+test('review B2: peers are read at their .members address, against both known_hosts files, with a timeout, and a skip says why', () => {
+  assert.match(PEER_KEYS_SH, /\/etc\/pve\/\.members/)
+  assert.match(PEER_KEYS_SH, /UserKnownHostsFile=\/etc\/pve\/nodes\/\$n\/ssh_known_hosts \/etc\/pve\/priv\/known_hosts/)
+  assert.match(PEER_KEYS_SH, /HostKeyAlias="\$n"/)
+  assert.match(PEER_KEYS_SH, /timeout 15 ssh /)
+  assert.match(PEER_KEYS_SH, /@@hpx skip \$n/)
 })
 
 // ---------------------------------------------------------------------------

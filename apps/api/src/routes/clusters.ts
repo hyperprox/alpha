@@ -444,7 +444,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
         : null
       if (typeof req.body?.record === 'string' && req.body.record.trim()) {
         const anchored = await saveAnchors(row.id, req.body.record, 'pasted')
-        await auditCredentialUse('host_key.anchor.save', `cluster:${row.id}`, { by: who(), source: 'pasted', nodes: anchored.nodes })
+        await auditCredentialUse('host_key.anchor.save', `cluster:${row.id}`, { by: who(), source: 'pasted', nodes: anchored.nodes, added: anchored.added, skipped: anchored.skipped })
         if (anchored.replaced.length) await anchorReplaced(row.name, `cluster:${row.id}`, who(), anchored.replaced)
       }
       const out = await runInCluster(row.id, async () => {

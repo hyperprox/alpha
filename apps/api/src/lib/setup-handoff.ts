@@ -152,8 +152,9 @@ export async function flushHeldSecrets(as: RequestContext): Promise<{ stored: st
     // wizard pinned below can be verified against it right after this sign-in.
     if (held.hostRecord) {
       try {
-        const { nodes: n } = await saveAnchors('home', held.hostRecord, 'installer')
-        await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by: as.email, source: 'installer', nodes: n })
+        const { nodes: n, skipped } = await saveAnchors('home', held.hostRecord, 'installer')
+        // The nodes whose own key files the installer could not read, and why, are kept in the audit row.
+        await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by: as.email, source: 'installer', nodes: n, skipped })
         stored.push(`host-key record for ${n.length} node${n.length === 1 ? '' : 's'}`)
         delete held.hostRecord
       } catch { failed.push('host-key record') }

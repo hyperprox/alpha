@@ -323,3 +323,30 @@ test('review N4: a pasted anchor never silently replaces the installer\'s; repla
   dropReconfirm('n4-sess')
   assert.equal(isReconfirmed('n4-sess'), false)
 })
+
+test('review m3: a paste that only adds keys to an anchor (the first after the peer-keys change) is not a replacement', async () => {
+  const audits: any[] = []
+  setAuditSink({ async write(r: any) { audits.push(r) } })
+  const mod: any = await import('ssh2')
+  const { utils } = mod.default ?? mod
+  const pub = () => String(utils.generateKeyPairSync('ed25519').public).trim().split(/\s+/).slice(0, 2).join(' ')
+  const own = pub(), rec = pub(), extra = pub()
+  // node-b had only its cluster-record key; the new output adds its own key files beside it.
+  const out = (b: string[]) => Buffer.from(['@@hpx local node-a', '@@hpx node node-a', `node-a ${own}`, '@@hpx node node-b', `node-b ${rec}`, '@@hpx priv',
+    ...(b.length ? ['@@hpx peer node-b', ...b.map(k => `${k} root@node-b`)] : []), '@@hpx own', `${own} root@node-a`, '@@hpx end'].join('\n')).toString('base64')
+  try {
+    await asOwner(async () => {
+      await saveAnchors('home', out([]), 'installer')
+      const r = await saveHostKeyAnchor({ output: out([rec, extra]) }, 'owner@example.com')
+      assert.deepEqual(r.replaced, [], 'no replacement, no alert')
+      assert.deepEqual(r.added, ['node-b'])
+      assert.equal((await getAnchor('home', 'node-b'))!.keys.length, 2)
+      assert.ok(!audits.some(a => a.action === 'host_key.anchor.replace'))
+      // A real replacement (a key that was there is gone) is still reported, audited and alerted.
+      const swapped = Buffer.from(['@@hpx local node-a', '@@hpx node node-a', `node-a ${own}`, '@@hpx node node-b', `node-b ${pub()}`, '@@hpx priv', '@@hpx own', `${own} root@node-a`, '@@hpx end'].join('\n')).toString('base64')
+      const r2 = await saveHostKeyAnchor({ output: swapped }, 'owner@example.com', { replaceInstaller: true })
+      assert.deepEqual(r2.replaced, ['node-b'])
+      assert.ok(audits.some(a => a.action === 'host_key.anchor.replace'))
+    })
+  } finally { setAuditSink(null) }
+})
