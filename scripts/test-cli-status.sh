@@ -46,7 +46,9 @@ check "restarts long ago, up for hours: fine"               '[[ "$out" == *"cont
 out="$(st FAKE_PS="hyperprox-grafana" FAKE_hyperprox_grafana="running 0 unhealthy ${old}")" || true
 check "an unhealthy container is named"                     '[[ "$out" == *"hyperprox-grafana CRASH-LOOPING"* ]]'
 out="$(st FAKE_PS="hyperprox-redis" FAKE_hyperprox_redis="exited 0 - ${old}")" || true
-check "a stopped container is named"                        '[[ "$out" == *"hyperprox-redis EXITED"* ]]'
+check "a stopped container is named as stopped"             '[[ "$out" == *"hyperprox-redis STOPPED (exited;"* ]]'
+out="$(st FAKE_PS="hyperprox-prometheus" FAKE_hyperprox_prometheus="exited 0 unhealthy ${old}")" || true
+check "stopped with an old unhealthy health: stopped, not crash-looping" '[[ "$out" == *"hyperprox-prometheus STOPPED"* && "$out" != *CRASH-LOOPING* ]]'
 out="$(st FAKE_PS="hyperprox-api hyperprox-ollama" FAKE_hyperprox_api="running 0 - ${old}" FAKE_hyperprox_ollama="exited 0 - ${old}" FAKE_SERVICES="api")" || true
 check "a container of a profile that is off is not this install's concern" '[[ "$out" == *"containers: all 1 running"* && "$out" != *ollama* ]]'
 out="$(st FAKE_PS="hyperprox-prometheus" FAKE_hyperprox_prometheus="restarting 9 - ${now}")" || true

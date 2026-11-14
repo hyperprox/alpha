@@ -87,10 +87,12 @@ containers_status() {
     total=$((total + 1))
     read -r st count health started < <(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}} {{.State.StartedAt}}' "$n" 2>/dev/null || echo "unknown 0 - -")
     age=$(( now - $(date -d "${started}" +%s 2>/dev/null || echo "$now") ))
-    if [[ "$st" == restarting ]] || [[ "$health" == unhealthy ]] || { [[ "${count:-0}" -ge 3 ]] && [[ "$age" -lt 600 ]]; }; then
+    # Not running (and not restarting) is stopped, whatever health its last run left behind: a cleanly stopped
+    # container keeps its old "unhealthy" and used to read as crash-looping.
+    if [[ "$st" != running && "$st" != restarting ]]; then
+      echo "container: ${n} STOPPED (${st}; docker logs --tail 30 ${n}; start it: docker start ${n})"; bad=1
+    elif [[ "$st" == restarting ]] || [[ "$health" == unhealthy ]] || { [[ "${count:-0}" -ge 3 ]] && [[ "$age" -lt 600 ]]; }; then
       echo "container: ${n} CRASH-LOOPING (${st}, restarted ${count} times$([[ "$health" != - ]] && echo ", health ${health}"); docker logs --tail 30 ${n})"; bad=1
-    elif [[ "$st" != running ]]; then
-      echo "container: ${n} ${st^^}  (docker logs --tail 30 ${n})"; bad=1
     fi
   done < <(docker ps -a --filter "label=com.docker.compose.project=$(basename "${HYPERPROX_DIR}")" \
              --format '{{.Label "com.docker.compose.service"}} {{.Names}}' 2>/dev/null \
