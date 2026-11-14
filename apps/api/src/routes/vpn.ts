@@ -9,7 +9,8 @@
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
-import { onUnlock } from '../lib/vault/state'
+import { execFile } from 'node:child_process'
+import { isUnlocked, onUnlock } from '../lib/vault/state'
 import { getProviderCredentials, setCredentials } from '../lib/credentials'
 import { pluginAddress, pluginRead } from '../lib/plugin-host'
 import { mikrotikPlugin } from '../plugins/mikrotik'
@@ -21,8 +22,21 @@ import { providerFromVault, providerSettingsFromVault } from '../lib/remote/prov
 import { WireguardService, WgInputError, WgNotFoundError, type WgVault } from '../lib/vpn/wireguard/service'
 import { PrismaWgStore } from '../lib/vpn/wireguard/store'
 import { restWriter, type RouterApi } from '../lib/vpn/wireguard/routeros'
+import { consumeInstallMarker, pendingEntries, type InstallHandoffDeps } from '../lib/vpn/install-handoff'
+import { parseStatus, statusScript, type ClientStatus } from '../lib/remote/scripts'
 
-export interface VpnRouteDeps { service?: WireguardService; sweep?: boolean }
+export interface VpnRouteDeps {
+  service?: WireguardService; sweep?: boolean
+  /** What the installer set up (lib/vpn/install-handoff.ts). Default: the real stores, taken over on unlock. */
+  handoff?: InstallHandoffDeps | null
+}
+
+/** This container's own Tailscale client, read with remote access's own status script. */
+export function localTailscaleStatus(): Promise<ClientStatus> {
+  return new Promise(resolve => {
+    execFile('bash', ['-c', statusScript('tailscale')], { timeout: 30_000 }, (_e, out) => resolve(parseStatus('tailscale', String(out ?? ''))))
+  })
+}
 
 const WG_CATEGORY = 'wireguard'
 /** Every field a WireGuard vault item can have; a missing one is written empty, so a write replaces the item. */
@@ -71,13 +85,29 @@ const MACHINE = /^(node|lxc|qemu|host)-[A-Za-z0-9._-]{1,120}$/
 
 export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
   return async (fastify) => {
+    let handoff: InstallHandoffDeps | null = deps.handoff ?? null
     const service = deps.service ?? (() => {
+      const remoteStore = new PrismaRemoteStore((fastify as any).prisma)
+      const wgStore = new PrismaWgStore((fastify as any).prisma)
       const remote = new RemoteAccessService({
-        store: new PrismaRemoteStore((fastify as any).prisma), exec: productionRemoteExecutor(livePve()),
+        store: remoteStore, exec: productionRemoteExecutor(livePve()),
         provider: id => providerFromVault(id), providerSettings: id => providerSettingsFromVault(id), log: m => fastify.log.info(m),
       })
-      return new WireguardService({ remote, exec: productionRemoteExecutor(livePve()), store: new PrismaWgStore((fastify as any).prisma), vault: vaultWg, router: productionRouter })
+      const wg = new WireguardService({ remote, exec: productionRemoteExecutor(livePve()), store: wgStore, vault: vaultWg, router: productionRouter })
+      if (deps.handoff === undefined) {
+        handoff = { wg: { listServers: () => wgStore.listServers(), adoptServer: (o, by) => wg.adoptServer(o, by) },
+          remote: remoteStore, tailscaleStatus: localTailscaleStatus, log: m => fastify.log.info(m) }
+      }
+      return wg
     })()
+    // What the installer set up is taken over when HyperProx is unlocked: the owner's first sign-in, or a start
+    // that finds it unlocked. Adopting twice changes nothing; what fails stays pending and is tried again.
+    if (handoff) {
+      const h = handoff
+      const take = () => { void consumeInstallMarker(h).catch(e => fastify.log.warn(`[vpn-handoff] ${e?.message ?? e}`)) }
+      onUnlock(take)
+      fastify.addHook('onReady', async () => { if (isUnlocked()) take() })
+    }
     if (deps.sweep !== false) {
       let t: NodeJS.Timeout | null = null
       fastify.addHook('onReady', async () => { void service.sweepRotations().catch(() => 0); t = setInterval(() => { void service.sweepRotations().catch(() => 0) }, 3600_000); t.unref?.() })
@@ -143,6 +173,12 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
       } catch (e) { return sendError(reply, e) }
     })
     fastify.get('/wg/router', wrap(() => service.routerView()))
+    // Remote access the installer set up and HyperProx has not taken over yet (public facts and the last error).
+    fastify.get('/install-pending', wrap(async () => ({ entries: pendingEntries(handoff?.file) })))
+    fastify.post('/install-pending/retry', wrap(async () => {
+      if (!handoff) throw new WgInputError('Nothing to take over')
+      return await consumeInstallMarker(handoff)
+    }))
     fastify.post<{ Body: any }>('/wg/router/peers/preview', async (req, reply) => {
       try { const b: any = req.body ?? {}; return await service.routerPeerPreview({ iface: String(b.iface ?? ''), publicKey: String(b.publicKey ?? ''), allowedAddress: b.allowedAddress ?? [], keepalive: b.keepalive, name: String(b.name ?? '') }) } catch (e) { return sendError(reply, e) }
     })

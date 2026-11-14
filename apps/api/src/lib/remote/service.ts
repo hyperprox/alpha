@@ -477,8 +477,10 @@ export class RemoteAccessService {
           cells[id] = dc?.installed ? detectedCell(id, dc, at!) : { ...emptyCell(windows ? 'manual' : 'not-installed'), detected: dc, detectedText: dc ? 'not installed' : null, checkedAt: at }
           continue
         }
-        // Without the provider's list (no key), the machine's own report decides.
-        const state: CellState = dev ? (dev.online ? 'connected' : 'offline') : list ? 'missing' : dc?.installed ? detectedState(dc) : 'unknown'
+        // Without the provider's list (no key), the machine's own report decides: probed now, or else what the
+        // record kept from its last check (an install HyperProx adopted, such as the installer's own Tailscale).
+        const state: CellState = dev ? (dev.online ? 'connected' : 'offline') : list ? 'missing' : dc?.installed ? detectedState(dc)
+          : rec?.connected === true ? 'connected' : rec?.connected === false ? 'offline' : 'unknown'
         cells[id] = {
           state, managed: !!rec,
           ip: dev?.addresses[0] ?? rec?.address ?? dc?.ip ?? null,
@@ -487,7 +489,7 @@ export class RemoteAccessService {
           deviceName: dev?.name ?? rec?.hostname ?? null,
           mode: rec?.mode ?? null, routes: rec?.routes ?? [], exitNode: rec?.exitNode ?? false, lastError: rec?.lastError ?? null,
           adopted: rec?.adopted ?? false,
-          dnsName: dev?.dnsName ?? dc?.dnsName ?? null,
+          dnsName: dev?.dnsName ?? dc?.dnsName ?? (rec?.hostname?.includes('.') ? rec.hostname : null),
           expiresAt: dev?.expiresAt ?? dc?.keyExpiry ?? null,
           expiryWarning: !!dev?.expiresAt && !dev.keyExpiryDisabled && Date.parse(dev.expiresAt) - this.now() < EXPIRY_WARN_MS,
           keyExpiryDisabled: dev?.keyExpiryDisabled ?? false,

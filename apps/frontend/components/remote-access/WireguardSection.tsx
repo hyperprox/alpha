@@ -11,6 +11,7 @@ import { browserKeypair } from '@/lib/wg-keys'
 import { Badge, Btn, ConfirmDialog, Notice, fmtTime } from '@/components/updates/ui'
 import { Panel } from './panel'
 import { StatusDots, type DotState } from '@/components/visual/kit'
+import { InstallHandoffNotice, WgServerHeading, type PendingVpnEntry } from './InstallHandoff'
 
 type Send = <T>(path: string, method: string, body?: unknown) => Promise<ApiResult<T> | null>
 
@@ -50,12 +51,15 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
   const [shown, setShown] = useState<{ title: string; config: string } | null>(null)
   const [form, setForm] = useState<null | 'server' | { device: string } | 'connect' | 'router-device'>(null)
   const [f, setF] = useState<Record<string, any>>({})
+  const [pending, setPending] = useState<PendingVpnEntry[]>([])
 
   const load = useCallback(async () => {
     const r = await apiJson<{ servers: Server[]; peers: Peer[] }>('/api/vpn/wg')
     if (r.ok && r.body) { setServers(r.body.servers); setPeers(r.body.peers) }
     const rv = await apiJson<RouterView>('/api/vpn/wg/router')
     if (rv.ok && rv.body) { setRouter(rv.body); setRouterErr(null) } else { setRouter(null); setRouterErr(rv.error ?? null) }
+    const ip = await apiJson<{ entries: PendingVpnEntry[] }>('/api/vpn/install-pending')
+    setPending(ip.ok && ip.body ? ip.body.entries : [])
   }, [])
   useEffect(() => { load() }, [load])
   useEffect(() => {
@@ -72,15 +76,15 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
   return (
     <Panel title="WireGuard" right={<div className="flex gap-2"><Btn small onClick={() => setForm('server')}>New server…</Btn><Btn small onClick={() => setForm('connect')}>Connect a machine…</Btn></div>}>
       <div className="space-y-4">
+        <InstallHandoffNotice entries={pending}
+          retry={<Btn small onClick={async () => { done(await send('/api/vpn/install-pending/retry', 'POST'), 'Tried again.') }}>Retry now</Btn>} />
         {!servers.length && <p className="text-sm" style={{ color: 'var(--text-dim)' }}>No WireGuard server yet. A server runs in a container or VM; its key is made there and never leaves it.</p>}
         {servers.map(s => (
           <div key={s.id} className="rounded-md border" style={{ borderColor: 'var(--border)' }}>
-            <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2" style={{ borderColor: 'var(--border)' }}>
-              <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{nameOf(s.machineId)} · {s.iface}</span>
-              <span className="font-mono text-xs" style={{ color: 'var(--text-soft)' }}>{s.address} · {s.endpoint}</span>
-              {s.keyBackedUp && <Badge tone="muted" title="The server key also has a copy in the vault">key in vault</Badge>}
-              <span className="ml-auto"><Btn small kind="primary" onClick={() => setForm({ device: s.id })}>Add phone or laptop…</Btn></span>
-            </div>
+            <WgServerHeading name={nameOf(s.machineId)} iface={s.iface} address={s.address} endpoint={s.endpoint} keyBackedUp={s.keyBackedUp}
+              peers={peers.filter(p => p.serverId === s.id).length}
+              add={<Btn small kind="primary" onClick={() => setForm({ device: s.id })}>Add phone or laptop…</Btn>}
+              badge={<Badge tone="muted" title="The server key also has a copy in the vault">key in vault</Badge>} />
             {peers.some(p => p.serverId === s.id) && (
               <div className="px-3 py-2">
                 {/* A peer is working when it shook hands in the last five minutes, warning when it did once but not lately, off when never. */}
