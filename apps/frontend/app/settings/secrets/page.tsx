@@ -9,9 +9,9 @@ import { BusyNote, CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, Primary
 import { Details, HudHeader, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
 import ss from '../settings.module.css'
 import { exact, inWords } from '../when'
-import { deleteArmed, deleteOutcome } from '@/lib/vault-delete'
+import { deleteArmed, deleteBody, deleteOutcome } from '@/lib/vault-delete'
 
-interface SecretRow { name: string; updatedAt?: string; managed?: boolean; fields?: string[] }
+interface SecretRow { id: string; name: string; updatedAt?: string; managed?: boolean; fields?: string[] }
 
 const REVEAL_SECONDS = 30
 
@@ -19,8 +19,8 @@ const REVEAL_SECONDS = 30
 function parseRows(body: any): SecretRow[] {
   const list = Array.isArray(body) ? body : body?.secrets ?? body?.data ?? []
   if (!Array.isArray(list)) return []
-  return list.map((x: any) => typeof x === 'string' ? { name: x } : {
-    name: String(x.name), updatedAt: x.updatedAt,
+  return list.map((x: any) => typeof x === 'string' ? { id: '', name: x } : {
+    id: typeof x.id === 'string' ? x.id : '', name: String(x.name), updatedAt: x.updatedAt,
     managed: !!x.managed || String(x.name).startsWith('hyperprox:'),
     fields: Array.isArray(x.fields) ? x.fields.map(String) : undefined,
   })
@@ -181,7 +181,8 @@ function GenerateModal({ onDone, onClose }: { onDone: () => void; onClose: () =>
 }
 
 /** Delete one item: type its name to arm the button; the master password is asked again; it goes to the vault's trash. */
-function DeleteModal({ name, onDone, onClose }: { name: string; onDone: (message: string) => void; onClose: () => void }) {
+function DeleteModal({ item, onDone, onClose }: { item: { id: string; name: string }; onDone: (message: string) => void; onClose: () => void }) {
+  const name = item.name
   const [typed, setTyped] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -191,7 +192,7 @@ function DeleteModal({ name, onDone, onClose }: { name: string; onDone: (message
     e?.preventDefault()
     if (!deleteArmed(typed, name)) return
     setBusy(true); setError('')
-    const r = await apiJson('/api/secrets/delete', 'POST', { name })
+    const r = await apiJson('/api/secrets/delete', 'POST', deleteBody(item))
     setBusy(false)
     const out = deleteOutcome(r, name)
     if (out.kind === 'reconfirm') { setConfirming(true); return }
@@ -234,7 +235,7 @@ export default function SecretsPage() {
   const [revealed, setRevealed] = useState<null | { name: string; values: Array<[string, string]> }>(null)
   const [sendFor, setSendFor] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
-  const [deleteFor, setDeleteFor] = useState<string | null>(null)
+  const [deleteFor, setDeleteFor] = useState<SecretRow | null>(null)
   const [toast, setToast] = useState('')
   const toastTimer = useRef<ReturnType<typeof setTimeout>>()
 
@@ -297,7 +298,7 @@ export default function SecretsPage() {
         ) : rows.length > 0 ? (
           <ul className={ss.items} aria-label="Secrets">
             {rows.map(r => (
-              <li key={r.name} className={ss.item}>
+              <li key={r.id || r.name} className={ss.item}>
                 <div className={ss.itemHead}>
                   <span className={ss.itemName}>{r.name}</span>
                   <span className={ss.pills}>
@@ -313,7 +314,7 @@ export default function SecretsPage() {
                     <div className={ss.acts}>
                       <button type="button" onClick={() => reveal(r.name)} className={ss.mini} aria-label={`Reveal ${r.name}`}>Reveal</button>
                       <button type="button" onClick={() => setSendFor(r.name)} className={ss.mini} data-tone="accent" aria-label={`Send ${r.name}`}>Send</button>
-                      <button type="button" onClick={() => setDeleteFor(r.name)} className={ss.mini} data-tone="bad" aria-label={`Delete ${r.name}`}>Delete</button>
+                      <button type="button" onClick={() => setDeleteFor(r)} className={ss.mini} data-tone="bad" aria-label={`Delete ${r.name}`}>Delete</button>
                     </div>
                   )
                 )}
@@ -336,7 +337,7 @@ export default function SecretsPage() {
               </thead>
               <tbody>
                 {rows.map(r => (
-                  <tr key={r.name}>
+                  <tr key={r.id || r.name}>
                     <td className="break-all" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-bright)' }}>
                       {r.name}
                       {r.managed && <span className="ml-2"><Pill>system</Pill></span>}
@@ -358,7 +359,7 @@ export default function SecretsPage() {
       )}
       {revealed && <RevealModal name={revealed.name} values={revealed.values} onClose={() => setRevealed(null)} />}
       {sendFor && <SendModal name={sendFor} fieldNames={rows?.find(x => x.name === sendFor)?.fields} onClose={() => setSendFor(null)} />}
-      {deleteFor && <DeleteModal name={deleteFor} onClose={() => setDeleteFor(null)} onDone={m => { setDeleteFor(null); flash(m); load() }} />}
+      {deleteFor && <DeleteModal item={deleteFor} onClose={() => setDeleteFor(null)} onDone={m => { setDeleteFor(null); flash(m); load() }} />}
       {generating && <GenerateModal onClose={() => setGenerating(false)} onDone={() => { setGenerating(false); flash('Password generated and saved to the vault.'); load() }} />}
     </Page>
   )

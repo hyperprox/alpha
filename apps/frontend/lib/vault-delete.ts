@@ -6,6 +6,11 @@ export function deleteArmed(typed: string, name: string): boolean {
   return typed.trim() === name && name.length > 0
 }
 
+/** What POST /api/secrets/delete is sent: the chosen item's id (only it is trashed) and its name (a check). */
+export function deleteBody(item: { id: string; name: string }): { id: string; name: string } {
+  return { id: item.id, name: item.name }
+}
+
 export type DeleteOutcome =
   | { kind: 'done'; message: string }
   | { kind: 'reconfirm' }

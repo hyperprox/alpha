@@ -30,7 +30,8 @@ import { fastSignInEnabled, sessionRoot, vaultAdminToken, vaultCaCert, vaultPubl
 import { FastPathFailed, NativeSessionExpired, NativeVaultSession, NotMemberError, type DecryptedItem, type NativeSessionSnapshot } from './native'
 import { snapshotChanged } from './snapshot'
 import { GROUP_OPERATORS, GROUP_VIEWERS } from './bw-crypto'
-import { keyFingerprint, memberStatus, memberTypeFor, type GrantableRole, type VaultMember } from './members'
+import { VaultOwnerOnlyError, isOwnerOnlyRefusal, keyFingerprint, memberStatus, memberTypeFor, type GrantableRole, type VaultMember } from './members'
+import { INVITE_TTL_MS } from '../users/invitations'
 
 // ---------------------------------------------------------------------------
 //  Contract types
@@ -94,6 +95,11 @@ export interface VaultBroker {
   upsertSecrets(sid: string, items: Array<{ name: string; fields: Record<string, string>; notes?: string }>): Promise<SecretItem[]>
   upsertSecret(sid: string, name: string, fields: Record<string, string>, notes?: string): Promise<SecretItem>
   deleteSecret(sid: string, name: string): Promise<void>
+  /**
+   * Additive, optional: trash exactly one item of the HyperProx collection, by id (Settings → Secrets). Unlike
+   * deleteSecret, another item that happens to share its name is left alone. Returns what was trashed.
+   */
+  deleteSecretById?(sid: string, id: string): Promise<{ id: string; name: string }>
   createSend(sid: string, text: string, opts?: { hours?: number; maxViews?: number; password?: string }): Promise<{ url: string; expiresAt: string }>
   /**
    * Additive, optional: the open sessions as JSON-serialisable data, for the keyholder's snapshot
@@ -105,13 +111,26 @@ export interface VaultBroker {
   // ---- People (Settings → Users, ./members.ts). Additive, optional: a broker without them has no Users page. ----
   /** The HyperProx organization's members, with the session's own rights. */
   members?(sid: string): Promise<VaultMember[]>
-  /** Invite an email with a role. The vault sends nothing; the caller hands out a link. */
-  inviteMember?(sid: string, email: string, role: GrantableRole): Promise<void>
+  /**
+   * Invite an email with a role. The vault sends nothing; the caller hands out a link. An invitation the vault
+   * still holds for that email (invited, never joined) is reused, with the new role, instead of refused.
+   * A refusal because only the vault's owner may do it is a VaultOwnerOnlyError (members.ts).
+   */
+  inviteMember?(sid: string, email: string, role: GrantableRole): Promise<{ reused: boolean } | void>
   /** Confirm an accepted member whose key fingerprint the admin compared. */
   confirmMember?(sid: string, memberId: string, fingerprint: string): Promise<void>
   setMemberRole?(sid: string, memberId: string, role: GrantableRole): Promise<void>
-  /** The join page, step 1: register an invited email with its master password. No session involved. */
-  registerInvitee?(email: string, masterPassword: string, opts?: { alreadyRegistered?: boolean }): Promise<{ totpSecret: string; otpauthUri: string; fingerprint: string }>
+  /**
+   * A withdrawn or expired invitation: take that email's membership out of the organization, if it never became a
+   * confirmed member. False when there was nothing to remove. VaultOwnerOnlyError as for inviteMember.
+   */
+  removePendingMember?(sid: string, email: string): Promise<boolean>
+  /**
+   * The join page, step 1: register an invited email with its master password. No session involved.
+   * `onRegistered` runs as soon as the account exists (before the sign-in that follows can fail), so a retry
+   * skips registering; an account the vault says already exists counts as registered and the sign-in checks it.
+   */
+  registerInvitee?(email: string, masterPassword: string, opts?: { alreadyRegistered?: boolean; onRegistered?: () => void }): Promise<{ totpSecret: string; otpauthUri: string; fingerprint: string }>
   /** The join page, step 2: turn on two-step login with the first code. */
   confirmInviteeTotp?(email: string, masterPassword: string, code: string): Promise<void>
 }
@@ -124,6 +143,14 @@ type SessionSnapshot =
 // ---------------------------------------------------------------------------
 //  Helpers
 // ---------------------------------------------------------------------------
+
+/** The vault's "only Owners can ..." refusal of a people change, as the error the routes answer 403 with. */
+async function ownerOnly<T>(p: Promise<T>): Promise<T> {
+  try { return await p } catch (err) {
+    if (err instanceof VaultHttpError && isOwnerOnlyRefusal(err.message)) throw new VaultOwnerOnlyError()
+    throw err
+  }
+}
 
 export function roleFromMemberType(type: number): Role {
   switch (type) {
@@ -188,7 +215,7 @@ function itemToSecret(it: any | DecryptedItem): SecretItem {
 //  Implementation
 // ---------------------------------------------------------------------------
 
-class CliVaultBroker implements VaultBroker {
+export class CliVaultBroker implements VaultBroker {
   private sessions = new Map<string, Session>()
   private pendingTotp = new Map<string, string>() // email -> secret, between bootstrap and confirm
   /** Emails whose fast sign-in failed after the vault accepted them: the CLI for the rest of this process. */
@@ -514,12 +541,33 @@ class CliVaultBroker implements VaultBroker {
     })
   }
 
-  async inviteMember(sid: string, email: string, role: GrantableRole): Promise<void> {
+  async inviteMember(sid: string, email: string, role: GrantableRole): Promise<{ reused: boolean }> {
     const e = normalizeEmail(email)
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) throw new Error('a valid email address is required')
     return this.withFast(sid, async v => {
-      if ((await v.orgMembers()).some(m => normalizeEmail(String(m.email ?? '')) === e)) throw new Error(`${e} is already a member`)
-      await v.orgInvite(e, memberTypeFor(role), await this.groupsFor(v, role))
+      const existing = (await v.orgMembers()).find(m => normalizeEmail(String(m.email ?? '')) === e)
+      const type = memberTypeFor(role)
+      if (existing) {
+        // Invited before and never joined (a lost or expired link): the same membership, with the role asked for now.
+        if (memberStatus(Number(existing.status)) !== 'invited') throw new Error(`${e} is already a member`)
+        if (Number(existing.type) !== type) await ownerOnly(v.orgEdit(String(existing.id), type, await this.groupsFor(v, role)))
+        return { reused: true }
+      }
+      await ownerOnly(v.orgInvite(e, type, await this.groupsFor(v, role)))
+      return { reused: false }
+    })
+  }
+
+  async removePendingMember(sid: string, email: string): Promise<boolean> {
+    const e = normalizeEmail(email)
+    return this.withFast(sid, async v => {
+      const m = (await v.orgMembers()).find(x => normalizeEmail(String(x.email ?? '')) === e)
+      if (!m) return false
+      // A confirmed member is a real user now; the owner is never removed. Neither goes with an invitation.
+      const status = memberStatus(Number(m.status))
+      if (Number(m.type) === MEMBER_TYPE.Owner || (status !== 'invited' && status !== 'accepted')) return false
+      await ownerOnly(v.orgRemove(String(m.id)))
+      return true
     })
   }
 
@@ -529,7 +577,7 @@ class CliVaultBroker implements VaultBroker {
       if (!m) throw new Error('no such member')
       if (memberStatus(Number(m.status)) !== 'accepted') throw new Error('only a member who has joined and is waiting can be confirmed')
       if (m.twoFactorEnabled !== true) throw new Error('this person has not turned on two-step login yet; they finish it on the join page')
-      await v.orgConfirm(memberId, String(m.userId), fingerprint)
+      await ownerOnly(v.orgConfirm(memberId, String(m.userId), fingerprint))
     })
   }
 
@@ -543,14 +591,29 @@ class CliVaultBroker implements VaultBroker {
     })
   }
 
-  private pendingInvitee = new Map<string, string>() // email -> TOTP secret, between join steps 1 and 2
+  // email -> TOTP secret, between join steps 1 and 2. An entry lives no longer than the invitation it came from.
+  private pendingInvitee = new Map<string, { secret: string; at: number }>()
 
-  async registerInvitee(email: string, masterPassword: string, opts: { alreadyRegistered?: boolean } = {}) {
+  private pendingInviteeSecret(e: string): string | undefined {
+    const now = Date.now()
+    for (const [k, v] of this.pendingInvitee) if (now - v.at > INVITE_TTL_MS) this.pendingInvitee.delete(k)
+    return this.pendingInvitee.get(e)?.secret
+  }
+
+  async registerInvitee(email: string, masterPassword: string, opts: { alreadyRegistered?: boolean; onRegistered?: () => void } = {}) {
     const e = normalizeEmail(email)
     if (masterPassword.length < 12) throw new Error('the master password must be at least 12 characters')
     const api = this.api()
-    // Already registered (HyperProx restarted between the two steps): the sign-in below checks the password.
-    if (!opts.alreadyRegistered) await registerAccount(api, e, masterPassword)
+    // Already registered (HyperProx restarted between the two steps, or the sign-in below failed last time):
+    // the sign-in checks the password.
+    if (!opts.alreadyRegistered) {
+      try {
+        await registerAccount(api, e, masterPassword)
+      } catch (err) {
+        if (!(err instanceof VaultHttpError && /already exists/i.test(err.message))) throw err
+      }
+      opts.onRegistered?.()
+    }
     const mk = await makeMasterKey(masterPassword, e)
     const hash = await masterPasswordHash(mk, masterPassword)
     mk.fill(0)
@@ -560,13 +623,14 @@ class CliVaultBroker implements VaultBroker {
     const pub = keys?.publicKey ?? keys?.PublicKey
     if (!pub) throw new Error('the new account has no public key')
     const secret = newTotpSecret()
-    this.pendingInvitee.set(e, secret)
+    this.pendingInviteeSecret(e) // prunes stale entries
+    this.pendingInvitee.set(e, { secret, at: Date.now() })
     return { totpSecret: secret, otpauthUri: otpauthUri(secret, e), fingerprint: keyFingerprint(Buffer.from(String(pub), 'base64')) }
   }
 
   async confirmInviteeTotp(email: string, masterPassword: string, code: string): Promise<void> {
     const e = normalizeEmail(email)
-    const secret = this.pendingInvitee.get(e)
+    const secret = this.pendingInviteeSecret(e)
     if (!secret) throw new BootstrapNotPendingError()
     if (!/^\d{6}$/.test(code.trim()) || !totpMatches(secret, code)) throw new VaultAuthError('totp_invalid')
     const api = this.api()
@@ -727,6 +791,19 @@ class CliVaultBroker implements VaultBroker {
         const r = await runBw(['delete', 'item', String(it.id)], { dir: s.dir, session: s.sessionKey })
         if (r.code !== 0) throw new Error(`vault delete failed: ${bwErrorMessage(r)}`)
       }
+    })
+  }
+
+  async deleteSecretById(sid: string, id: string): Promise<{ id: string; name: string }> {
+    return this.withSession(sid, async s => {
+      if (s.kind === 'fast') return s.vault.deleteItem(id)
+      await this.sync(s)
+      const it = (await this.rawItems(s)).find(x => String(x?.id) === id)
+      if (!it) throw new Error('no such item in the HyperProx collection')
+      // Moves to the vault's trash (recoverable from a Bitwarden client), not a hard delete.
+      const r = await runBw(['delete', 'item', String(it.id)], { dir: s.dir, session: s.sessionKey })
+      if (r.code !== 0) throw new Error(`vault delete failed: ${bwErrorMessage(r)}`)
+      return { id, name: String(it.name ?? '') }
     })
   }
 

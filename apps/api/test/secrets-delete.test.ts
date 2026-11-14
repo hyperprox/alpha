@@ -9,6 +9,15 @@ import { needsReconfirm, requiredRole } from '../src/lib/roles'
 import { setAuditSink } from '../src/lib/audit'
 
 const broker = new FakeBroker()
+// The one-item delete the route needs; the shared fake keeps items by name, so it is added here.
+const trashed: string[] = []
+;(broker as any).deleteSecretById = async (_sid: string, id: string) => {
+  const it = [...broker.items.values()].find(i => i.id === id)
+  if (!it) throw new Error('no such item')
+  trashed.push(id)
+  broker.items.delete(it.name)
+  return { id, name: it.name }
+}
 broker.addUser('owner@example.com', 'owner master password', 'owner')
 broker.addUser('admin@example.com', 'admin master password', 'admin')
 broker.addUser('viewer@example.com', 'viewer master password', 'viewer')
@@ -19,7 +28,8 @@ setAuditSink({ write: async row => { if (auditFails) throw new Error('db down');
 beforeEach(async () => { await resetLock(); audits.length = 0; auditFails = false })
 after(async () => { await resetLock(); await (await appP).close(); setAuditSink(null) })
 
-const del = async (cookie: string, name: string) => (await appP).inject({ method: 'POST', url: '/api/secrets/delete', headers: { cookie }, payload: { name } })
+const idOf = (name: string) => broker.items.get(name)?.id ?? 'no-such-id'
+const del = async (cookie: string, name: string, id = idOf(name)) => (await appP).inject({ method: 'POST', url: '/api/secrets/delete', headers: { cookie }, payload: { id, name } })
 const reconfirm = async (cookie: string, password: string) => (await appP).inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password } })
 
 test('the matrix: admin, and re-confirmed', () => {
@@ -41,12 +51,14 @@ test('a viewer cannot delete; an admin must re-confirm first; then the item goes
   await reconfirm(a.cookie, 'admin master password')
   const ok = await del(a.cookie, 'router-admin')
   assert.equal(ok.statusCode, 200, ok.body)
-  assert.deepEqual(ok.json().data, { name: 'router-admin', trashed: true })
+  assert.deepEqual(ok.json().data, { id: 'r1', name: 'router-admin', trashed: true })
   assert.ok(!ok.body.includes('s3cret-value'))
   assert.equal(broker.items.has('router-admin'), false)
   assert.equal(audits.length, 1)
   assert.equal(audits[0].action, 'secret.delete')
   assert.equal(audits[0].resource, 'vault:router-admin')
+  assert.equal(audits[0].details?.id, 'r1')
+  assert.equal(audits[0].details?.name, 'router-admin')
   assert.ok(!JSON.stringify(audits).includes('s3cret-value'), 'the value is never audited')
   // Gone from the cached list too.
   const list = await (await appP).inject({ method: 'GET', url: '/api/secrets', headers: { cookie: a.cookie } })
@@ -72,4 +84,33 @@ test('no audit row, no delete; HyperProx settings and unknown names are refused'
 
   assert.equal((await del(o.cookie, 'no-such-thing')).statusCode, 404)
   assert.equal((await del(o.cookie, '')).statusCode, 400)
+})
+
+test('only the chosen item goes: a same-named twin stays; a mismatched or missing id is refused', async () => {
+  const o = await signIn(await appP, 'owner@example.com', 'owner master password')
+  await reconfirm(o.cookie, 'owner master password')
+  const twins = [
+    { id: 't1', name: 'switch-admin', fields: { password: 'one' } },
+    { id: 't2', name: 'switch-admin', fields: { password: 'two' } },
+  ]
+  const realList = broker.listSecrets.bind(broker)
+  const realDel = (broker as any).deleteSecretById
+  const asked: string[] = []
+  broker.listSecrets = async () => twins.map(t => ({ ...t, fields: { ...t.fields } }))
+  ;(broker as any).deleteSecretById = async (_sid: string, id: string) => { asked.push(id); return { id, name: 'switch-admin' } }
+  try {
+    const r = await del(o.cookie, 'switch-admin', 't2')
+    assert.equal(r.statusCode, 200, r.body)
+    assert.deepEqual(asked, ['t2'], 'exactly the selected id, not every item named switch-admin')
+    assert.equal(audits.length, 1)
+    assert.equal(audits[0].details?.id, 't2')
+    assert.equal(audits[0].details?.name, 'switch-admin')
+    assert.equal((await del(o.cookie, 'other-name', 't1')).statusCode, 404, 'the name must match the id')
+    assert.equal((await del(o.cookie, 'switch-admin', 'gone')).statusCode, 404)
+    assert.equal((await (await appP).inject({ method: 'POST', url: '/api/secrets/delete', headers: { cookie: o.cookie }, payload: { name: 'switch-admin' } })).statusCode, 400, 'the id is required')
+    assert.deepEqual(asked, ['t2'])
+  } finally {
+    broker.listSecrets = realList
+    ;(broker as any).deleteSecretById = realDel
+  }
 })

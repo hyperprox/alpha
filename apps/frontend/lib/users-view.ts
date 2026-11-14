@@ -13,11 +13,20 @@ export const ROLE_WORDS: Record<Role, string> = {
   viewer: 'Viewer: read only',
 }
 
-/** The roles this person may hand out: an admin invites operators and viewers; the owner may also invite admins. */
+/**
+ * The roles this person may hand out. The vault lets only its owner add, confirm or remove anyone who manages
+ * others (an operator or admin), so an admin invites viewers and the owner invites anyone.
+ */
 export function grantableBy(me: Role | null | undefined): Grantable[] {
   if (me === 'owner') return ['admin', 'operator', 'viewer']
-  if (me === 'admin') return ['operator', 'viewer']
+  if (me === 'admin') return ['viewer']
   return []
+}
+
+/** Whether this person may confirm, or withdraw the invitation of, someone with this role (the same vault rule). */
+export function managesRole(me: Role | null | undefined, role: Role): boolean {
+  if (me === 'owner') return true
+  return me === 'admin' && role === 'viewer'
 }
 
 /** What the row says and offers. */

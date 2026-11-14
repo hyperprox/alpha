@@ -388,6 +388,20 @@ export class NativeVaultSession {
     for (const c of matches) await this.call('PUT', `/api/ciphers/${c.id}/delete`)
   }
 
+  /**
+   * Moves one item, by its id, to the vault's trash. Only an item of the HyperProx collection: an id from anywhere
+   * else (or a stale one) is refused rather than trashed. Returns the name it had, for the audit trail.
+   */
+  async deleteItem(id: string): Promise<{ id: string; name: string }> {
+    if (!VAULT_ID.test(id)) throw new Error('not a vault item id')
+    const c = (await this.collectionCiphers(true)).find(x => String(x?.id) === id)
+    if (!c) throw new Error('no such item in the HyperProx collection')
+    const name = this.decrypt(c).name
+    this.cache = null
+    await this.call('PUT', `/api/ciphers/${id}/delete`)
+    return { id, name }
+  }
+
   // ---- Sends --------------------------------------------------------------
 
   /** A text Send, encrypted as Bitwarden clients do; returns the access id and the secret URL fragment. */
@@ -470,6 +484,12 @@ export class NativeVaultSession {
     await this.call('PUT', this.orgPath(`/users/${memberId}`), {
       type, groups: groupIds, collections: [], accessAll: type === MEMBER_TYPE.Admin, permissions: {},
     })
+  }
+
+  /** Remove a member from the organization (a withdrawn or expired invitation). */
+  async orgRemove(memberId: string): Promise<void> {
+    if (!VAULT_ID.test(memberId)) throw new Error('not a vault member id')
+    await this.call('DELETE', this.orgPath(`/users/${memberId}`))
   }
 
   // ---- password check / end -----------------------------------------------

@@ -90,7 +90,7 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
  * The host the browser asked for. nginx and Next's rewrite proxy, both on this machine, pass it on as
  * X-Forwarded-Host (nginx replaces whatever the client sent); from anywhere else only Host counts.
  */
-function requestHost(req: FastifyRequest): string {
+export function requestHost(req: FastifyRequest): string {
   const h = req.headers as Record<string, any>
   const fwd = typeof h['x-forwarded-host'] === 'string' ? h['x-forwarded-host'].split(',')[0].trim() : ''
   if (fwd && LOOPBACK.has(req.socket?.remoteAddress ?? '')) return fwd.toLowerCase()

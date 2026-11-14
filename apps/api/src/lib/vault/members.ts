@@ -29,6 +29,25 @@ export function memberTypeFor(role: GrantableRole): number {
   return role === 'admin' ? MEMBER_TYPE.Admin : role === 'operator' ? MEMBER_TYPE.Manager : MEMBER_TYPE.User
 }
 
+/**
+ * Vaultwarden lets only the organization's Owner invite, confirm or remove anyone whose membership type is not
+ * User (a Manager or Admin). In HyperProx terms: only the owner adds, confirms or withdraws an operator or admin.
+ */
+export function needsVaultOwner(role: GrantableRole | 'owner'): boolean {
+  return role === 'owner' || memberTypeFor(role) !== MEMBER_TYPE.User
+}
+
+/** The vault refused a people change because only its Owner may make it. The routes answer 403 with this message. */
+export class VaultOwnerOnlyError extends Error {
+  constructor(message = 'Only the owner can add, confirm or remove an operator or admin.') {
+    super(message)
+    this.name = 'VaultOwnerOnlyError'
+  }
+}
+
+/** Vaultwarden's own refusals of that kind ("Only Owners can invite/confirm/delete Managers, Admins or Owners"). */
+export const isOwnerOnlyRefusal = (message: unknown): boolean => typeof message === 'string' && /only owners can/i.test(message)
+
 export type MemberStatus = 'invited' | 'accepted' | 'confirmed' | 'revoked'
 export function memberStatus(n: number): MemberStatus {
   return n === 2 ? 'confirmed' : n === 1 ? 'accepted' : n === 0 ? 'invited' : 'revoked'

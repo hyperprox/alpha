@@ -1,7 +1,7 @@
 // Settings → Secrets delete: the button arms only on the exact name, and each API answer means one thing.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deleteArmed, deleteOutcome } from '../lib/vault-delete'
+import { deleteArmed, deleteBody, deleteOutcome } from '../lib/vault-delete'
 
 test('armed only when the name is typed exactly', () => {
   assert.equal(deleteArmed('', 'router-admin'), false)
@@ -17,4 +17,8 @@ test('answers: done, re-confirm, error', () => {
   const managed = deleteOutcome({ ok: false, status: 400, code: 'managed', error: 'This is one of HyperProx\'s own settings.' }, 'x')
   assert.deepEqual(managed, { kind: 'error', message: 'This is one of HyperProx\'s own settings.' })
   assert.equal(deleteOutcome({ ok: false, status: 403, code: 'forbidden', error: 'This needs the admin role' }, 'x').kind, 'error')
+})
+
+test('the request names the chosen item by id, with its name as a check', () => {
+  assert.deepEqual(deleteBody({ id: 'id-2', name: 'router-admin', updatedAt: 'x' } as any), { id: 'id-2', name: 'router-admin' })
 })

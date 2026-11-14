@@ -12,7 +12,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
 import ss from '../settings.module.css'
-import { ROLE_WORDS, grantableBy, memberState, sameFingerprint, type Grantable, type Member, type Role } from '@/lib/users-view'
+import { ROLE_WORDS, grantableBy, managesRole, memberState, sameFingerprint, type Grantable, type Member, type Role } from '@/lib/users-view'
 
 interface Invitation { id: string; email: string; role: Grantable; by: string; expiresAt: string; joined: boolean }
 
@@ -68,6 +68,7 @@ function InviteModal({ me, onClose, onDone }: { me: Role; onClose: () => void; o
               {roles.map(r => <option key={r} value={r}>{ROLE_WORDS[r]}</option>)}
             </select></div>
           <p className="text-xs" style={{ margin: 0, color: 'var(--text-muted)' }}>No email is sent: HyperProx gives you a one-time link to pass on.</p>
+          {me !== 'owner' && <p className="text-xs" style={{ margin: 0, color: 'var(--text-muted)' }}>Only the owner can invite an operator or admin.</p>}
           {error && <Notice kind="error">{error}</Notice>}
           <div className="flex gap-2 justify-end">
             <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
@@ -187,7 +188,7 @@ export default function UsersPage() {
                   </div>
                   <p className={ss.meta}>{ROLE_WORDS[m.role]}{m.twoFactor ? ' · two-step login on' : ''}</p>
                   <div className={ss.acts}>
-                    {st.canConfirm && <button type="button" className={ss.mini} data-tone="accent" onClick={() => setConfirmFor(m)}>Confirm</button>}
+                    {st.canConfirm && managesRole(role, m.role) && <button type="button" className={ss.mini} data-tone="accent" onClick={() => setConfirmFor(m)}>Confirm</button>}
                     {role === 'owner' && m.role !== 'owner' && !self && m.status !== 'revoked' && (
                       <select aria-label={`Role for ${m.email}`} value={m.role} onChange={e => changeRole(m, e.target.value as Grantable)} style={{ ...INPUT, width: 'auto', padding: '4px 8px', fontSize: 13 }}>
                         {(['admin', 'operator', 'viewer'] as Grantable[]).map(r => <option key={r} value={r}>{r}</option>)}
@@ -208,7 +209,7 @@ export default function UsersPage() {
               <li key={i.id} className={ss.item}>
                 <div className={ss.itemHead}><span className={ss.itemName}>{i.email}</span><span className={ss.pills}><Pill>{i.role}</Pill>{i.joined && <Pill tone="warn">joining</Pill>}</span></div>
                 <p className={ss.meta}>by {i.by}, works until {new Date(i.expiresAt).toLocaleString()}</p>
-                <div className={ss.acts}><button type="button" className={ss.mini} data-tone="bad" onClick={() => withdraw(i)}>Withdraw</button></div>
+                {managesRole(role, i.role) && <div className={ss.acts}><button type="button" className={ss.mini} data-tone="bad" onClick={() => withdraw(i)}>Withdraw</button></div>}
               </li>
             ))}
           </ul>

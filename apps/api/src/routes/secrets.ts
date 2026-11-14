@@ -51,6 +51,7 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
         ok: true,
         data: items
           .map(i => ({
+            id:        i.id,
             name:      i.name,
             managed:   i.name.startsWith(ITEM_PREFIX),
             fields:    Object.keys(i.fields),
@@ -105,30 +106,43 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     })
 
-  // POST /api/secrets/delete { name } — owner/admin, re-confirmed (gate, lib/roles.ts), audited first: no audit row,
-  // no delete. HyperProx's own settings (hyperprox:…) are removed where they are used, never from here, so a
-  // stored login or key cannot vanish from under the feature that needs it.
-  fastify.post<{ Body: { name?: string } }>('/delete', async (req, reply) => {
+  // POST /api/secrets/delete { id, name } — owner/admin, re-confirmed (gate, lib/roles.ts), audited first: no audit
+  // row, no delete. Exactly the item chosen, by its id: another item that happens to share the name is left alone
+  // (the name must still match, so a stale page cannot trash something renamed since). HyperProx's own settings
+  // (hyperprox:…) are removed where they are used, never from here, so a stored login or key cannot vanish from
+  // under the feature that needs it.
+  fastify.post<{ Body: { id?: unknown; name?: unknown } }>('/delete', async (req, reply) => {
+    const id = typeof req.body?.id === 'string' ? req.body.id : ''
     const name = typeof req.body?.name === 'string' ? req.body.name : ''
-    if (!name) return reply.status(400).send({ ok: false, error: 'name is required' })
+    if (!name || !id) return reply.status(400).send({ ok: false, error: 'id and name are required' })
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(id)) return reply.status(404).send({ ok: false, error: 'No such secret' })
     if (name.startsWith(ITEM_PREFIX)) {
       return reply.status(400).send({ ok: false, code: 'managed', error: 'This is one of HyperProx\'s own settings. Remove it where it is used (its plug-in or Settings page), not here.' })
     }
-    const item = await find(req.session!.sid, name)
-    if (!item) return reply.status(404).send({ ok: false, error: 'No such secret' })
+    const broker = getBroker()
+    if (!broker.deleteSecretById) return reply.status(501).send({ ok: false, error: 'This vault connection cannot delete one item by itself.' })
+    let all: SecretItem[]
+    try { all = await broker.listSecrets(req.session!.sid) }
+    catch (e: any) { return reply.status(502).send({ ok: false, error: e?.message ?? 'Could not read the vault' }) }
+    const item = all.find(i => i.id === id)
+    if (!item || item.name !== name) return reply.status(404).send({ ok: false, error: 'No such secret (it may have been changed or deleted since the page loaded)' })
     try {
-      await auditOrThrow('secret.delete', `vault:${name}`, { by: req.session!.email, fields: Object.keys(item.fields) })
-    } catch (e: any) {
+      await auditOrThrow('secret.delete', `vault:${name}`, { by: req.session!.email, id: item.id, name: item.name, fields: Object.keys(item.fields) })
+    } catch {
       return reply.status(503).send({ ok: false, error: 'The audit log could not be written, so nothing was deleted. Try again.' })
     }
     try {
-      await getBroker().deleteSecret(req.session!.sid, name)
+      await broker.deleteSecretById(req.session!.sid, item.id)
     } catch (e: any) {
       return reply.status(502).send({ ok: false, error: e?.message ?? 'Could not delete from the vault' })
     }
-    removeCachedSecret(name)
-    req.log.info({ name, by: req.session!.email }, '[secrets] deleted')
-    return { ok: true, data: { name, trashed: true } }
+    // The cache is keyed by name. If it held this item, a same-named item that is still there takes its place.
+    if (cachedSecret(name)?.id === item.id) {
+      const twin = all.find(i => i.name === name && i.id !== item.id)
+      if (twin) putCachedSecret(twin); else removeCachedSecret(name)
+    }
+    req.log.info({ id: item.id, name, by: req.session!.email }, '[secrets] deleted')
+    return { ok: true, data: { id: item.id, name, trashed: true } }
   })
 
   // POST /api/secrets/generate { name, purpose, length? } — owner/admin. The value is never returned.

@@ -56,3 +56,138 @@ test('invite and edit: the membership type, the group, and admin-only access to 
   await assert.rejects(s.orgEdit('../../admin', 1, []), /not a vault member id/)
   await assert.rejects(s.userPublicKey('x/../y'), /not a vault user id/)
 })
+
+// ---- review fixes: the broker's people calls and one-item delete -------------------------------------------
+
+import { CliVaultBroker } from '../src/lib/vault/broker'
+import { VaultHttpError, encString2, symKeyFromBytes } from '../src/lib/vault/bw-crypto'
+import { VaultOwnerOnlyError } from '../src/lib/vault/members'
+import { INVITE_TTL_MS } from '../src/lib/users/invitations'
+
+const SID = 'a'.repeat(32)
+const INVITED = '66666666-6666-4666-8666-666666666666'
+
+/** A broker holding one fast session whose vault is a recording fake of the organization calls. */
+function brokerWith(members: any[], opts: { refuse?: string } = {}) {
+  const calls: Array<[string, ...unknown[]]> = []
+  const refuse = (_: string) => { if (opts.refuse) throw new VaultHttpError(400, opts.refuse) }
+  const vault: any = {
+    orgMembers: async () => members,
+    orgGroups: async () => [{ id: 'g-op', name: 'HyperProx operators' }, { id: 'g-view', name: 'HyperProx viewers' }],
+    orgInvite: async (email: string, type: number, groups: string[]) => { refuse('x'); calls.push(['invite', email, type, groups]) },
+    orgEdit: async (id: string, type: number, groups: string[]) => { refuse('x'); calls.push(['edit', id, type, groups]) },
+    orgRemove: async (id: string) => { refuse('x'); calls.push(['remove', id]) },
+    orgConfirm: async (id: string) => { refuse('x'); calls.push(['confirm', id]) },
+    close() {},
+  }
+  const b = new CliVaultBroker() as any
+  b.sessions.set(SID, { kind: 'fast', sid: SID, email: 'owner@example.com', role: 'owner', userId: 'owner-id', vault, queue: Promise.resolve() })
+  return { b: b as CliVaultBroker, calls: () => calls }
+}
+
+test('re-invite: an invitation the vault still holds is reused (with the new role), not refused or doubled', async () => {
+  const { b, calls } = brokerWith([{ id: INVITED, email: 'Friend@Example.com', status: 0, type: 2 }])
+  assert.deepEqual(await b.inviteMember(SID, 'friend@example.com', 'viewer'), { reused: true })
+  assert.deepEqual(calls(), [], 'same role: nothing to change')
+  assert.deepEqual(await b.inviteMember(SID, 'friend@example.com', 'operator'), { reused: true })
+  assert.deepEqual(calls(), [['edit', INVITED, 3, ['g-op']]])
+  const joined = brokerWith([{ id: INVITED, email: 'friend@example.com', status: 1, type: 2 }])
+  await assert.rejects(joined.b.inviteMember(SID, 'friend@example.com', 'viewer'), /already a member/)
+  const fresh = brokerWith([])
+  assert.deepEqual(await fresh.b.inviteMember(SID, 'new@example.com', 'viewer'), { reused: false })
+  assert.deepEqual(fresh.calls(), [['invite', 'new@example.com', 2, ['g-view']]])
+})
+
+test('withdraw/expiry: an invited or joined-but-unconfirmed membership is removed; a confirmed one or the owner never', async () => {
+  const { b, calls } = brokerWith([
+    { id: INVITED, email: 'inv@example.com', status: 0, type: 2 },
+    { id: MEMBER, email: 'acc@example.com', status: 1, type: 3 },
+    { id: USER, email: 'conf@example.com', status: 2, type: 2 },
+    { id: ORG, email: 'owner@example.com', status: 2, type: 0 },
+  ])
+  assert.equal(await b.removePendingMember(SID, 'INV@example.com'), true)
+  assert.equal(await b.removePendingMember(SID, 'acc@example.com'), true)
+  assert.equal(await b.removePendingMember(SID, 'conf@example.com'), false)
+  assert.equal(await b.removePendingMember(SID, 'owner@example.com'), false)
+  assert.equal(await b.removePendingMember(SID, 'nobody@example.com'), false)
+  assert.deepEqual(calls(), [['remove', INVITED], ['remove', MEMBER]])
+})
+
+test('the vault\'s "only Owners can ..." refusal becomes VaultOwnerOnlyError; other errors pass through', async () => {
+  const msg = 'Only Owners can invite Managers, Admins or Owners'
+  await assert.rejects(brokerWith([], { refuse: msg }).b.inviteMember(SID, 'x@example.com', 'operator'), VaultOwnerOnlyError)
+  await assert.rejects(brokerWith([{ id: INVITED, email: 'x@example.com', status: 0, type: 3 }], { refuse: 'Only Owners can delete Admins or Owners' }).b.removePendingMember(SID, 'x@example.com'), VaultOwnerOnlyError)
+  const acc = [{ id: MEMBER, userId: USER, email: 'x@example.com', status: 1, type: 3, twoFactorEnabled: true }]
+  await assert.rejects(brokerWith(acc, { refuse: 'Only Owners can confirm Managers, Admins or Owners' }).b.confirmMember(SID, MEMBER, 'f'), VaultOwnerOnlyError)
+  await assert.rejects(brokerWith([], { refuse: 'Something else' }).b.inviteMember(SID, 'x@example.com', 'viewer'), (e: any) => e instanceof VaultHttpError)
+})
+
+test('join step 1: "already exists" counts as registered; onRegistered runs before the sign-in; pending entries expire', async () => {
+  const rsa = generateRsaKeyPair()
+  const seen: string[] = []
+  let exists = false
+  const api: any = {
+    async api(method: string, p: string) {
+      seen.push(`${method} ${p}`)
+      if (p.endsWith('/send-verification-email')) return 'reg-token'
+      if (p.endsWith('/register/finish')) { if (exists) throw new VaultHttpError(400, 'Registration not allowed or user already exists'); exists = true; return {} }
+      if (p === '/api/accounts/keys') return { publicKey: rsa.publicDer.toString('base64') }
+      return {}
+    },
+    async passwordLogin() { seen.push('login'); return { accessToken: 'at' } },
+  }
+  const b = new CliVaultBroker() as any
+  b.api = () => api
+  let marked = 0
+  const r1 = await b.registerInvitee('j@example.com', 'a long master password', { onRegistered: () => { marked++; seen.push('marked') } })
+  assert.equal(r1.fingerprint, keyFingerprint(rsa.publicDer))
+  assert.ok(seen.indexOf('marked') < seen.indexOf('login'), 'marked before the sign-in that could fail')
+  // A retry that registers again (the record was not marked): the vault's "already exists" is not a failure.
+  const r2 = await b.registerInvitee('j@example.com', 'a long master password', { onRegistered: () => { marked++ } })
+  assert.equal(marked, 2)
+  assert.ok(r2.otpauthUri.startsWith('otpauth://'))
+  // Other refusals still fail.
+  api.api = async (_m: string, p: string) => { if (p.endsWith('/send-verification-email')) return 'reg-token'; throw new VaultHttpError(400, 'Email domain not allowed') }
+  await assert.rejects(b.registerInvitee('k@example.com', 'a long master password', {}), /domain not allowed/)
+  // The secret between steps 1 and 2 does not outlive the invitation.
+  b.pendingInvitee.set('old@example.com', { secret: 'S', at: Date.now() - INVITE_TTL_MS - 1 })
+  b.pendingInvitee.set('new@example.com', { secret: 'S', at: Date.now() })
+  assert.equal(b.pendingInviteeSecret('old@example.com'), undefined)
+  assert.equal(b.pendingInvitee.has('old@example.com'), false)
+  assert.equal(b.pendingInviteeSecret('new@example.com'), 'S')
+})
+
+test('remove a member: DELETE on the organization\'s users path, never a crafted id', async () => {
+  const { s, calls } = session(generateRsaKeyPair().publicDer)
+  await s.orgRemove(MEMBER)
+  assert.deepEqual(calls.at(-1), { method: 'DELETE', path: `/api/organizations/${ORG}/users/${MEMBER}`, body: undefined })
+  await assert.rejects(s.orgRemove('../x'), /not a vault member id/)
+})
+
+test('delete one item: only the chosen id is trashed, never a same-named twin, never an item outside the collection', async () => {
+  const COL = '77777777-7777-4777-8777-777777777777'
+  const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const OUT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const orgRaw = crypto.randomBytes(64)
+  const orgKey = symKeyFromBytes(orgRaw)
+  const enc = (v: string) => encString2(Buffer.from(v), orgKey)
+  const ciphers = [
+    { id: A, organizationId: ORG, collectionIds: [COL], name: enc('router-admin'), fields: [] },
+    { id: B, organizationId: ORG, collectionIds: [COL], name: enc('router-admin'), fields: [] },
+    { id: OUT, organizationId: ORG, collectionIds: ['elsewhere'], name: enc('router-admin'), fields: [] },
+  ]
+  const calls: string[] = []
+  const api: any = { async api(method: string, p: string) { calls.push(`${method} ${p}`); return p.startsWith('/api/sync') ? { ciphers } : {} } }
+  const k = (x: Buffer) => ({ enc: x.subarray(0, 32).toString('base64'), mac: x.subarray(32).toString('base64') })
+  const s = NativeVaultSession.fromSnapshot(api, {
+    email: 'owner@example.com', userId: 'owner-id', orgId: ORG, memberType: 0, collectionId: COL, kdf: { kdf: 0, iterations: 600000 },
+    localHash: crypto.randomBytes(32).toString('base64'), userKey: k(crypto.randomBytes(64)), orgKey: k(orgRaw),
+    accessToken: 'at', refreshToken: 'rt', expiresAt: Date.now() + 3_600_000,
+  } as any)
+  assert.deepEqual(await s.deleteItem(B), { id: B, name: 'router-admin' })
+  assert.deepEqual(calls.filter(c => c.startsWith('PUT')), [`PUT /api/ciphers/${B}/delete`])
+  await assert.rejects(s.deleteItem(OUT), /no such item/)
+  await assert.rejects(s.deleteItem('../../x'), /not a vault item id/)
+  assert.equal(calls.filter(c => c.startsWith('PUT')).length, 1)
+})
