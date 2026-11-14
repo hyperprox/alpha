@@ -118,3 +118,18 @@ test('setupKeyFromLocation: the fragment first, the old query still works, nothi
   assert.deepEqual(core.setupKeyFromLocation('', ''), { key: '', fromQuery: false })
   assert.deepEqual(core.setupKeyFromLocation('?k=', '#k='), { key: '', fromQuery: false })
 })
+
+test('Done page: a found NPM or PBS with no login says where to add it; found is not connected', () => {
+  const npm = core.serviceDoneRow({ key: 'npm', name: 'Nginx Proxy Manager', found: true, enabled: true, host: '192.0.2.5', port: '81' })
+  assert.equal(npm.status, 'found')
+  assert.match(npm.reason, /found at 192\.0\.2\.5:81; not connected yet: add its login in Settings → Proxy/)
+  assert.equal(npm.href, '/proxy')
+  assert.doesNotMatch(npm.reason, /connected at/)
+  const pbs = core.serviceDoneRow({ key: 'pbs', name: 'Proxmox Backup Server', found: true, enabled: true, host: '192.0.2.6', port: '8007' })
+  assert.match(pbs.reason, /Plug-ins → Proxmox Backup Server/)
+  assert.equal(core.serviceDoneRow({ key: 'npm', name: 'NPM', found: true, enabled: true, host: 'h', port: '81', hasLogin: true }).status, 'done')
+  assert.equal(core.serviceDoneRow({ key: 'ollama', name: 'Ollama', found: true, enabled: true, host: 'h', port: '11434' }).reason, 'connected at h:11434')
+  assert.equal(core.serviceDoneRow({ key: 'npm', name: 'NPM', found: true, enabled: false }).status, 'skipped')
+  assert.equal(core.statusLabel('found'), 'found: add its login')
+  assert.equal(core.statusLabel('unknown'), 'unknown')
+})

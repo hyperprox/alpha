@@ -231,6 +231,22 @@ test('questions: yes only where the exporter is missing; a fully done question i
   assert.equal(done.satisfied, true); assert.equal(done.default, false)
 })
 
+test('questions: a node whose state could not be read is unknown, never "already in place"', () => {
+  const igpu = { kind: 'integrated', vendor: 'intel', name: 'UHD 630' }
+  const nodes = [mk('node-a', { gpus: [igpu], igpuAccess: null }), mk('node-b', { gpus: [igpu], igpuAccess: 'open' })]
+  const q = setup.annotateQuestions(hwlib.applicableQuestions(nodes, {}), nodes).find((x) => x.id === 'igpu-access')
+  assert.ok(q, 'the built-in graphics question is asked')
+  assert.equal(q.satisfied, false, 'not "already there"')
+  assert.deepEqual(q.unknown, ['node-a'])
+  assert.match(q.notes.join(' '), /Unknown on: node-a/)
+  assert.deepEqual(hwlib.unknownNodes('igpu-access', nodes), ['node-a'])
+})
+
+test('Prometheus: the up count is the targets whose up is 1, of all of them', () => {
+  assert.equal(setup.upTargetsWords([{ value: [0, '1'] }, { value: [0, '0'] }, { value: [0, '1'] }]), 'answers a query (2 of 3 targets up)')
+  assert.equal(setup.upTargetsWords([]), 'answers a query (0 of 0 targets up)')
+})
+
 test('summary: one line per node, sorted by name', () => {
   const lines = setup.summaryLines([mk('node-b', { nodeExporter: 'running' }), mk('node-a')])
   assert.deepEqual(lines, ['node-a: no GPU', 'node-b: no GPU; health monitoring already running'])

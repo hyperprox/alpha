@@ -497,11 +497,22 @@ function annotateQuestions(questions, nodes, hw = onboard.hw) {
   return questions.map(q => {
     if (!q.nodeWork) return q
     const pending = [...new Set(hw.planNodeWork({ [q.id]: true }, nodes).map(p => p.node))]
-    if (!pending.length) return { ...q, default: false, satisfied: true, pending: [], notes: [...(q.notes || []), 'Already in place on every node: nothing to do.'] }
-    const rest = names.filter(n => !pending.includes(n))
-    return { ...q, pending, satisfied: false,
-      notes: [...(q.notes || []), `Will be set up on: ${pending.join(', ')}.` + (rest.length ? ` Nothing to do on: ${rest.join(', ')}.` : '')] }
+    // A node whose state could not be read is unknown, never "nothing to do" (the Setup checklist says the same).
+    const unknown = hw.unknownNodes(q.id, nodes).filter(n => !pending.includes(n))
+    const unknownNote = unknown.length ? `Unknown on: ${unknown.join(', ')} (it could not be checked; save a node login under Settings → Setup checklist to check).` : null
+    if (!pending.length && unknown.length) return { ...q, default: false, satisfied: false, pending: [], unknown, notes: [...(q.notes || []), unknownNote] }
+    if (!pending.length) return { ...q, default: false, satisfied: true, pending: [], unknown: [], notes: [...(q.notes || []), 'Already in place on every node: nothing to do.'] }
+    const rest = names.filter(n => !pending.includes(n) && !unknown.includes(n))
+    return { ...q, pending, unknown, satisfied: false,
+      notes: [...(q.notes || []), `Will be set up on: ${pending.join(', ')}.` + (rest.length ? ` Nothing to do on: ${rest.join(', ')}.` : ''), ...(unknownNote ? [unknownNote] : [])] }
   })
+}
+
+/** "answers a query (2 of 3 targets up)": the targets whose `up` is 1, not every series the query returned. */
+function upTargetsWords(result) {
+  const rows = Array.isArray(result) ? result : []
+  const up = rows.filter(r => r && Array.isArray(r.value) && String(r.value[1]) === '1').length
+  return `answers a query (${up} of ${rows.length} target${rows.length === 1 ? '' : 's'} up)`
 }
 
 /** Ask Prometheus a real query; success means it answers. { ok, reason }. */
@@ -513,7 +524,7 @@ async function verifyPrometheus(base, { get = onboard.getText, sleep = ms => new
     if (t) {
       try {
         const d = JSON.parse(t)
-        if (d.status === 'success') return { ok: true, reason: `answers a query (${(d.data && d.data.result || []).length} targets reporting)` }
+        if (d.status === 'success') return { ok: true, reason: upTargetsWords(d.data && d.data.result) }
         reason = `Prometheus answered with an error: ${d.error || d.status}`
       } catch { reason = 'Prometheus gave an answer that is not a query result' }
     }
@@ -879,7 +890,8 @@ function checkRows(rows){
     const label = statusLabel(r.status)
     const mark = (r.status==='done'||r.status==='already'||r.status==='ok') ? '<span class="badge badge-ok">' + label + '</span>'
       : r.status==='skipped' ? '<span class="badge badge-off">skipped</span>' : '<span class="badge badge-warn">' + label + '</span>'
-    return '<div class="detect-row"><span>' + escHtml((r.label||r.id||'') + (r.node ? ' · ' + r.node : '')) + '<br><span class="hint">' + escHtml(r.reason||'') + '</span></span>' + mark + '</div>'
+    const btn = r.href ? ' <a class="btn btn-ghost" style="padding:2px 10px" href="' + escHtml(r.href) + '">' + escHtml(r.action||'Open') + '</a>' : ''
+    return '<div class="detect-row"><span>' + escHtml((r.label||r.id||'') + (r.node ? ' · ' + r.node : '')) + '<br><span class="hint">' + escHtml(r.reason||'') + '</span></span>' + mark + btn + '</div>'
   }).join('')
 }
 function stepProviders(){
@@ -1248,9 +1260,8 @@ async function finishSetup(answers, svc = { applied: [] }) {
   const add = (label, status, reason) => list.push({ label, status, reason })
   const env = readEnv()
 
-  for (const a of (svc.applied || []).filter(a => a.found)) {
-    add(a.name, a.enabled ? 'done' : 'skipped', a.enabled ? `connected at ${a.host}:${a.port}` : 'found, and left off as you chose')
-  }
+  // Found is not connected: the wizard saves no NPM or PBS login, so those say where to add one (wizard-core.js).
+  for (const a of (svc.applied || []).filter(a => a.found)) list.push(core.serviceDoneRow(a))
   const ai = answers.ai === true
   writeEnv({ SETUP_COMPLETE: 'true', INSTALL_OLLAMA: ai ? 'true' : 'false', ...(ai ? { OLLAMA_URL: 'http://127.0.0.1:11434', OLLAMA_MODEL: onboard.hw.AI_MODEL } : {}) })
   const profiles = composeProfiles(readEnv()).split(',').filter(Boolean)
@@ -1663,7 +1674,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-module.exports = { sanitizeServiceHosts, verifyPrometheus, annotateQuestions, summaryLines, applyServices, serviceEnv, sanitizeServices, readProgress, writeProgress, progressPath, bootstrapTakenAt, tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, setupExporter, pveAdapter, WIZARD_HTML }
+module.exports = { upTargetsWords, sanitizeServiceHosts, verifyPrometheus, annotateQuestions, summaryLines, applyServices, serviceEnv, sanitizeServices, readProgress, writeProgress, progressPath, bootstrapTakenAt, tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, setupExporter, pveAdapter, WIZARD_HTML }
 
 if (require.main === module) {
   setupSecret()

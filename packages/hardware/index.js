@@ -216,6 +216,27 @@ function planNodeWork(answers, nodes) {
   return plan
 }
 
+/**
+ * The nodes whose state for one node question could not be read (a node seen only through the Proxmox API, or
+ * a probe that did not answer): unknown, which is neither "to do" nor "nothing to do". planNodeWork leaves a
+ * built-in GPU of unknown access out of the plan, so without this the wizard called it already in place while
+ * the Setup checklist said unknown.
+ */
+function unknownNodes(question, nodes) {
+  const out = []
+  for (const n of nodes ?? []) {
+    let unknown = false
+    if (question === 'node-health') unknown = n.nodeExporter === null || n.nodeExporter === undefined
+    else if (question === 'power') unknown = n.rapl === null || n.rapl === undefined
+    else if (question === 'igpu-access') unknown = (n.igpuAccess === null || n.igpuAccess === undefined)
+      && (n.gpus ?? []).some(g => g.kind === 'integrated' && (g.vendor === 'intel' || g.vendor === 'amd'))
+    else if (question === 'gpu') unknown = (n.gpus ?? []).some(g =>
+      (g.vendor === 'intel' && n.intelExporter == null) || (g.vendor === 'nvidia' && n.nvidiaExporter == null) || (g.vendor === 'amd' && n.amdMetrics == null))
+    if (unknown) out.push(n.node)
+  }
+  return out
+}
+
 const STEP_LABEL = {
   'node-exporter': 'Health monitoring',
   'rapl': 'Power monitoring',
@@ -342,5 +363,5 @@ module.exports = {
   NODE_DIR, STEPS, STEP_LABEL, QUESTIONS, AI_MODEL,
   probeScript, stepScript, parseProbe, classifyPci, fromProxmox, parseResult,
   summarise, gpuWords, gpuGap, applicableQuestions, defaultAnswers,
-  planNodeWork, runNodeWork, targetsFor, mergeTargets, verifyOutcome,
+  planNodeWork, unknownNodes, runNodeWork, targetsFor, mergeTargets, verifyOutcome,
 }

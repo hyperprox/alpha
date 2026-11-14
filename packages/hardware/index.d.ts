@@ -52,6 +52,8 @@ export function gpuGap(n: NodeHardware): string | null
 export function applicableQuestions(nodes: NodeHardware[], opts?: { charts?: boolean }): Question[]
 export function defaultAnswers(questions?: Question[]): Answers
 export function planNodeWork(answers: Answers, nodes: NodeHardware[]): PlanItem[]
+/** Nodes whose state for this question could not be read: unknown, neither to do nor done. */
+export function unknownNodes(question: string, nodes: NodeHardware[]): string[]
 export function runNodeWork(plan: PlanItem[], exec: (node: string, script: string) => Promise<{ code: number; output: string }>,
   onEvent?: (e: any) => void): Promise<StepResult[]>
 export function targetsFor(nodes: NodeHardware[], addr?: (node: string) => string, opts?: { cephMgrs?: Set<string> }): Record<string, Target[]>

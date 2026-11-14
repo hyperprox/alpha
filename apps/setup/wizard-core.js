@@ -124,7 +124,7 @@ function bootstrapSummary(rows, taken) {
 
 /** The badge text for a result row's status. */
 function statusLabel(status) {
-  return ({ done: 'done', ok: 'checked', already: 'already there', skipped: 'skipped', failed: 'failed' })[status] || 'failed'
+  return ({ done: 'done', ok: 'checked', already: 'already there', skipped: 'skipped', failed: 'failed', found: 'found: add its login', unknown: 'unknown' })[status] || 'failed'
 }
 
 /** "Step 3 of 5" for the eyebrow above a step's title; index is 0-based. */
@@ -132,4 +132,23 @@ function stepLabel(index, total) {
   return 'Step ' + (index + 1) + ' of ' + total
 }
 
-module.exports = { retryAsync, serviceCandidates, servicesFromScan, serviceToggles, serviceHosts, setupKeyFromLocation, takenLabel, bootstrapSummary, statusLabel, stepLabel }
+/**
+ * The Done page's line for a service the scan found and the person kept on. Found is not connected: NPM and PBS
+ * need a login HyperProx does not have yet (the wizard never asks for one), so they say where they were found and
+ * where to add the login, with a link there. Ollama needs no login, so it is connected.
+ */
+function serviceDoneRow(a) {
+  const LOGIN_PLACE = {
+    npm: { where: 'Settings → Proxy', href: '/proxy' },
+    pbs: { where: 'Plug-ins → Proxmox Backup Server', href: '/plugins' },
+  }
+  if (!a.enabled) return { label: a.name, status: 'skipped', reason: 'found, and left off as you chose' }
+  const at = `${a.host}:${a.port}`
+  const place = LOGIN_PLACE[a.key]
+  if (place && !a.hasLogin) {
+    return { label: a.name, status: 'found', reason: `found at ${at}; not connected yet: add its login in ${place.where}`, href: place.href, action: 'Add its login' }
+  }
+  return { label: a.name, status: 'done', reason: `connected at ${at}` }
+}
+
+module.exports = { serviceDoneRow, retryAsync, serviceCandidates, servicesFromScan, serviceToggles, serviceHosts, setupKeyFromLocation, takenLabel, bootstrapSummary, statusLabel, stepLabel }
