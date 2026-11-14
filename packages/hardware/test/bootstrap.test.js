@@ -59,6 +59,8 @@ function cluster(nodes, opts = {}) {
 for a in "$@"; do t="$a"; done; ! grep -qxF "$t" ${root}/arpable 2>/dev/null`)
   fs.writeFileSync(path.join(root, 'routes'), (opts.routes ?? []).join('\n') + '\n')
   w('ip', `[ "$*" = "-4 route show" ] && { cat ${root}/routes; exit 0; }; exit 0`)
+  fs.writeFileSync(path.join(root, 'vztmpl'), 'Name Type Status Total Used Available %\n' + (opts.vztmpl ?? ['local dir active 900000000 1000 899999000 1%']).join('\n') + '\n')
+  for (const [store, list] of Object.entries(opts.storeHas ?? {})) fs.writeFileSync(path.join(root, `has-${store}`), list.join('\n') + '\n')
   fs.writeFileSync(path.join(root, 'resources'), JSON.stringify((opts.resources ?? []).map(id => ({ id: `lxc/${id}`, type: 'lxc', vmid: id }))))
   w('pvesh', `case "$2" in
   /cluster/nextid) if [ "$3" = --vmid ]; then echo "$4"; else echo 900; fi;;
@@ -66,13 +68,15 @@ for a in "$@"; do t="$a"; done; ! grep -qxF "$t" ${root}/arpable 2>/dev/null`)
   /nodes) echo '${nodeJson}';; /cluster/status) echo '${statusJson}';; esac`)
   w('pvesm', `case "$1 $2 $3" in
   "status -content rootdir") cat ${root}/rootdir;;
-  "status -content vztmpl") printf "Name Type Status Total Used Available %%\\nlocal dir active 900000000 1000 899999000 1%%\\n";;
+  "status -content vztmpl") cat ${root}/vztmpl;;
   path*) echo "${tpl}/\${2#*vztmpl/}";;
   list*) echo "Volid Format Type Size VMID";;
 esac`)
   w('pveam', `case "$1" in
   available) cat ${root}/available;;
-  list) [ -n "\${FAKE_LIST_FAIL:-}" ] && exit 1; echo "NAME SIZE"; for f in ${tpl}/*; do [ -e "$f" ] && echo "$2:vztmpl/$(basename "$f")   100MB"; done;;
+  list) [ -n "\${FAKE_LIST_FAIL:-}" ] && exit 1; echo "NAME SIZE"
+        # A store with its own listing (opts.storeHas) lists that; any other lists what is downloaded.
+        if [ -f ${root}/has-$2 ]; then sed "s|^|$2:vztmpl/|" ${root}/has-$2; else for f in ${tpl}/*; do [ -e "$f" ] && echo "$2:vztmpl/$(basename "$f")   100MB"; done; fi;;
   download) echo template > "${tpl}/$3";;
   remove) rm -f "${tpl}/\${2#*vztmpl/}";;
 esac; exit 0`)
@@ -89,6 +93,7 @@ esac; exit 0`)
           # Cut off right after Proxmox wrote its lock, before anything else.
           if [ -n "\${FAKE_STUB:-}" ]; then echo 'lock: create' > "$c"; ctrl_c; exit 1; fi
           printf '#%s\nhostname: %s\n' "$d" "$h" > "$c"
+          [ -n "\${FAKE_PENDING:-}" ] && printf '[pve:pending]\nmemory: 4096\n' >> "$c"
           [ -n "\${FAKE_INT_ON_CREATE:-}" ] && ctrl_c; exit 0;;
   start) [ -n "\${FAKE_START_FAIL:-}" ] && exit 1; exit 0;;
   destroy) rm -f "$HPX_PVE_ETC/lxc/$2.conf"; exit 0;;
@@ -98,12 +103,14 @@ esac; exit 0`)
         [[ "$*" == *"tailscale up"* ]] && [ -n "\${FAKE_TS_NOLOGIN:-}" ] && { echo 'backend error: no route to the control server' >&2; exit 1; }
         [[ "$*" == *"tailscale ip -4"* ]] && [ -n "\${FAKE_TS_NOLOGIN:-}" ] && exit 1
         [[ "$*" == *"tailscale ip -4"* ]] && { echo 100.101.102.103; exit 0; }
+        [[ "$*" == *"s/^SETUP_SECRET=//p"* ]] && { echo 0123456789abcdef0123456789abcdef; exit 0; }
         [[ "$*" == *"tailscale status --json"* ]] && { echo '{"Self":{"DNSName":"hyperprox.example-tailnet.ts.net.","TailscaleIPs":["100.101.102.103"]}}'; exit 0; }
         [[ "$*" == *"WIREGUARD_SERVER_RECIPE"* ]] && { echo 'echo recipe'; exit 0; }
         [[ "$*" == *"WG_ADDRESS="*"bash -s"* ]] && { echo "HP_WG_PUB=\${FAKE_WG_PUB:-QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU=}"; exit 0; }
         [[ "$*" == *install.sh* ]] && [ -n "\${FAKE_INSTALL_FAIL:-}" ] && exit 1
         [[ "$*" == *"hostname -I"* ]] && echo 10.9.9.50; exit 0;;
   push) cp "$3" "${root}/pushed-\${4##*/}"; exit 0;;
+  set) [ -n "\${FAKE_SET_FAIL:-}" ] && exit 1; exit 0;;
   *) exit 0;;
 esac`)
   w('pveum', `t=${root}/tokens
@@ -284,7 +291,7 @@ test('an arm64 template already downloaded on an amd64 host is ignored; the newe
     const out = plain(r.stdout)
     assert.equal(r.status, 0, out + r.stderr)
     assert.match(out, /CPU architecture: amd64/)
-    assert.match(out, new RegExp(`Ignoring ${T13_ARM.replace(/\./g, '\\.')} on local: it is not built for amd64`))
+    assert.doesNotMatch(out, /Ignoring/, 'a template for another CPU is passed over without a line about it')
     assert.match(out, new RegExp(`Template\\s+${T13_AMD.replace(/\./g, '\\.')} \\(amd64\\) on local, downloaded first`))
     assert.match(c.calls(), new RegExp(`^pveam download local ${T13_AMD}$`, 'm'))
     const create = createLine(c)
@@ -621,6 +628,81 @@ test('the root password is saved root-only and not printed; a link in its place 
     assert.match(out, /is a symbolic link; the root password is not written there/)
     assert.match(out, /Root pw\s+Sekrit-Test-Pw1/)
   } finally { d.cleanup() }
+})
+
+// ── From the first install test ────────────────────────────────────────────────────────────────────────
+
+test('template storage: one that already keeps a Debian 13 template, else a file store that is not CephFS; --template-storage wins', () => {
+  const stores = ['media cephfs active 99000000000 0 99000000000 1%', 'nas cifs active 5000000000 0 5000000000 1%', 'local dir active 900000000 1000 899999000 1%']
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [], vztmpl: stores, storeHas: { media: [], nas: [], local: [T13_OLD_AMD] } })
+  try {
+    assert.match(plain(c.run(['-y', '--dry-run']).stdout), new RegExp(`Template: ${T13_AMD.replace(/\./g, '\\.')} \\(amd64\\), to be downloaded to local`))
+  } finally { c.cleanup() }
+  const d = cluster({ 'node-a': 'server-no-gpu' }, { have: [], vztmpl: stores, storeHas: { media: [], nas: [], local: [] } })
+  try {
+    assert.match(plain(d.run(['-y', '--dry-run']).stdout), /to be downloaded to nas/, 'the biggest store is CephFS: passed over')
+    assert.match(plain(d.run(['-y', '--dry-run', '--template-storage', 'media']).stdout), /to be downloaded to media/)
+    const bad = d.run(['-y', '--dry-run', '--template-storage', 'nope'])
+    assert.match(plain(bad.stderr), /Storage 'nope' is not active on this node, or does not take container templates/)
+  } finally { d.cleanup() }
+})
+
+test('tun: pct set --dev0 when PVE takes it; else the lines go before a [pve:pending] block, never after it', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    assert.equal(c.run(['-y', '--no-pve-metrics']).status, 0)
+    assert.match(c.calls(), /^pct set 900 --dev0 \/dev\/net\/tun$/m)
+  } finally { c.cleanup() }
+  const d = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = d.run(['-y', '--no-pve-metrics'], '', { FAKE_SET_FAIL: '1', FAKE_PENDING: '1' })
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    const conf = fs.readFileSync(path.join(d.root, 'pve/lxc/900.conf'), 'utf8')
+    const at = conf.indexOf('lxc.cgroup2.devices.allow: c 10:200 rwm'), pend = conf.indexOf('[pve:pending]')
+    assert.ok(at >= 0 && pend > at, conf)
+    assert.match(conf, /lxc\.mount\.entry: \/dev\/net\/tun dev\/net\/tun none bind,create=file\n\[pve:pending\]/)
+  } finally { d.cleanup() }
+})
+
+test('token name: a taken one is asked about at a terminal (Enter makes a free one); --token-name; host and port always written', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD], tokens: ['hyperprox'] })
+  try {
+    // ID, address: Enter; health, charts, dns, ai: no; token: Enter; VPN: Enter; create yes
+    const r = c.run([], '', { HPX_TTY: c.tty('\n\nn\nn\nn\nn\n\n\ny\n') })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    assert.match(out, /A token named hyperprox exists already/)
+    assert.match(c.calls(), /pveum user token add root@pam hyperprox-2 /)
+    assert.match(c.calls(), /pct exec 900 -- env HPX_HOST=\S+ HPX_TOKEN_ID=hyperprox-2 bash -c/)
+    assert.ok(!c.calls().includes('tok-secret'), 'the secret is on no command line')
+  } finally { c.cleanup() }
+  const d = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD], tokens: ['hyperprox'] })
+  try {
+    assert.equal(d.run(['-y', '--no-pve-metrics', '--token-name', 'hyperprox-test']).status, 0)
+    assert.match(d.calls(), /pveum user token add root@pam hyperprox-test /)
+  } finally { d.cleanup() }
+  const e = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD], tokens: ['hyperprox'] })
+  try {
+    const out = plain(e.run(['-y', '--no-pve-metrics']).stdout)
+    assert.doesNotMatch(e.calls(), /pveum user token add root@pam hyperprox /)
+    assert.match(e.calls(), /pct exec 900 -- env HPX_HOST=\S+ HPX_TOKEN_ID= bash -c/, 'the address is still written')
+    assert.match(out, /Proxmox address configured/)
+  } finally { e.cleanup() }
+})
+
+test('the end: one card with the setup link and its key, no yes pipe, the run mark replaced, checks summarised', () => {
+  const c = cluster({ 'node-a': 'fresh-intel-node' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y', '--no-pve-metrics'])
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    assert.match(out, /Open\s+https:\/\/10\.9\.9\.50\/setup\?k=0123456789abcdef0123456789abcdef/)
+    assert.match(out, /finish the wizard; it already has your answers from here/)
+    assert.doesNotMatch(c.calls(), /yes \|/)
+    assert.match(c.calls(), /bash \/tmp\/install\.sh < \/dev\/null/)
+    assert.match(c.calls(), /^pct set 900 --description HyperProx, installed by bootstrap\.sh on \d{4}-\d\d-\d\d$/m)
+    assert.match(out, /checks? (answer|do not answer) from here/)
+  } finally { c.cleanup() }
 })
 
 // ── The terminal, and `curl | bash` ────────────────────────────────────────────────────────────────────

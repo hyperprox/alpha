@@ -11,7 +11,7 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.13-alpine@sha256:93d55776e04376e19adb2733e3ccebb4392ee7dd86d8ff238503b30fe719c84f
     container_name: hyperprox-postgres
     restart: unless-stopped
     env_file: .env
@@ -30,7 +30,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.8-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6
     container_name: hyperprox-redis
     restart: unless-stopped
     command: redis-server --save 60 1 --loglevel warning
@@ -153,7 +153,7 @@ services:
       - grafana_data:/var/lib/grafana
 
   pve-exporter:
-    image: prompve/prometheus-pve-exporter:latest
+    image: prompve/prometheus-pve-exporter:3.8.3@sha256:4527b8080c4bd53ae8d7326ff7a3469dad0c1abb5753ff0bae9f1ef1c23cb2c9
     container_name: hyperprox-pve-exporter
     restart: unless-stopped
     profiles: [monitoring]
@@ -187,7 +187,7 @@ services:
   # wizard - systemd services on the host - are reached on loopback and can stay bound to 127.0.0.1
   # instead of every interface. It listens on 80 and 443 directly; there is no port mapping.
   nginx:
-    image: nginx:alpine
+    image: nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
     container_name: hyperprox-nginx
     restart: unless-stopped
     network_mode: host

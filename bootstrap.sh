@@ -42,6 +42,7 @@ DNS=""             ; DNS_FROM=""        ; DNS_NOTE=""      # the container's nam
 # Remote access: VPN is tailscale, wireguard or none (--vpn, or asked). The Tailscale auth key comes from
 # TS_AUTHKEY (preferred: it stays off the command line) or --tailscale-authkey, and is never printed.
 VPN=""             ; TS_KEY="${TS_AUTHKEY:-}"; TS_KEY_ARG=""; unset TS_AUTHKEY
+TOKEN_NAME="hyperprox"; TOKEN_NAME_GIVEN=0; TEMPLATE_STORAGE_ARG=""
 WG_SUBNET=""       ; WG_SUBNET_GIVEN=0  ; WG_ENDPOINT=""   ; WG_PORT=51820
 TS_IP=""           ; TS_DNS=""          ; TS_URL=""        ; TS_PID=""
 WG_CTID=""         ; WG_CT_TRY=0        ; WG_PUB=""        ; WG_IP=""        ; WG_EP=""     ; WG_LINE=""   ; WG_HOSTNAME=""
@@ -426,6 +427,10 @@ Usage: bootstrap.sh [options]
                       the environment. A key typed on the command line is refused. It is never printed.
   --wg-subnet CIDR    WireGuard tunnel network (default: a free one, e.g. 10.99.0.1/24)
   --wg-endpoint HOST  Public address or DNS name phones connect to (default: the VPN container's LAN address)
+  --token-name NAME   The Proxmox API token to make for HyperProx (default: hyperprox; asked at a terminal when
+                      that name is taken, since a token's secret is shown only once)
+  --template-storage NAME  Where the container template is kept or downloaded (default: a storage that already
+                      holds a Debian 13 template, else a file share that is not CephFS, most free space first)
   --ref REF           Install this release tag, branch or commit instead of main (e.g. v0.3.0);
                       HyperProx can update itself from there (Updates page)
   -y, --yes           Take every default and do not ask (or set HYPERPROX_YES=1)
@@ -448,8 +453,8 @@ Q_CHARTS='Do you want charts and dashboards (Prometheus and Grafana)?'
 W_CHARTS='Runs Prometheus and Grafana on this machine. You reach them only through HyperProx.'
 Q_PVE_METRICS="Do you want HyperProx to read Proxmox's own metrics?"
 W_PVE_METRICS='Makes a read-only Proxmox token (PVEAuditor) for the metrics exporter.'
-Q_DNS='Do you manage your domains at GoDaddy? Paste a key to let HyperProx manage DNS.'
-W_DNS='The key is kept in the vault. You can skip this and add it later.'
+Q_DNS='Do you manage your domains at GoDaddy? HyperProx can manage their DNS for you.'
+W_DNS='It needs a GoDaddy API key, kept in the vault. You can skip this and add it later.'
 Q_AI='Do you want a local AI assistant? HyperProx can run a small one on this machine, or you can connect one later.'
 W_AI='Runs Ollama here (3 CPUs, 4 GB) and downloads a small model (about 2 GB).'
 
@@ -885,6 +890,24 @@ vpn_marker() {
   printf '{"version":1,"source":"bootstrap","entries":[%s]}\n' "${e[*]}" > "$1"
 }
 
+check_token_name_shape() { [[ "$1" =~ ^[A-Za-z][A-Za-z0-9._-]{0,31}$ ]]; }
+check_token_name() {   # a new token's name: well formed and free, or the taken one kept on purpose
+  check_token_name_shape "$1" || { echo "$1 is not a token name: letters, digits, '.', '_' or '-', starting with a letter."; return 1; }
+  [ "$1" = "$TOKEN_TAKEN" ] && return 0
+  token_exists "$1" && { echo "A token named $1 exists too. Choose another name."; return 1; }
+  return 0
+}
+TOKEN_TAKEN=""
+# ask_token_name: when the token's name is taken (its secret was shown once and is gone), offer a free one.
+ask_token_name() {
+  token_exists "$TOKEN_NAME" || return 0
+  TOKEN_TAKEN="$TOKEN_NAME"
+  [ "$ASK_PLACEMENT" -eq 1 ] && [ "$TOKEN_NAME_GIVEN" -eq 0 ] || return 0
+  local n free="${TOKEN_NAME}-2"
+  for n in $(seq 2 20); do token_exists "${TOKEN_NAME}-$n" || { free="${TOKEN_NAME}-$n"; break; }; done
+  ask_value TOKEN_NAME "$free" "Proxmox API token" "A token named ${TOKEN_TAKEN} exists already; its secret was shown only once, so HyperProx cannot use it. Which name should the new one get?" \
+    "Enter makes ${free}. Type ${TOKEN_TAKEN} to leave it as it is; the setup page then asks for its secret." check_token_name Name "$TOKEN_TAKEN"
+}
 # save_password FILE: the root password into FILE, mode 600, owned by root; never through a link.
 save_password() {
   [ ! -L "$1" ] || { warn "$1 is a symbolic link; the root password is not written there."; return 1; }
@@ -963,9 +986,9 @@ rollback() {
     pveum user token remove root@pam "$EXPORTER_TOKEN" >/dev/null 2>&1 \
       && ok "Removed token root@pam!$EXPORTER_TOKEN" || warn "Could not remove token root@pam!$EXPORTER_TOKEN"
   fi
-  if [ "$TOKEN_TRY" -eq 1 ] && [ "$TOKEN_EXISTED" -eq 0 ] && token_exists hyperprox; then
-    pveum user token remove root@pam hyperprox >/dev/null 2>&1 \
-      && ok "Removed token root@pam!hyperprox" || warn "Could not remove token root@pam!hyperprox"
+  if [ "$TOKEN_TRY" -eq 1 ] && [ "$TOKEN_EXISTED" -eq 0 ] && token_exists "$TOKEN_NAME"; then
+    pveum user token remove root@pam "$TOKEN_NAME" >/dev/null 2>&1 \
+      && ok "Removed token root@pam!$TOKEN_NAME" || warn "Could not remove token root@pam!$TOKEN_NAME"
   fi
   tp=""; [ "$TPL_TRY" -eq 1 ] && tp="$(template_path)"
   if [ -n "$tp" ] && [ -e "$tp" ]; then
@@ -1179,6 +1202,33 @@ debian_templates() { grep -oE 'debian-[0-9]+-standard_[^[:space:]/:]+\.tar\.zst'
 for_arch() { grep -E "_${1}\.tar\.zst\$" || true; }
 newest() { sort -V | tail -1; }
 
+# add_tun CTID: /dev/net/tun in the container, for Tailscale. `pct set --dev0` (PVE 8.1 and later) writes it the
+# way Proxmox expects. Without it, the two lxc lines go in by writing the whole config with them placed before its
+# first [section]: lines appended after a [pve:pending] or snapshot block belong to that block, and PVE drops them.
+TUN_LINES=$'lxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file'
+add_tun() {
+  local conf="$PVE_ETC/lxc/$1.conf" tmp
+  grep -qE '^dev[0-9]+:.*/dev/net/tun|c 10:200 rwm' "$conf" 2>/dev/null && return 0
+  pct set "$1" --dev0 /dev/net/tun >/dev/null 2>&1 && return 0
+  tmp="$(mktemp)"; TMP_PATHS+=("$tmp")
+  L="$TUN_LINES" awk 'BEGIN { l = ENVIRON["L"] } /^\[/ && !done { print l; done = 1 } { print } END { if (!done) print l }' "$conf" > "$tmp" \
+    && cat "$tmp" > "$conf" || warn "Could not add /dev/net/tun to container $1."
+}
+
+# pick_template_storage: where a template to download goes. One that already keeps a Debian 13 template for this
+# CPU (that is where this cluster keeps them); else a file store that is not CephFS (a CephFS pool may be one with
+# no replicas, kept for bulk data); else any. TPL_STORES is most-free first, so among equals the roomiest wins.
+pick_template_storage() {
+  local s rank best="" br=9
+  for s in "${TPL_STORES[@]}"; do
+    if grep -q '^debian-13-standard_' <<< "${HAVE[$s]:-}"; then rank=0
+    elif [ "${TPL_TYPE[$s]:-}" = cephfs ]; then rank=2
+    else rank=1; fi
+    if [ "$rank" -lt "$br" ]; then br=$rank; best=$s; fi
+  done
+  echo "$best"
+}
+
 # ---------------------------------------------------------------------------
 #  Storage for the container's disk: one that is active, can hold DISK GB, and
 #  is block storage if there is any (a container's root on a network file share
@@ -1309,6 +1359,8 @@ main() {
       --ref) REF="${2:-}"; shift 2;;
       --dns) DNS="${2:-}"; DNS_FROM="--dns"; shift 2;;
       --vpn) VPN="${2:-}"; shift 2;;
+      --token-name) TOKEN_NAME="${2:-}"; TOKEN_NAME_GIVEN=1; shift 2;;
+      --template-storage) TEMPLATE_STORAGE_ARG="${2:-}"; shift 2;;
       --tailscale-authkey) TS_KEY_ARG="${2:-}"; shift 2;;
       --wg-subnet) WG_SUBNET="${2:-}"; WG_SUBNET_GIVEN=1; shift 2;;
       --wg-endpoint) WG_ENDPOINT="${2:-}"; shift 2;;
@@ -1333,6 +1385,8 @@ main() {
     dns_list_ok "$DNS" || die "--dns must be one to three IPv4 or IPv6 addresses, separated by commas."
   fi
   case "$VPN" in ""|tailscale|wireguard|none) ;; *) die "--vpn must be tailscale, wireguard or none.";; esac
+  check_token_name_shape "$TOKEN_NAME" || die "--token-name must be letters, digits, '.', '_' or '-', starting with a letter (at most 32)."
+  [ -z "$TEMPLATE_STORAGE_ARG" ] || [[ "$TEMPLATE_STORAGE_ARG" =~ ^[A-Za-z][A-Za-z0-9._-]{0,63}$ ]] || die "--template-storage must be a storage name."
   if [ -n "$TS_KEY_ARG" ]; then
     # A key on the command line is in the process list and the shell history: only file:PATH is taken here.
     [[ "$TS_KEY_ARG" == file:* ]] || die "--tailscale-authkey takes file:/path/to/key only, so the key stays off the command line. Or set TS_AUTHKEY=tskey-… in the environment."
@@ -1406,17 +1460,24 @@ main() {
     ui_try ui_wait "Refreshing Proxmox's template list" pveam update
     [ "$UI_RC" -eq 0 ] || warn "Could not refresh the template list; using what is cached."
   fi
-  TPL_STORES=($(pvesm status -content vztmpl 2>/dev/null | awk 'NR>1 && $3=="active" {print $6, $1}' | sort -k1,1nr | awk '{print $2}'))
+  # Storages that take templates, most free space first, and the type of each.
+  declare -gA TPL_TYPE
+  TPL_STORES=()
+  while read -r _n _t; do TPL_STORES+=("$_n"); TPL_TYPE[$_n]="$_t"; done \
+    < <(pvesm status -content vztmpl 2>/dev/null | awk 'NR>1 && $3=="active" {print $6, $1, $2}' | sort -k1,1nr | awk '{print $2, $3}')
   [ "${#TPL_STORES[@]}" -gt 0 ] || die "No active storage on this node accepts container templates."
+  if [ -n "$TEMPLATE_STORAGE_ARG" ]; then
+    [ -n "${TPL_TYPE[$TEMPLATE_STORAGE_ARG]:-}" ] || die "Storage '$TEMPLATE_STORAGE_ARG' is not active on this node, or does not take container templates."
+    TPL_STORES=("$TEMPLATE_STORAGE_ARG")
+  fi
   AVAIL="$(pveam available --section system 2>/dev/null | debian_templates | for_arch "$ARCH")"
   declare -gA HAVE
-  ALL_HAVE=""; OTHER_ARCH=""
+  ALL_HAVE=""
   for s in "${TPL_STORES[@]}"; do
     if ! l="$(pveam list "$s" 2>/dev/null)"; then warn "Could not list the templates on $s; any there are checked again before downloading."; fi
     l="$(debian_templates <<< "$l")"
     HAVE[$s]="$(for_arch "$ARCH" <<< "$l")"
     ALL_HAVE="$ALL_HAVE${HAVE[$s]:+${HAVE[$s]}$'\n'}"
-    OTHER_ARCH="$OTHER_ARCH$(grep -vE "_${ARCH}\.tar\.zst\$" <<< "$l" | grep . | sed "s|^|$s:|" || true)"$'\n'
   done
   CANDIDATES="$(printf '%s\n%s\n' "$AVAIL" "$ALL_HAVE" | grep . | sort -u || true)"
   TEMPLATE="$(grep '^debian-13-standard_' <<< "$CANDIDATES" | newest || true)"
@@ -1425,16 +1486,13 @@ main() {
     [ -n "$TEMPLATE" ] || die "No Debian container template for $ARCH is available from Proxmox or on this node's storage."
     warn "No Debian 13 template for $ARCH; using $TEMPLATE"
   fi
-  while IFS= read -r o; do
-    [ -n "$o" ] && note "Ignoring ${o#*:} on ${o%%:*}: it is not built for $ARCH."
-  done <<< "$OTHER_ARCH"
   NEED_DOWNLOAD=1
   for s in "${TPL_STORES[@]}"; do
     if grep -qxF "$TEMPLATE" <<< "${HAVE[$s]}"; then TEMPLATE_STORAGE="$s"; NEED_DOWNLOAD=0; break; fi
   done
   if [ "$NEED_DOWNLOAD" -eq 1 ]; then
     grep -qxF "$TEMPLATE" <<< "$AVAIL" || die "$TEMPLATE is not offered for download."
-    TEMPLATE_STORAGE="${TPL_STORES[0]}"
+    TEMPLATE_STORAGE="$(pick_template_storage)"
     ui_kv "Template" "$TEMPLATE ($ARCH), to be downloaded to $TEMPLATE_STORAGE"
   else
     TEMPLATE_PATH="$(template_path)"
@@ -1623,7 +1681,8 @@ main() {
   [ -n "$PASSWORD" ] || PASSWORD="$(openssl rand -base64 18 2>/dev/null | tr -d '/+=' | head -c 20 || true)"
   [ -n "$PASSWORD" ] || die "Could not generate a root password; pass --password."
   EXPORTER_TOKEN="hyperprox-exporter"
-  token_exists hyperprox && TOKEN_EXISTED=1
+  ask_token_name
+  token_exists "$TOKEN_NAME" && TOKEN_EXISTED=1
   token_exists "$EXPORTER_TOKEN" && XTOKEN_EXISTED=1
 
   # -------------------------------------------------------------------------
@@ -1643,8 +1702,8 @@ main() {
   [ -z "$DNS_NOTE" ] || echo "               ${DNS_NOTE}"
   echo "    Template   ${TEMPLATE} (${ARCH}) on ${TEMPLATE_STORAGE}$([ "$NEED_DOWNLOAD" -eq 1 ] && echo ', downloaded first' || echo ', already there')"
   echo "    VPN        $(vpn_words)"
-  if [ "$TOKEN_EXISTED" -eq 1 ]; then echo "    Token      root@pam!hyperprox exists already and is left alone; the setup page will ask for one"
-  else echo "    Token      root@pam!hyperprox (Administrator on /)"; fi
+  if [ "$TOKEN_EXISTED" -eq 1 ]; then echo "    Token      root@pam!${TOKEN_NAME} exists already and is left alone; the setup page will ask for one"
+  else echo "    Token      root@pam!${TOKEN_NAME} (Administrator on /)"; fi
   if [ "$A_PVE_METRICS" = yes ]; then
     if [ "$XTOKEN_EXISTED" -eq 1 ]; then echo "               root@pam!${EXPORTER_TOKEN} exists already and is left alone"
     else echo "               root@pam!${EXPORTER_TOKEN} (read-only: PVEAuditor on /)"; fi
@@ -1727,15 +1786,13 @@ main() {
     die "Container creation failed."
   fi
 
-  # tun needs a device rule; --features tun=1 is not accepted on every PVE version, so set it the way
-  # that works everywhere. The container was made a moment ago and has no pending changes to append into.
-  CONF="$PVE_ETC/lxc/${CTID}.conf"
-  grep -q 'c 10:200 rwm' "$CONF" 2>/dev/null || {
-    printf 'lxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\n' >> "$CONF"
-  }
+  add_tun "$CTID"
   ok "Container $CTID created"
 
   pct start "$CTID" >/dev/null || die "Container failed to start."
+  # Checked after the start: that is when Proxmox has applied (or dropped) what the config asked for.
+  pct exec "$CTID" -- test -c /dev/net/tun 2>/dev/null \
+    || warn "/dev/net/tun is missing in container $CTID; Tailscale cannot run there until it is added (pct set $CTID --dev0 /dev/net/tun)."
   # The root password goes in on stdin, so it is on no command line (and in no process list).
   printf 'root:%s\n' "$PASSWORD" | pct exec "$CTID" -- chpasswd \
     || warn "Could not set the root password; set it with: pct exec $CTID -- passwd"
@@ -1778,19 +1835,19 @@ main() {
   # -------------------------------------------------------------------------
   say "Creating the Proxmox API token"
   TOKEN_SECRET=""
-  if [ "$TOKEN_EXISTED" -eq 1 ] || token_exists hyperprox; then
+  if [ "$TOKEN_EXISTED" -eq 1 ] || token_exists "$TOKEN_NAME"; then
     # Someone else's token: neither its secret nor its permissions are ours to change.
-    warn "A token named 'hyperprox' already exists; its secret is only shown once, so it is left alone."
-    note "The setup page will ask for a token. Or delete it (pveum user token remove root@pam hyperprox) and re-run."
+    warn "A token named '${TOKEN_NAME}' already exists; its secret is only shown once, so it is left alone."
+    note "The setup page will ask for its secret. Or re-run with --token-name to make a new one."
   else
-    TOKEN_SECRET="$(pveum user token add root@pam hyperprox --privsep=0 --output-format json 2>/dev/null \
+    TOKEN_SECRET="$(pveum user token add root@pam "$TOKEN_NAME" --privsep=0 --output-format json 2>/dev/null \
       | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" || TOKEN_SECRET=""
     # Ours only once it has handed back its secret: a token that failed to be made, or was made by someone
     # else meanwhile ("already exists"), is never removed by the undo.
-    [ -n "$TOKEN_SECRET" ] || die "Could not create the token root@pam!hyperprox (check: pveum user token list root@pam)."
+    [ -n "$TOKEN_SECRET" ] || die "Could not create the token root@pam!${TOKEN_NAME} (check: pveum user token list root@pam)."
     TOKEN_TRY=1
-    ok "Token root@pam!hyperprox created"
-    pveum acl modify / --token 'root@pam!hyperprox' --role Administrator >/dev/null 2>&1 \
+    ok "Token root@pam!${TOKEN_NAME} created"
+    pveum acl modify / --token "root@pam!${TOKEN_NAME}" --role Administrator >/dev/null 2>&1 \
       && ok "Granted Administrator on /" || warn "Could not set the ACL; grant it by hand."
   fi
 
@@ -1805,7 +1862,7 @@ main() {
     note "After signing in to HyperProx, run in the container: hyperprox pve-exporter"
   else
     EXPORTER_SECRET="$(pveum user token add root@pam "${EXPORTER_TOKEN}" --privsep 1 \
-      --comment 'HyperProx metrics exporter, read-only (PVEAuditor) [exporter for root@pam!hyperprox]' --output-format json 2>/dev/null \
+      --comment "HyperProx metrics exporter, read-only (PVEAuditor) [exporter for root@pam!${TOKEN_NAME}]" --output-format json 2>/dev/null \
       | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)"
     [ -n "$EXPORTER_SECRET" ] && XTOKEN_TRY=1
     if [ -n "$EXPORTER_SECRET" ] && pveum acl modify / --token "root@pam!${EXPORTER_TOKEN}" --role PVEAuditor >/dev/null 2>&1; then
@@ -1842,6 +1899,7 @@ main() {
   # Check the outcome, not the scripts' word.
   if [ "$A_NODE_HEALTH" = yes ] || [ "$A_POWER" = yes ] || [ "$A_GPU" = yes ]; then
     say "Checking from here"
+    _before=${#CHECKLIST[@]}
     for node in "${NODES[@]}"; do
       [ "${HW_OK[$node]}" -eq 1 ] || { check failed "Node checks" "$node" "could not be reached"; continue; }
       ip="$(node_ip "$node")"; ip="${ip:-$node}"
@@ -1870,6 +1928,10 @@ main() {
         fi
       fi
     done
+    _ok=0; _bad=0
+    for row in "${CHECKLIST[@]:$_before}"; do case "${row%%$'\t'*}" in ok) _ok=$((_ok + 1));; *) _bad=$((_bad + 1));; esac; done
+    if [ "$_bad" -eq 0 ]; then ok "All ${_ok} checks answer from here"
+    else warn "${_bad} of $((_ok + _bad)) checks do not answer from here (listed at the end)"; fi
   fi
 
   # -------------------------------------------------------------------------
@@ -1883,27 +1945,34 @@ main() {
   else
     ui_env+=" NO_COLOR=1"
   fi
-  pct exec "$CTID" -- bash -c "curl -fsSL '$RAW_BASE/install.sh' -o /tmp/install.sh && yes | $ui_env HYPERPROX_REF='$REF' HYPERPROX_REPO_URL='$REPO_URL_ARG' bash /tmp/install.sh" \
+  pct exec "$CTID" -- bash -c "curl -fsSL '$RAW_BASE/install.sh' -o /tmp/install.sh && $ui_env HYPERPROX_REF='$REF' HYPERPROX_REPO_URL='$REPO_URL_ARG' bash /tmp/install.sh < /dev/null" \
     || die "The HyperProx installer failed inside the container. To keep the container and look inside, re-run with --keep-on-failure."
 
   # -------------------------------------------------------------------------
   #  9. Hand the container everything it would otherwise ask you for
   # -------------------------------------------------------------------------
-  if [ -n "$TOKEN_SECRET" ]; then
-    say "Configuring the Proxmox connection"
-    # This node's address in the cluster: `hostname -I` lists every address, and the first is not always it.
-    HOST_IP="$(node_ip "$THIS_NODE")"
-    [ -n "$HOST_IP" ] || HOST_IP="$(hostname -I | awk '{print $1}')"
-    pct exec "$CTID" -- bash -c "
+  # The node's address and port always; the token too when this run made it. Its secret goes in on stdin, so
+  # it is on no command line.
+  say "Configuring the Proxmox connection"
+  # This node's address in the cluster: `hostname -I` lists every address, and the first is not always it.
+  HOST_IP="$(node_ip "$THIS_NODE")"
+  [ -n "$HOST_IP" ] || HOST_IP="$(hostname -I | awk '{print $1}')"
+  if printf '%s\n' "$TOKEN_SECRET" | pct exec "$CTID" -- env HPX_HOST="$HOST_IP" HPX_TOKEN_ID="$([ -n "$TOKEN_SECRET" ] && echo "$TOKEN_NAME")" bash -c '
       f=/opt/hyperprox/.env
-      set_kv() { grep -q \"^\$1=\" \"\$f\" 2>/dev/null && sed -i \"s|^\$1=.*|\$1=\$2|\" \"\$f\" || echo \"\$1=\$2\" >> \"\$f\"; }
-      set_kv PROXMOX_HOST '$HOST_IP'
-      set_kv PROXMOX_PORT '8006'
-      set_kv PROXMOX_USER 'root@pam'
-      set_kv PROXMOX_TOKEN_ID 'hyperprox'
-      set_kv PROXMOX_TOKEN_SECRET '$TOKEN_SECRET'
-      systemctl restart hyperprox-api 2>/dev/null || true
-    " && ok "Proxmox connection configured — the setup wizard will not ask again"
+      set_kv() { if grep -q "^$1=" "$f" 2>/dev/null; then K="$1" V="$2" awk "BEGIN{k=ENVIRON[\"K\"];v=ENVIRON[\"V\"]} index(\$0,k\"=\")==1{print k\"=\"v;next}{print}" "$f" > "$f.tmp" && cat "$f.tmp" > "$f" && rm -f "$f.tmp"; else printf "%s=%s\n" "$1" "$2" >> "$f"; fi; }
+      IFS= read -r secret || true
+      set_kv PROXMOX_HOST "$HPX_HOST"
+      set_kv PROXMOX_PORT 8006
+      if [ -n "$secret" ]; then
+        set_kv PROXMOX_USER root@pam
+        set_kv PROXMOX_TOKEN_ID "$HPX_TOKEN_ID"
+        set_kv PROXMOX_TOKEN_SECRET "$secret"
+      fi
+      systemctl restart hyperprox-api 2>/dev/null || true'; then
+    if [ -n "$TOKEN_SECRET" ]; then ok "Proxmox connection configured — the setup wizard will not ask again"
+    else ok "Proxmox address configured (${HOST_IP}:8006); the setup wizard asks only for the token's secret"; fi
+  else
+    warn "Could not write the Proxmox connection; the setup wizard will ask for it"
   fi
 
   if [ -n "$EXPORTER_SECRET" ]; then
@@ -2002,18 +2071,26 @@ PVEYML
     fi
   fi
   FINISHED=1
+  # The run's mark has done its job (only the undo reads it): a plain description takes its place.
+  pct set "$CTID" --description "HyperProx, installed by bootstrap.sh on $(date +%F)" >/dev/null 2>&1 || true
+  [ -z "$WG_PUB" ] || pct set "$WG_CTID" --description "HyperProx WireGuard server, installed by bootstrap.sh on $(date +%F)" >/dev/null 2>&1 || true
 
   # -------------------------------------------------------------------------
   #  Done
   # -------------------------------------------------------------------------
   CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i !~ /^100\./) {print $i; exit}}')"
+  # The setup link carries the setup key (install.sh made it); this card is the one place it is shown.
+  SETUP_KEY="$(pct exec "$CTID" -- sed -n 's/^SETUP_SECRET=//p' /opt/hyperprox/.env 2>/dev/null | head -1 || true)"
+  [[ "$SETUP_KEY" =~ ^[0-9a-f]{32,128}$ ]] || SETUP_KEY=""
+  SETUP_URL="https://${CT_IP}/setup${SETUP_KEY:+?k=${SETUP_KEY}}"
   # The root password, kept where only root on this node reads it; the summary names the file, not the password.
   PW_FILE=""; save_password "${HPX_PW_DIR:-/root}/hyperprox-${CTID}.txt" && PW_FILE="${HPX_PW_DIR:-/root}/hyperprox-${CTID}.txt"
   if [ "$UI_FANCY" -eq 1 ]; then success_card; return 0; fi
   echo
   printf '  HyperProx is ready\n'
   echo
-  echo "    Open       https://${CT_IP}/   (self-signed certificate: the browser warns once)"
+  echo "    Open       ${SETUP_URL}"
+  echo "               the setup wizard; keep this link private, it carries the setup key (self-signed certificate: the browser warns once)"
   [ -z "$TS_URL" ] || echo "    Away       ${TS_URL}   (Tailscale)"
   [ -z "$WG_LINE" ] || echo "    VPN        WireGuard: ${WG_LINE}"
   [ "$VPN" != none ] || echo "    VPN        add remote access later on the VPN page"
@@ -2031,7 +2108,8 @@ PVEYML
     note "Anything skipped or failed can be done later: Settings → Setup checklist."
   fi
   echo
-  note "First: open the address above and create the owner account. HyperProx has no password of its own;"
+  note "First: open the setup link above and finish the wizard; it already has your answers from here."
+  note "Then create the owner account at https://${CT_IP}/login. HyperProx has no password of its own;"
   note "it signs in with its built-in vault (email, master password, required 2FA). See docs/security.md."
   note "Then: open Plug-ins and press Scan, and HyperProx will find the services"
   note "already running on your network and offer to configure them."
@@ -2057,8 +2135,8 @@ summary_box() {
   ui_table_row "Template" "${TEMPLATE}$([ "$NEED_DOWNLOAD" -eq 1 ] && echo ' (downloaded first)')"
   ui_table_row "Monitoring" "$( [ "${#mon[@]}" -gt 0 ] && join_list "${mon[@]}" | sed 's/, / · /g' || echo none)"
   ui_table_row "VPN" "$(vpn_words)"
-  if [ "$TOKEN_EXISTED" -eq 1 ]; then ui_table_row "Token" "uses the existing one (setup page asks for it)"
-  else ui_table_row "Token" "root@pam!hyperprox (Administrator on /)"; fi
+  if [ "$TOKEN_EXISTED" -eq 1 ]; then ui_table_row "Token" "root@pam!${TOKEN_NAME} exists: kept (setup page asks for its secret)"
+  else ui_table_row "Token" "root@pam!${TOKEN_NAME} (Administrator on /)"; fi
   if [ "$A_PVE_METRICS" = yes ] && [ "$XTOKEN_EXISTED" -ne 1 ]; then ui_table_row "" "root@pam!${EXPORTER_TOKEN} (read-only)"; fi
   if [ "${#PLAN[@]}" -gt 0 ]; then
     for p in "${PLAN[@]}"; do ui_table_row "$([ "$p" = "${PLAN[0]}" ] && echo 'On nodes')" "${p%%$'\t'*}: $(step_label "${p#*$'\t'}")"; done
@@ -2075,14 +2153,14 @@ success_card() {
   ui_box_top "" "$UI_CW" "$C_OK"
   ui_card_line "✓  HyperProx is running" "$C_OK$C_BOLD" "total $(ui_secs "$SECONDS")"
   ui_card_line ""
-  ui_card_line "   Open   https://${CT_IP}/" "$C_KEY"
+  ui_card_line "   Open   ${SETUP_URL}" "$C_KEY"
+  ui_card_line "   Keep this link private: it carries the setup key." "$C_DIM"
   [ -z "$TS_URL" ] || ui_card_line "   Away   ${TS_URL}  (Tailscale)" "$C_KEY"
   [ -z "$WG_LINE" ] || ui_card_line "   VPN    ${WG_LINE}"
   ui_card_line ""
   ui_card_line "   Next" "$C_BOLD"
-  ui_card_line "   1  Open the address and create your owner account (vault, 2FA)"
-  if [ -n "$TOKEN_SECRET" ]; then ui_card_line "   2  Your Proxmox connection is already filled in"
-  else ui_card_line "   2  The setup page asks for a Proxmox API token"; fi
+  ui_card_line "   1  Open the link and finish the setup wizard: it has your answers from here$([ -n "$TOKEN_SECRET" ] && echo ' and your Proxmox connection' || echo '; it asks for the token secret')"
+  ui_card_line "   2  Then create your owner account at https://${CT_IP}/login (vault, 2FA)"
   case "$VPN" in
     wireguard) ui_card_line "   3  On the VPN page, add your phone: it shows a QR code";;
     tailscale) ui_card_line "   3  Add DNS, proxy and alerts any time under Settings";;

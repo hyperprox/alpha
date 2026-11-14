@@ -30,8 +30,10 @@ sed -e "s/container_name: hyperprox-/container_name: ${P}-/" \
     "${here}/docker-compose.yml" > "${tmp}/docker-compose.yml"
 grep -q 'web.listen-address=127.0.0.1:19090' "${tmp}/docker-compose.yml" || { echo "could not retarget Prometheus"; exit 1; }
 grep -q 'GF_SERVER_HTTP_PORT=13003' "${tmp}/docker-compose.yml"          || { echo "could not retarget Grafana"; exit 1; }
-mkdir -p "${tmp}/config/prometheus/rules" "${tmp}/config/prometheus/targets" "${tmp}/config/prometheus/secrets" "${tmp}/data/prometheus"
-chmod 777 "${tmp}/data/prometheus"
+mkdir -p "${tmp}/config/prometheus/rules" "${tmp}/config/prometheus/targets" "${tmp}/config/prometheus/secrets"
+# data/prometheus as an install leaves it: made by bin/hyperprox-config, not opened up here (a chmod 777 once hid
+# that Prometheus could not write a root-owned directory and crash-looped on every fresh install).
+HYPERPROX_DIR="${tmp}" ENV_FILE=/dev/null bash -c "$(sed -n '/^ensure_prometheus_data() {/,/^}/p' "${here}/bin/hyperprox-config"); log() { :; }; warn() { :; }; PROMETHEUS_UID=65534; ensure_prometheus_data"
 cp -r "${here}/config/grafana" "${tmp}/config/grafana"
 sed -i 's|http://127.0.0.1:9090|http://127.0.0.1:19090|' "${tmp}/config/grafana/provisioning/datasources/prometheus.yml"
 grep -q 19090 "${tmp}/config/grafana/provisioning/datasources/prometheus.yml" || { echo "could not retarget the datasource"; exit 1; }

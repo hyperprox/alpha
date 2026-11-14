@@ -244,8 +244,19 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 
 ### Option 2: install.sh on a machine you already have
 
-Use this for your own container, a VM or bare metal. Supported systems are Debian 12 or 13 and
-Ubuntu 22.04 or 24.04. As root:
+Use this for your own container, a VM or bare metal. Supported systems are Debian 11, 12 or 13 and
+Ubuntu 22.04 or 24.04. It needs at least 2 cores, 4 GB of memory (8 GB with charts and a local AI) and
+32 GB of disk (100 GB is comfortable: charts keep up to a quarter of the free disk, at most 40 GB).
+
+In a Proxmox container:
+
+- It must be **privileged** (Unprivileged: No) with the features **nesting** and **keyctl** on. Docker cannot
+  run in an unprivileged container here, so that is not supported. The `pct create` line below sets all three.
+- Give it its address in Proxmox (the container's network, `net0`), not inside the container: Proxmox rewrites
+  the container's network settings at every start. If it uses DHCP, the installer shows the exact
+  `pct set <ID> --net0 …` line that keeps its current address, to run on the node.
+
+First install the two things the steps below use, then clone and run, as root:
 
 ```bash
 apt update && apt install -y git curl
@@ -254,10 +265,13 @@ bash /opt/hyperprox/install.sh
 ```
 
 The installer sets everything up in `/opt/hyperprox`: it installs what HyperProx runs on (Docker,
-Node.js 20 and pnpm 9), builds HyperProx, creates its built-in vault and starts its services. If the
-machine gets its address by DHCP, it offers to give it a fixed one. It asks first if you run it
-directly on a Proxmox node rather than in a container. Inside a container it turns AppArmor off for
-that container, because Docker cannot run there with it on.
+Node.js 20 and pnpm 10), builds HyperProx, creates its built-in vault and starts its services, then checks
+that every container really runs (a container that keeps restarting fails the install, with its last log
+lines). It asks first if you run it directly on a Proxmox node rather than in a container. Inside a
+container it turns AppArmor off for that container, because Docker cannot run there with it on.
+
+The Catalogue (installing apps into new containers), Updates, VPN, Devices and the Terminal work on your
+nodes over SSH, so they need a node login: add one in the setup wizard, or later from any of those pages.
 
 Your credentials (Proxmox, node logins, proxies, DNS, app logins and everything else you add) are kept
 in the vault, never in a file. The installer also writes `/opt/hyperprox/.env`, readable only by root. It

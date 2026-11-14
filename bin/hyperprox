@@ -67,7 +67,30 @@ cmd_status() {
   if [[ "$vault" == "DOWN" ]]; then
     echo "note:   HyperProx will not run without the vault: docker logs hyperprox-vault"
   fi
+  containers_status || rc=1
   return "$rc"
+}
+
+# Every hyperprox-* container: a crash loop (restarting, unhealthy, or restarted 3+ times and up for less than
+# ten minutes) or a stop is named, with the command that shows why. Prints one line when all are well.
+containers_status() {
+  command -v docker >/dev/null 2>&1 || return 0
+  local n st count health started age bad=0 total=0 now
+  now="$(date +%s)"
+  while IFS= read -r n; do
+    [[ -n "$n" ]] || continue
+    total=$((total + 1))
+    read -r st count health started < <(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}} {{.State.StartedAt}}' "$n" 2>/dev/null || echo "unknown 0 - -")
+    age=$(( now - $(date -d "${started}" +%s 2>/dev/null || echo "$now") ))
+    if [[ "$st" == restarting ]] || [[ "$health" == unhealthy ]] || { [[ "${count:-0}" -ge 3 ]] && [[ "$age" -lt 600 ]]; }; then
+      echo "container: ${n} CRASH-LOOPING (${st}, restarted ${count} times${health:+, health ${health}}; docker logs --tail 30 ${n})"; bad=1
+    elif [[ "$st" != running ]]; then
+      echo "container: ${n} ${st^^}  (docker logs --tail 30 ${n})"; bad=1
+    fi
+  done < <(docker ps -a --filter 'name=^hyperprox-' --format '{{.Names}}' 2>/dev/null | sort)
+  [[ "$bad" -eq 1 ]] && return 1
+  [[ "$total" -gt 0 ]] && echo "containers: all ${total} running"
+  return 0
 }
 
 # Locks, then reads the state back: the answer to "is it locked?" is the API's state, not the lock call's status.

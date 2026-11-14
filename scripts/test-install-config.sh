@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # the variables are read inside check strings, which eval runs
 # bin/hyperprox-config is what install.sh and deploy.sh run to bring an install's own configuration up to
 # date. These run it against throwaway install directories and check what it leaves behind, and that a
 # second run changes nothing. Then they check that install.sh and deploy.sh call it where it has to run,
@@ -21,9 +22,31 @@ mkinstall() {  # mkinstall <.env contents> -> prints the new install dir
   printf '%s\n' "$1" > "${d}/.env"; chmod 644 "${d}/.env"
   echo "$d"
 }
-run() { HYPERPROX_DIR="$1" HPX_API_STATUS_URL="${HPX_API_STATUS_URL:-file:///nonexistent}" bash "$cfg" 2>&1; }   # HPX_LOCAL_ADDRS, when set, passes through
+# This machine's addresses are the test's own (HOST_IP below), unless a test sets HPX_LOCAL_ADDRS.
+run() { HYPERPROX_DIR="$1" HPX_API_STATUS_URL="${HPX_API_STATUS_URL:-file:///nonexistent}" HPX_LOCAL_ADDRS="${HPX_LOCAL_ADDRS-192.0.2.10}" bash "$cfg" 2>&1; }
 envval() { grep -m1 "^$2=" "$1/.env" | cut -d= -f2-; }
 digest() { find "$1" -type f -print0 | sort -z | xargs -0 sha256sum; find "$1" -printf '%p %m %U\n' | sort; }
+
+# ── Prometheus data: an existing root-owned directory (what install.sh used to leave) is put right ──
+d0="$(mkinstall 'HOST_IP=192.0.2.10')"
+mkdir -p "$d0/data/prometheus/wal"; touch "$d0/data/prometheus/queries.active"
+out0="$(run "$d0")"
+check "a root-owned data/prometheus is given to 65534, contents too" '[[ "$(stat -c %u "$d0/data/prometheus")" == 65534 && "$(stat -c %u "$d0/data/prometheus/wal")" == 65534 && "$(stat -c %u "$d0/data/prometheus/queries.active")" == 65534 ]]'
+check "  and that is logged"                                     '[[ "$out0" == *"data/prometheus: given to the Prometheus user"* ]]'
+check "  a second run says nothing about it"                     '[[ "$(run "$d0")" != *"data/prometheus"* ]]'
+
+# ── The address follows the machine's ───────────────────────────────────────────
+da="$(mkinstall 'HOST_IP=192.0.2.10
+NEXT_PUBLIC_API_URL=https://192.0.2.10/api
+NEXT_PUBLIC_WS_URL=wss://192.0.2.10/ws
+GRAFANA_ROOT_URL=https://192.0.2.10/grafana/
+HYPERPROX_PUBLIC_URL=https://hp.example.com')"
+outa="$(HPX_LOCAL_ADDRS="192.0.2.77" HPX_CURRENT_ADDR=192.0.2.77 run "$da")"
+check "an address that changed is followed: HOST_IP"           '[[ "$(envval "$da" HOST_IP)" == 192.0.2.77 ]]'
+check "  and the URLs that named it"                           '[[ "$(envval "$da" NEXT_PUBLIC_API_URL)" == https://192.0.2.77/api && "$(envval "$da" NEXT_PUBLIC_WS_URL)" == wss://192.0.2.77/ws && "$(envval "$da" GRAFANA_ROOT_URL)" == https://192.0.2.77/grafana/ ]]'
+check "  HYPERPROX_PUBLIC_URL is left alone"                    '[[ "$(envval "$da" HYPERPROX_PUBLIC_URL)" == https://hp.example.com ]]'
+check "  and the change is logged"                             '[[ "$outa" == *"HOST_IP: 192.0.2.10 -> 192.0.2.77"* ]]'
+check "  an address that did not change is not touched"        '[[ "$(HPX_LOCAL_ADDRS="192.0.2.77" HPX_CURRENT_ADDR=192.0.2.77 run "$da")" != *"HOST_IP:"* ]]'
 
 # ── METRICS_TOKEN ─────────────────────────────────────────────────────────────
 d="$(mkinstall 'HOST_IP=192.0.2.10
@@ -37,6 +60,8 @@ check "metrics_token is owned by the Prometheus user (65534)"     '[[ "$(stat -c
 check ".env is left mode 0600"                                    '[[ "$(stat -c %a "$d/.env")" == 600 ]]'
 check "the generation is logged, the token is not"                '[[ "$out" == *"METRICS_TOKEN: generated"* && "$out" != *"$tok"* ]]'
 
+check "data/prometheus is made for the Prometheus user (65534)"   '[[ "$(stat -c %u:%g "$d/data/prometheus")" == 65534:65534 ]]'
+check "and the creation is logged"                               '[[ "$out" == *"data/prometheus: created"* ]]'
 before="$(digest "$d")"
 out2="$(run "$d")"
 check "a second run changes nothing (no rotation)"                '[[ "$(digest "$d")" == "$before" ]]'

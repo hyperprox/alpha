@@ -10,6 +10,9 @@
 #
 #   METRICS_TOKEN    Generated once if .env has none (or adopted from Prometheus's secret file), then
 #                    written to config/prometheus/secrets/metrics_token for the plug-in metrics scrape.
+#   Prometheus data  data/prometheus exists and belongs to the Prometheus user (65534). Created by root, it
+#                    did not, and Prometheus crash-looped on every fresh install ("queries.active: permission
+#                    denied"); an existing install with that problem is put right too.
 #   pve.yml          config/pve-exporter/pve.yml exists as a file, never as the directory Docker makes
 #                    for a missing bind-mount source. Its token is filled in by the setup wizard,
 #                    bootstrap.sh or `hyperprox pve-exporter`; an existing one is never touched.
@@ -189,6 +192,29 @@ grafana_behind_nginx() {
   fi
 }
 
+# ── This machine's address ───────────────────────────────────────────────────
+# HOST_IP, the NEXT_PUBLIC_* URLs and GRAFANA_ROOT_URL were written with the address the install had then. In a
+# container Proxmox owns the address (net0), and it can change. When HOST_IP is no longer one of this machine's
+# addresses, they follow the current one. (The web app itself works from the address in the browser; these are
+# the few places that keep an address.) A HYPERPROX_PUBLIC_URL you set is never touched.
+current_address() {
+  if [[ -n "${HPX_CURRENT_ADDR:-}" ]]; then printf '%s' "$HPX_CURRENT_ADDR"; return; fi
+  ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I 2>/dev/null | awk '{print $1}'
+}
+follow_address() {
+  local old new a k v
+  old="$(cfg_get HOST_IP)"; [[ -n "$old" ]] || return 0
+  for a in ${HPX_LOCAL_ADDRS-$(hostname -I 2>/dev/null)}; do [[ "$a" == "$old" ]] && return 0; done
+  new="$(current_address)"
+  [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 0
+  cfg_set HOST_IP "$new"
+  for k in NEXT_PUBLIC_API_URL NEXT_PUBLIC_WS_URL GRAFANA_ROOT_URL; do
+    v="$(cfg_get "$k")"
+    [[ -n "$v" && "$(url_host "$v")" == "$old" ]] && cfg_set "$k" "${v/\/\/$old/\/\/$new}"
+  done
+  log "HOST_IP: ${old} -> ${new} (this machine's address changed; the URLs that name it follow)"
+}
+
 # ── Fewer keys on disk ───────────────────────────────────────────────────────
 # cfg_drop KEY: remove every KEY= line. The file keeps its mode.
 cfg_drop() {
@@ -232,12 +258,28 @@ draw_cluster_dashboard() {
   return 0
 }
 
+# ── Prometheus's data directory ──────────────────────────────────────────────
+ensure_prometheus_data() {
+  local d="${HYPERPROX_DIR}/data/prometheus"
+  [[ -L "$d" ]] && { warn "data/prometheus is a symbolic link; its owner is left alone"; return 0; }
+  if [[ ! -d "$d" ]]; then
+    install -d -m 0755 -o "${PROMETHEUS_UID}" -g "${PROMETHEUS_UID}" "$d"
+    log "data/prometheus: created for the Prometheus user (${PROMETHEUS_UID})"
+  elif [[ -n "$(find "$d" \( ! -uid "${PROMETHEUS_UID}" -o ! -gid "${PROMETHEUS_UID}" \) -print -quit 2>/dev/null)" ]]; then
+    # -h: a link inside is re-owned itself, never what it points at.
+    chown -Rh "${PROMETHEUS_UID}:${PROMETHEUS_UID}" "$d"
+    log "data/prometheus: given to the Prometheus user (${PROMETHEUS_UID}); Prometheus could not write it"
+  fi
+}
+
 main() {
   [[ -f "$ENV_FILE" ]] || { echo "hyperprox-config: ${ENV_FILE} not found" >&2; exit 1; }
   ensure_metrics_token
+  ensure_prometheus_data
   ensure_pve_exporter_file
   drop_npm_profile
   grafana_behind_nginx
+  follow_address
   fewer_keys_on_disk
   draw_cluster_dashboard
   chmod 600 "$ENV_FILE"
