@@ -4,8 +4,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh | bash
 #
-# Everything the README used to ask you to do by hand, this does: picks a
-# container ID and a storage, fetches the right template for this host's CPU,
+# Everything the README used to ask you to do by hand, this does: asks for a
+# container ID and an address (offering free ones), picks a storage, fetches the right template for this host's CPU,
 # creates the container with the features Docker needs, mints the API token,
 # then installs HyperProx and hands you a URL.
 #
@@ -39,30 +39,363 @@ STORAGE=""         ; TEMPLATE_STORAGE=""
 PASSWORD=""        ; ASSUME_YES=0       ; DRY_RUN=0       ; KEEP_ON_FAILURE=0
 REF=""             # a tag, branch or commit to install instead of main (--ref)
 DNS=""             ; DNS_FROM=""        ; DNS_NOTE=""      # the container's nameservers (--dns, or chosen below)
+# Remote access: VPN is tailscale, wireguard or none (--vpn, or asked). The Tailscale auth key comes from
+# TS_AUTHKEY (preferred: it stays off the command line) or --tailscale-authkey, and is never printed.
+VPN=""             ; TS_KEY="${TS_AUTHKEY:-}"; unset TS_AUTHKEY
+WG_SUBNET=""       ; WG_SUBNET_GIVEN=0  ; WG_ENDPOINT=""   ; WG_PORT=51820
+TS_IP=""           ; TS_DNS=""          ; TS_URL=""        ; TS_PID=""
+WG_CTID=""         ; WG_CT_TRY=0        ; WG_PUB=""        ; WG_IP=""        ; WG_EP=""     ; WG_LINE=""   ; WG_HOSTNAME=""
+PW_FILE=""
 [ "${HYPERPROX_YES:-}" = 1 ] && ASSUME_YES=1
 # Answers: "" means ask (or take the default with -y); a flag below answers in advance.
 A_NODE_HEALTH=""   ; A_POWER=""         ; A_GPU=""
 A_CHARTS=""        ; A_PVE_METRICS=""   ; A_DNS=""          ; A_AI=""          ; A_IGPU=""
 
-C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_DIM=$'\e[90m'; C_ACC=$'\e[36m'; C_OFF=$'\e[0m'
-say()  { printf '%s→%s %s\n' "$C_ACC" "$C_OFF" "$*"; }
-ok()   { printf '  %s✓%s %s\n' "$C_OK" "$C_OFF" "$*"; }
-warn() { printf '  %s!%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
-die()  { printf '  %s✗%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
-note() { printf '    %s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+# ── hpx-ui begin ──────────────────────────────────────────────────────────────
+#  The installers' look: banner, step headers, spinners, question boxes, the review table and the finish
+#  cards. Pure bash, printf and tput; nothing to install. bootstrap.sh and install.sh each carry an IDENTICAL
+#  copy of this block (from the "hpx-ui begin" line to the "hpx-ui end" line), because bootstrap.sh arrives
+#  alone through `curl | bash` and has nothing to source. scripts/test-installer-ui.sh fails if the two copies
+#  differ: change one, copy it to the other.
+#
+#  Graphical only where it can be seen: stdout is a terminal at least 72 columns wide, NO_COLOR is not set,
+#  TERM is set and not "dumb", and the locale is UTF-8. Anything else (a pipe, a log file, -y > install.log)
+#  gets plain lines ("[step 4/10] …", "[ ok ] … (6s)", "[ .. ] …") with no escape codes, so logs stay
+#  grep-friendly. The layout is drawn for 80 columns.
+UI_FANCY=0; UI_W=80; UI_BW=70; UI_CW=68
+UI_STEP=0; UI_STEPS=0; UI_STEP_TITLE=""; UI_NEXT=()
+UI_SPIN_PID=""; UI_RUN_PID=""; UI_LOG="/dev/null"; UI_LAST_OUT=""; UI_PROGRESS=""
+C_ACC=""; C_ACC2=""; C_ACC3=""; C_OK=""; C_WARN=""; C_ERR=""; C_DIM=""; C_BOLD=""; C_KEY=""; C_INV=""; C_OFF=""
+
+ui_init() {
+  local n=0 cols=0
+  UI_FANCY=0
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ -n "${TERM:-}" ] && [ "${TERM}" != dumb ]; then
+    if [ "$(locale charmap 2>/dev/null)" = UTF-8 ]; then UI_FANCY=1
+    elif [ -z "${LC_ALL:-}" ] && [ "$(LC_CTYPE=C.UTF-8 locale charmap 2>/dev/null)" = UTF-8 ]; then
+      LC_CTYPE=C.UTF-8; UI_FANCY=1      # this shell only (not exported): lengths count characters, not bytes
+    fi
+  fi
+  [ "$UI_FANCY" -eq 1 ] || return 0
+  if [[ "${COLUMNS:-}" =~ ^[0-9]+$ ]]; then cols="$COLUMNS"
+  elif command -v tput >/dev/null 2>&1; then cols="$(tput cols 2>/dev/null || echo 0)"; fi
+  [[ "$cols" =~ ^[0-9]+$ ]] || cols=0
+  [ "$cols" -ge 72 ] || { UI_FANCY=0; return 0; }
+  UI_W=80; [ "$cols" -ge 80 ] || UI_W="$cols"
+  UI_BW=$(( UI_W - 10 )); UI_CW=$(( UI_W - 12 ))
+  command -v tput >/dev/null 2>&1 && n="$(tput colors 2>/dev/null || echo 0)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  # The brand teal, #2fd6e8, shading to #1fa9bb and #147c8b: truecolor where the terminal says it has it,
+  # else the nearest of 256 (44, 37, 30), else plain cyan.
+  if [ "${COLORTERM:-}" = truecolor ] || [ "${COLORTERM:-}" = 24bit ]; then
+    C_ACC=$'\e[38;2;47;214;232m'; C_ACC2=$'\e[38;2;31;169;187m'; C_ACC3=$'\e[38;2;20;124;139m'
+    C_INV=$'\e[1;48;2;47;214;232;38;2;10;17;28m'
+  elif [ "$n" -ge 256 ]; then
+    C_ACC=$'\e[38;5;44m'; C_ACC2=$'\e[38;5;37m'; C_ACC3=$'\e[38;5;30m'; C_INV=$'\e[1;48;5;44;38;5;234m'
+  else
+    C_ACC=$'\e[36m'; C_ACC2=$'\e[36m'; C_ACC3=$'\e[36m'; C_INV=$'\e[1;46;30m'
+  fi
+  C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_DIM=$'\e[90m'; C_BOLD=$'\e[1m'; C_KEY=$'\e[1;97m'; C_OFF=$'\e[0m'
+}
+
+# ui_rep CHAR N: CHAR, N times.
+ui_rep() { local s=""; local -i i; for (( i = 0; i < $2; i++ )); do s+="$1"; done; printf '%s' "$s"; }
+# ui_pad TEXT WIDTH: TEXT, then spaces up to WIDTH characters.
+ui_pad() { local p=$(( $2 - ${#1} )); [ "$p" -ge 0 ] || p=0; printf '%s%*s' "$1" "$p" ''; }
+ui_secs() { local t="$1"; if [ "$t" -ge 60 ]; then printf '%dm %02ds' $(( t / 60 )) $(( t % 60 )); else printf '%ds' "$t"; fi; }
+
+# ui_wrap WIDTH TEXT: TEXT as lines of at most WIDTH characters, broken between words.
+ui_wrap() {
+  local w="$1" line="" word; local -a ws
+  read -ra ws <<< "$2"
+  for word in "${ws[@]}"; do
+    while [ "${#word}" -gt "$w" ]; do
+      [ -z "$line" ] || { printf '%s\n' "$line"; line=""; }
+      printf '%s\n' "${word:0:$w}"; word="${word:$w}"
+    done
+    if [ -z "$line" ]; then line="$word"
+    elif [ $(( ${#line} + 1 + ${#word} )) -le "$w" ]; then line+=" $word"
+    else printf '%s\n' "$line"; line="$word"; fi
+  done
+  [ -z "$line" ] || printf '%s\n' "$line"
+}
+
+# ui_banner WHAT REF: the HYPERPROX banner and its tagline (fancy), or one plain line.
+ui_banner() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf 'HyperProx %s · %s\n' "$1" "$2"; return; fi
+  printf '\n'
+  if [ "$UI_W" -ge 78 ]; then
+    printf '%s  %s%s\n' \
+      "$C_ACC"  '██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ ██████╗ ██████╗  ██████╗ ██╗  ██╗' "$C_OFF" \
+      "$C_ACC"  '██║  ██║╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔══██╗██╔═══██╗╚██╗██╔╝' "$C_OFF" \
+      "$C_ACC2" '███████║ ╚████╔╝ ██████╔╝█████╗  ██████╔╝██████╔╝██████╔╝██║   ██║ ╚███╔╝ ' "$C_OFF" \
+      "$C_ACC2" '██╔══██║  ╚██╔╝  ██╔═══╝ ██╔══╝  ██╔══██╗██╔═══╝ ██╔══██╗██║   ██║ ██╔██╗ ' "$C_OFF" \
+      "$C_ACC3" '██║  ██║   ██║   ██║     ███████╗██║  ██║██║     ██║  ██║╚██████╔╝██╔╝ ██╗' "$C_OFF" \
+      "$C_ACC3" '╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝' "$C_OFF"
+  else
+    printf '  %s%s▌ H Y P E R P R O X%s\n' "$C_ACC" "$C_BOLD" "$C_OFF"
+  fi
+  printf '%s            Your Proxmox command center  ·  %s  ·  %s%s\n\n' "$C_DIM" "$1" "$2" "$C_OFF"
+}
+
+# ui_step TITLE: the next numbered step: "━━━ Step 3/10 · Title ━━━…" (plain: "[step 3/10] Title").
+ui_step() {
+  UI_STEP=$(( UI_STEP + 1 )); UI_STEP_TITLE="$1"; UI_NEXT=()
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[step %s/%s] %s\n' "$UI_STEP" "$UI_STEPS" "$1"; return; fi
+  local head="━━━ Step ${UI_STEP}/${UI_STEPS} · $1 "
+  printf '%s%s%s%s\n' "$C_ACC" "$head" "$(ui_rep '━' $(( UI_W - ${#head} )))" "$C_OFF"
+}
+# ui_plan MSG...: the long jobs this step runs next (their ui_run messages), listed dim under the spinner.
+ui_plan() { UI_NEXT=("$@"); }
+ui_sub() {   # a heading inside a step
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[ -- ] %s\n' "$1"; return; fi
+  printf '  %s▸%s %s\n' "$C_ACC" "$C_OFF" "$1"
+}
+
+# ── Result lines. Fancy: "  ✓ text" with the time right-aligned and dim; plain: "[ ok ] text (6s)".
+ui_ok() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[ ok ] %s%s\n' "$1" "${2:+ ($2)}"; return; fi
+  if [ -n "${2:-}" ]; then printf '  %s✓%s %s %s%7s%s\n' "$C_OK" "$C_OFF" "$(ui_pad "$1" $(( UI_W - 22 )))" "$C_DIM" "$2" "$C_OFF"
+  else printf '  %s✓%s %s\n' "$C_OK" "$C_OFF" "$1"; fi
+}
+ui_kv() {    # KEY VALUE: a found fact. Fancy: key column and dim value; plain: "[ ok ] Key: value".
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[ ok ] %s: %s\n' "$1" "$2"; return; fi
+  printf '  %s✓%s %s %s%s%s\n' "$C_OK" "$C_OFF" "$(ui_pad "$1" 25)" "$C_DIM" "$2" "$C_OFF"
+}
+ui_warn() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[warn] %s\n' "$1"; return; fi
+  printf '  %s!%s %s\n' "$C_WARN" "$C_OFF" "$1"
+}
+ui_bad() {   # a refused answer or a failed line: red ✗
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[ no ] %s\n' "$1"; return; fi
+  printf '  %s✗ %s%s\n' "$C_ERR" "$1" "$C_OFF"
+}
+ui_note() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf '       %s\n' "$1"; return; fi
+  printf '    %s%s%s\n' "$C_DIM" "$1" "$C_OFF"
+}
+
+# ── Spinners. ui_run and ui_wait run a command in the background (stdin from /dev/null, all output to
+#    UI_OUT, else UI_LOG) and, on a terminal, show a braille spinner with the seconds so far, the jobs still
+#    to come in this step (ui_plan) dim below it, and a progress bar when UI_PROGRESS names a function that
+#    prints "done total". The spinner is its own background process watching the command's PID;
+#    ui_spin_stop (and ui_abort, from an exit or interrupt trap) removes it and puts the cursor back. Both
+#    return the command's exit status. Shell variables the command sets do not come back: it runs in a subshell.
+ui_bar() {   # DONE TOTAL: a 24-cell bar with half cells
+  local h=0 full half
+  [ "$2" -gt 0 ] && h=$(( $1 * 48 / $2 )); [ "$h" -le 48 ] || h=48
+  full=$(( h / 2 )); half=$(( h % 2 ))
+  printf '%s%s%s%s%s%s' "$C_ACC" "$(ui_rep '█' "$full")" "$([ "$half" -eq 1 ] && printf '▌')" "$C_DIM" \
+    "$(ui_rep '░' $(( 24 - full - half )))" "$C_OFF"
+}
+ui_spin_start() {   # MSG PID
+  [ "$UI_FANCY" -eq 1 ] || return 0
+  local msg="$1" pid="$2" max=$(( UI_W - 24 )) n
+  local -a next=()
+  for n in "${UI_NEXT[@]}"; do [ "$n" = "$1" ] || next+=("$n"); done
+  [ "${#next[@]}" -le 4 ] || next=("${next[@]:0:4}")
+  [ "${#msg}" -le "$max" ] || msg="${msg:0:$(( max - 1 ))}…"
+  (
+    trap 'exit 0' TERM
+    frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏'); i=0; t0=$SECONDS; prog=""
+    while kill -0 "$pid" 2>/dev/null; do
+      if [ -n "$UI_PROGRESS" ] && [ $(( i % 10 )) -eq 0 ]; then prog="$("$UI_PROGRESS" 2>/dev/null || true)"; fi
+      body="$msg"; shown="$msg"
+      if [[ "$prog" =~ ^([0-9]+)\ ([1-9][0-9]*)$ ]]; then
+        body="$msg  $(ui_bar "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")  ${BASH_REMATCH[1]} of ${BASH_REMATCH[2]}"
+        shown="$msg  $(ui_rep x 24)  ${BASH_REMATCH[1]} of ${BASH_REMATCH[2]}"
+      fi
+      pad=$(( UI_W - 22 - ${#shown} )); [ "$pad" -ge 1 ] || pad=1
+      printf '\r  %s%s%s %s%*s%s%7s%s\e[K' "$C_ACC" "${frames[i % 10]}" "$C_OFF" "$body" "$pad" '' "$C_DIM" \
+        "$(ui_secs $(( SECONDS - t0 )))" "$C_OFF"
+      for n in "${next[@]}"; do printf '\n    %s·  %s%s\e[K' "$C_DIM" "$n" "$C_OFF"; done
+      [ "${#next[@]}" -eq 0 ] || printf '\e[%dA' "${#next[@]}"
+      i=$(( i + 1 )); sleep 0.1
+    done
+  ) &
+  UI_SPIN_PID=$!
+  printf '\e[?25l'
+}
+ui_spin_stop() {
+  [ -n "$UI_SPIN_PID" ] || return 0
+  kill "$UI_SPIN_PID" 2>/dev/null || true
+  wait "$UI_SPIN_PID" 2>/dev/null || true
+  UI_SPIN_PID=""
+  printf '\r\e[J\e[?25h'
+}
+# ui_abort: from an exit or interrupt trap. Stops the running command and what it started (a background job
+# ignores Ctrl+C), then the spinner.
+ui_kill_tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do ui_kill_tree "$c"; done; kill "$1" 2>/dev/null || true; }
+ui_abort() {
+  if [ -n "$UI_RUN_PID" ]; then ui_kill_tree "$UI_RUN_PID"; wait "$UI_RUN_PID" 2>/dev/null || true; UI_RUN_PID=""; fi
+  ui_spin_stop
+}
+
+# ui_wait MSG CMD...: a spinner on a terminal, nothing in plain output; the caller reports the outcome.
+ui_wait() {
+  local msg="$1" rc=0; shift
+  "$@" < /dev/null >> "${UI_OUT:-$UI_LOG}" 2>&1 &
+  UI_RUN_PID=$!
+  ui_spin_start "$msg" "$UI_RUN_PID"
+  wait "$UI_RUN_PID" || rc=$?
+  UI_RUN_PID=""
+  ui_spin_stop
+  [ "${UI_NEXT[0]:-}" != "$msg" ] || UI_NEXT=("${UI_NEXT[@]:1}")
+  return "$rc"
+}
+# ui_run MSG CMD...: as ui_wait, then a ✓ line with the time taken, or a ✗ line and the last 20 lines of
+# the command's output, so a failure is never hidden behind the spinner.
+ui_run() {
+  local msg="$1" rc=0 t0=$SECONDS out="${UI_OUT:-$UI_LOG}"; shift
+  [ "$UI_FANCY" -eq 1 ] || printf '[ .. ] %s\n' "$msg"
+  ui_wait "$msg" "$@" || rc=$?
+  if [ "$rc" -eq 0 ]; then ui_ok "$msg" "$(ui_secs $(( SECONDS - t0 )))"; return 0; fi
+  ui_bad "$msg (failed after $(ui_secs $(( SECONDS - t0 ))), exit $rc)"
+  if [ -s "$out" ] && [ "$out" != /dev/null ]; then
+    UI_LAST_OUT="$out"
+    printf '    %slast output:%s\n' "$C_DIM" "$C_OFF"
+    tail -n 20 "$out" | sed $'s/\e\\[[0-9;?]*[A-Za-z]//g; s/\r//g; s/^/      /'
+  fi
+  return "$rc"
+}
+
+# ── Questions. ui_ask_box TITLE QUESTION [EXPLANATION]: a rounded box (plain: the question, the explanation
+#    indented below). ui_prompt LABEL DEFAULT: "› ID [160]: " under it (plain: "[160] ").
+ui_ask_box() {
+  local l w=$(( UI_BW - 4 ))
+  if [ "$UI_FANCY" -ne 1 ]; then printf '\n  %s\n' "$2"; [ -z "${3:-}" ] || printf '    %s\n' "$3"; return; fi
+  printf '\n'
+  ui_box_top "$1" "$UI_BW" "$C_ACC"
+  while IFS= read -r l; do ui_box_put "$l" "${#l}" "$UI_BW"; done < <(ui_wrap "$w" "$2")
+  if [ -n "${3:-}" ]; then
+    while IFS= read -r l; do ui_box_put "$C_DIM$l$C_OFF" "${#l}" "$UI_BW"; done < <(ui_wrap "$w" "$3")
+  fi
+}
+ui_ask_end() { [ "$UI_FANCY" -ne 1 ] || ui_box_bottom "$UI_BW"; }
+ui_prompt() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf '  [%s] ' "$2"; return; fi
+  printf '  %s› %s%s %s[%s]%s: ' "$C_KEY" "$1" "$C_OFF" "$C_DIM" "$2" "$C_OFF"
+}
+# ui_choices DEFAULT ITEM...: numbered rows inside the open box (plain: indented lines), the default one
+# highlighted in reverse teal.
+ui_choices() {
+  local def="$1" i=0 it row; shift
+  [ "$UI_FANCY" -ne 1 ] || ui_box_put "" 0 "$UI_BW"
+  for it in "$@"; do
+    i=$(( i + 1 )); row=" $i  $it "
+    if [ "$UI_FANCY" -ne 1 ]; then printf '    %s\n' "$row"
+    elif [ "$i" = "$def" ]; then ui_box_put "  $C_INV$row$C_OFF" $(( 2 + ${#row} )) "$UI_BW"
+    else ui_box_put "  $row" $(( 2 + ${#row} )) "$UI_BW"; fi
+  done
+}
+# ui_yn_row LABEL HINT [EXPLANATION]: the explanation dim, then "◆ Label   [Y/n]  " with the cursor left after the
+#    hint. ui_yn_answer TEXT STYLE READ_A_NEWLINE then writes the answer on that row (one line up, after Enter).
+ui_yn_row() {
+  local l
+  if [ -n "${3:-}" ]; then
+    while IFS= read -r l; do printf '      %s%s%s\n' "$C_DIM" "$l" "$C_OFF"; done < <(ui_wrap $(( UI_W - 8 )) "$3")
+  fi
+  printf '  %s◆%s %s%s%s%s  ' "$C_ACC" "$C_OFF" "$(ui_pad "$1" 38)" "$C_KEY" "$2" "$C_OFF"
+}
+ui_yn_answer() {   # TEXT STYLE READ_A_NEWLINE(0|1)
+  [ "$3" -eq 1 ] && printf '\e[1A'
+  printf '\e[%dG\e[K%s%s%s\n' $(( 2 + 2 + 38 + 5 + 2 + 1 )) "$2" "$1" "$C_OFF"
+}
+
+# ── Boxes. ui_box_* draw a rounded box WIDTH wide (questions and cards); ui_table_* the double-lined review
+#    table. Text longer than the box is wrapped inside it. Fancy output only.
+UI_BOX_C=""
+ui_box_top() {   # TITLE WIDTH COLOUR (an empty TITLE: a plain top edge)
+  UI_BOX_C="${3:-$C_ACC}"
+  local t=""; [ -z "$1" ] || t="─ $1 "
+  printf '  %s╭%s%s╮%s\n' "$UI_BOX_C" "$t" "$(ui_rep '─' $(( $2 - 2 - ${#t} )))" "$C_OFF"
+}
+ui_box_put() {   # TEXT VISIBLE_LENGTH WIDTH: one line "│ text … │"
+  local pad=$(( $3 - 4 - $2 )); [ "$pad" -ge 0 ] || pad=0
+  printf '  %s│%s %s%*s %s│%s\n' "$UI_BOX_C" "$C_OFF" "$1" "$pad" '' "$UI_BOX_C" "$C_OFF"
+}
+ui_box_bottom() { printf '  %s╰%s╯%s\n' "$UI_BOX_C" "$(ui_rep '─' $(( $1 - 2 )))" "$C_OFF"; }
+ui_card_line() { # TEXT [STYLE] [RIGHT]: a card line with a 2-space margin, wrapped; RIGHT goes to the right edge
+  local l w=$(( UI_CW - 8 )) r="${3:-}"
+  if [ -z "$1" ]; then ui_box_put "" 0 "$UI_CW"; return; fi
+  [ -z "$r" ] || w=$(( w - ${#r} - 2 ))
+  while IFS= read -r l; do
+    if [ -n "$r" ]; then ui_box_put " ${2:-}$(ui_pad "$l" "$w")$C_OFF  $C_DIM$r$C_OFF " $(( 1 + w + 2 + ${#r} + 1 )) "$UI_CW"; r=""
+    else ui_box_put " ${2:-}$l$C_OFF" $(( 1 + ${#l} )) "$UI_CW"; fi
+  done < <(if [ "${#1}" -le "$w" ]; then printf '%s\n' "$1"; else ui_wrap "$w" "$1"; fi)
+}
+ui_table_top() { # TITLE
+  printf '  %s╔%s╗%s\n' "$C_ACC" "$(ui_rep '═' $(( UI_CW - 2 )))" "$C_OFF"
+  printf '  %s║%s  %s%s%s%s║%s\n' "$C_ACC" "$C_OFF" "$C_KEY" "$(ui_pad "$1" $(( UI_CW - 4 )))" "$C_OFF" "$C_ACC" "$C_OFF"
+  printf '  %s╟%s┬%s╢%s\n' "$C_ACC" "$(ui_rep '─' 14)" "$(ui_rep '─' $(( UI_CW - 17 )))" "$C_OFF"
+}
+ui_table_row() { # KEY VALUE
+  local l k="$1" vw=$(( UI_CW - 19 ))
+  # Short values keep their own spacing; long ones are wrapped between words.
+  while IFS= read -r l; do
+    printf '  %s║%s %s %s│%s %s %s║%s\n' "$C_ACC" "$C_OFF" "$(ui_pad "$k" 12)" "$C_ACC" "$C_OFF" "$(ui_pad "$l" "$vw")" "$C_ACC" "$C_OFF"
+    k=""
+  done < <(if [ "${#2}" -le "$vw" ]; then printf '%s\n' "${2:--}"; else ui_wrap "$vw" "$2"; fi)
+}
+ui_table_bottom() { printf '  %s╚%s╧%s╝%s\n' "$C_ACC" "$(ui_rep '═' 14)" "$(ui_rep '═' $(( UI_CW - 17 )))" "$C_OFF"; }
+
+# ui_failure_card ERROR CLEANUP LOG: the red card when an install stops (plain: the same facts as lines).
+ui_failure_card() {
+  local where="step ${UI_STEP}/${UI_STEPS} · ${UI_STEP_TITLE}" l
+  local try="curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/scripts/diagnose.sh | bash"
+  if [ "$UI_FANCY" -ne 1 ]; then
+    printf '[fail] Install stopped at %s: %s\n' "$where" "$1"
+    [ -z "$2" ] || printf '       %s\n' "$2"
+    [ -z "$3" ] || printf '       Full log: %s\n' "$3"
+    printf '       Try: %s\n' "$try"
+    return 0
+  fi
+  printf '\n'
+  ui_box_top "Install stopped at $where" "$UI_CW" "$C_ERR"
+  ui_card_line "✗ $1" "$C_ERR"
+  if [ -n "$UI_LAST_OUT" ] && [ -s "$UI_LAST_OUT" ]; then
+    ui_card_line ""
+    ui_card_line "last log lines" "$C_DIM"
+    while IFS= read -r l; do
+      [ "${#l}" -le $(( UI_CW - 10 )) ] || l="${l:0:$(( UI_CW - 11 ))}…"
+      ui_box_put "   $C_DIM$l$C_OFF" $(( 3 + ${#l} )) "$UI_CW"
+    done < <(tail -n 3 "$UI_LAST_OUT" | sed $'s/\e\\[[0-9;?]*[A-Za-z]//g; s/\r//g')
+  fi
+  ui_card_line ""
+  [ -z "$2" ] || ui_card_line "$2"
+  [ -z "$3" ] || ui_card_line "Full log: $3"
+  ui_card_line "Try:  $try"
+  ui_box_bottom "$UI_CW"
+  printf '\n'
+}
+# ── hpx-ui end ────────────────────────────────────────────────────────────────
+
+say()  { ui_sub "$*"; }
+ok()   { ui_ok "$*"; }
+warn() { ui_warn "$*"; }
+note() { ui_note "$*"; }
+# The message is kept for the failure card (on_exit). Coloured only when stderr is the terminal too.
+DIE_MSG=""; NO_CARD=0
+die()  {
+  DIE_MSG="$*"
+  if [ "$UI_FANCY" -eq 1 ] && [ -t 2 ]; then printf '  %s✗ %s%s\n' "$C_ERR" "$*" "$C_OFF" >&2; else printf '[fail] %s\n' "$*" >&2; fi
+  exit 1
+}
 
 usage() {
   cat <<'USAGE'
 Usage: bootstrap.sh [options]
 
-  --vmid N            Container ID           (default: one that fits your numbering, or next free)
+  --vmid N            Container ID           (default: asked at a terminal, offering one that fits your
+                                             numbering or the next free; with -y or no terminal, that one)
   --hostname NAME     Container hostname     (default: hyperprox)
   --cores N           CPU cores              (default: 4)
   --memory MB         Memory in MB           (default: 8192)
   --disk GB           Disk in GB             (default: 100)
   --storage NAME      Storage for the rootfs (default: block storage with room, most free first)
   --bridge NAME       Network bridge         (default: vmbr0)
-  --ip CIDR           Static address, e.g. 10.0.0.50/24 (default: one that fits your numbering, or dhcp)
+  --ip CIDR           Static address, e.g. 10.0.0.50/24 (default: asked at a terminal, offering one that
+                      fits your numbering, or dhcp; with -y or no terminal, that one)
   --gateway IP        Gateway, required with --ip
   --password PASS     Container root password (default: generated)
   --skip-exporter     Answer no: do not watch node health (node_exporter)
@@ -76,6 +409,13 @@ Usage: bootstrap.sh [options]
   --keep-on-failure   If the install fails, keep what was created so you can look inside
   --dns IP[,IP]       The container's DNS servers, IPv4 or IPv6, at most three (default: the node's own,
                       unless the container cannot reach it, e.g. Tailscale's 100.100.100.100; then 1.1.1.1)
+  --vpn KIND          Remote access: tailscale, wireguard or none (default: asked at a terminal; else none).
+                      Tailscale goes in HyperProx's own container; WireGuard gets a small container of
+                      its own. Either shows on HyperProx's VPN page after the first sign-in.
+  --tailscale-authkey KEY  Join Tailscale with this key, unattended (or file:/path). Better: set TS_AUTHKEY in
+                      the environment, which keeps the key off the command line. It is never printed.
+  --wg-subnet CIDR    WireGuard tunnel network (default: a free one, e.g. 10.99.0.1/24)
+  --wg-endpoint HOST  Public address or DNS name phones connect to (default: the VPN container's LAN address)
   --ref REF           Install this release tag, branch or commit instead of main (e.g. v0.3.0);
                       HyperProx can update itself from there (Updates page)
   -y, --yes           Take every default and do not ask (or set HYPERPROX_YES=1)
@@ -126,25 +466,387 @@ open_answers() {
   exec 0</dev/null
 }
 
-# ask_yn VAR DEFAULT(yes|no) QUESTION WHAT: sets VAR to yes or no. A value given by a flag wins.
+# ask_yn VAR DEFAULT(yes|no) QUESTION WHAT [LABEL] [SKIPPED]: sets VAR to yes or no. A value given by a flag wins.
+# On a terminal the question is a "◆ LABEL [Y/n]" row with WHAT dim below it; plain output keeps the whole
+# question (the setup wizard's words). SKIPPED is shown for a no: where to add it later.
 ask_yn() {
-  local var="$1" def="$2" q="$3" what="$4" reply hint
-  if [ -n "${!var}" ]; then printf '  %s %s\n' "$q" "${!var}"; return; fi
-  if [ "$ASSUME_YES" -eq 1 ] || [ "$NO_TERMINAL" -eq 1 ]; then printf -v "$var" '%s' "$def"; printf '  %s %s\n' "$q" "$def"; return; fi
+  local var="$1" def="$2" q="$3" what="$4" label="${5:-$3}" skipped="${6:-}" reply hint nl=1
   [ "$def" = yes ] && hint='[Y/n]' || hint='[y/N]'
-  printf '\n  %s%s%s\n    %s%s%s\n  %s ' "$C_ACC" "$q" "$C_OFF" "$C_DIM" "$what" "$C_OFF" "$hint"
+  if [ -n "${!var}" ] || [ "$ASSUME_YES" -eq 1 ] || [ "$NO_TERMINAL" -eq 1 ]; then
+    [ -n "${!var}" ] || printf -v "$var" '%s' "$def"
+    if [ "$UI_FANCY" -eq 1 ]; then ui_yn_row "$label" "$hint"; yn_echo "${!var}" "$skipped" 0
+    else printf '  %s %s\n' "$q" "${!var}"; fi
+    return
+  fi
+  if [ "$UI_FANCY" -eq 1 ]; then ui_yn_row "$label" "$hint" "$what"
+  else printf '\n  %s\n    %s\n  %s ' "$q" "$what" "$hint"; fi
   # Nothing more to read (EOF) is not consent: every question here asks to add something, so it means no.
-  if ! IFS= read -r reply <&3 && [ -z "$reply" ]; then printf -v "$var" no; printf '(no answer: no)'; [ -t 1 ] || echo; return; fi
+  if ! IFS= read -r reply <&3 && [ -z "$reply" ]; then
+    printf -v "$var" no
+    if [ "$UI_FANCY" -eq 1 ]; then yn_echo "no (no answer)" "" 0; else printf '(no answer: no)'; [ -t 1 ] || echo; fi
+    return
+  fi
   case "$reply" in [yY]*) printf -v "$var" yes;; [nN]*) printf -v "$var" no;; *) printf -v "$var" '%s' "$def";; esac
-  [ -t 1 ] || echo
+  if [ "$UI_FANCY" -eq 1 ]; then yn_echo "${!var}" "$skipped" "$nl"; else [ -t 1 ] || echo; fi
+}
+yn_echo() {   # ANSWER SKIPPED READ_A_NEWLINE: the answer on its row, green for yes
+  case "$1" in
+    yes) ui_yn_answer yes "$C_OK" "$3";;
+    no)  if [ -n "$2" ]; then ui_yn_answer "skip · $2" "$C_DIM" "$3"; else ui_yn_answer no "$C_DIM" "$3"; fi;;
+    *)   ui_yn_answer "$1" "$C_DIM" "$3";;
+  esac
 }
 # ask_secret VAR PROMPT: read without echo. Held in this shell's memory only.
 ask_secret() {
   local var="$1" reply=""
-  printf '    %s: ' "$2"
+  if [ "$UI_FANCY" -eq 1 ]; then printf '  %s› %s%s: ' "$C_KEY" "$2" "$C_OFF"; else printf '    %s: ' "$2"; fi
   IFS= read -rs reply <&3 || reply=""
   echo
   printf -v "$var" '%s' "$reply"
+}
+# ask_value VAR DEFAULT TITLE QUESTION WHAT CHECK LABEL [ON_EOF]: sets VAR to the answer; Enter takes DEFAULT.
+# CHECK VALUE prints why a value cannot be used and fails; the question is then asked again. Nothing more to read
+# (EOF) takes ON_EOF (else DEFAULT). On a terminal: a box with the question, then "› LABEL [default]: ".
+ask_value() {
+  local var="$1" def="$2" title="$3" q="$4" what="$5" chk="$6" label="$7" on_eof="${8-$2}" reply why
+  [ "$UI_FANCY" -ne 1 ] || { ui_ask_box "$title" "$q" "$what"; ui_ask_end; }
+  while :; do
+    if [ "$UI_FANCY" -eq 1 ]; then ui_prompt "$label" "${def:-?}"; else ui_ask_box "$title" "$q" "$what"; ui_prompt "$label" "${def:-?}"; fi
+    if ! IFS= read -r reply <&3 && [ -z "$reply" ]; then
+      [ -n "$on_eof" ] || { echo; NO_CARD=1; die "No answer. Cancelled. Nothing was created."; }
+      printf '(no answer: %s)\n' "$on_eof"; reply="$on_eof"
+    else
+      [ -t 1 ] || echo
+      reply="${reply//[[:space:]]/}"; [ -n "$reply" ] || reply="$def"
+      [ -n "$reply" ] || continue
+    fi
+    if why="$("$chk" "$reply")"; then printf -v "$var" '%s' "$reply"; return 0; fi
+    if [ "$UI_FANCY" -eq 1 ]; then ui_bad "$why"; else warn "$why"; fi
+    # The default was checked before it was offered; a default that went bad meanwhile cannot be kept.
+    [ "$reply" != "$def" ] || die "$why"
+  done
+}
+# ask_choice VAR DEFAULT TITLE QUESTION ON_EOF ITEM...: a numbered list, the default highlighted. VAR gets the
+# number picked, or what was typed when it is not one of the numbers (the caller checks it). EOF gives ON_EOF.
+ask_choice() {
+  local var="$1" def="$2" title="$3" q="$4" on_eof="$5" reply; shift 5
+  if [ "$UI_FANCY" -eq 1 ]; then
+    ui_ask_box "$title" "$q"; ui_choices "$def" "$@"; ui_ask_end; ui_prompt Choice "$def"
+  else
+    ui_ask_box "$title" "$q"; ui_choices "$def" "$@"; ui_prompt Choice "$def"
+  fi
+  if ! IFS= read -r reply <&3 && [ -z "$reply" ]; then printf '(no answer: %s)\n' "$on_eof"; printf -v "$var" '%s' "$on_eof"; return; fi
+  [ -t 1 ] || echo
+  reply="${reply//[[:space:]]/}"; [ -n "$reply" ] || reply="$def"
+  printf -v "$var" '%s' "$reply"
+}
+
+# ---------------------------------------------------------------------------
+#  The container's ID and address, when asked for them
+# ---------------------------------------------------------------------------
+CLUSTER_RES=""
+# id_in_use ID: where ID is used (a guest config anywhere in the cluster, or the cluster's own list), or fail.
+id_in_use() {
+  local f
+  if f="$(guest_conf "$1")"; then echo "$f"; return 0; fi
+  [ -n "$CLUSTER_RES" ] || CLUSTER_RES="$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null || true)"
+  grep -qE "\"vmid\"[[:space:]]*:[[:space:]]*\"?$1\"?[,}]" <<< "$CLUSTER_RES" && { echo "the cluster's guest list"; return 0; }
+  return 1
+}
+check_ctid() {
+  local where
+  [[ "$1" =~ ^[1-9][0-9]{2,8}$ ]] || { echo "$1 is not a container ID: it must be a number of 100 or more."; return 1; }
+  if where="$(id_in_use "$1")"; then echo "ID $1 is already used ($where). Choose another."; return 1; fi
+}
+# check_net dhcp|CIDR: a static address must be well formed, in no guest's config, and answer nothing.
+check_net() {
+  [ "$1" = dhcp ] && return 0
+  [[ "${1%%/*}" =~ $IPV4_RE ]] && [[ "$1" =~ /([1-9]|[12][0-9]|3[0-2])$ ]] \
+    || { echo "$1 is not dhcp or an address with its prefix, e.g. 192.0.2.50/24."; return 1; }
+  [ "$1" = "${CONV_IP:-}" ] && return 0      # checked already, when it was offered
+  addr_in_configs "${1%%/*}" && { echo "Another guest's config already uses ${1%%/*}. Choose another."; return 1; }
+  addr_answers "${1%%/*}" && { echo "Something already answers on ${1%%/*}. Choose another."; return 1; }
+  return 0
+}
+check_gw() { [[ "$1" =~ $IPV4_RE ]] || { echo "$1 is not an IPv4 address."; return 1; }; }
+# ask_network: DHCP or a static address (the numbering's, when the ID is the numbering's), then the gateway.
+# Sets NET and GATEWAY. A number from the list, "dhcp" or an address with its prefix are all answers; nothing
+# to read (EOF) is DHCP.
+ask_network() {
+  local -a items=() map=()
+  local pick n why gw_def
+  if [ -n "$CONV_IP" ] && [ "$CTID" = "$CONV_ID" ]; then
+    items+=("Static  ${CONV_IP}  via ${CONV_GW}  (matches ID)"); map+=(conv)
+  fi
+  items+=("DHCP    (address shown at the end)" "Static, type my own"); map+=(dhcp own)
+  while :; do
+    ask_choice pick 1 "Network" "How should the container get its address?" dhcp "${items[@]}"
+    case "$pick" in
+      [1-9]) n="${map[$(( pick - 1 ))]:-}";;
+      dhcp|DHCP) n=dhcp;;
+      */*) if why="$(check_net "$pick")"; then NET="$pick"; n=typed; else bad_answer "$why"; continue; fi;;
+      *) n="";;
+    esac
+    case "$n" in
+      conv) NET="$CONV_IP"; GATEWAY="$CONV_GW"; return 0;;
+      dhcp) NET=dhcp; GATEWAY=""; return 0;;
+      own)  ask_value NET "" "Address" "Which static address should the container have?" \
+              "With its prefix, e.g. 192.0.2.50/24. It is checked against every guest's config and with a ping." check_net Address dhcp
+            if [ "$NET" = dhcp ]; then GATEWAY=""; return 0; fi
+            break;;
+      typed) break;;
+      *) bad_answer "$pick is not one of the choices: type its number, dhcp, or an address with its prefix.";;
+    esac
+  done
+  gw_def="$GATEWAY"; [ "$NET" = "${CONV_IP:-}" ] && gw_def="$CONV_GW"
+  [ -n "$gw_def" ] || gw_def="$(ip route show default 2>/dev/null | awk '/via/ {for (i = 1; i < NF; i++) if ($i == "via") {print $(i+1); exit}}')"
+  ask_value GATEWAY "$gw_def" "Gateway" "Which gateway should ${NET} use?" "Usually your router's address on that network." check_gw Gateway
+}
+bad_answer() { if [ "$UI_FANCY" -eq 1 ]; then ui_bad "$1"; else warn "$1"; fi; }
+
+# ---------------------------------------------------------------------------
+#  Remote access (VPN). Tailscale goes into HyperProx's own container; WireGuard gets a small container of
+#  its own. Nothing is ever installed or changed on a Proxmox node. Either way HyperProx's VPN page takes it
+#  over at the first sign-in: bootstrap writes data/setup/vpn-pending.json in the container (public facts only:
+#  addresses, the WireGuard server's public key, container IDs), and the API adopts what it lists
+#  (apps/api/src/lib/vpn/install-handoff.ts).
+# ---------------------------------------------------------------------------
+ip2int() { local IFS=. a b c d; read -r a b c d <<< "$1"; echo $(( (a << 24) + (b << 16) + (c << 8) + d )); }
+# cidr_overlaps A/n B/m: the two networks share any address.
+cidr_overlaps() {
+  local n ai bi mask
+  n="${1#*/}"; [ "${2#*/}" -lt "$n" ] && n="${2#*/}"
+  ai="$(ip2int "${1%/*}")"; bi="$(ip2int "${2%/*}")"
+  mask=$(( n == 0 ? 0 : (0xFFFFFFFF << (32 - n)) & 0xFFFFFFFF ))
+  [ $(( ai & mask )) -eq $(( bi & mask )) ]
+}
+# The IPv4 networks in use here: this node's own, the cluster's nodes, every guest config's static addresses,
+# and Tailscale's 100.64.0.0/10. A WireGuard tunnel network must overlap none of them (the same rule as
+# checkAllowedIps in lib/vpn/wireguard/config.ts, which the API applies again when it adopts the server).
+used_networks() {
+  local n x
+  { ip -4 -o addr show 2>/dev/null | awk '{print $4}'
+    for n in "${NODES[@]}"; do x="$(node_ip "$n")"; [[ "$x" =~ $IPV4_RE ]] && echo "$x/32"; done
+    cat "$PVE_ETC"/nodes/*/lxc/*.conf "$PVE_ETC"/nodes/*/qemu-server/*.conf 2>/dev/null | grep -oE 'ip=[0-9.]+/[0-9]+' | cut -d= -f2
+    echo 100.64.0.0/10
+  } | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' | grep -v '^127\.' | sort -u || true
+}
+check_wg_subnet() {
+  local net
+  [[ "${1%%/*}" =~ $IPV4_RE ]] && [[ "$1" =~ /(1[6-9]|2[0-9]|30)$ ]] \
+    || { echo "$1 is not a tunnel network with its prefix (/16 to /30), e.g. 10.99.0.1/24."; return 1; }
+  while IFS= read -r net; do
+    cidr_overlaps "$1" "$net" && { echo "$1 overlaps $net, which is already in use here: LAN and cluster traffic must stay off the tunnel."; return 1; }
+  done < <(used_networks)
+  return 0
+}
+wg_subnet_default() {
+  local c
+  for c in 10.99.0.1/24 10.98.0.1/24 10.97.0.1/24 172.30.99.1/24 192.168.199.1/24; do
+    check_wg_subnet "$c" >/dev/null && { echo "$c"; return 0; }
+  done
+}
+check_endpoint() { [ "$1" = lan ] || [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] || { echo "$1 is not an address or a DNS name."; return 1; }; }
+
+# ask_vpn: sets VPN (tailscale | wireguard | none), and WG_SUBNET and WG_ENDPOINT for WireGuard. Not now is the
+# default; with -y or no terminal it is not asked, and only an auth key or --vpn turns it on.
+ask_vpn() {
+  local pick why
+  [ -n "$VPN" ] || [ -z "$TS_KEY" ] || VPN=tailscale
+  if [ -z "$VPN" ]; then
+    if [ "$ASK_PLACEMENT" -eq 1 ]; then
+      while :; do
+        ask_choice pick 3 "VPN" "How do you want to reach HyperProx when you are away from home?" 3 \
+          "Tailscale   sign in with a link, nothing to open on router" \
+          "WireGuard   own small VPN container, forward UDP ${WG_PORT}" \
+          "Not now     add it later on the VPN page"
+        case "${pick,,}" in
+          1|tailscale) VPN=tailscale; break;;
+          2|wireguard) VPN=wireguard; break;;
+          3|none|no|not*) VPN=none; break;;
+          *) bad_answer "$pick is not one of the choices: type 1, 2 or 3.";;
+        esac
+      done
+    else
+      VPN=none
+    fi
+  fi
+  if [ "$VPN" = tailscale ] && [ -z "$TS_KEY" ] && [ "$INTERACTIVE" -ne 1 ]; then
+    warn "Tailscale signs in through a link, and there is no terminal to show it on: skipped. Give an auth key (TS_AUTHKEY), or add it later on the VPN page."
+    VPN=none
+  fi
+  [ "$VPN" = wireguard ] || return 0
+  if [ ! -d "${HPX_SYSFS:-/sys}/module/wireguard" ]; then
+    warn "The WireGuard kernel module is not loaded on ${THIS_NODE}, and HyperProx never changes a node to load it: WireGuard skipped."
+    note "To use it: load it there (modprobe wireguard, and add wireguard to /etc/modules), then add it on the VPN page; or choose Tailscale."
+    VPN=none; return 0
+  fi
+  [ -n "$WG_SUBNET" ] || WG_SUBNET="$(wg_subnet_default)"
+  [ -n "$WG_SUBNET" ] || die "No free tunnel network was found for WireGuard; pass --wg-subnet."
+  if [ "$ASK_PLACEMENT" -eq 1 ] && [ "$WG_SUBNET_GIVEN" -eq 0 ]; then
+    ask_value WG_SUBNET "$WG_SUBNET" "WireGuard tunnel" "Which network should the tunnel use?" \
+      "Phones and laptops get addresses in it. It must not overlap your LAN, the cluster or Tailscale; the one offered does not." check_wg_subnet Tunnel
+    ask_value WG_ENDPOINT "${WG_ENDPOINT:-lan}" "WireGuard address" "Which address do phones connect to from outside: your public IP, or a DNS name for it?" \
+      "Enter keeps the VPN container's LAN address for now (it works at home); change it on the VPN page." check_endpoint Address
+  fi
+  why="$(check_wg_subnet "$WG_SUBNET")" || die "$why"
+  why="$(check_endpoint "${WG_ENDPOINT:-lan}")" || die "$why"
+}
+# ── Tailscale, in HyperProx's own container. It has /dev/net/tun (the lxc lines written after pct create).
+#    --accept-dns=false: the container keeps its own resolver, so the MagicDNS checks (choose_dns here,
+#    resolv_uses_magicdns in install.sh) see what they saw before. An auth key goes in through a root-only
+#    file in the container that is removed straight after: never on a command line, never in a log.
+ts_install() {
+  pct exec "$CTID" -- bash -c 'command -v tailscale >/dev/null 2>&1 || curl -fsSL https://tailscale.com/install.sh | sh'
+}
+ts_up_key() {
+  printf '%s' "$TS_KEY" | pct exec "$CTID" -- bash -c 'umask 077; cat > /run/hpx-ts.key'
+  pct exec "$CTID" -- bash -c "tailscale up --auth-key=file:/run/hpx-ts.key --hostname='${HOSTNAME%%.*}' --accept-dns=false; rc=\$?; rm -f /run/hpx-ts.key; exit \$rc"
+}
+ts_wait_ip() {   # until the container has a tailnet address (someone signed in), at most 15 minutes
+  local i
+  for i in $(seq 1 450); do
+    pct exec "$CTID" -- tailscale ip -4 2>/dev/null | grep -qE '^[0-9.]+$' && return 0
+    sleep 2
+  done
+  return 1
+}
+# setup_tailscale: sets TS_IP, TS_DNS and TS_URL. Never fatal: a failure says where to finish it.
+setup_tailscale() {
+  local out url st t0
+  TS_IP=""; TS_DNS=""; TS_URL=""
+  ui_run "Installing Tailscale in container $CTID" ts_install || { warn "Tailscale could not be installed; add it later on the VPN page."; return 0; }
+  if [ -n "$TS_KEY" ]; then
+    ui_run "Joining your tailnet with the auth key" ts_up_key || { warn "Tailscale did not accept the auth key; add it later on the VPN page."; return 0; }
+  else
+    out="$(mktemp)"; TMP_PATHS+=("$out")
+    pct exec "$CTID" -- tailscale up --hostname="${HOSTNAME%%.*}" --accept-dns=false --qr > "$out" 2>&1 &
+    TS_PID=$!
+    url=""
+    for _ in $(seq 1 60); do
+      url="$(grep -oE 'https://login\.tailscale\.com/[A-Za-z0-9/_-]+' "$out" | head -1 || true)"
+      [ -n "$url" ] && break
+      kill -0 "$TS_PID" 2>/dev/null || break
+      sleep 1
+    done
+    if [ -n "$url" ]; then
+      sleep 1   # the QR code follows the link
+      if [ "$UI_FANCY" -eq 1 ]; then printf '    %sOpen%s  %s%s%s   or scan:\n' "$C_BOLD" "$C_OFF" "$C_ACC" "$url" "$C_OFF"
+      else printf '       Open %s or scan:\n' "$url"; fi
+      grep -E '[█▀▄]' "$out" | sed 's/^/      /' || true
+    fi
+    t0=$SECONDS
+    if ! ui_wait "Waiting for you to sign in to Tailscale…" ts_wait_ip; then
+      ui_kill_tree "$TS_PID"; TS_PID=""
+      warn "Nobody signed in to Tailscale within 15 minutes; finish it later on the VPN page."
+      return 0
+    fi
+    ui_kill_tree "$TS_PID" 2>/dev/null; TS_PID=""
+  fi
+  TS_IP="$(pct exec "$CTID" -- tailscale ip -4 2>/dev/null | head -1 || true)"
+  st="$(pct exec "$CTID" -- tailscale status --json --peers=false 2>/dev/null || true)"
+  TS_DNS="$(grep -m1 -oE '"DNSName"[[:space:]]*:[[:space:]]*"[^"]+"' <<< "$st" | sed -E 's/.*"([^"]+)"$/\1/; s/\.$//' || true)"
+  [[ "$TS_IP" =~ $IPV4_RE ]] || { warn "Tailscale did not report an address; check it later on the VPN page."; TS_IP=""; return 0; }
+  [[ "$TS_DNS" =~ ^[A-Za-z0-9.-]+$ ]] || TS_DNS=""
+  TS_URL="https://${TS_DNS:-$TS_IP}/"
+  ui_ok "On your tailnet as ${TS_DNS:-${HOSTNAME%%.*}} · ${TS_IP}" "$(ui_secs $(( SECONDS - ${t0:-$SECONDS} )))"
+}
+
+# ── WireGuard, in a small unprivileged container of its own. Created here (with this run's mark, so the undo
+#    removes it); set up after HyperProx is installed, by the Catalogue recipe's own script
+#    (WIREGUARD_SERVER_RECIPE in apps/api/src/lib/vpn/wireguard/recipe.ts, read from the installed copy), which
+#    makes the server key inside that container: it never leaves it. No client key is made here.
+create_wg_ct() {
+  pct create "$WG_CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
+    --arch "$ARCH" --ostype debian --description "$RUN_MARK" --hostname "$WG_HOSTNAME" \
+    --cores 1 --memory 256 --swap 256 --rootfs "${STORAGE}:2" \
+    --net0 "name=eth0,bridge=${BRIDGE},ip=dhcp" ${DNS:+--nameserver "${DNS//,/ }"} \
+    --unprivileged 1 --features nesting=1 --onboot 1 --start 0
+}
+pick_wg_ctid() {   # the next free ID after HyperProx's own
+  local id n
+  id="$(pvesh get /cluster/nextid 2>/dev/null || true)"
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  for n in $(seq 0 50); do
+    [ "$((id + n))" != "$CTID" ] || continue
+    id_in_use "$((id + n))" >/dev/null && continue
+    [ "$(pvesh get /cluster/nextid --vmid "$((id + n))" 2>/dev/null)" = "$((id + n))" ] || continue
+    echo "$((id + n))"; return 0
+  done
+  return 1
+}
+wait_dns_in() {   # CTID: until the container can resolve names, at most two minutes
+  for _ in $(seq 1 60); do
+    pct exec "$1" -- getent hosts deb.debian.org >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+# The tunnel network checked again by the API's own rules (checkSpec, checkAllowedIps), from the installed copy.
+wg_check_rules() {
+  local nets
+  nets="$(used_networks | tr '\n' ' ')"
+  # shellcheck disable=SC2086
+  pct exec "$CTID" -- node -e '
+    const c = require("/opt/hyperprox/apps/api/dist/lib/vpn/wireguard/config.js")
+    const [addr, ...nets] = process.argv.slice(1).filter(a => a !== "--")
+    const why = c.checkSpec({ iface: "hp-wg0", address: addr, listenPort: Number(process.env.WG_PORT || 51820), peers: [] })
+      || c.checkAllowedIps([addr], { node: false, clusterNets: nets })
+    if (why) { console.log(why); process.exit(1) }' -- "$WG_SUBNET" $nets
+}
+wg_recipe() {
+  local script
+  script="$(pct exec "$CTID" -- node -e 'process.stdout.write(require("/opt/hyperprox/apps/api/dist/lib/vpn/wireguard/recipe.js").WIREGUARD_SERVER_RECIPE.install.script)')" || return 1
+  [ -n "$script" ] || return 1
+  printf '%s\n' "$script" | pct exec "$WG_CTID" -- env WG_ADDRESS="$WG_SUBNET" WG_PORT="$WG_PORT" bash -s
+}
+# setup_wireguard: sets WG_PUB, WG_IP, WG_EP and WG_LINE. A failure removes the WireGuard container again
+# (it is this run's) and says where to add it later; HyperProx itself stays.
+setup_wireguard() {
+  local out why
+  out="$(mktemp)"; TMP_PATHS+=("$out")
+  if ! why="$(wg_check_rules 2>&1)"; then
+    warn "HyperProx's WireGuard rules refuse ${WG_SUBNET}: ${why}"; wg_give_up; return 0
+  fi
+  if ! UI_OUT="$out" ui_run "Setting up WireGuard in container $WG_CTID (recipe)" wg_recipe; then
+    wg_give_up; return 0
+  fi
+  WG_PUB="$(sed -n 's/^HP_WG_PUB=//p' "$out" | tail -1)"
+  [[ "$WG_PUB" =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]] || { warn "The WireGuard container did not report its public key."; wg_give_up; return 0; }
+  WG_IP="$(pct exec "$WG_CTID" -- hostname -I 2>/dev/null | awk '{print $1}')"
+  if [ "${WG_ENDPOINT:-lan}" = lan ]; then WG_EP="${WG_IP}:${WG_PORT}"; else WG_EP="${WG_ENDPOINT}:${WG_PORT}"; fi
+  WG_LINE="UDP ${WG_PORT} → ${WG_IP} (forward it on your router)"
+  ui_ok "WireGuard server up in container $WG_CTID · tunnel $WG_SUBNET"
+  note "On your router, forward UDP ${WG_PORT} to ${WG_IP}. Then add your phone on the VPN page: it shows a QR code."
+}
+wg_give_up() {
+  warn "WireGuard was not set up; add it later on the VPN page."
+  if [ "$WG_CT_TRY" -eq 1 ] && [ -n "$WG_CTID" ]; then
+    pct stop "$WG_CTID" >/dev/null 2>&1 || true
+    pct destroy "$WG_CTID" --purge >/dev/null 2>&1 && note "Removed its container $WG_CTID again."
+    WG_CT_TRY=0
+  fi
+  VPN=none
+}
+# vpn_marker FILE: what HyperProx's VPN page takes over at the first sign-in. Public facts only.
+vpn_marker() {
+  local e=()
+  [ -n "$TS_IP" ] && e+=("$(printf '{"kind":"tailscale","ctid":%s,"machineId":"lxc-%s","hostname":"%s","ip":"%s","dnsName":"%s"}' \
+    "$CTID" "$CTID" "${HOSTNAME%%.*}" "$TS_IP" "$TS_DNS")")
+  [ -n "$WG_PUB" ] && e+=("$(printf '{"kind":"wireguard","ctid":%s,"machineId":"lxc-%s","iface":"hp-wg0","address":"%s","listenPort":%s,"endpoint":"%s","publicKey":"%s"}' \
+    "$WG_CTID" "$WG_CTID" "$WG_SUBNET" "$WG_PORT" "$WG_EP" "$WG_PUB")")
+  [ "${#e[@]}" -gt 0 ] || return 1
+  local IFS=,
+  printf '{"version":1,"source":"bootstrap","entries":[%s]}\n' "${e[*]}" > "$1"
+}
+
+vpn_words() {   # the plan's VPN line
+  case "$VPN" in
+    tailscale) if [ -n "$TS_KEY" ]; then echo "Tailscale in this container, joined with the auth key given"
+               else echo "Tailscale in this container (sign-in link shown during install)"; fi;;
+    wireguard) echo "WireGuard in a small container of its own (next free ID), tunnel ${WG_SUBNET}, UDP ${WG_PORT}";;
+    *)         echo "not now (add it later on the VPN page)";;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -184,6 +886,12 @@ rollback() {
       ok "$node: undid $(step_label "${step%-undo}")"
     else warn "$node: could not undo $(step_label "${step%-undo}"); see Settings → Setup checklist"; fi
   done
+  if [ "$WG_CT_TRY" -eq 1 ] && [ -n "$WG_CTID" ] && f="$(guest_conf "$WG_CTID")" \
+      && grep -qF "$RUN_MARK" "$f" && grep -qxF "hostname: ${WG_HOSTNAME}" "$f"; then
+    pct stop "$WG_CTID" >/dev/null 2>&1 || true
+    if pct destroy "$WG_CTID" --purge >/dev/null 2>&1; then ok "Removed the WireGuard container $WG_CTID"
+    else warn "Could not remove container $WG_CTID; remove it with: pct destroy $WG_CTID --purge"; fi
+  fi
   if [ "$CT_TRY" -eq 1 ]; then
     # Only a container that carries this run's mark is ours. pct create removes its own volumes when it fails.
     if f="$(guest_conf "$CTID")"; then
@@ -221,22 +929,37 @@ rollback() {
   done
 }
 made_anything() {
-  [ "$CT_TRY" -eq 1 ] || [ "$TPL_TRY" -eq 1 ] || [ "$TOKEN_TRY" -eq 1 ] || [ "$XTOKEN_TRY" -eq 1 ] \
+  [ "$CT_TRY" -eq 1 ] || [ "$WG_CT_TRY" -eq 1 ] || [ "$TPL_TRY" -eq 1 ] || [ "$TOKEN_TRY" -eq 1 ] || [ "$XTOKEN_TRY" -eq 1 ] \
     || [ "${#NODE_UNDO[@]}" -gt 0 ] || [ "${#NODE_LEFT[@]}" -gt 0 ]
 }
 on_exit() {
-  local rc=$? p
+  local rc=$? p log
   trap '' INT TERM HUP     # a second Ctrl+C must not stop the clean-up half-way
   set +eu
+  ui_abort                 # a command still running under a spinner, and the spinner itself
+  [ -z "$TS_PID" ] || ui_kill_tree "$TS_PID"
+  local outcome=""
   if [ "$FINISHED" -ne 1 ]; then
     echo
     if ! made_anything; then
       [ "$INTERRUPTED" -eq 1 ] && note "Stopped. Nothing was created."
+      outcome="Nothing was created."
     elif [ "$KEEP_ON_FAILURE" -eq 1 ] && [ "$INTERRUPTED" -ne 1 ]; then
       warn "Stopped part-way. Kept what was made, as asked (--keep-on-failure): container ${CTID}."
+      outcome="Kept what was made, as asked (--keep-on-failure): container ${CTID}. Look inside with: pct enter ${CTID}"
     else
       say "$([ "$INTERRUPTED" -eq 1 ] && echo Interrupted || echo Stopped) — undoing what this run created"
       rollback
+      outcome="Cleaned up: what this run created was removed again (listed above). Nothing else was changed."
+    fi
+    if [ "$rc" -ne 0 ] && [ "$NO_CARD" -ne 1 ] && { [ -n "$DIE_MSG" ] || made_anything; }; then
+      # The spinner commands' output outlives this run only when something went wrong after work began.
+      log=""
+      if made_anything && [ -s "$UI_LOG" ]; then
+        log="${TMPDIR:-/tmp}/hyperprox-bootstrap-$(date +%Y%m%d-%H%M%S).log"
+        (umask 077; sed $'s/\e\\[[0-9;?]*[A-Za-z]//g' "$UI_LOG" > "$log") 2>/dev/null || log=""
+      fi
+      ui_failure_card "${DIE_MSG:-$([ "$INTERRUPTED" -eq 1 ] && echo 'Interrupted' || echo "Stopped (exit $rc)")}" "$outcome" "$log"
     fi
   fi
   for p in "${TMP_PATHS[@]}"; do [ -n "$p" ] && rm -rf -- "$p"; done
@@ -342,6 +1065,11 @@ node_run() {
   [ -n "$kh" ] && opts+=(-o "GlobalKnownHostsFile=$kh")
   ssh "${opts[@]}" "$1" 'bash -s'
 }
+
+# run_node_step STEP NODE: carry out one node step there (its HPX-RESULT line and anything else on stdout).
+run_node_step() { step_text "$1" | node_run "$2" 2>&1; }
+# probe_node NODE: what NODE has (probe.sh's lines on stdout; its errors are dropped, as before).
+probe_node() { node_run "$1" < "$NODE_DIR/probe.sh" 2>/dev/null; }
 
 cluster_nodes() {
   pvesh get /nodes --output-format json 2>/dev/null \
@@ -501,6 +1229,7 @@ detect_numbering() {
 
 # ===========================================================================
 main() {
+  ui_init
   while [ $# -gt 0 ]; do
     case "$1" in
       --vmid) CTID="$2"; shift 2;;
@@ -526,6 +1255,10 @@ main() {
       --keep-on-failure) KEEP_ON_FAILURE=1; shift;;
       --ref) REF="${2:-}"; shift 2;;
       --dns) DNS="${2:-}"; DNS_FROM="--dns"; shift 2;;
+      --vpn) VPN="${2:-}"; shift 2;;
+      --tailscale-authkey) TS_KEY="${2:-}"; shift 2;;
+      --wg-subnet) WG_SUBNET="${2:-}"; WG_SUBNET_GIVEN=1; shift 2;;
+      --wg-endpoint) WG_ENDPOINT="${2:-}"; shift 2;;
       -y|--yes) ASSUME_YES=1; shift;;
       -h|--help) usage; exit 0;;
       *) die "Unknown option: $1 (try --help)";;
@@ -546,6 +1279,15 @@ main() {
   if [ -n "$DNS_FROM" ]; then
     dns_list_ok "$DNS" || die "--dns must be one to three IPv4 or IPv6 addresses, separated by commas."
   fi
+  case "$VPN" in ""|tailscale|wireguard|none) ;; *) die "--vpn must be tailscale, wireguard or none.";; esac
+  if [[ "$TS_KEY" == file:* ]]; then
+    [ -r "${TS_KEY#file:}" ] || die "--tailscale-authkey file: cannot read ${TS_KEY#file:}."
+    TS_KEY="$(tr -d '[:space:]' < "${TS_KEY#file:}")"
+  fi
+  # Checked by shape only, and never echoed: a wrong key is reported without it.
+  [ -z "$TS_KEY" ] || [[ "$TS_KEY" =~ ^tskey-[A-Za-z0-9_-]{8,200}$ ]] || die "The Tailscale auth key does not look like one (tskey-…)."
+  [ -z "$TS_KEY" ] || [ "$VPN" != wireguard ] || die "A Tailscale auth key and --vpn wireguard do not go together."
+  [ -z "$WG_ENDPOINT" ] || [[ "$WG_ENDPOINT" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] || die "--wg-endpoint must be an address or a DNS name, without a port."
   # A mirror or fork to clone instead of GitHub (HPX_REPO_URL), as install.sh's HYPERPROX_REPO_URL.
   REPO_URL_ARG="${HPX_REPO_URL:-}"
   [ -z "$REPO_URL_ARG" ] || [[ "$REPO_URL_ARG" =~ ^https?://[A-Za-z0-9.:-]+/[A-Za-z0-9._~/-]+$ ]] || die "HPX_REPO_URL must be an http(s) git URL."
@@ -554,21 +1296,28 @@ main() {
     [ -n "$GATEWAY" ] || die "--ip needs --gateway too."
   fi
 
+  CTID_GIVEN="$CTID"; NET_GIVEN=0; [ "$NET" = dhcp ] || NET_GIVEN=1
   open_answers
   trap on_exit EXIT
   trap 'INTERRUPTED=1; exit 130' INT TERM HUP
   PVE_ETC="${HPX_PVE_ETC:-/etc/pve}"
+  # Output of the commands that run under a spinner; shown (its tail) only when one fails.
+  UI_LOG="$(mktemp)"; TMP_PATHS+=("$UI_LOG")
+  ASK_PLACEMENT=0; [ "$INTERACTIVE" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ] && ASK_PLACEMENT=1
+
+  ui_banner "installer" "${REF:-main}$([ "$DRY_RUN" -eq 1 ] && echo ' · dry run')"
+  UI_STEPS=10
 
   # -------------------------------------------------------------------------
   #  1. Are we somewhere this can work?
   # -------------------------------------------------------------------------
-  say "Checking this host"
+  ui_step "Looking around"
   command -v pveversion >/dev/null 2>&1 || die "This must run on a Proxmox VE host — pveversion was not found."
   [ "$(id -u)" -eq 0 ] || die "This must run as root."
-  ok "Proxmox $(pveversion | cut -d/ -f2)"
+  ui_kv "Proxmox VE" "$(pveversion | cut -d/ -f2)"
   ip link show "$BRIDGE" >/dev/null 2>&1 || die "There is no network bridge '$BRIDGE' on this node. Pass --bridge."
   ARCH="$(host_arch)" || die "This host's CPU ($(uname -m)) has no Proxmox container template; HyperProx needs amd64 or arm64."
-  ok "CPU architecture: $ARCH"
+  ui_kv "CPU architecture" "$ARCH"
   # This node's name in the cluster (which is not always what `hostname` says).
   THIS_NODE=""
   [ -L "$PVE_ETC/local" ] && THIS_NODE="$(basename "$(readlink -f "$PVE_ETC/local")")"
@@ -579,34 +1328,6 @@ main() {
   # -------------------------------------------------------------------------
   #  2. Where to put it
   # -------------------------------------------------------------------------
-  say "Choosing placement"
-  if [ -z "$CTID" ] && [ "$NET" = dhcp ]; then
-    detect_numbering
-    if [ -n "$CONV_ID" ]; then
-      use=""
-      if [ "$NO_TERMINAL" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ]; then
-        note "Your guests follow <node#><IP> numbering; with no terminal to ask on, a static address is not chosen for you."
-        use=no
-      else
-        ask_yn use yes "Your guests follow <node#><IP> numbering ($CONV_MATCH of $CONV_TOTAL do); use CT $CONV_ID with IP $CONV_IP (gateway $CONV_GW)?" \
-          "The ID is free, no guest config uses the address, and nothing answers a ping on it."
-      fi
-      if [ "$use" = yes ]; then CTID="$CONV_ID"; NET="$CONV_IP"; GATEWAY="$CONV_GW"; fi
-    fi
-  fi
-  [ -n "$CTID" ] || CTID="$(pvesh get /cluster/nextid)"
-  [[ "$CTID" =~ ^[0-9]+$ ]] || die "Could not get a free container ID from Proxmox."
-  if f="$(guest_conf "$CTID")"; then die "ID $CTID is already used ($f). Pass --vmid to choose another."; fi
-  ok "Container ID $CTID"
-  if [ "$NET" = dhcp ]; then ok "Network: DHCP on $BRIDGE"
-  else
-    if [ "$NET" != "${CONV_IP:-}" ]; then
-      addr_in_configs "${NET%%/*}" && die "Another guest's config already uses ${NET%%/*}. Choose another --ip."
-      addr_answers "${NET%%/*}" && die "Something already answers on ${NET%%/*}. Choose another --ip."
-    fi
-    ok "Network: $NET, gateway $GATEWAY, on $BRIDGE"
-  fi
-
   if [ -z "$STORAGE" ]; then
     STORAGE="$(pick_rootfs_storage)"
     [ -n "$STORAGE" ] || die "No active storage on this node can hold a ${DISK} GB container disk. Pass --storage, or a smaller --disk."
@@ -614,20 +1335,20 @@ main() {
     pvesm status -content rootdir 2>/dev/null | awk -v s="$STORAGE" 'NR>1 && $1==s && $3=="active" {f=1} END {exit !f}' \
       || die "Storage '$STORAGE' is not active on this node, or cannot hold containers."
   fi
-  ok "Rootfs storage: $STORAGE"
+  ui_kv "Rootfs storage" "$STORAGE"
   choose_dns
   case "$DNS_FROM" in
-    "")   ok "DNS: the node's own" ;;
-    auto) ok "DNS: ${DNS//,/, }"; note "$DNS_NOTE" ;;
-    *)    ok "DNS: ${DNS//,/, } (from ${DNS_FROM})" ;;
+    "")   ui_kv "DNS" "the node's own" ;;
+    auto) ui_kv "DNS" "${DNS//,/, }"; note "$DNS_NOTE" ;;
+    *)    ui_kv "DNS" "${DNS//,/, } (from ${DNS_FROM})" ;;
   esac
 
   # -------------------------------------------------------------------------
   #  3. Template — the newest Debian 13 built for this CPU. A template for
   #     another CPU is never used, even when it is the only one downloaded.
   # -------------------------------------------------------------------------
-  say "Choosing the container template"
-  [ "$DRY_RUN" -eq 1 ] || pveam update >/dev/null 2>&1 || warn "Could not refresh the template list; using what is cached."
+  [ "$DRY_RUN" -eq 1 ] || ui_wait "Refreshing Proxmox's template list" pveam update \
+    || warn "Could not refresh the template list; using what is cached."
   TPL_STORES=($(pvesm status -content vztmpl 2>/dev/null | awk 'NR>1 && $3=="active" {print $6, $1}' | sort -k1,1nr | awk '{print $2}'))
   [ "${#TPL_STORES[@]}" -gt 0 ] || die "No active storage on this node accepts container templates."
   AVAIL="$(pveam available --section system 2>/dev/null | debian_templates | for_arch "$ARCH")"
@@ -657,23 +1378,26 @@ main() {
   if [ "$NEED_DOWNLOAD" -eq 1 ]; then
     grep -qxF "$TEMPLATE" <<< "$AVAIL" || die "$TEMPLATE is not offered for download."
     TEMPLATE_STORAGE="${TPL_STORES[0]}"
-    ok "Template: $TEMPLATE ($ARCH), to be downloaded to $TEMPLATE_STORAGE"
+    ui_kv "Template" "$TEMPLATE ($ARCH), to be downloaded to $TEMPLATE_STORAGE"
   else
     TEMPLATE_PATH="$(template_path)"
     [ -n "$TEMPLATE_PATH" ] && [ -r "$TEMPLATE_PATH" ] && [ -s "$TEMPLATE_PATH" ] \
       || die "The template ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE} is listed but cannot be read (${TEMPLATE_PATH:-no path}). Is the storage mounted?"
-    ok "Template: $TEMPLATE ($ARCH), already on $TEMPLATE_STORAGE"
+    ui_kv "Template" "$TEMPLATE ($ARCH), already on $TEMPLATE_STORAGE"
   fi
 
   # -------------------------------------------------------------------------
   #  3b. What every node has
   # -------------------------------------------------------------------------
-  say "Looking at your nodes"
   node_scripts_dir
   ANY_CEPH=0; REACHED=()
   echo "    Found ${#NODES[@]} node$([ "${#NODES[@]}" -eq 1 ] || echo s):"
   for node in "${NODES[@]}"; do
-    if ! out="$(node_run "$node" < "$NODE_DIR/probe.sh" 2>/dev/null)" || ! grep -q '^arch' <<< "$out"; then
+    # The probe only reads (packages/hardware/node/probe.sh); its output lands in a file while the spinner turns.
+    probe_out="$(mktemp)"; TMP_PATHS+=("$probe_out")
+    probe_rc=0; UI_OUT="$probe_out" ui_wait "Looking at $node" probe_node "$node" || probe_rc=$?
+    out="$(cat "$probe_out")"; rm -f "$probe_out"
+    if [ "$probe_rc" -ne 0 ] || ! grep -q '^arch' <<< "$out"; then
       HW_OK[$node]=0
       echo "      • $node: could not be reached, so it is left out"
       continue
@@ -701,9 +1425,51 @@ main() {
   [ "${#REACHED[@]}" -gt 0 ] || die "No node could be reached, not even this one."
 
   # -------------------------------------------------------------------------
+  #  2. The container's ID and address. With someone at the keyboard both are asked for, a free ID and an
+  #     address that fit the cluster's numbering offered first; -y, a flag or no terminal: no question.
+  # -------------------------------------------------------------------------
+  ui_step "Your container"
+  if [ -z "$CTID" ] && [ "$NET" = dhcp ]; then
+    detect_numbering
+    if [ -n "$CONV_ID" ] && [ "$ASK_PLACEMENT" -ne 1 ]; then
+      use=""
+      if [ "$NO_TERMINAL" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ]; then
+        note "Your guests follow <node#><IP> numbering; with no terminal to ask on, a static address is not chosen for you."
+        use=no
+      else
+        ask_yn use yes "Your guests follow <node#><IP> numbering ($CONV_MATCH of $CONV_TOTAL do); use CT $CONV_ID with IP $CONV_IP (gateway $CONV_GW)?" \
+          "The ID is free, no guest config uses the address, and nothing answers a ping on it." "Use CT $CONV_ID at ${CONV_IP%%/*}"
+      fi
+      if [ "$use" = yes ]; then CTID="$CONV_ID"; NET="$CONV_IP"; GATEWAY="$CONV_GW"; fi
+    fi
+  fi
+  [ -n "$CTID" ] || CTID="$(pvesh get /cluster/nextid)"
+  [[ "$CTID" =~ ^[0-9]+$ ]] || die "Could not get a free container ID from Proxmox."
+  if f="$(id_in_use "$CTID")"; then die "ID $CTID is already used ($f). Pass --vmid to choose another."; fi
+  if [ "$ASK_PLACEMENT" -eq 1 ] && [ -z "$CTID_GIVEN" ]; then
+    if [ -n "$CONV_ID" ]; then
+      why="Your guests follow <node#><IP> numbering ($CONV_MATCH of $CONV_TOTAL do), so on $THIS_NODE the next free one is $CONV_ID, which goes with ${CONV_IP%%/*}."
+    else
+      why="The next free one is $CTID. Any free ID of 100 or more; every guest in the cluster is checked."
+    fi
+    # Nothing to read (EOF) takes the next free ID, never the numbering's static address.
+    ask_value CTID "${CONV_ID:-$CTID}" "Container ID" "Which ID should the HyperProx container get?" "$why" check_ctid ID "$CTID"
+  fi
+  if [ "$ASK_PLACEMENT" -eq 1 ] && [ "$NET_GIVEN" -eq 0 ]; then ask_network; fi
+  ok "Container ID $CTID"
+  if [ "$NET" = dhcp ]; then ui_kv "Network" "DHCP on $BRIDGE"
+  else
+    if [ "$NET" != "${CONV_IP:-}" ]; then
+      addr_in_configs "${NET%%/*}" && die "Another guest's config already uses ${NET%%/*}. Choose another --ip."
+      addr_answers "${NET%%/*}" && die "Something already answers on ${NET%%/*}. Choose another --ip."
+    fi
+    ui_kv "Network" "$NET, gateway $GATEWAY, on $BRIDGE"
+  fi
+
+  # -------------------------------------------------------------------------
   #  3c. The questions — only those that apply, and never about what is there
   # -------------------------------------------------------------------------
-  say "A few questions"
+  ui_step "What to switch on"
   [ "$NO_TERMINAL" -eq 1 ] && note "No terminal to ask on, so the defaults are shown. Re-run with -y to go ahead with them."
   N=${#REACHED[@]}; NS="$N node$([ "$N" -eq 1 ] || echo s)"
   NX_NEED=(); RAPL_ANY=(); RAPL_NEED=(); GPU_ANY=(); GPU_NEED=(); IGPU_ANY=(); IGPU_NEED=(); AMD_ANY=0
@@ -730,14 +1496,14 @@ main() {
     ok "Health monitoring already running on all $NS"; A_NODE_HEALTH=yes
   else
     partial NX_NEED REACHED
-    ask_yn A_NODE_HEALTH yes "$Q_NODE_HEALTH" "$W_NODE_HEALTH"
+    ask_yn A_NODE_HEALTH yes "$Q_NODE_HEALTH" "$W_NODE_HEALTH" "Node health (CPU, memory, disks)"
   fi
   if [ "${#RAPL_ANY[@]}" -eq 0 ]; then A_POWER=no
   elif [ -z "$A_POWER" ] && [ "${#RAPL_NEED[@]}" -eq 0 ]; then
     ok "Power counters already readable on $([ "${#RAPL_ANY[@]}" -eq "$N" ] && echo "all $NS" || join_list "${RAPL_ANY[@]}")"; A_POWER=yes
   else
     partial RAPL_NEED RAPL_ANY
-    ask_yn A_POWER yes "$Q_POWER" "$W_POWER"
+    ask_yn A_POWER yes "$Q_POWER" "$W_POWER" "Power use per node"
   fi
   if [ "${#GPU_ANY[@]}" -eq 0 ]; then A_GPU=no
   elif [ -z "$A_GPU" ] && [ "${#GPU_NEED[@]}" -eq 0 ]; then
@@ -745,7 +1511,7 @@ main() {
   else
     [ "$AMD_ANY" -eq 1 ] && note "AMD GPUs are read by node_exporter, so on those nodes this also needs node health monitoring."
     partial GPU_NEED GPU_ANY
-    ask_yn A_GPU yes "$Q_GPU" "$W_GPU"
+    ask_yn A_GPU yes "$Q_GPU" "$W_GPU" "GPU monitoring"
   fi
   # Offered on nodes with built-in Intel or AMD graphics, but the default is no, even with -y.
   if [ "${#IGPU_ANY[@]}" -eq 0 ]; then A_IGPU=no
@@ -753,12 +1519,12 @@ main() {
     ok "Built-in graphics already open to containers on $(join_list "${IGPU_ANY[@]}")"; A_IGPU=yes
   else
     [ "${#IGPU_NEED[@]}" -gt 0 ] && note "Applies to $(join_list "${IGPU_NEED[@]}")."
-    ask_yn A_IGPU no "$Q_IGPU" "$W_IGPU"
+    ask_yn A_IGPU no "$Q_IGPU" "$W_IGPU" "Built-in graphics for containers"
   fi
-  ask_yn A_CHARTS yes "$Q_CHARTS" "$W_CHARTS"
-  if [ "$A_CHARTS" = yes ]; then ask_yn A_PVE_METRICS yes "$Q_PVE_METRICS" "$W_PVE_METRICS"; else A_PVE_METRICS=no; fi
+  ask_yn A_CHARTS yes "$Q_CHARTS" "$W_CHARTS" "Charts and history"
+  if [ "$A_CHARTS" = yes ]; then ask_yn A_PVE_METRICS yes "$Q_PVE_METRICS" "$W_PVE_METRICS" "Proxmox's own metrics"; else A_PVE_METRICS=no; fi
   GD_KEY=""; GD_SECRET=""
-  ask_yn A_DNS no "$Q_DNS" "$W_DNS"
+  ask_yn A_DNS no "$Q_DNS" "$W_DNS" "DNS provider (GoDaddy)" "add it later in Settings → Setup checklist"
   if [ "$A_DNS" = yes ] && [ "$ASSUME_YES" -ne 1 ] && [ "$NO_TERMINAL" -ne 1 ]; then
     note "Production key from developer.godaddy.com/keys (test keys do not work). Typing is hidden."
     ask_secret GD_KEY "API key"
@@ -777,7 +1543,7 @@ main() {
   elif [ "$A_DNS" = yes ]; then
     A_DNS=no; note "A GoDaddy key cannot be typed without a terminal; add one later under Settings → Setup checklist."
   fi
-  ask_yn A_AI no "$Q_AI" "$W_AI"
+  ask_yn A_AI no "$Q_AI" "$W_AI" "AI assistant" "connect one later on the AI page"
 
   # The node work these answers mean, one node at a time: "node<TAB>step".
   PLAN=()
@@ -803,6 +1569,12 @@ main() {
   token_exists hyperprox && TOKEN_EXISTED=1
   token_exists "$EXPORTER_TOKEN" && XTOKEN_EXISTED=1
 
+  # -------------------------------------------------------------------------
+  #  4. Remote access, then one table of everything, and one question. Nothing exists yet.
+  # -------------------------------------------------------------------------
+  ui_step "Remote access"
+  ask_vpn
+  if [ "$UI_FANCY" -eq 1 ]; then summary_box; else
   echo
   echo "  Ready to create:"
   echo "    Container  $CTID ($HOSTNAME): privileged, with nesting, keyctl and tun; starts on boot"
@@ -813,6 +1585,7 @@ main() {
   else echo "    DNS        the node's own"; fi
   [ -z "$DNS_NOTE" ] || echo "               ${DNS_NOTE}"
   echo "    Template   ${TEMPLATE} (${ARCH}) on ${TEMPLATE_STORAGE}$([ "$NEED_DOWNLOAD" -eq 1 ] && echo ', downloaded first' || echo ', already there')"
+  echo "    VPN        $(vpn_words)"
   if [ "$TOKEN_EXISTED" -eq 1 ]; then echo "    Token      root@pam!hyperprox exists already and is left alone; the setup page will ask for one"
   else echo "    Token      root@pam!hyperprox (Administrator on /)"; fi
   if [ "$A_PVE_METRICS" = yes ]; then
@@ -827,6 +1600,7 @@ main() {
   fi
   echo "  In HyperProx: charts ${A_CHARTS} · Proxmox metrics ${A_PVE_METRICS} · GoDaddy ${A_DNS} · local AI ${A_AI}"
   [ "${#IGPU_ANY[@]}" -gt 0 ] && echo "  Built-in graphics for containers: ${A_IGPU}"
+  fi
   echo
   if [ "$DRY_RUN" -eq 1 ]; then
     FINISHED=1
@@ -835,10 +1609,11 @@ main() {
   fi
   if [ "$ASSUME_YES" -ne 1 ]; then
     [ "$INTERACTIVE" -eq 1 ] || die "No terminal to confirm on. Re-run with -y (or HYPERPROX_YES=1) to accept the plan above."
-    printf "  Create it? [Y/n] "
-    if ! IFS= read -r reply <&3 && [ -z "$reply" ]; then echo; die "No answer. Cancelled. Nothing was created."; fi
+    if [ "$UI_FANCY" -eq 1 ]; then printf '  %s› Go ahead?%s %s[Y/n]%s ' "$C_KEY" "$C_OFF" "$C_DIM" "$C_OFF"
+    else printf "  Create it? [Y/n] "; fi
+    if ! IFS= read -r reply <&3 && [ -z "$reply" ]; then echo; NO_CARD=1; die "No answer. Cancelled. Nothing was created."; fi
     [ -t 1 ] || echo
-    case "$reply" in [nN]*) die "Cancelled. Nothing was created.";; esac
+    case "$reply" in [nN]*) NO_CARD=1; die "Cancelled. Nothing was created.";; esac
   fi
 
   # -------------------------------------------------------------------------
@@ -848,6 +1623,7 @@ main() {
   #  driver fails without it, which is the first wall people hit. tun is included
   #  so Tailscale works later without a second reboot.
   # -------------------------------------------------------------------------
+  ui_step "Creating the container"
   if [ "$NEED_DOWNLOAD" -eq 1 ]; then
     # The listing can fail quietly; the storage's own path is the last word on whether the file is there.
     TEMPLATE_PATH="$(template_path)"
@@ -855,34 +1631,37 @@ main() {
     [ -e "$TEMPLATE_PATH" ] && NEED_DOWNLOAD=0 && ok "Template $TEMPLATE is on $TEMPLATE_STORAGE already"
   fi
   if [ "$NEED_DOWNLOAD" -eq 1 ]; then
-    note "Downloading $TEMPLATE — this is the slow part, usually a minute or two."
+    note "This is the slow part, usually a minute or two."
     TPL_TRY=1
-    pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >/dev/null || die "Template download failed."
-    ok "Downloaded $TEMPLATE"
+    ui_run "Downloading $TEMPLATE" pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" || die "Template download failed."
   fi
   TEMPLATE_PATH="$(template_path)"
   [ -n "$TEMPLATE_PATH" ] && [ -r "$TEMPLATE_PATH" ] && [ -s "$TEMPLATE_PATH" ] \
     || die "The template ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE} cannot be read (${TEMPLATE_PATH:-no path})."
 
-  say "Creating the container"
   # Checked again at the last moment: the ID may have been taken while the questions were open.
-  if f="$(guest_conf "$CTID")"; then die "ID $CTID was taken meanwhile ($f). Re-run to pick another."; fi
+  if f="$(id_in_use "$CTID")"; then die "ID $CTID was taken meanwhile ($f). Re-run to pick another."; fi
   if [ "$NET" != dhcp ]; then
     addr_in_configs "${NET%%/*}" && die "${NET%%/*} was taken meanwhile by another guest's config. Re-run to pick another."
     addr_answers "${NET%%/*}" && die "Something answers on ${NET%%/*} now. Re-run to pick another address."
   fi
   CT_TRY=1
-  if ! create_out="$(pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
-    --arch "$ARCH" --ostype debian \
-    --description "$RUN_MARK" \
-    --hostname "$HOSTNAME" \
-    --cores "$CORES" --memory "$MEMORY" --swap 512 \
-    --rootfs "${STORAGE}:${DISK}" \
-    --net0 "$NETCONF" \
-    ${DNS:+--nameserver "${DNS//,/ }"} \
-    --unprivileged 0 \
-    --features "keyctl=1,nesting=1" \
-    --onboot 1 --start 0 2>&1)"; then
+  create_log="$(mktemp)"; TMP_PATHS+=("$create_log")
+  create_ct() {
+    pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
+      --arch "$ARCH" --ostype debian \
+      --description "$RUN_MARK" \
+      --hostname "$HOSTNAME" \
+      --cores "$CORES" --memory "$MEMORY" --swap 512 \
+      --rootfs "${STORAGE}:${DISK}" \
+      --net0 "$NETCONF" \
+      ${DNS:+--nameserver "${DNS//,/ }"} \
+      --unprivileged 0 \
+      --features "keyctl=1,nesting=1" \
+      --onboot 1 --start 0
+  }
+  if ! UI_OUT="$create_log" ui_wait "Creating container $CTID on $STORAGE" create_ct; then
+    create_out="$(cat "$create_log")"
     # Someone else's container with this ID: not ours to remove.
     grep -q 'already exists' <<< "$create_out" && CT_TRY=0
     printf '%s\n' "$create_out" | sed 's/^/    /' >&2
@@ -901,15 +1680,31 @@ main() {
   # The root password goes in on stdin, so it is on no command line (and in no process list).
   printf 'root:%s\n' "$PASSWORD" | pct exec "$CTID" -- chpasswd \
     || warn "Could not set the root password; set it with: pct exec $CTID -- passwd"
-  say "Waiting for the container's network"
-  for _ in $(seq 1 60); do
-    if pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1; then break; fi
-    sleep 2
-  done
+  ui_run "Waiting for the container's network" wait_dns_in "$CTID" || true
   pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1 \
     || die "The container has no working DNS. Check the bridge and gateway, then re-run."
   CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}')"
   ok "Container is up at ${CT_IP:-unknown}"
+  ui_run "Preparing the container (apt: curl, certificates)" \
+    pct exec "$CTID" -- bash -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates" \
+    || die "Could not install curl inside the container."
+
+  # Remote access: Tailscale now, while you are here to sign in; WireGuard's container now (the undo covers it),
+  # its server once HyperProx is installed (the recipe comes from the installed copy).
+  [ "$VPN" != tailscale ] || setup_tailscale
+  if [ "$VPN" = wireguard ]; then
+    WG_HOSTNAME="${HOSTNAME%%.*}-wg"
+    WG_CTID="$(pick_wg_ctid)" || die "Could not find a free container ID for the WireGuard container."
+    wg_log="$(mktemp)"; TMP_PATHS+=("$wg_log")
+    WG_CT_TRY=1
+    if ! UI_OUT="$wg_log" ui_run "Creating the WireGuard container $WG_CTID" create_wg_ct; then
+      grep -q 'already exists' "$wg_log" && WG_CT_TRY=0
+      die "Could not create the WireGuard container."
+    fi
+    pct start "$WG_CTID" >/dev/null || die "The WireGuard container failed to start."
+    ui_run "Waiting for the WireGuard container's network" wait_dns_in "$WG_CTID" \
+      || die "The WireGuard container has no working DNS. Check the bridge, then re-run."
+  fi
 
   # -------------------------------------------------------------------------
   #  6. Proxmox API token
@@ -964,7 +1759,9 @@ main() {
   if [ "${#PLAN[@]}" -gt 0 ]; then say "Setting up your nodes"; fi
   for p in "${PLAN[@]}"; do
     node="${p%%$'\t'*}"; step="${p#*$'\t'}"; label="$(step_label "$step")"
-    out="$(step_text "$step" | node_run "$node" 2>&1)" || true
+    step_out="$(mktemp)"; TMP_PATHS+=("$step_out")
+    UI_OUT="$step_out" ui_wait "$node — $label" run_node_step "$step" "$node" || true
+    out="$(cat "$step_out")"; rm -f "$step_out"
     res="$(grep '^HPX-RESULT' <<< "$out" | tail -1)"
     if [ -z "$res" ]; then check failed "$label" "$node" "could not run the step there"; warn "$node — $label: could not run the step there"; continue; fi
     st="$(cut -f2 <<< "$res")"; why="$(cut -f3- <<< "$res")"
@@ -1011,10 +1808,15 @@ main() {
   # -------------------------------------------------------------------------
   #  8. Install HyperProx inside the container
   # -------------------------------------------------------------------------
-  say "Installing HyperProx (this takes a few minutes)"
-  pct exec "$CTID" -- bash -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates >/dev/null 2>&1" \
-    || die "Could not install curl inside the container."
-  pct exec "$CTID" -- bash -c "curl -fsSL '$RAW_BASE/install.sh' -o /tmp/install.sh && yes | HYPERPROX_REF='$REF' HYPERPROX_REPO_URL='$REPO_URL_ARG' bash /tmp/install.sh" \
+  # install.sh draws steps 6 to 10 itself, with its own spinners. It gets this terminal's type and width, or
+  # NO_COLOR when this run's output is plain (a log), so the two look alike; HPX_UI_NESTED drops its banner.
+  ui_env="HPX_UI_NESTED=1 HPX_UI_STEP_BASE=${UI_STEP} HPX_UI_STEPS=${UI_STEPS}"
+  if [ "$UI_FANCY" -eq 1 ]; then
+    ui_env+=" TERM='${TERM//[^A-Za-z0-9._+-]/}' COLORTERM='${COLORTERM//[^A-Za-z0-9]/}' COLUMNS='$(( UI_W + 2 ))'"
+  else
+    ui_env+=" NO_COLOR=1"
+  fi
+  pct exec "$CTID" -- bash -c "curl -fsSL '$RAW_BASE/install.sh' -o /tmp/install.sh && yes | $ui_env HYPERPROX_REF='$REF' HYPERPROX_REPO_URL='$REPO_URL_ARG' bash /tmp/install.sh" \
     || die "The HyperProx installer failed inside the container. To keep the container and look inside, re-run with --keep-on-failure."
 
   # -------------------------------------------------------------------------
@@ -1084,11 +1886,11 @@ PVEYML
   _answers="$(mktemp)"; TMP_PATHS+=("$_answers"); chmod 600 "$_answers"
   {
     printf '{"source":"bootstrap","hostRecord":"%s","answers":{' "$_hostrec"
-    printf '"node-health":%s,"power":%s,"gpu":%s,"charts":%s,"proxmox-metrics":%s,"dns":%s,"ai":%s,"igpu-access":%s},"results":[' \
+    printf '"node-health":%s,"power":%s,"gpu":%s,"charts":%s,"proxmox-metrics":%s,"dns":%s,"ai":%s,"igpu-access":%s,"vpn":"%s"},"results":[' \
       "$([ "$A_NODE_HEALTH" = yes ] && echo true || echo false)" "$([ "$A_POWER" = yes ] && echo true || echo false)" \
       "$([ "$A_GPU" = yes ] && echo true || echo false)" "$([ "$A_CHARTS" = yes ] && echo true || echo false)" \
       "$([ "$A_PVE_METRICS" = yes ] && echo true || echo false)" "$([ "$A_DNS" = yes ] && echo true || echo false)" \
-      "$([ "$A_AI" = yes ] && echo true || echo false)" "$([ "$A_IGPU" = yes ] && echo true || echo false)"
+      "$([ "$A_AI" = yes ] && echo true || echo false)" "$([ "$A_IGPU" = yes ] && echo true || echo false)" "$VPN"
     _first=1
     for row in "${CHECKLIST[@]}"; do
       IFS=$'\t' read -r _s _l _n _w <<< "$row"
@@ -1104,28 +1906,52 @@ PVEYML
 
   if [ "$A_DNS" = yes ] && [ -n "$GD_KEY" ]; then
     # Sent on stdin, so it is on no command line; the wizard holds it in memory only.
-    if printf '{"godaddy":{"key":"%s","secret":"%s"}}' "$GD_KEY" "$GD_SECRET" | pct exec "$CTID" -- bash -c '
+    hand_godaddy() {
+      printf '{"godaddy":{"key":"%s","secret":"%s"}}' "$GD_KEY" "$GD_SECRET" | pct exec "$CTID" -- bash -c '
         k="$(grep -oP "^SETUP_SECRET=\K.*" /opt/hyperprox/.env)"
         for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3001/health && break; sleep 2; done
-        curl -fsS -o /dev/null -X POST -H "Content-Type: application/json" -H "X-Setup-Key: $k" --data-binary @- http://127.0.0.1:3001/api/setup/hold-secrets'; then
+        curl -fsS -o /dev/null -X POST -H "Content-Type: application/json" -H "X-Setup-Key: $k" --data-binary @- http://127.0.0.1:3001/api/setup/hold-secrets'
+    }
+    if ui_wait "Waiting for the setup wizard, then handing it the GoDaddy key" hand_godaddy; then
       ok "GoDaddy key held in memory until you create the owner account, then kept in the vault"
     else
       warn "Could not hand over the GoDaddy key; add it on the setup page or under Settings → Setup checklist"
     fi
   fi
   GD_KEY=""; GD_SECRET=""
+
+  # Remote access: the WireGuard server, then what HyperProx's VPN page is to take over. The marker holds public
+  # facts only (addresses, the server's public key, container IDs). The API adopts what it lists when HyperProx
+  # is first unlocked (apps/api/src/lib/vpn/install-handoff.ts), and adopting twice changes nothing.
+  if [ "$VPN" = wireguard ]; then say "Setting up WireGuard"; setup_wireguard; fi
+  if [ -n "$TS_IP" ] || [ -n "$WG_PUB" ]; then
+    _marker="$(mktemp)"; TMP_PATHS+=("$_marker"); chmod 600 "$_marker"
+    vpn_marker "$_marker"
+    if pct push "$CTID" "$_marker" /opt/hyperprox/data/setup/vpn-pending.json --perms 0600 >/dev/null 2>&1; then
+      ok "Remote access handed to HyperProx: its VPN page takes it over at the first sign-in"
+    else
+      warn "Could not hand the VPN over to HyperProx; its VPN page shows it as found, not managed"
+    fi
+  fi
   FINISHED=1
 
   # -------------------------------------------------------------------------
   #  Done
   # -------------------------------------------------------------------------
-  CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}')"
+  CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i !~ /^100\./) {print $i; exit}}')"
+  # The root password, kept where only root on this node reads it (the card names the file, not the password).
+  PW_FILE="${HOME:-/root}/hyperprox-${CTID}.txt"
+  if ! ( umask 077; printf 'HyperProx container %s (%s)\nroot password: %s\n' "$CTID" "$HOSTNAME" "$PASSWORD" > "$PW_FILE" ) 2>/dev/null; then PW_FILE=""; fi
+  if [ "$UI_FANCY" -eq 1 ]; then success_card; return 0; fi
   echo
-  printf '%s  HyperProx is ready%s\n' "$C_OK" "$C_OFF"
+  printf '  HyperProx is ready\n'
   echo
   echo "    Open       https://${CT_IP}/   (self-signed certificate: the browser warns once)"
+  [ -z "$TS_URL" ] || echo "    Away       ${TS_URL}   (Tailscale)"
+  [ -z "$WG_LINE" ] || echo "    VPN        WireGuard: ${WG_LINE}; add your phone on the VPN page"
+  [ "$VPN" != none ] || echo "    VPN        add remote access later on the VPN page"
   echo "    Container  $CTID  (pct enter $CTID)"
-  [ -n "$PASSWORD" ] && echo "    Root pw    $PASSWORD"
+  [ -n "$PASSWORD" ] && echo "    Root pw    $PASSWORD${PW_FILE:+   (saved in $PW_FILE)}"
   if [ "${#CHECKLIST[@]}" -gt 0 ]; then
     echo
     echo "    What was done on your nodes:"
@@ -1141,6 +1967,64 @@ PVEYML
   note "it signs in with its built-in vault (email, master password, required 2FA). See docs/security.md."
   note "Then: open Plug-ins and press Scan, and HyperProx will find the services"
   note "already running on your network and offer to configure them."
+  echo
+}
+
+# ---------------------------------------------------------------------------
+#  The review table and the success card, on a terminal. Plain output prints the same facts as lines (main).
+# ---------------------------------------------------------------------------
+summary_box() {
+  local p mon=()
+  [ "$A_NODE_HEALTH" = yes ] && mon+=("node health"); [ "$A_POWER" = yes ] && mon+=(power)
+  [ "$A_GPU" = yes ] && mon+=(GPU); [ "$A_CHARTS" = yes ] && mon+=(charts); [ "$A_PVE_METRICS" = yes ] && mon+=("Proxmox metrics")
+  echo
+  ui_table_top "Ready to install"
+  ui_table_row "Container" "$CTID  $HOSTNAME  on $THIS_NODE"
+  if [ "$NET" = dhcp ]; then ui_table_row "Address" "DHCP on ${BRIDGE}"
+  else ui_table_row "Address" "${NET}  gw ${GATEWAY}  on ${BRIDGE}"; fi
+  if [ -n "$DNS" ]; then ui_table_row "DNS" "${DNS//,/, }$([ "$DNS_FROM" = auto ] || echo " (from ${DNS_FROM})")"
+  else ui_table_row "DNS" "the node's own"; fi
+  ui_table_row "Size" "${CORES} cores · ${MEMORY} MB RAM · ${DISK} GB on ${STORAGE}"
+  ui_table_row "Features" "privileged · nesting · keyctl · tun · on boot"
+  ui_table_row "Template" "${TEMPLATE}$([ "$NEED_DOWNLOAD" -eq 1 ] && echo ' (downloaded first)')"
+  ui_table_row "Monitoring" "$( [ "${#mon[@]}" -gt 0 ] && join_list "${mon[@]}" | sed 's/, / · /g' || echo none)"
+  ui_table_row "VPN" "$(vpn_words)"
+  if [ "$TOKEN_EXISTED" -eq 1 ]; then ui_table_row "Token" "uses the existing one (setup page asks for it)"
+  else ui_table_row "Token" "root@pam!hyperprox (Administrator on /)"; fi
+  if [ "$A_PVE_METRICS" = yes ] && [ "$XTOKEN_EXISTED" -ne 1 ]; then ui_table_row "" "root@pam!${EXPORTER_TOKEN} (read-only)"; fi
+  if [ "${#PLAN[@]}" -gt 0 ]; then
+    for p in "${PLAN[@]}"; do ui_table_row "$([ "$p" = "${PLAN[0]}" ] && echo 'On nodes')" "${p%%$'\t'*}: $(step_label "${p#*$'\t'}")"; done
+  else
+    ui_table_row "On nodes" "nothing to change"
+  fi
+  ui_table_row "Extras" "GoDaddy ${A_DNS} · local AI ${A_AI}$([ "${#IGPU_ANY[@]}" -gt 0 ] && echo " · built-in graphics ${A_IGPU}")"
+  ui_table_bottom
+}
+success_card() {
+  local row _s _l _n _w bad=0
+  for row in "${CHECKLIST[@]}"; do case "${row%%$'\t'*}" in done|already|ok|skipped) ;; *) bad=$(( bad + 1 ));; esac; done
+  echo
+  ui_box_top "" "$UI_CW" "$C_OK"
+  ui_card_line "✓  HyperProx is running" "$C_OK$C_BOLD" "total $(ui_secs "$SECONDS")"
+  ui_card_line ""
+  ui_card_line "   Open   https://${CT_IP}/" "$C_KEY"
+  [ -z "$TS_URL" ] || ui_card_line "   Away   ${TS_URL}  (Tailscale)" "$C_KEY"
+  [ -z "$WG_LINE" ] || ui_card_line "   VPN    ${WG_LINE}"
+  ui_card_line ""
+  ui_card_line "   Next" "$C_BOLD"
+  ui_card_line "   1  Open the address and create your owner account (vault, 2FA)"
+  if [ -n "$TOKEN_SECRET" ]; then ui_card_line "   2  Your Proxmox connection is already filled in"
+  else ui_card_line "   2  The setup page asks for a Proxmox API token"; fi
+  case "$VPN" in
+    wireguard) ui_card_line "   3  On the VPN page, add your phone: it shows a QR code";;
+    tailscale) ui_card_line "   3  Add DNS, proxy and alerts any time under Settings";;
+    *)         ui_card_line "   3  Remote access: add it later on the VPN page";;
+  esac
+  [ "$bad" -eq 0 ] || ui_card_line "   $bad node step(s) did not work: Settings → Setup checklist" "$C_WARN"
+  ui_card_line ""
+  if [ -n "$PW_FILE" ]; then ui_card_line "Container $CTID · root password saved in $PW_FILE" "$C_DIM"
+  else ui_card_line "Container $CTID · root password: $PASSWORD" "$C_DIM"; fi
+  ui_box_bottom "$UI_CW"
   echo
 }
 

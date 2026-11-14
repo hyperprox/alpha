@@ -138,14 +138,37 @@ First it looks at every node and lists what it found, one line per node, for exa
       • node-b: Intel UHD Graphics 630 (built in)
 ```
 
-Then it asks a few yes/no questions, only the ones that apply to your hardware (see
-[Monitoring, power, GPUs and more](#monitoring-power-gpus-and-more)). It never asks about something that is
-already there: if health monitoring already runs on every node, it says so and moves on, and if it runs on
-some, it names the nodes the question is about. Then it shows one summary of everything it will create
-(container ID, network, storage, template and its CPU type, tokens, and the work on each node) and asks
-"Create it?". Nothing is created before you answer.
+Then it asks, in this order:
 
-The questions work under `curl ... | bash`: they are read from your terminal, not from the pipe.
+1. **Your container.** Which ID it should have (Enter takes the one offered: the next free ID, or one that fits
+   your numbering), and how it gets its address: DHCP, or a static address and its gateway. A taken ID, or an
+   address another guest uses or that answers a ping, is refused and asked again.
+2. **What to switch on.** A few yes/no questions, only the ones that apply to your hardware (see
+   [Monitoring, power, GPUs and more](#monitoring-power-gpus-and-more)). It never asks about something that is
+   already there: if health monitoring already runs on every node, it says so and moves on, and if it runs on
+   some, it names the nodes the question is about.
+3. **Remote access.** How you want to reach HyperProx when you are away from home:
+   - **Tailscale**: installed in HyperProx's own container. It shows a sign-in link and a QR code; you sign in
+     with your Tailscale account in a browser or on your phone. Nothing to open on your router, and no key to
+     paste. The container keeps its own DNS settings (Tailscale's DNS is not switched on in it).
+   - **WireGuard**: a small container of its own runs the server. It asks for the tunnel network (the one
+     offered does not overlap your network or the cluster's) and the address phones connect to. Forward the
+     UDP port it names on your router to that container.
+   - **Not now** (the default): add either later on the VPN page.
+
+   Either way it shows up on HyperProx's VPN page after your first sign-in, as an entry HyperProx manages.
+   For WireGuard, that is where you add your phone: its key is made in your browser and kept in the vault, and
+   a QR code is shown to scan. The installer never makes a phone's key.
+
+Then it shows one table of everything it will create (container ID, address, size, storage, template,
+monitoring, VPN, tokens, and the work on each node) and asks before it goes ahead. Nothing is created before
+you answer.
+
+The questions work under `curl ... | bash`: they are read from your terminal, not from the pipe. On a terminal
+it draws a banner, numbered steps, boxed questions, spinners with a seconds count for every long wait (the
+last lines of a failed step's output are shown, never hidden), and a card at the end with the address to open.
+Piped into a log, with `NO_COLOR` set, on a basic console or a window narrower than 72 columns, it prints plain
+lines (`[step 4/10] …`, `[ ok ] … (6s)`) with no colour codes, so a log stays easy to search.
 
 Then it does the work:
 
@@ -156,15 +179,20 @@ Then it does the work:
   and only on a file share if there is nothing else.
 - If your guests are numbered by node and address (guest 342 on node 3 at `x.y.z.242`), it offers an ID
   and a static address that fit, and checks that the ID is free, that no guest uses the address and that
-  nothing answers a ping on it. Otherwise it takes the next free ID and DHCP.
+  nothing answers a ping on it. Otherwise it offers the next free ID and DHCP. With `-y` or no terminal it
+  takes what it offers without asking.
 - It makes the API token `root@pam!hyperprox` (privilege separation off, so it has root's rights) and,
   if you want Proxmox's own metrics, a read-only `root@pam!hyperprox-exporter` (`PVEAuditor` on `/`).
   A token named `hyperprox` that already exists is left alone, and the setup wizard makes its own.
 - It carries out your answers on each node, one node at a time, over the cluster's own SSH trust, then
   checks them over the network from the node you ran it on: each exporter answers, and power reads above
   zero.
-- It installs HyperProx in the container, then prints the address, the root password and a short list of
-  what was done, skipped or failed, with the reason for each.
+- It installs HyperProx in the container, then prints the address (and the Tailscale address, if you chose
+  it), where it saved the root password (a root-only file on the node), and what was done, skipped or failed
+  on your nodes, with the reason for each.
+- Remote access never changes a Proxmox node: Tailscale goes into HyperProx's container, WireGuard into its
+  own. WireGuard needs the `wireguard` kernel module loaded on the node; if it is not, the installer says so
+  and skips it rather than load it.
 
 `-y` (or `HYPERPROX_YES=1`) takes every default. Without a terminal and without `-y`, it shows the
 defaults and stops before creating anything. `--dry-run` looks and asks, shows the plan, and changes nothing.
@@ -186,14 +214,14 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--vmid N` | fits your numbering, or next free | Container ID |
+| `--vmid N` | asked; fits your numbering, or next free | Container ID |
 | `--hostname NAME` | `hyperprox` | Container hostname |
 | `--cores N` | `4` | CPU cores |
 | `--memory MB` | `8192` | Memory |
 | `--disk GB` | `100` | Root disk |
 | `--storage NAME` | block storage with room | Storage for the root disk |
 | `--bridge NAME` | `vmbr0` | Network bridge |
-| `--ip CIDR` | fits your numbering, or `dhcp` | Static address, for example `192.0.2.50/24` |
+| `--ip CIDR` | asked; fits your numbering, or `dhcp` | Static address, for example `192.0.2.50/24` |
 | `--gateway IP` | | Gateway, required with `--ip` |
 | `--dns IP[,IP]` | the node's own | The container's DNS servers (IPv4 or IPv6, up to three). When the node's resolver is one a container cannot reach (Tailscale's 100.100.100.100 or anything in 100.64.0.0/10, a local 127.x or `::1` stub), the container gets 1.1.1.1 and the summary says so. With `HPX_API_URL` (https only) and `HPX_API_TOKEN` (a read-only viewer token) pointing at an existing HyperProx, the DNS saved in its Naming & addresses is used instead; its certificate is checked, or pinned with `HPX_API_PINNEDPUBKEY=sha256//...` for a self-signed one |
 | `--ref REF` | `main` | Install a release tag, branch or commit |
@@ -205,6 +233,10 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 | `--no-pve-metrics` | | Answer no to reading Proxmox's own metrics |
 | `--ai`, `--no-ai` | | Answer yes or no to a local AI assistant |
 | `--igpu`, `--no-igpu` | | Answer yes or no to letting containers use the nodes' built-in graphics |
+| `--vpn KIND` | asked; `none` with `-y` | Remote access: `tailscale`, `wireguard` or `none` |
+| `--tailscale-authkey KEY` | | Join Tailscale without a browser sign-in, for unattended installs. Better: set `TS_AUTHKEY` in the environment, which keeps the key off the command line. Never printed or written to a log |
+| `--wg-subnet CIDR` | a free one, such as `10.99.0.1/24` | WireGuard tunnel network |
+| `--wg-endpoint HOST` | the VPN container's LAN address | Public address or DNS name phones connect to (change it later on the VPN page) |
 | `--dry-run` | | Look and ask, then show what would be done; change nothing |
 | `--keep-on-failure` | | After a failure, keep what was made so you can look inside |
 | `-y`, `--yes` | | Take every default and do not ask (or set `HYPERPROX_YES=1`) |

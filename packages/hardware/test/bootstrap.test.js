@@ -21,6 +21,7 @@ const T13_OLD_AMD = 'debian-13-standard_13.1-2_amd64.tar.zst'
 const T12_AMD = 'debian-12-standard_12.12-1_amd64.tar.zst'
 
 // opts: { have: [templates already on 'local'], available: [templates offered], guests: { 'node/lxc/ID': conf },
+//         resources: [guest IDs only the cluster's resource list knows],
 //         pingable: [addresses], tokens: [existing token names], rootdir: 'pvesm status lines' }
 function cluster(nodes, opts = {}) {
   const made = Object.entries(nodes).map(([name, f]) => [name, fakeNode(fx[f])])
@@ -57,8 +58,10 @@ function cluster(nodes, opts = {}) {
   w('arping', `[ "$1" = -V ] && { echo "arping from iputils 20240905"; exit 0; }
 for a in "$@"; do t="$a"; done; ! grep -qxF "$t" ${root}/arpable 2>/dev/null`)
   w('ip', 'case "$1" in link) exit 0;; *) exit 0;; esac')
+  fs.writeFileSync(path.join(root, 'resources'), JSON.stringify((opts.resources ?? []).map(id => ({ id: `lxc/${id}`, type: 'lxc', vmid: id }))))
   w('pvesh', `case "$2" in
   /cluster/nextid) if [ "$3" = --vmid ]; then echo "$4"; else echo 900; fi;;
+  /cluster/resources) cat ${root}/resources;;
   /nodes) echo '${nodeJson}';; /cluster/status) echo '${statusJson}';; esac`)
   w('pvesm', `case "$1 $2 $3" in
   "status -content rootdir") cat ${root}/rootdir;;
@@ -88,8 +91,14 @@ esac; exit 0`)
   start) [ -n "\${FAKE_START_FAIL:-}" ] && exit 1; exit 0;;
   destroy) rm -f "$HPX_PVE_ETC/lxc/$2.conf"; exit 0;;
   exec) [ -t 0 ] || cat > /dev/null   # a command that reads stdin, as pct exec does
+        # Tailscale in the container: joined at once, at a fixed address. WireGuard: the recipe prints the key.
+        [[ "$*" == *"tailscale ip -4"* ]] && { echo 100.101.102.103; exit 0; }
+        [[ "$*" == *"tailscale status --json"* ]] && { echo '{"Self":{"DNSName":"hyperprox.example-tailnet.ts.net.","TailscaleIPs":["100.101.102.103"]}}'; exit 0; }
+        [[ "$*" == *"WIREGUARD_SERVER_RECIPE"* ]] && { echo 'echo recipe'; exit 0; }
+        [[ "$*" == *"WG_ADDRESS="*"bash -s"* ]] && { echo "HP_WG_PUB=\${FAKE_WG_PUB:-QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU=}"; exit 0; }
         [[ "$*" == *install.sh* ]] && [ -n "\${FAKE_INSTALL_FAIL:-}" ] && exit 1
         [[ "$*" == *"hostname -I"* ]] && echo 10.9.9.50; exit 0;;
+  push) cp "$3" "${root}/pushed-\${4##*/}"; exit 0;;
   *) exit 0;;
 esac`)
   w('pveum', `t=${root}/tokens
@@ -125,7 +134,8 @@ if ! grep -q '^# HyperProx node-side helpers' <<< "$s" && grep -q '^# HyperProx 
 step="$(grep -m1 -oE '^# (Undo|node_exporter|Power|Intel GPU|NVIDIA GPU|AMD GPU|Let containers)' <<< "$s" | cut -c3-)"
 echo "$node $step" >> ${root}/steps.log
 printf 'HPX-RESULT\\tdone\\tset up (%s)\\n' "$step"`)
-  const env = extra => ({ PATH: `${bin}:/usr/bin:/bin`, HPX_PVE_ETC: path.join(root, 'pve'), HPX_RESOLV_CONF: path.join(root, 'resolv.conf'), HOME: root, TMPDIR: tmp, LANG: 'C', TERM: 'dumb', ...extra })
+  fs.mkdirSync(path.join(root, 'sys/module/wireguard'), { recursive: true })
+  const env = extra => ({ PATH: `${bin}:/usr/bin:/bin`, HPX_SYSFS: path.join(root, 'sys'), HPX_PVE_ETC: path.join(root, 'pve'), HPX_RESOLV_CONF: path.join(root, 'resolv.conf'), HOME: root, TMPDIR: tmp, LANG: 'C', TERM: 'dumb', ...extra })
   // A file of answers standing in for the keyboard (HPX_TTY).
   const tty = answers => { const f = path.join(root, `tty-${Math.random().toString(36).slice(2)}`); fs.writeFileSync(f, answers); return f }
   const run = (args, input, extra = {}) => spawnSync('/bin/bash', [BOOTSTRAP, ...args], {
@@ -140,8 +150,9 @@ printf 'HPX-RESULT\\tdone\\tset up (%s)\\n' "$step"`)
   const templates = () => fs.readdirSync(tpl).sort()
   const tokens = () => fs.readFileSync(path.join(root, 'tokens'), 'utf8').split('\n').filter(Boolean)
   const leftovers = () => fs.readdirSync(tmp)
+  const pushed = name => { const f = path.join(root, `pushed-${name}`); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null }
   return {
-    root, env, tty, run, piped, calls, steps, templates, tokens, leftovers,
+    root, env, tty, run, piped, calls, steps, templates, tokens, leftovers, pushed,
     cleanup: () => { made.forEach(([, n]) => n.cleanup()); fs.rmSync(root, { recursive: true, force: true }) },
   }
 }
@@ -219,8 +230,8 @@ test('health and GPU monitoring already on every node: neither is asked, and bot
     const r = c.run(['--dry-run'], c.tty('n\nn\nn\nn\n'))
     const out = plain(r.stdout)
     assert.equal(r.status, 0, out + r.stderr)
-    assert.match(out, /✓ Health monitoring already running on all 2 nodes/)
-    assert.match(out, /✓ GPU monitoring already running on all 2 nodes/)
+    assert.match(out, /\[ ok \] Health monitoring already running on all 2 nodes/)
+    assert.match(out, /\[ ok \] GPU monitoring already running on all 2 nodes/)
     assert.ok(!out.includes(askOf('node-health')), 'not asked')
     assert.ok(!out.includes(askOf('gpu')), 'not asked')
     assert.match(out, /Nothing to change on your nodes\./)
@@ -355,11 +366,12 @@ test('numbering: guests follow <node#><IP>, so a free ID and a free address that
   } finally { c.cleanup() }
 })
 
-test('numbering: answering no keeps the next free ID and DHCP', () => {
+test('numbering at a terminal: another ID typed keeps DHCP', () => {
   const c = cluster({ 'node-a': 'server-no-gpu' }, { guests: conventional })
   try {
-    // numbering no, then defaults for the rest, and the final "Create it?" is answered no.
-    const r = c.run([], '', { HPX_TTY: c.tty('n\n\n\n\n\n\nn\n') })
+    // ID 900 instead of the numbering's, Enter at the address (DHCP), defaults for the rest, VPN not now,
+    // and "Create it?" no.
+    const r = c.run([], '', { HPX_TTY: c.tty('900\n\n\n\n\n\n\n\nn\n') })
     const out = plain(r.stdout + r.stderr)
     assert.match(out, /Container ID 900/)
     assert.match(out, /Network\s+DHCP on vmbr0/)
@@ -379,6 +391,155 @@ test('numbering: guests that do not follow it get no offer', () => {
     assert.doesNotMatch(out, /numbering/)
     assert.match(out, /Container ID 900/)
     assert.match(out, /Network: DHCP/)
+  } finally { c.cleanup() }
+})
+
+// ── Asked for the ID and the address ───────────────────────────────────────────────────────────────────
+
+test('at a terminal the ID is asked for: a bad or used one is asked again, Enter at the address keeps DHCP', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { guests: { 'node-a/lxc/950': lxc('192.0.2.50/24') }, resources: [960] })
+  try {
+    // ID: abc, 99, 950 (a config), 960 (only the cluster's list), 951; address Enter; health, charts, dns, ai: no
+    const r = c.run(['--dry-run'], '', { HPX_TTY: c.tty('abc\n99\n950\n960\n951\n\nn\nn\nn\nn\n\n') })
+    const out = r.stdout + r.stderr
+    assert.equal(r.status, 0, out)
+    assert.ok(!/\x1b/.test(out), 'no escape codes when the output is not a terminal')
+    assert.match(out, /Which ID should the HyperProx container get\?\n.*\n  \[900\]/)
+    assert.match(out, /abc is not a container ID: it must be a number of 100 or more\./)
+    assert.match(out, /99 is not a container ID/)
+    assert.match(out, /ID 950 is already used \([^)]*950\.conf\)\. Choose another\./)
+    assert.match(out, /ID 960 is already used \(the cluster's guest list\)\. Choose another\./)
+    assert.match(out, /Container ID 951/)
+    assert.match(out, /Container\s+951 \(hyperprox\)/)
+    assert.match(out, /Network\s+DHCP on vmbr0/)
+    assert.match(out, /Dry run: nothing was changed/)
+  } finally { c.cleanup() }
+})
+
+test('at a terminal the address is asked for: a used one is asked again, then the gateway, and it is created so', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { guests: { 'node-a/lxc/950': lxc('192.0.2.50/24') }, pingable: ['192.0.2.61'] })
+  try {
+    // ID Enter; address: junk, .50 (a config), .61 (answers a ping), .60; gateway: Enter (none known), then
+    // 192.0.2.1; health, charts, dns, ai: no; VPN not now; create yes
+    const r = c.run([], '', { HPX_TTY: c.tty('\nfoo\n192.0.2.50/24\n192.0.2.61/24\n192.0.2.60/24\n\n192.0.2.1\nn\nn\nn\nn\n\ny\n') })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    assert.match(out, /foo is not one of the choices/)
+    assert.match(out, /Another guest's config already uses 192\.0\.2\.50\. Choose another\./)
+    assert.match(out, /Something already answers on 192\.0\.2\.61\. Choose another\./)
+    assert.match(out, /Which gateway should 192\.0\.2\.60\/24 use\?/)
+    assert.match(out, /Network\s+192\.0\.2\.60\/24, gateway 192\.0\.2\.1, on vmbr0/)
+    assert.match(createLine(c), /^pct create 900 .*--net0 name=eth0,bridge=vmbr0,ip=192\.0\.2\.60\/24,gw=192\.0\.2\.1/)
+  } finally { c.cleanup() }
+})
+
+test('at a terminal, an accepted numbering offer is the default for the ID and the address', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { guests: conventional, pingable: ['192.0.2.200'] })
+  try {
+    // Enter at the ID and the address (both the numbering's); health, charts, dns, ai: no; VPN not now
+    const r = c.run(['--dry-run'], '', { HPX_TTY: c.tty('\n\nn\nn\nn\nn\n\n') })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    assert.match(out, /Which ID should the HyperProx container get\?\n.*numbering \(4 of 5 do\).*\n  \[105\]/)
+    assert.match(out, /1  Static  192\.0\.2\.205\/24  via 192\.0\.2\.1  \(matches ID\)/)
+    assert.match(out, /Container ID 105/)
+    assert.match(out, /Network\s+192\.0\.2\.205\/24, gateway 192\.0\.2\.1, on vmbr0/)
+  } finally { c.cleanup() }
+})
+
+test('-y, --vmid/--ip or no terminal: the ID and the address are not asked for', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' })
+  try {
+    for (const [args, extra] of [[['-y', '--dry-run'], {}], [['--dry-run', '--vmid', '777', '--ip', '192.0.2.70/24', '--gateway', '192.0.2.1'], { HPX_TTY: c.tty('n\nn\nn\nn\n') }],
+                                 [['--dry-run'], { HPX_TTY: '/nonexistent/tty' }]]) {
+      const r = c.run(args, '', extra)
+      const out = plain(r.stdout + r.stderr)
+      assert.equal(r.status, 0, out)
+      assert.doesNotMatch(out, /Which container ID|Which address should/)
+    }
+  } finally { c.cleanup() }
+})
+
+// ── Remote access (VPN) ────────────────────────────────────────────────────────────────────────────────
+
+test('VPN at a terminal: WireGuard asks for a tunnel network that overlaps nothing, and the plan says so', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { guests: { 'node-a/lxc/950': lxc('192.0.2.50/24') } })
+  try {
+    // ID, address: Enter; health, charts, dns, ai: no; VPN 2; tunnel: one on the LAN, then Enter; address: Enter
+    const r = c.run(['--dry-run'], '', { HPX_TTY: c.tty('\n\nn\nn\nn\nn\n2\n192.0.2.1/24\n\n\n') })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    assert.match(out, /How do you want to reach HyperProx when you are away from home\?/)
+    assert.match(out, /192\.0\.2\.1\/24 overlaps 192\.0\.2\.50\/24/)
+    assert.match(out, /VPN\s+WireGuard in a small container of its own \(next free ID\), tunnel 10\.99\.0\.1\/24, UDP 51820/)
+    assert.doesNotMatch(c.calls(), /^pct create/m)
+  } finally { c.cleanup() }
+})
+
+test('VPN: WireGuard without the kernel module on the node is skipped, and the node is not changed', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' })
+  try {
+    fs.rmSync(path.join(c.root, 'sys/module/wireguard'), { recursive: true })
+    const out = plain(c.run(['-y', '--dry-run', '--vpn', 'wireguard']).stdout)
+    assert.match(out, /WireGuard kernel module is not loaded/)
+    assert.match(out, /VPN\s+not now/)
+    assert.doesNotMatch(c.calls(), /modprobe/)
+  } finally { c.cleanup() }
+})
+
+test('VPN: -y does not ask and sets nothing up; no terminal and no key skips Tailscale', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' })
+  try {
+    const out = plain(c.run(['-y', '--dry-run']).stdout)
+    assert.doesNotMatch(out, /How do you want to reach HyperProx/)
+    assert.match(out, /VPN\s+not now \(add it later on the VPN page\)/)
+    const ts = plain(c.run(['-y', '--dry-run', '--vpn', 'tailscale'], '', { HPX_TTY: '/nonexistent/tty' }).stdout)
+    assert.match(ts, /no terminal to show it on: skipped/)
+  } finally { c.cleanup() }
+})
+
+test('VPN: Tailscale with TS_AUTHKEY joins unattended; the key is on no command line and in no file handed over', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  const key = 'tskey-auth-kTESTONLY0000-abcdefghijklmnop'
+  try {
+    const r = c.run(['-y', '--no-pve-metrics'], '', { TS_AUTHKEY: key })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    assert.ok(!c.calls().includes(key), 'not on any command line')
+    assert.ok(!out.includes(key), 'not printed')
+    assert.match(c.calls(), /tailscale up --auth-key=file:\/run\/hpx-ts\.key .*--accept-dns=false/)
+    assert.match(out, /Away\s+https:\/\/hyperprox\.example-tailnet\.ts\.net\/\s+\(Tailscale\)/)
+    const marker = JSON.parse(c.pushed('vpn-pending.json'))
+    assert.deepEqual(marker.entries, [{ kind: 'tailscale', ctid: 900, machineId: 'lxc-900', hostname: 'hyperprox', ip: '100.101.102.103', dnsName: 'hyperprox.example-tailnet.ts.net' }])
+    assert.ok(!c.pushed('vpn-pending.json').includes('tskey'))
+    assert.match(c.pushed('bootstrap.json'), /"vpn":"tailscale"/)
+  } finally { c.cleanup() }
+})
+
+test('VPN: WireGuard -y makes its own unprivileged container, runs the recipe there and hands over public facts only', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y', '--no-pve-metrics', '--vpn', 'wireguard', '--wg-endpoint', 'vpn.example.com'])
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    const wg = c.calls().split('\n').find(l => l.startsWith('pct create 901 ')) ?? ''
+    assert.match(wg, /--hostname hyperprox-wg .*--unprivileged 1/)
+    assert.match(c.calls(), /WIREGUARD_SERVER_RECIPE/, 'the Catalogue recipe, from the installed copy')
+    const marker = JSON.parse(c.pushed('vpn-pending.json'))
+    assert.deepEqual(marker.entries, [{ kind: 'wireguard', ctid: 901, machineId: 'lxc-901', iface: 'hp-wg0', address: '10.99.0.1/24',
+      listenPort: 51820, endpoint: 'vpn.example.com:51820', publicKey: 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU=' }])
+    assert.doesNotMatch(c.pushed('vpn-pending.json'), /private/i)
+    assert.match(out, /forward UDP 51820 to 10\.9\.9\.50/)
+  } finally { c.cleanup() }
+})
+
+test('VPN: a failed install removes the WireGuard container too', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y', '--no-pve-metrics', '--vpn', 'wireguard'], '', { FAKE_INSTALL_FAIL: '1' })
+    assert.equal(r.status, 1)
+    assert.match(c.calls(), /^pct destroy 901 --purge$/m)
+    assert.match(c.calls(), /^pct destroy 900 --purge$/m)
   } finally { c.cleanup() }
 })
 
@@ -410,8 +571,9 @@ test('answers piped into a file run still need -y to create anything', () => {
 test('through a pipe, like curl | bash: questions come from the terminal and the script is not eaten', () => {
   const c = cluster({ 'node-a': 'nvidia-dedicated', 'node-b': 'fresh-intel-node' })
   try {
-    // health yes, power no, gpu yes, built-in graphics no, charts yes, metrics no, dns no, ai no, create yes
-    const r = c.piped([], { HPX_TTY: c.tty('y\nn\ny\nn\ny\nn\nn\nn\ny\n') })
+    // ID and address: Enter; health yes, power no, gpu yes, built-in graphics no, charts yes, metrics no, dns no,
+    // ai no, VPN not now, create yes
+    const r = c.piped([], { HPX_TTY: c.tty('\n\ny\nn\ny\nn\ny\nn\nn\nn\n\ny\n') })
     const out = plain(r.stdout)
     assert.equal(r.status, 0, out + r.stderr)
     assert.match(out, /Create it\? \[Y\/n\]/)
@@ -449,7 +611,7 @@ test('Ctrl+C at a question: nothing is created and nothing is left behind', asyn
     const done = new Promise(res => child.on('close', (code, sig) => res({ code, sig })))
     await new Promise((res, rej) => {
       const t = setTimeout(() => rej(new Error('no question came: ' + out)), 30_000)
-      child.stdout.on('data', d => { out += d; if (out.includes('[Y/n]')) { clearTimeout(t); res() } })
+      child.stdout.on('data', d => { out += d; if (/\[(Y\/n|900)\]/.test(out)) { clearTimeout(t); res() } })
     })
     child.kill('SIGINT')
     const { code } = await done
@@ -536,8 +698,8 @@ test('a GoDaddy key is checked before it is held, and a wrong one is dropped', (
   for (const [key, accepted] of [['good-key', true], ['bad-key', false]]) {
     const c = cluster({ 'node-a': 'server-no-gpu' })
     try {
-      // health no, charts no, dns yes + key + secret, ai no, then "Create it?" yes
-      const r = c.run([], '', { HPX_TTY: c.tty(`n\nn\ny\n${key}\ngood-secret\nn\ny\n`) })
+      // ID and address: Enter; health no, charts no, dns yes + key + secret, ai no, VPN not now, "Create it?" yes
+      const r = c.run([], '', { HPX_TTY: c.tty(`\n\nn\nn\ny\n${key}\ngood-secret\nn\n\ny\n`) })
       const out = plain(r.stdout + r.stderr)
       assert.equal(r.status, 0, out)
       if (accepted) {

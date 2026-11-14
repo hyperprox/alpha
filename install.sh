@@ -51,35 +51,357 @@ if ! touch "${LOG_FILE}" 2>/dev/null; then
 fi
 echo "HyperProx install log — $(date -u)" > "${LOG_FILE}"
 
-# ── Colors ───────────────────────────────────────────────────────────────────
-C_RESET="\033[0m"
-C_BOLD="\033[1m"
-C_DIM="\033[2m"
-C_CYAN="\033[36m"
-C_GREEN="\033[32m"
-C_YELLOW="\033[33m"
-C_RED="\033[31m"
+# ── Look ─────────────────────────────────────────────────────────────────────
+# The shared UI block below is identical in bootstrap.sh (see its header). When bootstrap.sh runs this
+# installer in the container it passes HPX_UI_NESTED (no banner, no card of its own: bootstrap shows both),
+# HPX_UI_STEP_BASE and HPX_UI_STEPS, so the steps continue its count ("Step 6/10 · Docker").
+# ── hpx-ui begin ──────────────────────────────────────────────────────────────
+#  The installers' look: banner, step headers, spinners, question boxes, the review table and the finish
+#  cards. Pure bash, printf and tput; nothing to install. bootstrap.sh and install.sh each carry an IDENTICAL
+#  copy of this block (from the "hpx-ui begin" line to the "hpx-ui end" line), because bootstrap.sh arrives
+#  alone through `curl | bash` and has nothing to source. scripts/test-installer-ui.sh fails if the two copies
+#  differ: change one, copy it to the other.
+#
+#  Graphical only where it can be seen: stdout is a terminal at least 72 columns wide, NO_COLOR is not set,
+#  TERM is set and not "dumb", and the locale is UTF-8. Anything else (a pipe, a log file, -y > install.log)
+#  gets plain lines ("[step 4/10] …", "[ ok ] … (6s)", "[ .. ] …") with no escape codes, so logs stay
+#  grep-friendly. The layout is drawn for 80 columns.
+UI_FANCY=0; UI_W=80; UI_BW=70; UI_CW=68
+UI_STEP=0; UI_STEPS=0; UI_STEP_TITLE=""; UI_NEXT=()
+UI_SPIN_PID=""; UI_RUN_PID=""; UI_LOG="/dev/null"; UI_LAST_OUT=""; UI_PROGRESS=""
+C_ACC=""; C_ACC2=""; C_ACC3=""; C_OK=""; C_WARN=""; C_ERR=""; C_DIM=""; C_BOLD=""; C_KEY=""; C_INV=""; C_OFF=""
+
+ui_init() {
+  local n=0 cols=0
+  UI_FANCY=0
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ -n "${TERM:-}" ] && [ "${TERM}" != dumb ]; then
+    if [ "$(locale charmap 2>/dev/null)" = UTF-8 ]; then UI_FANCY=1
+    elif [ -z "${LC_ALL:-}" ] && [ "$(LC_CTYPE=C.UTF-8 locale charmap 2>/dev/null)" = UTF-8 ]; then
+      LC_CTYPE=C.UTF-8; UI_FANCY=1      # this shell only (not exported): lengths count characters, not bytes
+    fi
+  fi
+  [ "$UI_FANCY" -eq 1 ] || return 0
+  if [[ "${COLUMNS:-}" =~ ^[0-9]+$ ]]; then cols="$COLUMNS"
+  elif command -v tput >/dev/null 2>&1; then cols="$(tput cols 2>/dev/null || echo 0)"; fi
+  [[ "$cols" =~ ^[0-9]+$ ]] || cols=0
+  [ "$cols" -ge 72 ] || { UI_FANCY=0; return 0; }
+  UI_W=80; [ "$cols" -ge 80 ] || UI_W="$cols"
+  UI_BW=$(( UI_W - 10 )); UI_CW=$(( UI_W - 12 ))
+  command -v tput >/dev/null 2>&1 && n="$(tput colors 2>/dev/null || echo 0)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  # The brand teal, #2fd6e8, shading to #1fa9bb and #147c8b: truecolor where the terminal says it has it,
+  # else the nearest of 256 (44, 37, 30), else plain cyan.
+  if [ "${COLORTERM:-}" = truecolor ] || [ "${COLORTERM:-}" = 24bit ]; then
+    C_ACC=$'\e[38;2;47;214;232m'; C_ACC2=$'\e[38;2;31;169;187m'; C_ACC3=$'\e[38;2;20;124;139m'
+    C_INV=$'\e[1;48;2;47;214;232;38;2;10;17;28m'
+  elif [ "$n" -ge 256 ]; then
+    C_ACC=$'\e[38;5;44m'; C_ACC2=$'\e[38;5;37m'; C_ACC3=$'\e[38;5;30m'; C_INV=$'\e[1;48;5;44;38;5;234m'
+  else
+    C_ACC=$'\e[36m'; C_ACC2=$'\e[36m'; C_ACC3=$'\e[36m'; C_INV=$'\e[1;46;30m'
+  fi
+  C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_DIM=$'\e[90m'; C_BOLD=$'\e[1m'; C_KEY=$'\e[1;97m'; C_OFF=$'\e[0m'
+}
+
+# ui_rep CHAR N: CHAR, N times.
+ui_rep() { local s=""; local -i i; for (( i = 0; i < $2; i++ )); do s+="$1"; done; printf '%s' "$s"; }
+# ui_pad TEXT WIDTH: TEXT, then spaces up to WIDTH characters.
+ui_pad() { local p=$(( $2 - ${#1} )); [ "$p" -ge 0 ] || p=0; printf '%s%*s' "$1" "$p" ''; }
+ui_secs() { local t="$1"; if [ "$t" -ge 60 ]; then printf '%dm %02ds' $(( t / 60 )) $(( t % 60 )); else printf '%ds' "$t"; fi; }
+
+# ui_wrap WIDTH TEXT: TEXT as lines of at most WIDTH characters, broken between words.
+ui_wrap() {
+  local w="$1" line="" word; local -a ws
+  read -ra ws <<< "$2"
+  for word in "${ws[@]}"; do
+    while [ "${#word}" -gt "$w" ]; do
+      [ -z "$line" ] || { printf '%s\n' "$line"; line=""; }
+      printf '%s\n' "${word:0:$w}"; word="${word:$w}"
+    done
+    if [ -z "$line" ]; then line="$word"
+    elif [ $(( ${#line} + 1 + ${#word} )) -le "$w" ]; then line+=" $word"
+    else printf '%s\n' "$line"; line="$word"; fi
+  done
+  [ -z "$line" ] || printf '%s\n' "$line"
+}
+
+# ui_banner WHAT REF: the HYPERPROX banner and its tagline (fancy), or one plain line.
+ui_banner() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf 'HyperProx %s · %s\n' "$1" "$2"; return; fi
+  printf '\n'
+  if [ "$UI_W" -ge 78 ]; then
+    printf '%s  %s%s\n' \
+      "$C_ACC"  '██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ ██████╗ ██████╗  ██████╗ ██╗  ██╗' "$C_OFF" \
+      "$C_ACC"  '██║  ██║╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔══██╗██╔═══██╗╚██╗██╔╝' "$C_OFF" \
+      "$C_ACC2" '███████║ ╚████╔╝ ██████╔╝█████╗  ██████╔╝██████╔╝██████╔╝██║   ██║ ╚███╔╝ ' "$C_OFF" \
+      "$C_ACC2" '██╔══██║  ╚██╔╝  ██╔═══╝ ██╔══╝  ██╔══██╗██╔═══╝ ██╔══██╗██║   ██║ ██╔██╗ ' "$C_OFF" \
+      "$C_ACC3" '██║  ██║   ██║   ██║     ███████╗██║  ██║██║     ██║  ██║╚██████╔╝██╔╝ ██╗' "$C_OFF" \
+      "$C_ACC3" '╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝' "$C_OFF"
+  else
+    printf '  %s%s▌ H Y P E R P R O X%s\n' "$C_ACC" "$C_BOLD" "$C_OFF"
+  fi
+  printf '%s            Your Proxmox command center  ·  %s  ·  %s%s\n\n' "$C_DIM" "$1" "$2" "$C_OFF"
+}
+
+# ui_step TITLE: the next numbered step: "━━━ Step 3/10 · Title ━━━…" (plain: "[step 3/10] Title").
+ui_step() {
+  UI_STEP=$(( UI_STEP + 1 )); UI_STEP_TITLE="$1"; UI_NEXT=()
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[step %s/%s] %s\n' "$UI_STEP" "$UI_STEPS" "$1"; return; fi
+  local head="━━━ Step ${UI_STEP}/${UI_STEPS} · $1 "
+  printf '%s%s%s%s\n' "$C_ACC" "$head" "$(ui_rep '━' $(( UI_W - ${#head} )))" "$C_OFF"
+}
+# ui_plan MSG...: the long jobs this step runs next (their ui_run messages), listed dim under the spinner.
+ui_plan() { UI_NEXT=("$@"); }
+ui_sub() {   # a heading inside a step
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[ -- ] %s\n' "$1"; return; fi
+  printf '  %s▸%s %s\n' "$C_ACC" "$C_OFF" "$1"
+}
+
+# ── Result lines. Fancy: "  ✓ text" with the time right-aligned and dim; plain: "[ ok ] text (6s)".
+ui_ok() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[ ok ] %s%s\n' "$1" "${2:+ ($2)}"; return; fi
+  if [ -n "${2:-}" ]; then printf '  %s✓%s %s %s%7s%s\n' "$C_OK" "$C_OFF" "$(ui_pad "$1" $(( UI_W - 22 )))" "$C_DIM" "$2" "$C_OFF"
+  else printf '  %s✓%s %s\n' "$C_OK" "$C_OFF" "$1"; fi
+}
+ui_kv() {    # KEY VALUE: a found fact. Fancy: key column and dim value; plain: "[ ok ] Key: value".
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[ ok ] %s: %s\n' "$1" "$2"; return; fi
+  printf '  %s✓%s %s %s%s%s\n' "$C_OK" "$C_OFF" "$(ui_pad "$1" 25)" "$C_DIM" "$2" "$C_OFF"
+}
+ui_warn() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[warn] %s\n' "$1"; return; fi
+  printf '  %s!%s %s\n' "$C_WARN" "$C_OFF" "$1"
+}
+ui_bad() {   # a refused answer or a failed line: red ✗
+  if [ "$UI_FANCY" -ne 1 ]; then printf '[ no ] %s\n' "$1"; return; fi
+  printf '  %s✗ %s%s\n' "$C_ERR" "$1" "$C_OFF"
+}
+ui_note() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf '       %s\n' "$1"; return; fi
+  printf '    %s%s%s\n' "$C_DIM" "$1" "$C_OFF"
+}
+
+# ── Spinners. ui_run and ui_wait run a command in the background (stdin from /dev/null, all output to
+#    UI_OUT, else UI_LOG) and, on a terminal, show a braille spinner with the seconds so far, the jobs still
+#    to come in this step (ui_plan) dim below it, and a progress bar when UI_PROGRESS names a function that
+#    prints "done total". The spinner is its own background process watching the command's PID;
+#    ui_spin_stop (and ui_abort, from an exit or interrupt trap) removes it and puts the cursor back. Both
+#    return the command's exit status. Shell variables the command sets do not come back: it runs in a subshell.
+ui_bar() {   # DONE TOTAL: a 24-cell bar with half cells
+  local h=0 full half
+  [ "$2" -gt 0 ] && h=$(( $1 * 48 / $2 )); [ "$h" -le 48 ] || h=48
+  full=$(( h / 2 )); half=$(( h % 2 ))
+  printf '%s%s%s%s%s%s' "$C_ACC" "$(ui_rep '█' "$full")" "$([ "$half" -eq 1 ] && printf '▌')" "$C_DIM" \
+    "$(ui_rep '░' $(( 24 - full - half )))" "$C_OFF"
+}
+ui_spin_start() {   # MSG PID
+  [ "$UI_FANCY" -eq 1 ] || return 0
+  local msg="$1" pid="$2" max=$(( UI_W - 24 )) n
+  local -a next=()
+  for n in "${UI_NEXT[@]}"; do [ "$n" = "$1" ] || next+=("$n"); done
+  [ "${#next[@]}" -le 4 ] || next=("${next[@]:0:4}")
+  [ "${#msg}" -le "$max" ] || msg="${msg:0:$(( max - 1 ))}…"
+  (
+    trap 'exit 0' TERM
+    frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏'); i=0; t0=$SECONDS; prog=""
+    while kill -0 "$pid" 2>/dev/null; do
+      if [ -n "$UI_PROGRESS" ] && [ $(( i % 10 )) -eq 0 ]; then prog="$("$UI_PROGRESS" 2>/dev/null || true)"; fi
+      body="$msg"; shown="$msg"
+      if [[ "$prog" =~ ^([0-9]+)\ ([1-9][0-9]*)$ ]]; then
+        body="$msg  $(ui_bar "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")  ${BASH_REMATCH[1]} of ${BASH_REMATCH[2]}"
+        shown="$msg  $(ui_rep x 24)  ${BASH_REMATCH[1]} of ${BASH_REMATCH[2]}"
+      fi
+      pad=$(( UI_W - 22 - ${#shown} )); [ "$pad" -ge 1 ] || pad=1
+      printf '\r  %s%s%s %s%*s%s%7s%s\e[K' "$C_ACC" "${frames[i % 10]}" "$C_OFF" "$body" "$pad" '' "$C_DIM" \
+        "$(ui_secs $(( SECONDS - t0 )))" "$C_OFF"
+      for n in "${next[@]}"; do printf '\n    %s·  %s%s\e[K' "$C_DIM" "$n" "$C_OFF"; done
+      [ "${#next[@]}" -eq 0 ] || printf '\e[%dA' "${#next[@]}"
+      i=$(( i + 1 )); sleep 0.1
+    done
+  ) &
+  UI_SPIN_PID=$!
+  printf '\e[?25l'
+}
+ui_spin_stop() {
+  [ -n "$UI_SPIN_PID" ] || return 0
+  kill "$UI_SPIN_PID" 2>/dev/null || true
+  wait "$UI_SPIN_PID" 2>/dev/null || true
+  UI_SPIN_PID=""
+  printf '\r\e[J\e[?25h'
+}
+# ui_abort: from an exit or interrupt trap. Stops the running command and what it started (a background job
+# ignores Ctrl+C), then the spinner.
+ui_kill_tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do ui_kill_tree "$c"; done; kill "$1" 2>/dev/null || true; }
+ui_abort() {
+  if [ -n "$UI_RUN_PID" ]; then ui_kill_tree "$UI_RUN_PID"; wait "$UI_RUN_PID" 2>/dev/null || true; UI_RUN_PID=""; fi
+  ui_spin_stop
+}
+
+# ui_wait MSG CMD...: a spinner on a terminal, nothing in plain output; the caller reports the outcome.
+ui_wait() {
+  local msg="$1" rc=0; shift
+  "$@" < /dev/null >> "${UI_OUT:-$UI_LOG}" 2>&1 &
+  UI_RUN_PID=$!
+  ui_spin_start "$msg" "$UI_RUN_PID"
+  wait "$UI_RUN_PID" || rc=$?
+  UI_RUN_PID=""
+  ui_spin_stop
+  [ "${UI_NEXT[0]:-}" != "$msg" ] || UI_NEXT=("${UI_NEXT[@]:1}")
+  return "$rc"
+}
+# ui_run MSG CMD...: as ui_wait, then a ✓ line with the time taken, or a ✗ line and the last 20 lines of
+# the command's output, so a failure is never hidden behind the spinner.
+ui_run() {
+  local msg="$1" rc=0 t0=$SECONDS out="${UI_OUT:-$UI_LOG}"; shift
+  [ "$UI_FANCY" -eq 1 ] || printf '[ .. ] %s\n' "$msg"
+  ui_wait "$msg" "$@" || rc=$?
+  if [ "$rc" -eq 0 ]; then ui_ok "$msg" "$(ui_secs $(( SECONDS - t0 )))"; return 0; fi
+  ui_bad "$msg (failed after $(ui_secs $(( SECONDS - t0 ))), exit $rc)"
+  if [ -s "$out" ] && [ "$out" != /dev/null ]; then
+    UI_LAST_OUT="$out"
+    printf '    %slast output:%s\n' "$C_DIM" "$C_OFF"
+    tail -n 20 "$out" | sed $'s/\e\\[[0-9;?]*[A-Za-z]//g; s/\r//g; s/^/      /'
+  fi
+  return "$rc"
+}
+
+# ── Questions. ui_ask_box TITLE QUESTION [EXPLANATION]: a rounded box (plain: the question, the explanation
+#    indented below). ui_prompt LABEL DEFAULT: "› ID [160]: " under it (plain: "[160] ").
+ui_ask_box() {
+  local l w=$(( UI_BW - 4 ))
+  if [ "$UI_FANCY" -ne 1 ]; then printf '\n  %s\n' "$2"; [ -z "${3:-}" ] || printf '    %s\n' "$3"; return; fi
+  printf '\n'
+  ui_box_top "$1" "$UI_BW" "$C_ACC"
+  while IFS= read -r l; do ui_box_put "$l" "${#l}" "$UI_BW"; done < <(ui_wrap "$w" "$2")
+  if [ -n "${3:-}" ]; then
+    while IFS= read -r l; do ui_box_put "$C_DIM$l$C_OFF" "${#l}" "$UI_BW"; done < <(ui_wrap "$w" "$3")
+  fi
+}
+ui_ask_end() { [ "$UI_FANCY" -ne 1 ] || ui_box_bottom "$UI_BW"; }
+ui_prompt() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf '  [%s] ' "$2"; return; fi
+  printf '  %s› %s%s %s[%s]%s: ' "$C_KEY" "$1" "$C_OFF" "$C_DIM" "$2" "$C_OFF"
+}
+# ui_choices DEFAULT ITEM...: numbered rows inside the open box (plain: indented lines), the default one
+# highlighted in reverse teal.
+ui_choices() {
+  local def="$1" i=0 it row; shift
+  [ "$UI_FANCY" -ne 1 ] || ui_box_put "" 0 "$UI_BW"
+  for it in "$@"; do
+    i=$(( i + 1 )); row=" $i  $it "
+    if [ "$UI_FANCY" -ne 1 ]; then printf '    %s\n' "$row"
+    elif [ "$i" = "$def" ]; then ui_box_put "  $C_INV$row$C_OFF" $(( 2 + ${#row} )) "$UI_BW"
+    else ui_box_put "  $row" $(( 2 + ${#row} )) "$UI_BW"; fi
+  done
+}
+# ui_yn_row LABEL HINT [EXPLANATION]: the explanation dim, then "◆ Label   [Y/n]  " with the cursor left after the
+#    hint. ui_yn_answer TEXT STYLE READ_A_NEWLINE then writes the answer on that row (one line up, after Enter).
+ui_yn_row() {
+  local l
+  if [ -n "${3:-}" ]; then
+    while IFS= read -r l; do printf '      %s%s%s\n' "$C_DIM" "$l" "$C_OFF"; done < <(ui_wrap $(( UI_W - 8 )) "$3")
+  fi
+  printf '  %s◆%s %s%s%s%s  ' "$C_ACC" "$C_OFF" "$(ui_pad "$1" 38)" "$C_KEY" "$2" "$C_OFF"
+}
+ui_yn_answer() {   # TEXT STYLE READ_A_NEWLINE(0|1)
+  [ "$3" -eq 1 ] && printf '\e[1A'
+  printf '\e[%dG\e[K%s%s%s\n' $(( 2 + 2 + 38 + 5 + 2 + 1 )) "$2" "$1" "$C_OFF"
+}
+
+# ── Boxes. ui_box_* draw a rounded box WIDTH wide (questions and cards); ui_table_* the double-lined review
+#    table. Text longer than the box is wrapped inside it. Fancy output only.
+UI_BOX_C=""
+ui_box_top() {   # TITLE WIDTH COLOUR (an empty TITLE: a plain top edge)
+  UI_BOX_C="${3:-$C_ACC}"
+  local t=""; [ -z "$1" ] || t="─ $1 "
+  printf '  %s╭%s%s╮%s\n' "$UI_BOX_C" "$t" "$(ui_rep '─' $(( $2 - 2 - ${#t} )))" "$C_OFF"
+}
+ui_box_put() {   # TEXT VISIBLE_LENGTH WIDTH: one line "│ text … │"
+  local pad=$(( $3 - 4 - $2 )); [ "$pad" -ge 0 ] || pad=0
+  printf '  %s│%s %s%*s %s│%s\n' "$UI_BOX_C" "$C_OFF" "$1" "$pad" '' "$UI_BOX_C" "$C_OFF"
+}
+ui_box_bottom() { printf '  %s╰%s╯%s\n' "$UI_BOX_C" "$(ui_rep '─' $(( $1 - 2 )))" "$C_OFF"; }
+ui_card_line() { # TEXT [STYLE] [RIGHT]: a card line with a 2-space margin, wrapped; RIGHT goes to the right edge
+  local l w=$(( UI_CW - 8 )) r="${3:-}"
+  if [ -z "$1" ]; then ui_box_put "" 0 "$UI_CW"; return; fi
+  [ -z "$r" ] || w=$(( w - ${#r} - 2 ))
+  while IFS= read -r l; do
+    if [ -n "$r" ]; then ui_box_put " ${2:-}$(ui_pad "$l" "$w")$C_OFF  $C_DIM$r$C_OFF " $(( 1 + w + 2 + ${#r} + 1 )) "$UI_CW"; r=""
+    else ui_box_put " ${2:-}$l$C_OFF" $(( 1 + ${#l} )) "$UI_CW"; fi
+  done < <(if [ "${#1}" -le "$w" ]; then printf '%s\n' "$1"; else ui_wrap "$w" "$1"; fi)
+}
+ui_table_top() { # TITLE
+  printf '  %s╔%s╗%s\n' "$C_ACC" "$(ui_rep '═' $(( UI_CW - 2 )))" "$C_OFF"
+  printf '  %s║%s  %s%s%s%s║%s\n' "$C_ACC" "$C_OFF" "$C_KEY" "$(ui_pad "$1" $(( UI_CW - 4 )))" "$C_OFF" "$C_ACC" "$C_OFF"
+  printf '  %s╟%s┬%s╢%s\n' "$C_ACC" "$(ui_rep '─' 14)" "$(ui_rep '─' $(( UI_CW - 17 )))" "$C_OFF"
+}
+ui_table_row() { # KEY VALUE
+  local l k="$1" vw=$(( UI_CW - 19 ))
+  # Short values keep their own spacing; long ones are wrapped between words.
+  while IFS= read -r l; do
+    printf '  %s║%s %s %s│%s %s %s║%s\n' "$C_ACC" "$C_OFF" "$(ui_pad "$k" 12)" "$C_ACC" "$C_OFF" "$(ui_pad "$l" "$vw")" "$C_ACC" "$C_OFF"
+    k=""
+  done < <(if [ "${#2}" -le "$vw" ]; then printf '%s\n' "${2:--}"; else ui_wrap "$vw" "$2"; fi)
+}
+ui_table_bottom() { printf '  %s╚%s╧%s╝%s\n' "$C_ACC" "$(ui_rep '═' 14)" "$(ui_rep '═' $(( UI_CW - 17 )))" "$C_OFF"; }
+
+# ui_failure_card ERROR CLEANUP LOG: the red card when an install stops (plain: the same facts as lines).
+ui_failure_card() {
+  local where="step ${UI_STEP}/${UI_STEPS} · ${UI_STEP_TITLE}" l
+  local try="curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/scripts/diagnose.sh | bash"
+  if [ "$UI_FANCY" -ne 1 ]; then
+    printf '[fail] Install stopped at %s: %s\n' "$where" "$1"
+    [ -z "$2" ] || printf '       %s\n' "$2"
+    [ -z "$3" ] || printf '       Full log: %s\n' "$3"
+    printf '       Try: %s\n' "$try"
+    return 0
+  fi
+  printf '\n'
+  ui_box_top "Install stopped at $where" "$UI_CW" "$C_ERR"
+  ui_card_line "✗ $1" "$C_ERR"
+  if [ -n "$UI_LAST_OUT" ] && [ -s "$UI_LAST_OUT" ]; then
+    ui_card_line ""
+    ui_card_line "last log lines" "$C_DIM"
+    while IFS= read -r l; do
+      [ "${#l}" -le $(( UI_CW - 10 )) ] || l="${l:0:$(( UI_CW - 11 ))}…"
+      ui_box_put "   $C_DIM$l$C_OFF" $(( 3 + ${#l} )) "$UI_CW"
+    done < <(tail -n 3 "$UI_LAST_OUT" | sed $'s/\e\\[[0-9;?]*[A-Za-z]//g; s/\r//g')
+  fi
+  ui_card_line ""
+  [ -z "$2" ] || ui_card_line "$2"
+  [ -z "$3" ] || ui_card_line "Full log: $3"
+  ui_card_line "Try:  $try"
+  ui_box_bottom "$UI_CW"
+  printf '\n'
+}
+# ── hpx-ui end ────────────────────────────────────────────────────────────────
+ui_init
+UI_LOG="${LOG_FILE}"
+UI_STEPS="${HPX_UI_STEPS:-5}"; [[ "${UI_STEPS}" =~ ^[0-9]+$ ]] || UI_STEPS=5
+UI_STEP="${HPX_UI_STEP_BASE:-0}"; [[ "${UI_STEP}" =~ ^[0-9]+$ ]] || UI_STEP=0
+NESTED="${HPX_UI_NESTED:-}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 banner() {
-  echo ""
-  echo -e "${C_CYAN}${C_BOLD}"
-  echo "  ██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ ██████╗ ██████╗  ██████╗ ██╗  ██╗"
-  echo "  ██║  ██║╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔══██╗██╔═══██╗╚██╗██╔╝"
-  echo "  ███████║ ╚████╔╝ ██████╔╝█████╗  ██████╔╝██████╔╝██████╔╝██║   ██║ ╚███╔╝ "
-  echo "  ██╔══██║  ╚██╔╝  ██╔═══╝ ██╔══╝  ██╔══██╗██╔═══╝ ██╔══██╗██║   ██║ ██╔██╗ "
-  echo "  ██║  ██║   ██║   ██║     ███████╗██║  ██║██║     ██║  ██║╚██████╔╝██╔╝ ██╗"
-  echo "  ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝"
-  echo -e "${C_RESET}"
-  echo -e "${C_DIM}  Your Proxmox infrastructure, hypercharged.${C_RESET}"
-  echo ""
+  [[ -n "${NESTED}" ]] && return 0
+  ui_banner "installer" "${INSTALL_REF:-main}"
 }
 
-step()    { echo -e "\n${C_CYAN}${C_BOLD}▶  $1${C_RESET}"; }
-ok()      { echo -e "   ${C_GREEN}✓${C_RESET}  $1"; }
-warn()    { echo -e "   ${C_YELLOW}⚠${C_RESET}  $1"; }
-info()    { echo -e "   ${C_DIM}→  $1${C_RESET}"; }
-die()     { echo -e "\n   ${C_RED}✗  ERROR: $1${C_RESET}"; echo -e "   ${C_DIM}Full log: ${LOG_FILE}${C_RESET}\n"; exit 1; }
+step()    { ui_sub "$1"; }
+ok()      { ui_ok "$1"; }
+warn()    { ui_warn "$1"; }
+info()    { ui_note "$1"; }
+DIE_MSG=""
+die()     { DIE_MSG="$1"; ui_bad "ERROR: $1"; [[ -n "${NESTED}" ]] && ui_note "Full log: ${LOG_FILE}"; exit 1; }
+# On any stop that is not a success: the spinner goes, and (run on its own) the failure card says where it stopped.
+on_exit() {
+  local rc=$?
+  ui_abort
+  if [[ ${rc} -ne 0 && -z "${NESTED}" ]]; then
+    ui_failure_card "${DIE_MSG:-stopped unexpectedly (exit ${rc})}" "Nothing is rolled back: re-running this installer picks up where it stopped." "${LOG_FILE}"
+  fi
+  exit "${rc}"
+}
+trap on_exit EXIT
+trap 'exit 130' INT TERM HUP
 
 # ── Root check ────────────────────────────────────────────────────────────────
 # After die() exists: before, a non-root run failed with "die: command not found" instead of the message.
@@ -88,40 +410,19 @@ die()     { echo -e "\n   ${C_RED}✗  ERROR: $1${C_RESET}"; echo -e "   ${C_DIM
 confirm() {
   # Default to yes when running non-interactively (curl | bash)
   if [[ ! -t 0 ]]; then return 0; fi
-  echo -e "   ${C_YELLOW}?${C_RESET}  $1 [Y/n] "
+  if [[ "${UI_FANCY}" -eq 1 ]]; then printf '  %s› %s%s %s[Y/n]%s ' "${C_KEY}" "$1" "${C_OFF}" "${C_DIM}" "${C_OFF}"
+  else printf '  %s [Y/n] ' "$1"; fi
   read -r reply
   [[ "${reply,,}" =~ ^(y|yes|)$ ]]
 }
 
 # ── Spinner ───────────────────────────────────────────────────────────────────
 # Usage: run_with_spinner "Message" command [args...]
-# Runs command in background, shows spinner until it completes.
-# On failure, dumps the last 20 lines of LOG_FILE.
+# The command's output goes to LOG_FILE; ui_run (the shared block) shows the spinner and the time taken, and on
+# failure the last 20 lines of that output, before this stops the install.
 run_with_spinner() {
   local msg="$1"; shift
-  # An array, not a string sliced by position: a fresh container has no UTF-8 locale, so bash slices
-  # bytes and every frame came out as a broken fragment of a braille character - an invisible spinner.
-  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-  local i=0 start=${SECONDS}
-
-  "$@" >> "${LOG_FILE}" 2>&1 &
-  local pid=$!
-
-  while kill -0 "${pid}" 2>/dev/null; do
-    local t=$((SECONDS - start))
-    printf "\r   ${C_CYAN}%s${C_RESET}  %s... ${C_DIM}%dm %02ds${C_RESET}   " \
-      "${frames[$((i % ${#frames[@]}))]}" "${msg}" $((t / 60)) $((t % 60))
-    i=$((i + 1))
-    sleep 0.2
-  done
-  printf "\r\033[K"  # clear the whole spinner line
-
-  if ! wait "${pid}"; then
-    echo -e "   ${C_RED}✗${C_RESET}  ${msg} — FAILED"
-    echo -e "   ${C_DIM}Last output:${C_RESET}"
-    tail -20 "${LOG_FILE}" | sed 's/^/      /'
-    die "${msg} failed. See ${LOG_FILE} for full output."
-  fi
+  ui_run "${msg}" "$@" || die "${msg} failed. See ${LOG_FILE} for full output."
 }
 
 # ── Environment Detection ─────────────────────────────────────────────────────
@@ -272,13 +573,13 @@ EOF
   prefix="$(echo "${current_ip}" | grep -oP '/\d+$' || echo '/24')"
   local ip_only="${current_ip%%/*}"
 
-  echo -e "   ${C_YELLOW}?${C_RESET}  Static IP to assign (default: ${ip_only}/24): "
+  ui_prompt "Static IP to assign" "${ip_only}/24"
   read -r user_ip
   [[ -z "${user_ip}" ]] && user_ip="${ip_only}/24"
   # Strip trailing /prefix if user forgot to add one
   [[ "${user_ip}" != */* ]] && user_ip="${user_ip}/24"
 
-  echo -e "   ${C_YELLOW}?${C_RESET}  Gateway (default: ${gateway}): "
+  ui_prompt "Gateway" "${gateway}"
   read -r user_gw
   [[ -z "${user_gw}" ]] && user_gw="${gateway}"
 
@@ -314,7 +615,6 @@ EOF
 install_prerequisites() {
   step "Installing system prerequisites"
 
-  info "Updating package lists..."
   run_with_spinner "Updating apt" apt-get update -qq
 
   local pkgs=(curl wget git gnupg lsb-release ca-certificates
@@ -325,7 +625,6 @@ install_prerequisites() {
     pkgs+=(software-properties-common)
   fi
 
-  info "Installing base packages..."
   run_with_spinner "Installing packages" \
     apt-get install -y -qq "${pkgs[@]}"
 
@@ -372,7 +671,6 @@ https://download.docker.com/linux/${OS_ID} ${PKG_CODENAME} stable" \
 
   run_with_spinner "Updating apt (Docker repo)" apt-get update -qq
 
-  info "Downloading and installing Docker CE (this may take a few minutes)..."
   run_with_spinner "Installing Docker CE" \
     apt-get install -y -qq \
       docker-ce docker-ce-cli containerd.io \
@@ -401,10 +699,9 @@ EOF
   # lands in a store the daemon stops reading at the next reboot, and HyperProx comes back with no containers.
   systemctl restart docker
 
-  info "Running smoke test (hello-world)..."
-  docker run --rm hello-world >>"${LOG_FILE}" 2>&1 \
-    && ok "Docker CE installed and working" \
+  ui_run "Docker smoke test (hello-world)" docker run --rm hello-world \
     || die "Docker installed but test container failed. Check LXC nesting settings."
+  ok "Docker CE installed and working"
 }
 
 # ── Node.js + pnpm ────────────────────────────────────────────────────────────
@@ -426,7 +723,6 @@ install_node() {
   if command -v pnpm &>/dev/null && [[ "$(pnpm --version 2>/dev/null | cut -d. -f1)" -ge "${PNPM_VERSION}" ]]; then
     ok "pnpm already installed: $(pnpm --version)"
   else
-    info "Installing pnpm..."
     run_with_spinner "Installing pnpm" \
       npm install -g "pnpm@${PNPM_VERSION}"
     ok "pnpm $(pnpm --version) installed"
@@ -434,11 +730,9 @@ install_node() {
 }
 
 _install_node_nodesource() {
-  info "Adding NodeSource repository for Node.js ${NODE_VERSION}..."
   run_with_spinner "Configuring NodeSource repo" \
     bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash -"
 
-  info "Installing Node.js ${NODE_VERSION}..."
   run_with_spinner "Installing Node.js" \
     apt-get install -y -qq nodejs
 
@@ -470,7 +764,6 @@ clone_repo() {
     rm -rf "${HYPERPROX_DIR}"
   fi
 
-  info "Cloning from ${REPO_URL}..."
   run_with_spinner "Cloning repository" \
     git clone --quiet "${REPO_URL}" "${HYPERPROX_DIR}"
 
@@ -500,7 +793,7 @@ build_app() {
 
   step "Installing dependencies"
   cd "${HYPERPROX_DIR}"
-  info "Running pnpm install (first run downloads all packages — may take a few minutes)..."
+  info "The first run downloads every package; it can take a few minutes."
   run_with_spinner "Installing npm packages" \
     pnpm install --frozen-lockfile
   ok "Dependencies installed"
@@ -509,10 +802,8 @@ build_app() {
   cd "${HYPERPROX_DIR}/apps/api"
   # The API's TypeScript needs the generated Prisma client (Prisma.DbNull, typed transactions).
   # Generating it reads only the schema file — no database needed — so it must happen before the build.
-  info "Generating Prisma client..."
   run_with_spinner "Generating Prisma client" \
     npx prisma generate --schema ./prisma/schema.prisma
-  info "Compiling TypeScript..."
   run_with_spinner "Building API" pnpm build
   ok "API built"
 
@@ -526,7 +817,7 @@ build_app() {
   # FIX: Write .env.production so NEXT_PUBLIC_ vars are baked into the Next.js build
   grep '^NEXT_PUBLIC_' "${HYPERPROX_DIR}/.env" > .env.production
 
-  info "Building Next.js app (this is the slow step — typically 3-5 minutes)..."
+  info "The web app is the slow part: typically 3 to 5 minutes."
   run_with_spinner "Building Frontend" pnpm build
 
   info "Copying static assets to standalone output..."
@@ -713,8 +1004,7 @@ configure_vault_env() {
   if ! env_has VAULT_ADMIN_TOKEN_HASH; then
     local token hash
     token="$(openssl rand -hex 24)"
-    info "Pulling the pinned Vaultwarden image and hashing the admin token..."
-    docker pull --quiet "${VAULT_IMAGE}" >>"${LOG_FILE}" 2>&1 || die "Could not pull ${VAULT_IMAGE}"
+    ui_run "Pulling the pinned Vaultwarden image" docker pull --quiet "${VAULT_IMAGE}" || die "Could not pull ${VAULT_IMAGE}"
     hash="$(vault_token_hash "${token}")"
     [[ "${hash}" == \$argon2id\$* ]] || die "Could not generate the vault admin token hash (see ${LOG_FILE})"
     {
@@ -996,31 +1286,37 @@ install_cli() {
   ok "hyperprox status | hyperprox lock"
 }
 
+wait_postgres() {   # at most a minute
+  local i
+  for i in $(seq 1 30); do
+    docker exec hyperprox-postgres pg_isready -U hyperprox >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+
 # ── Database Migration ────────────────────────────────────────────────────────
 run_migrations() {
   step "Running database migrations"
 
-  info "Waiting for PostgreSQL to be ready..."
-  local retries=30
-  while ! docker exec hyperprox-postgres pg_isready -U hyperprox >/dev/null 2>&1; do
-    retries=$((retries - 1))
-    [[ $retries -le 0 ]] && die "PostgreSQL did not become ready in time"
-    printf "\r   ${C_DIM}→  Waiting for PostgreSQL... (%d retries left)${C_RESET}" "${retries}"
-    sleep 2
-  done
-  printf "\r   \r"
-  ok "PostgreSQL is ready"
+  ui_run "Waiting for PostgreSQL" wait_postgres || die "PostgreSQL did not become ready in time"
 
   cd "${HYPERPROX_DIR}/apps/api"
   source "${HYPERPROX_DIR}/.env"
   export DATABASE_URL
-  info "Generating Prisma client..."
   run_with_spinner "Generating Prisma client" \
     npx prisma generate --schema ./prisma/schema.prisma
-  info "Applying migrations..."
   run_with_spinner "Running Prisma migrations" \
     npx prisma migrate deploy --schema ./prisma/schema.prisma
   ok "Database migrations applied"
+}
+
+# compose_progress: "<images here> <images in the stack>", for the pull's progress bar.
+compose_progress() {
+  local imgs n=0 t=0 i
+  imgs="$(cd "${HYPERPROX_DIR}" && docker compose config --images 2>/dev/null | sort -u)"
+  for i in ${imgs}; do t=$((t + 1)); docker image inspect "${i}" >/dev/null 2>&1 && n=$((n + 1)); done
+  echo "${n} ${t}"
 }
 
 # ── Start Everything ──────────────────────────────────────────────────────────
@@ -1029,14 +1325,15 @@ start_services() {
   cd "${HYPERPROX_DIR}"
   run_with_spinner "Starting the vault" \
     docker compose up -d --quiet-pull vault
-  info "Waiting for the vault to answer..."
-  VAULT_URL=https://127.0.0.1:8222 VAULT_CA_CERT="${HYPERPROX_DIR}/config/vault-tls/cert.pem" VAULT_WAIT_SECONDS=90 "${HYPERPROX_DIR}/bin/wait-for-vault" \
+  VAULT_URL=https://127.0.0.1:8222 VAULT_CA_CERT="${HYPERPROX_DIR}/config/vault-tls/cert.pem" VAULT_WAIT_SECONDS=90 \
+    ui_run "Waiting for the vault to answer" "${HYPERPROX_DIR}/bin/wait-for-vault" \
     || die "The vault did not start. HyperProx cannot run without it. See: docker logs hyperprox-vault"
   ok "Vault is up on https://127.0.0.1:8222"
 
   step "Starting Docker stack"
-  info "Pulling images and starting containers (postgres, redis, nginx, and the COMPOSE_PROFILES in .env)..."
-  run_with_spinner "Starting Docker stack" \
+  # Pulled first, with a bar: how many of the stack's images are here already. Then started.
+  UI_PROGRESS=compose_progress run_with_spinner "Pulling images" docker compose pull --quiet
+  run_with_spinner "Starting containers (postgres, redis, nginx and the COMPOSE_PROFILES in .env)" \
     docker compose up -d --quiet-pull
   ok "Docker stack started"
 
@@ -1080,68 +1377,98 @@ start_services() {
 # ── Summary ───────────────────────────────────────────────────────────────────
 print_summary() {
   HOST_IP="$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I | awk '{print $1}')"
-
-  echo ""
-  echo -e "${C_CYAN}${C_BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
-  echo -e "${C_GREEN}${C_BOLD}  HyperProx installed successfully!${C_RESET}"
-  echo -e "${C_CYAN}${C_BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
-  echo ""
-  echo -e "  ${C_BOLD}Open the setup wizard in your browser:${C_RESET}"
-  echo ""
   # The wizard only answers requests carrying the setup key; the link carries it. Read from .env so a
   # re-run that kept an existing .env prints the key that is actually in force.
   SETUP_SECRET="$(grep -oP '^SETUP_SECRET=\K.*' "${ENV_FILE}" 2>/dev/null || true)"
-  if grep -q '^SETUP_COMPLETE=true' "${ENV_FILE}" 2>/dev/null; then
-    echo -e "  ${C_GREEN}  Setup is already done.${C_RESET} Sign in at https://${HOST_IP}/login"
-  else
-    echo -e "  ${C_CYAN}${C_BOLD}  https://${HOST_IP}/setup?k=${SETUP_SECRET}${C_RESET}"
-    echo -e "  ${C_DIM}Keep this link private - it is the key to the setup wizard.${C_RESET}"
+  local done_already=false link
+  grep -q '^SETUP_COMPLETE=true' "${ENV_FILE}" 2>/dev/null && done_already=true
+  link="https://${HOST_IP}/setup?k=${SETUP_SECRET}"; [[ "${done_already}" == true ]] && link="https://${HOST_IP}/login"
+
+  if [[ "${UI_FANCY}" -eq 1 ]]; then
+    echo ""
+    ui_box_top "" "${UI_CW}" "${C_OK}"
+    ui_card_line "✓  HyperProx is installed" "${C_OK}${C_BOLD}" "total $(ui_secs "${SECONDS}")"
+    ui_card_line ""
+    if [[ "${done_already}" == true ]]; then ui_card_line "   Setup is already done. Sign in at ${link}"
+    else
+      ui_card_line "   Open   ${link}" "${C_KEY}"
+      ui_card_line "   Keep this link private: it is the key to the setup wizard." "${C_DIM}"
+    fi
+    ui_card_line "   The certificate is self-signed unless you supplied one, so the browser warns once." "${C_DIM}"
+    ui_card_line ""
+    ui_card_line "   Next" "${C_BOLD}"
+    ui_card_line "   1  The setup wizard connects your Proxmox cluster and asks a few yes/no questions"
+    ui_card_line "   2  Then create the owner account at https://${HOST_IP}/login (vault, required 2FA)"
+    ui_card_line "   3  Check on it any time with: hyperprox status · lock it with: hyperprox lock"
+    ui_card_line ""
+    ui_card_line "Install log: ${LOG_FILE} · logs: journalctl -fu hyperprox-api" "${C_DIM}"
+    ui_box_bottom "${UI_CW}"
+    echo ""
+    return 0
   fi
-  echo -e "  ${C_DIM}The certificate is self-signed unless you supplied one, so the browser warns once.${C_RESET}"
   echo ""
-  echo -e "  ${C_DIM}The wizard will guide you through:${C_RESET}"
-  echo -e "  ${C_DIM}  • Connecting your Proxmox cluster${C_RESET}"
-  echo -e "  ${C_DIM}  • Finding the GPUs and power meters on each node${C_RESET}"
-  echo -e "  ${C_DIM}  • A few yes/no questions (monitoring, power, GPUs, charts, DNS, local AI),${C_RESET}"
-  echo -e "  ${C_DIM}    which it then carries out on your nodes for you${C_RESET}"
+  echo "HyperProx installed successfully!"
   echo ""
-  echo -e "  ${C_BOLD}Then create the owner account${C_RESET}"
-  echo -e "  ${C_DIM}  HyperProx has no password of its own. After setup, open https://${HOST_IP}/login to${C_RESET}"
-  echo -e "  ${C_DIM}  create the owner vault account (email, master password, and a required 2FA code).${C_RESET}"
-  echo -e "  ${C_DIM}  Check on it any time with: hyperprox status    Lock it now with: hyperprox lock${C_RESET}"
-  echo -e "  ${C_DIM}  Details: docs/security.md. The vault admin token is VAULT_ADMIN_TOKEN in ${ENV_FILE}.${C_RESET}"
+  echo "  Open the setup wizard in your browser:"
+  if [[ "${done_already}" == true ]]; then
+    echo "    Setup is already done. Sign in at ${link}"
+  else
+    echo "    ${link}"
+    echo "  Keep this link private - it is the key to the setup wizard."
+  fi
+  echo "  The certificate is self-signed unless you supplied one, so the browser warns once."
   echo ""
-  echo -e "  ${C_DIM}Service logs:${C_RESET}"
-  echo -e "  ${C_DIM}  journalctl -fu hyperprox-api${C_RESET}"
-  echo -e "  ${C_DIM}  journalctl -fu hyperprox-frontend${C_RESET}"
-  echo -e "  ${C_DIM}  journalctl -fu hyperprox-setup${C_RESET}"
-  echo -e "  ${C_DIM}  docker compose -f ${HYPERPROX_DIR}/docker-compose.yml ps${C_RESET}"
+  echo "  The wizard will guide you through:"
+  echo "    • Connecting your Proxmox cluster"
+  echo "    • Finding the GPUs and power meters on each node"
+  echo "    • A few yes/no questions (monitoring, power, GPUs, charts, DNS, local AI),"
+  echo "      which it then carries out on your nodes for you"
   echo ""
-  echo -e "  ${C_DIM}Install log: ${LOG_FILE}${C_RESET}"
+  echo "  Then create the owner account"
+  echo "    HyperProx has no password of its own. After setup, open https://${HOST_IP}/login to"
+  echo "    create the owner vault account (email, master password, and a required 2FA code)."
+  echo "    Check on it any time with: hyperprox status    Lock it now with: hyperprox lock"
+  echo "    Details: docs/security.md. The vault admin token is VAULT_ADMIN_TOKEN in ${ENV_FILE}."
   echo ""
-  echo -e "${C_CYAN}${C_BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+  echo "  Service logs:"
+  echo "    journalctl -fu hyperprox-api"
+  echo "    journalctl -fu hyperprox-frontend"
+  echo "    journalctl -fu hyperprox-setup"
+  echo "    docker compose -f ${HYPERPROX_DIR}/docker-compose.yml ps"
+  echo ""
+  echo "  Install log: ${LOG_FILE}"
   echo ""
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+# Five steps, each a group of the jobs below (bootstrap.sh counts them as its steps 6 to 10).
 main() {
   banner
+  ui_step "Docker"
+  ui_plan "Updating apt" "Installing packages" "Installing Docker CE"
   detect_environment
   configure_network
   disable_apparmor
   install_prerequisites
   install_docker
+  ui_step "HyperProx"
+  ui_plan "Installing Node.js" "Cloning repository"
   install_node
   clone_repo
   configure_env
   configure_vault_env
   apply_install_config
+  ui_step "Building"
+  ui_plan "Installing npm packages" "Generating Prisma client" "Building API" "Building Frontend"
   build_app
+  ui_step "Configuring"
   configure_compose
   write_monitoring_config
   configure_tls
   write_systemd_services
   install_cli
+  ui_step "Starting"
+  ui_plan "Starting the vault" "Waiting for the vault to answer" "Pulling images" "Waiting for PostgreSQL"
   start_services
   print_summary
 }
