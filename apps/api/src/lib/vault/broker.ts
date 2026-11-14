@@ -32,6 +32,7 @@ import { snapshotChanged } from './snapshot'
 import { GROUP_OPERATORS, GROUP_VIEWERS } from './bw-crypto'
 import { VaultOwnerOnlyError, isOwnerOnlyRefusal, keyFingerprint, memberStatus, memberTypeFor, type GrantableRole, type VaultMember } from './members'
 import { INVITE_TTL_MS } from '../users/invitations'
+import { memberRoles, resolveRole, roleFromMemberType as rolesFromType } from '../users/roles'
 
 // ---------------------------------------------------------------------------
 //  Contract types
@@ -152,13 +153,16 @@ async function ownerOnly<T>(p: Promise<T>): Promise<T> {
   }
 }
 
+/** A vault membership type as a role (lib/users/roles.ts: a Manager reads back as 4, Custom, and is operator). */
 export function roleFromMemberType(type: number): Role {
-  switch (type) {
-    case MEMBER_TYPE.Owner: return 'owner'
-    case MEMBER_TYPE.Admin: return 'admin'
-    case MEMBER_TYPE.Manager: return 'operator'
-    default: return 'viewer' // User, Custom, anything unknown
-  }
+  return rolesFromType(type)
+}
+
+/** The role someone signs in with or is listed as: HyperProx's own record first, the vault's type as fallback. */
+function memberRole(type: number, email: string): Role {
+  let recorded = null
+  try { recorded = memberRoles().get(email) } catch { /* unreadable record: the vault's type */ }
+  return resolveRole(type, recorded)
 }
 
 /** Maps a CLI / server message to a contract error code; null if it is not an auth failure. */
@@ -394,7 +398,7 @@ export class CliVaultBroker implements VaultBroker {
       if (err instanceof NotMemberError) throw new VaultAuthError('not_member')
       throw this.httpAuthError(err)
     }
-    const role = roleFromMemberType(vault.memberType)
+    const role = memberRole(vault.memberType, email)
     if (role === 'owner' && !(await this.ownerHasTwoFactor(email))) {
       vault.close()
       throw new VaultAuthError('totp_required', 'two-step login must be enabled for the owner')
@@ -465,7 +469,7 @@ export class CliVaultBroker implements VaultBroker {
       await runBw(['logout'], { dir })
       return fail(new VaultAuthError('not_member'))
     }
-    const role = roleFromMemberType(Number(org.type))
+    const role = memberRole(Number(org.type), email)
 
     if (role === 'owner' && !(await this.ownerHasTwoFactor(email))) {
       await runBw(['logout'], { dir })
@@ -535,7 +539,7 @@ export class CliVaultBroker implements VaultBroker {
         let fingerprint: string | null = null
         if (status === 'accepted' && userId) fingerprint = await v.userPublicKey(userId).then(keyFingerprint).catch(() => null)
         out.push({ id: String(m.id), userId, email: String(m.email ?? ''), name: m.name ? String(m.name) : null,
-          role: roleFromMemberType(Number(m.type)), status, twoFactor: m.twoFactorEnabled === true, fingerprint })
+          role: memberRole(Number(m.type), String(m.email ?? '')), status, twoFactor: m.twoFactorEnabled === true, fingerprint })
       }
       return out.sort((a, b) => a.email.localeCompare(b.email))
     })
@@ -551,9 +555,11 @@ export class CliVaultBroker implements VaultBroker {
         // Invited before and never joined (a lost or expired link): the same membership, with the role asked for now.
         if (memberStatus(Number(existing.status)) !== 'invited') throw new Error(`${e} is already a member`)
         if (Number(existing.type) !== type) await ownerOnly(v.orgEdit(String(existing.id), type, await this.groupsFor(v, role)))
+        memberRoles().set(e, role)
         return { reused: true }
       }
       await ownerOnly(v.orgInvite(e, type, await this.groupsFor(v, role)))
+      memberRoles().set(e, role)
       return { reused: false }
     })
   }
@@ -567,6 +573,7 @@ export class CliVaultBroker implements VaultBroker {
       const status = memberStatus(Number(m.status))
       if (Number(m.type) === MEMBER_TYPE.Owner || (status !== 'invited' && status !== 'accepted')) return false
       await ownerOnly(v.orgRemove(String(m.id)))
+      try { memberRoles().remove(e) } catch { /* nothing recorded */ }
       return true
     })
   }
@@ -588,6 +595,8 @@ export class CliVaultBroker implements VaultBroker {
       if (Number(m.type) === MEMBER_TYPE.Owner) throw new Error('the owner\'s role is not changed here')
       if (String(m.userId ?? '') === s.userId) throw new Error('you cannot change your own role')
       await v.orgEdit(memberId, memberTypeFor(role), await this.groupsFor(v, role))
+      // HyperProx's own record, once the vault took the change: the vault reads a Manager back as Custom (4).
+      memberRoles().set(String(m.email ?? ''), role)
     })
   }
 

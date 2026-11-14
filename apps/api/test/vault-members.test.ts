@@ -63,6 +63,16 @@ import { CliVaultBroker } from '../src/lib/vault/broker'
 import { VaultHttpError, encString2, symKeyFromBytes } from '../src/lib/vault/bw-crypto'
 import { VaultOwnerOnlyError } from '../src/lib/vault/members'
 import { INVITE_TTL_MS } from '../src/lib/users/invitations'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { RoleStore, resolveRole, setMemberRoles } from '../src/lib/users/roles'
+import { roleFromMemberType } from '../src/lib/vault/broker'
+
+// The role record goes to a temporary file, never the repo's data/.
+const rolesFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-roles-')), 'roles.json')
+setMemberRoles(new RoleStore(rolesFile))
+const resetRoles = () => { try { fs.unlinkSync(rolesFile) } catch { /* none yet */ } }
 
 const SID = 'a'.repeat(32)
 const INVITED = '66666666-6666-4666-8666-666666666666'
@@ -190,4 +200,46 @@ test('delete one item: only the chosen id is trashed, never a same-named twin, n
   await assert.rejects(s.deleteItem(OUT), /no such item/)
   await assert.rejects(s.deleteItem('../../x'), /not a vault item id/)
   assert.equal(calls.filter(c => c.startsWith('PUT')).length, 1)
+})
+
+// ---- roles: Vaultwarden reports a Manager as 4 (Custom); HyperProx's own record wins -------------------------
+
+test('a Manager reads back as operator whether the vault says 3 or 4 (Custom); Owner, Admin, User as before', () => {
+  assert.equal(roleFromMemberType(0), 'owner')
+  assert.equal(roleFromMemberType(1), 'admin')
+  assert.equal(roleFromMemberType(2), 'viewer')
+  assert.equal(roleFromMemberType(3), 'operator')
+  assert.equal(roleFromMemberType(4), 'operator')
+  assert.equal(roleFromMemberType(99), 'viewer')
+})
+
+test('HyperProx\'s record is the role; the vault type is the fallback; nobody records their way to owner', () => {
+  assert.equal(resolveRole(2, 'operator'), 'operator')
+  assert.equal(resolveRole(4, null), 'operator')
+  assert.equal(resolveRole(2, null), 'viewer')
+  assert.equal(resolveRole(0, 'viewer'), 'owner')
+})
+
+test('a role change sticks: the list reads the new role back even though the vault reports 4', async () => {
+  resetRoles()
+  // The vault took the change to Manager but lists the member as type 4, as Vaultwarden 1.3x does.
+  const members = [{ id: MEMBER, userId: USER, email: 'op@example.com', status: 2, type: 2 }]
+  const { b, calls } = brokerWith(members)
+  await b.setMemberRole(SID, MEMBER, 'operator')
+  assert.deepEqual(calls(), [['edit', MEMBER, 3, ['g-op']]])
+  members[0].type = 4
+  assert.equal((await b.members!(SID))[0].role, 'operator')
+  // Back to viewer: the record follows, even though the vault would still have said 4 had it lagged.
+  await b.setMemberRole(SID, MEMBER, 'viewer')
+  assert.equal((await b.members!(SID))[0].role, 'viewer')
+})
+
+test('an invitation records the role it was made with; withdrawing it removes the record', async () => {
+  resetRoles()
+  const { b } = brokerWith([])
+  await b.inviteMember(SID, 'New@Example.com', 'operator')
+  assert.equal(new RoleStore(rolesFile).get('new@example.com'), 'operator')
+  const pending = brokerWith([{ id: INVITED, email: 'new@example.com', status: 0, type: 4 }])
+  assert.equal(await pending.b.removePendingMember(SID, 'new@example.com'), true)
+  assert.equal(new RoleStore(rolesFile).get('new@example.com'), null)
 })
