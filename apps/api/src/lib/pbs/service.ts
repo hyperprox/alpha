@@ -227,7 +227,9 @@ export class PbsService {
       if ((Array.isArray(tokens) ? tokens : []).some((t: any) => t?.tokenid === TID || t?.['token-name'] === T)) {
         // The old token's ACL lines first, so none outlives it; the new token is granted its own below.
         const acl = await api.call('GET', '/access/acl')
-        for (const r of (Array.isArray(acl) ? acl : []).filter((x: any) => x?.ugid === TID)) await api.call('PUT', '/access/acl', { path: r.path, role: r.roleid, 'auth-id': TID, delete: true })
+        // Token lines only (PBS lists them as ugid_type "token"): the user's own lines are not this token's.
+        const mine = (x: any) => x?.ugid === TID && (x?.ugid_type ?? x?.type) === 'token'
+        for (const r of (Array.isArray(acl) ? acl : []).filter(mine)) await api.call('PUT', '/access/acl', { path: r.path, role: r.roleid, 'auth-id': TID, delete: true })
         await api.call('DELETE', `/access/users/${enc(U)}/token/${enc(T)}`)
       }
       const made = await api.call('POST', `/access/users/${enc(U)}/token/${enc(T)}`, { comment: 'HyperProx read-only' })

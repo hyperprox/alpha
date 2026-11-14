@@ -395,6 +395,7 @@ function signinWorld() {
   const users: any[] = [{ userid: 'root@pam' }]
   const tokens: Record<string, string[]> = {}
   let acl: any[] = []
+  const aclDeletes: string[] = []
   let n = 0
   const admin: PbsApi = {
     async call(method, p, params) {
@@ -408,7 +409,11 @@ function signinWorld() {
         if (method === 'DELETE') { tokens[u] = (tokens[u] ?? []).filter(x => x !== t[2]); acl = acl.filter(r => r.ugid !== `${u}!${t[2]}`); return null }
         if (method === 'POST') { (tokens[u] ??= []).push(t[2]!); return { tokenid: `${u}!${t[2]}`, value: `token-secret-${++n}` } }
       }
-      if (p === '/access/acl' && method === 'PUT') { acl.push({ path: params!.path, roleid: params!.role, ugid: params!['auth-id'] }); return null }
+      if (p === '/access/acl' && method === 'PUT') {
+        const id = params!['auth-id']
+        if (params!.delete) { aclDeletes.push(`${params!.path} ${params!.role} ${id}`); acl = acl.filter(r => !(r.path === params!.path && r.roleid === params!.role && r.ugid === id)); return null }
+        acl.push({ path: params!.path, roleid: params!.role, ugid: id, ugid_type: String(id).includes('!') ? 'token' : 'user' }); return null
+      }
       if (p === '/access/acl') return acl
       if (p === '/admin/datastore') return [{ store: 'tank' }, { store: 'offsite' }]
       throw new PbsHttpError(404, p)
@@ -430,7 +435,7 @@ function signinWorld() {
     },
     api: () => fakeApi(), now: () => NOW.getTime(), wait: async () => {},
   })
-  return { svc, io, audit, order, acl: () => acl, tokens, logins, store, cert }
+  return { svc, io, audit, order, acl: () => acl, aclDeletes, tokens, logins, store, cert }
 }
 
 const signin = (extra: Record<string, unknown> = {}) => ({ name: 'backups', url: 'https://10.9.8.7:8007', username: 'root', realm: 'pam', password: PASSWORD, confirmFingerprint: normaliseFingerprint('cd'.repeat(32))!, ...extra })
@@ -455,7 +460,7 @@ test('sign-in: pins before the password is sent, makes hyperprox@pbs and its rea
   const m = await w.svc.addWithLogin(signin(), admin)
   assert.ok(w.order.indexOf('probe') < w.order.indexOf('login'), 'the certificate is pinned before the password is sent')
   assert.deepEqual(w.logins, [{ userid: 'root@pam', pinned: true }])
-  assert.deepEqual(w.acl(), [
+  assert.deepEqual(w.acl().map(({ ugid_type: _t, ...r }) => r), [
     { path: '/', roleid: 'Audit', ugid: 'hyperprox@pbs' },
     { path: '/', roleid: 'Audit', ugid: 'hyperprox@pbs!readonly' },
   ], 'read-only: Audit on /, and no datastore role unless asked')
@@ -489,6 +494,9 @@ test('sign-in: adding the same server again is idempotent and regenerates the to
   assert.equal((await w.store.connection(a.id))!.secret, 'token-secret-2')
   assert.equal(w.audit.at(-1).details.result, 'done:token_replaced')
   assert.equal((await w.store.list())[0].name, 'backups', 'the existing entry keeps its name')
+  // Before the old token went, its own ACL lines went, and only those: the user's line of the same role stays.
+  assert.deepEqual(w.aclDeletes, ['/ Audit hyperprox@pbs!readonly'])
+  assert.ok(w.acl().some(r => r.ugid === 'hyperprox@pbs' && r.ugid_type === 'user'))
 })
 
 test('sign-in: "Allow Verify now" grants DatastoreReader on the datastores only, never on /', async () => {
