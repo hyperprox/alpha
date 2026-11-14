@@ -2,13 +2,26 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
-import { apiJson, installAuthInterceptor, type AuthStatus, type Role } from '@/lib/api'
+import { apiJson, installAuthInterceptor, isPublicPath, type AuthStatus, type Role } from '@/lib/api'
+
+export { isPublicPath }
 
 interface SessionValue {
   status:  AuthStatus | null
   role:    Role | undefined
   email:   string | undefined
   refresh: () => Promise<void>
+}
+
+/** Where a page with this auth status has to go, or null to stay put. Public pages (/login, /join) never move. */
+export function signInRedirect(status: AuthStatus | null, pathname: string | null): string | null {
+  if (!status || isPublicPath(pathname)) return null
+  if (!status.locked && status.user) return null
+  const q = new URLSearchParams()
+  if (status.locked) q.set('locked', '1')
+  if (pathname && pathname !== '/') q.set('next', pathname)
+  const qs = q.toString()
+  return '/login' + (qs ? `?${qs}` : '')
 }
 
 const Ctx = createContext<SessionValue>({ status: null, role: undefined, email: undefined, refresh: async () => {} })
@@ -27,18 +40,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   // Re-read on every navigation: a lock or a role change elsewhere shows up on the next click.
-  useEffect(() => { if (pathname !== '/login') refresh() }, [pathname, refresh])
+  useEffect(() => { if (!isPublicPath(pathname)) refresh() }, [pathname, refresh])
 
-  // Locked, or unlocked with no session of ours: the sign-in page is the only place to go.
+  // Locked, or unlocked with no session of ours: the sign-in page is the only place to go (public pages excepted).
   useEffect(() => {
-    if (!status || pathname === '/login') return
-    if (status.locked || !status.user) {
-      const q = new URLSearchParams()
-      if (status.locked) q.set('locked', '1')
-      if (pathname !== '/') q.set('next', pathname)
-      const qs = q.toString()
-      window.location.assign('/login' + (qs ? `?${qs}` : ''))
-    }
+    const to = signInRedirect(status, pathname)
+    if (to) window.location.assign(to)
   }, [status, pathname])
 
   return (

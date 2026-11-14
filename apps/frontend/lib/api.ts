@@ -40,8 +40,16 @@ function requestPath(input: RequestInfo | URL): string | null {
   } catch { return null }
 }
 
+/** Pages that work without a session: the sign-in page, and the invite page (its token rides in the #hash,
+ *  which a bounce to /login would throw away). Nothing sends them to sign in. */
+export const PUBLIC_PATHS = ['/login', '/join']
+
+export function isPublicPath(pathname: string | null | undefined): boolean {
+  return !!pathname && PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + '/'))
+}
+
 function goToLogin(locked: boolean) {
-  if (redirecting || window.location.pathname === '/login') return
+  if (redirecting || isPublicPath(window.location.pathname)) return
   redirecting = true
   const next = window.location.pathname + window.location.search
   const q = new URLSearchParams()
