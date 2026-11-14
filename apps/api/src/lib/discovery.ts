@@ -36,7 +36,9 @@ export const PROBES: Probe[] = SHARED.filter(p => p.pluginId && p.setting).map(p
 
 export interface Finding {
   pluginId: string
-  setting:  string
+  /** null for a plug-in with its own device list (PBS): it is added on `page`. */
+  setting:  string | null
+  page?:    string | null
   label:    string
   address:  string
   /** Where it was found, for a human to recognise. */

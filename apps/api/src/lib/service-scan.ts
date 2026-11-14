@@ -83,7 +83,8 @@ export class ServiceScanCache {
 export function pluginFindings(findings: Finding[]) {
   const seen = new Set<string>()
   return findings
-    .filter(f => f.pluginId && f.setting)
+    // A finding a plug-in can take: by its address setting, or (a plug-in with its own device list, PBS) on its page.
+    .filter(f => f.pluginId && (f.setting || f.page))
     .filter(f => {
       if (f.multiple) return true
       const key = `${f.pluginId}:${f.setting}`
@@ -91,7 +92,7 @@ export function pluginFindings(findings: Finding[]) {
       seen.add(key)
       return true
     })
-    .map(f => ({ pluginId: f.pluginId!, setting: f.setting!, label: f.label, address: f.address, source: f.source, needs: f.needs, key: f.key, recipeId: f.recipeId }))
+    .map(f => ({ pluginId: f.pluginId!, setting: f.setting ?? null, page: f.page ?? null, label: f.label, address: f.address, source: f.source, needs: f.needs, key: f.key, recipeId: f.recipeId }))
 }
 
 /** The Catalogue's shape: per recipe, where it runs (as lib/catalogue-detect.ts's Running). */

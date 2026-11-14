@@ -25,6 +25,7 @@
  * @property {string|null} recipeId   The Catalogue recipe this service satisfies, if any.
  * @property {string|null} pluginId   The bundled plug-in it configures, if any.
  * @property {string|null} setting    That plug-in's setting that takes the address.
+ * @property {string} [page]          For a plug-in with its own device list (no setting): the page to add it on.
  * @property {string[]} needs         Settings a person must still supply (a key that cannot be discovered).
  * @property {boolean} multiple       Several of it may legitimately run (Unmanic workers).
  * @property {(status: number, body: string) => boolean} match
@@ -38,7 +39,8 @@ const PROBES = [
   { key: 'npm', label: 'Nginx Proxy Manager', port: 81, path: '/', scheme: 'http', recipeId: 'nginx-proxy-manager', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => s === 200 && /nginx proxy manager/i.test(b) },
   // Its version endpoint needs a login; the web interface's title does not.
-  { key: 'pbs', label: 'Proxmox Backup Server', port: 8007, path: '/', scheme: 'https', recipeId: 'proxmox-backup-server', pluginId: null, setting: null, needs: [], multiple: false,
+  // The PBS plug-in keeps its own server list (no address setting): a finding points at its page to add it.
+  { key: 'pbs', label: 'Proxmox Backup Server', port: 8007, path: '/', scheme: 'https', recipeId: 'proxmox-backup-server', pluginId: 'pbs', setting: null, page: '/plugins/pbs', needs: ['an API token'], multiple: true,
     match: (s, b) => s === 200 && /proxmox backup server/i.test(b) },
   { key: 'ollama', label: 'Ollama', port: 11434, path: '/api/tags', scheme: 'http', recipeId: 'ollama', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => { if (s !== 200) return false; try { return Array.isArray(JSON.parse(b).models) } catch { return false } } },
@@ -64,6 +66,16 @@ const PROBES = [
     match: (s, b) => s < 500 && /tautulli/i.test(b) },
   { key: 'jellyfin', label: 'Jellyfin', port: 8096, path: '/System/Info/Public', scheme: 'http', recipeId: 'jellyfin', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => s === 200 && /"ProductName"\s*:\s*"[^"]*jellyfin/i.test(b) },
+  // Nextcloud answers /status.php without a login, naming itself; on 443 behind its own TLS or on plain 80.
+  { key: 'nextcloud', label: 'Nextcloud', port: 443, path: '/status.php', scheme: 'https', recipeId: 'nextcloud', pluginId: null, setting: null, needs: [], multiple: false,
+    match: (s, b) => s === 200 && /"productname"\s*:\s*"[^"]*nextcloud|"installed"\s*:\s*true[^}]*"versionstring"/i.test(b) },
+  { key: 'nextcloud', label: 'Nextcloud', port: 80, path: '/status.php', scheme: 'http', recipeId: 'nextcloud', pluginId: null, setting: null, needs: [], multiple: false,
+    match: (s, b) => s === 200 && /"productname"\s*:\s*"[^"]*nextcloud|"installed"\s*:\s*true[^}]*"versionstring"/i.test(b) },
+  // Vaultwarden's /api/config is public and names the server ("server": { "name": "Vaultwarden" }).
+  { key: 'vaultwarden', label: 'Vaultwarden', port: 443, path: '/api/config', scheme: 'https', recipeId: 'vaultwarden', pluginId: null, setting: null, needs: [], multiple: false,
+    match: (s, b) => s === 200 && /"name"\s*:\s*"vaultwarden"/i.test(b) },
+  { key: 'vaultwarden', label: 'Vaultwarden', port: 80, path: '/api/config', scheme: 'http', recipeId: 'vaultwarden', pluginId: null, setting: null, needs: [], multiple: false,
+    match: (s, b) => s === 200 && /"name"\s*:\s*"vaultwarden"/i.test(b) },
   { key: 'tdarr', label: 'Tdarr', port: 8265, path: '/', scheme: 'http', recipeId: 'tdarr', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => s === 200 && title('Tdarr').test(b) },
 ]
@@ -172,7 +184,7 @@ async function scanHosts(hosts, get, opts = {}) {
   const found = []
   await mapLimit(jobs, opts.concurrency || 16, async ({ h, p }) => {
     if (await probeHost(get, h.address, p)) {
-      found.push({ key: p.key, label: p.label, recipeId: p.recipeId, pluginId: p.pluginId, setting: p.setting, needs: p.needs.slice(),
+      found.push({ key: p.key, label: p.label, recipeId: p.recipeId, pluginId: p.pluginId, setting: p.setting, page: p.page ?? null, needs: p.needs.slice(),
         multiple: p.multiple, address: `${p.scheme}://${urlHost(h.address)}:${p.port}`, host: h.address, port: p.port, source: h.source, guest: h.guest ?? null })
     }
   })

@@ -32,7 +32,8 @@ interface PluginCard {
 }
 
 interface Finding {
-  pluginId: string; setting: string; label: string
+  /** null for a plug-in with its own device list (PBS): it is added on `page`, not by an address setting. */
+  pluginId: string; setting: string | null; page?: string | null; label: string
   address: string; source: string; needs: string[]
 }
 
@@ -338,6 +339,7 @@ export default function PluginsPage() {
   // still a key the user has to paste, and pretending otherwise would just move
   // the failure to the first refresh.
   const applyFinding = async (f: Finding) => {
+    if (!f.setting) return   // added on its own page (PBS), not by a setting
     const res = await fetch(`/api/plugins/${f.pluginId}/settings`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -418,9 +420,15 @@ export default function PluginsPage() {
                       )}
                     </div>
                   </div>
-                  <button onClick={() => applyFinding(f)} className={`${styles.btn} ${styles.btnPri}`}>
-                    Use this
-                  </button>
+                  {f.setting ? (
+                    <button onClick={() => applyFinding(f)} className={`${styles.btn} ${styles.btnPri}`}>
+                      Use this
+                    </button>
+                  ) : (
+                    <Link href={f.page ?? `/plugins/${f.pluginId}`} className={`${styles.btn} ${styles.btnPri}`}>
+                      Add it
+                    </Link>
+                  )}
                 </div>
               ))}
             </div>

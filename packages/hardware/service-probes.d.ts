@@ -7,6 +7,8 @@ export interface ServiceProbe {
   recipeId: string | null
   pluginId: string | null
   setting: string | null
+  /** A plug-in with its own device list (no setting): the page to add it on. */
+  page?: string
   needs: string[]
   multiple: boolean
   match(status: number, body: string): boolean
@@ -20,6 +22,7 @@ export interface ServiceFinding<G = unknown> {
   recipeId: string | null
   pluginId: string | null
   setting: string | null
+  page: string | null
   needs: string[]
   multiple: boolean
   /** scheme://host:port */

@@ -18,6 +18,7 @@ import { apiJson } from '@/lib/api'
 import { InstallWizard, type WizardRecipe } from '@/components/catalogue/InstallWizard'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Page, HudHeader, Panel, Pill, Tiles, FlowPipeline, styles } from '@/components/visual/kit'
+import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
 
 const ACCENT = 'var(--accent)'
 const BORDER = 'var(--border)'
@@ -81,11 +82,6 @@ export default function CataloguePage() {
   const [leftovers, setLeftovers] = useState<Array<{ jobId: string; recipeId: string; status: string; vmid?: number; node?: string; error?: string }>>([])
 
   // Node login form
-  const [formNode, setFormNode] = useState('')
-  const [user,     setUser]     = useState('root')
-  const [secret,   setSecret]   = useState('')
-  const [useKey,   setUseKey]   = useState(false)
-  const [saving,   setSaving]   = useState(false)
   const [running,  setRunning]  = useState<Record<string, Running[]> | null>(null)
   const [detectState, setDetectState] = useState<'loading' | 'ready' | 'unavailable'>('loading')
 
@@ -104,10 +100,9 @@ export default function CataloguePage() {
       setRecipes(res.data.recipes)
       setNodes(res.data.nodes)
       setCanInstall(res.data.canInstall)
-      if (!formNode && res.data.nodes.length) setFormNode(res.data.nodes[0].node)
     }
     setLoading(false)
-  }, [formNode])
+  }, [])
 
   useEffect(() => { load() }, [load])
 
@@ -159,19 +154,6 @@ export default function CataloguePage() {
     if (job?.jobId === jobId) setJob({ ...job, steps: job.steps.map(st => st.id === 'arr-seerr' ? { ...st, status: 'done', detail: r.body!.data.detail } : st) })
   }
 
-  const saveLogin = async () => {
-    if (!formNode || !user || !secret) return
-    setSaving(true); setNotice(null)
-    const body: any = { username: user }
-    if (useKey) body.privateKey = secret; else body.password = secret
-    const res = await fetch(`/api/catalogue/nodes/${encodeURIComponent(formNode)}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    }).then(r => r.json()).catch(() => null)
-    setSaving(false)
-    if (res?.success) { setSecret(''); setNotice(`${formNode}: ${res.data.version}`); load() }
-    else setNotice(res?.error ?? 'Could not verify that login.')
-  }
-
   const forget = async (node: string) => {
     if (!window.confirm(`Remove the stored login for ${node}?`)) return
     await fetch(`/api/catalogue/nodes/${encodeURIComponent(node)}`, { method: 'DELETE' })
@@ -187,7 +169,6 @@ export default function CataloguePage() {
   const unfinished = leftovers.filter(l => l.jobId !== job?.jobId)
   const categories = [...new Set(recipes.map(r => r.category))]
   const shown = category === 'all' ? recipes : recipes.filter(r => r.category === category)
-  const field = styles.field
 
   return (
     <Page>
@@ -195,7 +176,8 @@ export default function CataloguePage() {
         title="Install what you do not run yet"
         chips={[
           { label: 'Services', value: recipes.length },
-          { label: 'Already here', value: configured, tone: configured ? 'good' : undefined },
+          // No count while the scan is still looking: "0 already here" would be a claim, not a reading.
+          { label: 'Already here', value: detectState === 'loading' ? '…' : configured, tone: detectState !== 'loading' && configured ? 'good' : undefined },
           { label: 'Node logins', value: `${loginCount}/${nodes.length}`, tone: canInstall ? 'good' : 'warn' },
           ...(unfinished.length ? [{ label: 'Unfinished', value: unfinished.length, tone: 'warn' as const }] : []),
         ]}
@@ -222,8 +204,8 @@ export default function CataloguePage() {
         <p style={{ margin: '0 0 14px', fontSize: 14, lineHeight: 1.6, color: 'var(--text-muted)', maxWidth: 680 }}>
           Installs run with <span className="font-mono" style={{ fontSize: 13, color: ACCENT }}>pct exec</span> from the node, not by SSH into the
           container — a container a minute old has no login, may have no sshd, and may not have an address yet.
-          So HyperProx needs one login per node. It is tested before it is stored, and it is not shared with
-          the Terminal&rsquo;s guest login.
+          So HyperProx needs a login for the nodes: add it once on the Setup checklist, where it is tested on every
+          node before it is stored. It is not shared with the Terminal&rsquo;s guest login.
         </p>
 
         <ul className={styles.dots} style={{ marginBottom: 16 }} aria-label="Node logins">
@@ -241,37 +223,8 @@ export default function CataloguePage() {
           ))}
         </ul>
 
-        <div className={styles.row} style={{ alignItems: 'flex-end' }}>
-          <label className={field} style={{ minWidth: 120 }}>
-            <span>Node</span>
-            <select value={formNode} onChange={e => setFormNode(e.target.value)} className={styles.input}>
-              {nodes.map(n => <option key={n.node} value={n.node}>{n.node}</option>)}
-            </select>
-          </label>
-          <label className={field} style={{ width: 130 }}>
-            <span>User</span>
-            <input value={user} onChange={e => setUser(e.target.value)} className={styles.input} style={{ fontFamily: 'var(--font-mono)' }} />
-          </label>
-          <label className={field} style={{ flex: 1, minWidth: 220 }}>
-            <span>{useKey ? 'Private key' : 'Password'}</span>
-            {useKey ? (
-              <textarea value={secret} onChange={e => setSecret(e.target.value)} rows={3}
-                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                className={styles.input} style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }} />
-            ) : (
-              <input type="password" value={secret} onChange={e => setSecret(e.target.value)} className={styles.input} />
-            )}
-          </label>
-          <button onClick={() => { setUseKey(v => !v); setSecret('') }} className={styles.btn}>
-            {useKey ? 'use a password' : 'use a key'}
-          </button>
-          <button onClick={saveLogin} disabled={saving || !secret} className={`${styles.btn} ${styles.btnPri}`}>
-            {saving ? 'verifying…' : 'Verify and save'}
-          </button>
-        </div>
-        <p style={{ margin: '12px 0 0', fontSize: 13, color: 'var(--text-dimmer)' }}>
-          A key is safer than the root password: it can be revoked on the node without changing anything else.
-        </p>
+        {/* One login for every node, saved and tested on Settings → Setup checklist (the same store installs use). */}
+        {nodes.some(n => !n.hasLogin) && <NodeLoginAction why />}
       </Panel>
 
       {/* ── Live install ────────────────────────────────────────────────────── */}

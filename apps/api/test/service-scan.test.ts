@@ -44,6 +44,9 @@ const ANSWERS: Record<string, ProbeAnswer> = {
   // A redirect off its own origin is a miss, and the other address is never asked.
   'http://10.0.2.11:32400/identity': { status: 302, body: '', location: 'http://10.0.2.99:32400/identity' },
   'http://10.0.2.99:32400/identity': ok('<MediaContainer machineIdentifier="x"/>'),
+  // Nextcloud and Vaultwarden, which the Catalogue missed while they ran: public status endpoints that name them.
+  'https://10.0.2.13:443/status.php': ok({ installed: true, maintenance: false, version: '31.0.0.18', versionstring: '31.0.0', edition: '', productname: 'Nextcloud' }),
+  'http://10.0.2.11:80/api/config': ok({ version: '2025.6.0', server: { name: 'Vaultwarden', url: 'https://github.com/dani-garcia/vaultwarden' } }),
 }
 function fakeGet(asked: string[] = []): ProbeGetter {
   return async url => { asked.push(url); return ANSWERS[url] ?? null }
@@ -80,6 +83,11 @@ test('one scan, three consumers: Plug-ins Scan, Catalogue and the wizard verdict
   assert.equal(catalogue['proxmox-backup-server'][0].guest?.vmid, 102)
   // Unmanic may run on several hosts; Scan lists each.
   assert.equal(plugins.filter(f => f.key === 'unmanic').length, 2)
+  // Nextcloud and Vaultwarden are found, for the Catalogue; PBS is a Scan finding too, added on its own page.
+  assert.equal(catalogue['nextcloud']?.[0]?.url, 'https://10.0.2.13:443')
+  assert.equal(catalogue['vaultwarden']?.[0]?.url, 'http://10.0.2.11:80')
+  const pbs = plugins.find(f => f.key === 'pbs')
+  assert.equal(pbs?.pluginId, 'pbs'); assert.equal(pbs?.setting, null); assert.equal(pbs?.page, '/plugins/pbs')
 })
 
 test('the cache: a second ask within five minutes is the same answer; refresh asks again', async () => {
