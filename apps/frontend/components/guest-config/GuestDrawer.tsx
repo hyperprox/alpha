@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { apiJson } from '@/lib/api'
+import { isUpid, taskWords, upidNode, waitForTask, type TaskStatus } from '@/lib/pve-task'
 import { formatBytes, formatUptime } from '@/lib/utils'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, Notice, PrimaryButton, BusyNote, INPUT, LABEL } from '@/components/vault/ui'
@@ -101,11 +102,19 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
 
   const call = async (label: string, path: string, method: string, body?: unknown, after?: () => void) => {
     setBusy(true); setMsg(null)
-    const r = await apiJson(path, method, body)
+    const r = await apiJson<{ data?: unknown }>(path, method, body)
+    if (r.status === 403 && r.code === 'reconfirm_required') { setBusy(false); setReconfirm(() => () => void call(label, path, method, body, after)); return }
+    if (!r.ok) { setBusy(false); setMsg({ kind: 'error', text: r.error ?? `${label} failed` }); return }
+    // An action answers with its Proxmox task: "done" only once that task has stopped, then the list is read
+    // again (a migration used to say done at 3 s of 10, with the old node still shown).
+    const upid = r.body?.data
+    if (isUpid(upid)) {
+      setMsg({ kind: 'info', text: taskWords(label, null) })
+      const o = await waitForTask(() => readTask(upid))
+      setMsg({ kind: o.ok ? 'info' : 'error', text: taskWords(label, o) })
+    } else setMsg({ kind: 'info', text: `${label}: done` })
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void call(label, path, method, body, after)); return }
-    setMsg(r.ok ? { kind: 'info', text: `${label}: done` } : { kind: 'error', text: r.error ?? `${label} failed` })
-    if (r.ok) { setTimeout(onRefresh, 1200); after?.() }
+    onRefresh(); after?.()
   }
   const power = (a: string) => call(a, `/api/infra/vms/${row.node}/${row.vmid}/${row.type}/${a}`, 'POST')
   const ha = (state: string) => call(`HA ${state}`, `/api/infra/ha/${encodeURIComponent(sid)}`, 'PUT', { state })
@@ -187,6 +196,14 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
   )
 }
 
+/** One Proxmox task's state, through the API (routes/infrastructure.ts GET /tasks/:node/:upid). */
+async function readTask(upid: string): Promise<TaskStatus | null> {
+  const node = upidNode(upid)
+  if (!node) return null
+  const r = await apiJson<{ data: TaskStatus }>(`/api/infra/tasks/${encodeURIComponent(node)}/${encodeURIComponent(upid)}`)
+  return r.ok ? r.body!.data : null
+}
+
 // ── snapshots ────────────────────────────────────────────────────────────────
 
 function SnapshotsTab({ row, canAdmin, onRefresh }: { row: GuestRow; canAdmin: boolean; onRefresh: () => void }) {
@@ -196,19 +213,49 @@ function SnapshotsTab({ row, canAdmin, onRefresh }: { row: GuestRow; canAdmin: b
   const base = `/api/infra/vms/${row.node}/${row.vmid}/${row.type}/snapshots`
   const load = useCallback(async () => { const r = await apiJson<{ data: any[] }>(base); setSnaps(r.ok ? (r.body!.data ?? []).filter((s: any) => s.name !== 'current') : []); if (!r.ok) setMsg(r.error ?? null) }, [base])
   useEffect(() => { void load() }, [load])
-  const act = async (label: string, path: string, method: string, body?: unknown) => {
-    const r = await apiJson(path, method, body); setMsg(r.ok ? `${label}: started` : r.error ?? `${label} failed`); setTimeout(() => { void load(); onRefresh() }, 1500)
+  const [busy, setBusy] = useState(false)
+  /** Set after a rollback stopped a guest that was running: offers to start it again. */
+  const [restartAfter, setRestartAfter] = useState(false)
+  const act = async (label: string, path: string, method: string, body?: unknown): Promise<boolean> => {
+    setBusy(true); setRestartAfter(false)
+    const r = await apiJson<{ data?: unknown }>(path, method, body)
+    if (!r.ok) { setBusy(false); setMsg(r.error ?? `${label} failed`); return false }
+    // Wait for the snapshot task itself, then read the list: refreshing on a timer showed a deleted one still there.
+    let ok = true
+    const upid = r.body?.data
+    if (isUpid(upid)) {
+      setMsg(taskWords(label, null))
+      const o = await waitForTask(() => readTask(upid))
+      ok = o.ok
+      setMsg(taskWords(label, o))
+    } else setMsg(`${label}: done`)
+    setBusy(false)
+    await load(); onRefresh()
+    return ok
+  }
+  const rollback = async (snap: string) => {
+    const running = row.status === 'running'
+    // A rollback stops a running guest (a container always; a VM unless the snapshot holds its memory).
+    const warn = running ? `\n\n${row.name} is running: the rollback stops it, and it stays stopped. You can start it again afterwards.` : ''
+    if (!confirm(`Roll ${row.name} back to ${snap}? Everything since is lost.${warn}`)) return
+    const ok = await act('Rollback', `${base}/${encodeURIComponent(snap)}/rollback`, 'POST')
+    if (ok && running) setRestartAfter(true)
+  }
+  const startAgain = async () => {
+    setRestartAfter(false)
+    await act('Start', `/api/infra/vms/${row.node}/${row.vmid}/${row.type}/start`, 'POST')
   }
   return (
     <div className="space-y-3">
       {msg && <Notice kind="info">{msg}</Notice>}
-      {canAdmin && <div className="flex gap-2"><input style={INPUT} value={name} placeholder="snapshot name" onChange={e => setName(e.target.value)} /><PrimaryButton disabled={!name.trim()} onClick={() => { void act('Snapshot', base, 'POST', { name }); setName('') }}>Create</PrimaryButton></div>}
+      {restartAfter && canAdmin && <Notice kind="warn">{row.name} was running before the rollback and is stopped now. <PrimaryButton style={{ height: 30 }} disabled={busy} onClick={() => void startAgain()}>Start it again</PrimaryButton></Notice>}
+      {canAdmin && <div className="flex gap-2"><input style={INPUT} value={name} placeholder="snapshot name" onChange={e => setName(e.target.value)} /><PrimaryButton disabled={busy || !name.trim()} onClick={() => { void act('Snapshot', base, 'POST', { name }); setName('') }}>Create</PrimaryButton></div>}
       {snaps === null ? <BusyNote>Reading snapshots…</BusyNote> : snaps.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>No snapshots. (A guest with a bind mount cannot be snapshotted.)</p> : snaps.map(s => (
         <div key={s.name} className="flex items-center gap-2 flex-wrap rounded-md border p-3" style={{ borderColor: 'var(--border-dim)', background: 'var(--ground-deep)' }}>
           <div className="min-w-0 flex-1"><div className="font-mono text-sm" style={{ color: 'var(--text-bright)' }}>{s.name}</div>
             <div className="text-xs" style={{ color: 'var(--text-dimmer)' }}>{s.snaptime ? new Date(s.snaptime * 1000).toLocaleString() : ''}{s.description ? ` · ${s.description}` : ''}</div></div>
-          {canAdmin && <><GhostButton style={{ height: 32 }} onClick={() => { if (confirm(`Roll ${row.name} back to ${s.name}? Everything since is lost.`)) void act('Rollback', `${base}/${encodeURIComponent(s.name)}/rollback`, 'POST') }}>Rollback</GhostButton>
-            <GhostButton style={{ height: 32, color: 'var(--crit-soft)' }} onClick={() => { if (confirm(`Delete the snapshot ${s.name} of ${row.name}? You will not be able to roll back to it.`)) void act('Delete', `${base}/${encodeURIComponent(s.name)}`, 'DELETE') }}>Delete</GhostButton></>}
+          {canAdmin && <><GhostButton style={{ height: 32 }} disabled={busy} onClick={() => void rollback(s.name)}>Rollback</GhostButton>
+            <GhostButton style={{ height: 32, color: 'var(--crit-soft)' }} disabled={busy} onClick={() => { if (confirm(`Delete the snapshot ${s.name} of ${row.name}? You will not be able to roll back to it.`)) void act('Delete', `${base}/${encodeURIComponent(s.name)}`, 'DELETE') }}>Delete</GhostButton></>}
         </div>
       ))}
     </div>

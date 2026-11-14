@@ -86,4 +86,8 @@ export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
   // Node tasks
   fastify.get<{ Params: { node: string } }>('/nodes/:node/tasks', async (req, r) =>
     wrap(r, () => pve.getNodeTasks(req.params.node)))
+
+  // One task, for a page waiting on an action it started (snapshot, rollback, migration) to really finish.
+  fastify.get<{ Params: { node: string; upid: string } }>('/tasks/:node/:upid', async (req, r) =>
+    wrap(r, () => pve.getTaskStatus(req.params.node, req.params.upid)))
 }

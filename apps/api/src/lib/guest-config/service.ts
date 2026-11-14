@@ -140,6 +140,23 @@ export interface RestartResult {
 
 const SAFE_DEV_PATH = /^\/dev\/[A-Za-z0-9_./:+-]+$/
 
+/**
+ * One row per guest. While a guest migrates, /cluster/resources can list it on both nodes for a moment, and the
+ * Infrastructure list showed it twice. The row that is running wins, then one that is stopped, then one with no
+ * lock (the migration's own lock is on the side being left), then the later one.
+ */
+export function oneRowPerGuest<T extends { vmid: number | string; type?: string; status?: string; lock?: string | null }>(rows: T[]): T[] {
+  const rank = (r: T) => (r.status === 'running' ? 4 : r.status === 'stopped' ? 2 : 0) + (r.lock ? 0 : 1)
+  const best = new Map<string, T>()
+  const order: string[] = []
+  for (const r of rows) {
+    const k = `${r.type ?? ''}:${r.vmid}`
+    const had = best.get(k)
+    if (!had) { best.set(k, r); order.push(k) } else if (rank(r) >= rank(had)) best.set(k, r)
+  }
+  return order.map(k => best.get(k)!)
+}
+
 export class GuestConfigService {
   private previews = new Map<string, Preview>()
   private applying = new Set<string>()
@@ -906,7 +923,7 @@ export class GuestConfigService {
       this.d.pve.get<any[]>('/cluster/ha/resources').catch(() => [] as any[]),
       this.d.pve.get<any[]>('/cluster/ha/status/current').catch(() => [] as any[]),
     ])
-    const guests = (res ?? []).filter(r => r.type === 'lxc' || r.type === 'qemu')
+    const guests = oneRowPerGuest((res ?? []).filter(r => r.type === 'lxc' || r.type === 'qemu'))
     const configs = await Promise.all(guests.map(x => this.d.pve.get<PveConfig>(`/nodes/${encodeURIComponent(x.node)}/${x.type}/${x.vmid}/config`).catch(() => null)))
     const invs = new Map<string, NodeInventory | null>()
     for (const n of new Set(guests.map(x => x.node as string))) { const hit = this.inv.get(n); invs.set(n, hit ? hit.inv : null) }

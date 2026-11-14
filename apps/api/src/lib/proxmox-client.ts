@@ -359,6 +359,11 @@ export class ProxmoxClient {
     return this.fetchStrict<string>(`/nodes/${seg(node)}/lxc`, 'POST', lxcParams.toString())
   }
 
+  /** One task's state: running, or stopped with its exit status ("OK", or why it failed). */
+  async getTaskStatus(node: string, upid: string): Promise<{ status: string; exitstatus?: string; type?: string; id?: string }> {
+    return this.fetchStrict(`/nodes/${encodeURIComponent(node)}/tasks/${encodeURIComponent(upid)}/status`)
+  }
+
   /**
    * Wait for a Proxmox task to finish and say why if it did not succeed. Polls the task status rather than
    * the guest, so a failed create reports its own log tail instead of timing out on a guest that is not there.

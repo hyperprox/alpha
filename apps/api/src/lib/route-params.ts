@@ -16,6 +16,8 @@ const RULES: Record<string, RegExp> = {
   type: /^(lxc|qemu)$/,
   snapname: SNAP_RE,
   sid: /^(ct|vm):\d{1,9}$/,
+  // A Proxmox task id: UPID:<node>:<pid>:<pstart>:<starttime>:<type>:<id>:<user>: (no "/", "?" or "#").
+  upid: /^UPID:[a-zA-Z0-9][a-zA-Z0-9.-]{0,62}:[0-9A-Fa-f]{8}:[0-9A-Fa-f]{8,16}:[0-9A-Fa-f]{8}:[a-z0-9_-]{1,40}:[A-Za-z0-9._-]{0,64}:[A-Za-z0-9.@!_-]{1,128}:$/,
 }
 
 /** The first parameter that breaks its rule, or null. */
