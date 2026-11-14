@@ -103,7 +103,9 @@ async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: str
     factsRead = true
     try {
       const r = await exec.nodeExec(node.name, NODE_FACTS_COMMAND, undefined, 60_000)
-      facts = parseNodeFacts(r.output)
+      // A non-zero exit, or output without both marker pairs, is unknown (factsUnknown), never "none".
+      facts = r.code === 0 ? parseNodeFacts(r.output) : null
+      if (!facts) errors.push(`node facts: ${r.code === 0 ? 'the answer was incomplete' : `the command exited ${r.code}`}; holds and pin unknown`)
     } catch (e: any) {
       // Unknown is not OK: a node whose holds could not be read must not look safe.
       errors.push(`node shell: ${e.message}`)

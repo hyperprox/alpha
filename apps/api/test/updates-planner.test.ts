@@ -206,7 +206,12 @@ test('node facts: free space, kernel, holds, pin on the line after its label, in
   assert.deepEqual(f.holds, ['proxmox-default-kernel', 'proxmox-kernel-7.0'])
   assert.equal(f.pinned, '7.0.1-1-pve')
   assert.deepEqual(f.kernelPackages, ['proxmox-kernel-7.0.1-1-pve-signed', 'proxmox-kernel-7.0.2-1-pve-signed'])
-  assert.equal(parseNodeFacts('HP_PIN_BEGIN\nHP_PIN_END').pinned, null)
+  assert.equal(parseNodeFacts('HP_HOLDS_BEGIN\nHP_HOLDS_END\nHP_PIN_BEGIN\nHP_PIN_END')!.pinned, null)
+  // Review B3: missing markers are unknown (null), never "no holds and no pin".
+  assert.equal(parseNodeFacts('HP_PIN_BEGIN\nHP_PIN_END'), null)
+  assert.equal(parseNodeFacts('HP_HOLDS_BEGIN\nHP_HOLDS_END'), null)
+  assert.equal(parseNodeFacts('garbage'), null)
+  assert.equal(parseNodeFacts('HP_HOLDS_END\nHP_HOLDS_BEGIN\nHP_PIN_BEGIN\nHP_PIN_END'), null, 'markers out of order')
 })
 
 test('old kernels: keep running, pinned and one fallback; never guess when the running kernel is unknown', () => {
@@ -237,4 +242,11 @@ test('held and kept-back packages are not pending: they are listed apart and nev
   const only = parseGuestPending('HP_KEPT linux-image-amd64\n')
   assert.equal(only.pending.length, 0)
   assert.deepEqual(only.keptBack, ['linux-image-amd64'])
+})
+
+test('review m4: a node with unknown holds and pin takes no part in the Ceph phase either', () => {
+  const ceph = [{ name: 'ceph-common', from: '19.2.6-pve1', to: '19.2.7-pve1' }]
+  const p = buildPlan(inv([n('node-a', { cephPending: true, pending: ceph, factsUnknown: true }), n('node-b', { cephPending: true, pending: ceph })], []), defaultPolicy())
+  assert.ok(!p.steps.some(s => s.target === 'node-a'), 'no Ceph or upgrade step for the unknown node')
+  assert.ok(p.steps.some(s => s.target === 'node-b' && s.action === 'ceph'))
 })

@@ -875,16 +875,23 @@ export class UpdatesRunner {
 
   // --- Nodes ---------------------------------------------------------------------------
 
+  /** The node's holds, pin and kernels. Throws when they cannot be read whole: unknown is never "none". */
   private async nodeFacts(node: string): Promise<NodeFacts> {
     const r = await this.exec.nodeExec(node, NODE_FACTS_COMMAND, undefined, 60_000)
-    return parseNodeFacts(r.output)
+    const f = r.code === 0 ? parseNodeFacts(r.output) : null
+    if (!f) throw new Error(`${node}'s package holds and kernel pin could not be read (${r.code === 0 ? 'incomplete answer' : `the command exited ${r.code}`})`)
+    return f
   }
 
   private async nodeUpgrade(jobId: string, node: string, policy: Policy, log: LineSink): Promise<Outcome> {
     // The node's policy, read now, decides upgrade vs dist-upgrade — never the stored plan — and so does what is
     // on the node: held packages or a pinned kernel mean `upgrade` unless the policy names this node for more.
     const pol = nodePolicy(policy, node)
-    const before = await this.nodeFacts(node)
+    // Unknown holds or pin refuse the upgrade, whatever the policy says (a pinned kernel must never be moved by a
+    // dist-upgrade nobody could check).
+    let before: NodeFacts
+    try { before = await this.nodeFacts(node) }
+    catch (e: any) { return { status: 'failed', reason: `refusing to upgrade ${node}: ${e?.message ?? e}. Nothing was installed.` } }
     const pre = await this.combine([Promise.resolve(holdsPinGate(node, before, pol)), Promise.resolve(freeSpaceGate(node, before, policy))])
     if (!pre.ok) return { status: 'failed', reason: `stopped before installing: ${pre.reason}` }
     const choice = effectiveUpgrade(policy, node, before)
@@ -920,7 +927,9 @@ export class UpdatesRunner {
     const svc = await this.exec.nodeExec(node, this.remote ? REMOTE_NODE_SERVICES_COMMAND : NODE_SERVICES_COMMAND, log, 60_000)
     if (svc.code !== 0) return { status: 'failed', reason: 'Proxmox services not all active after the upgrade', output: tail(r.output + '\n' + svc.output) }
 
-    const afterFacts = await this.nodeFacts(node)
+    let afterFacts: NodeFacts
+    try { afterFacts = await this.nodeFacts(node) }
+    catch (e: any) { return { status: 'failed', reason: `after the upgrade: ${e?.message ?? e} — a person must look`, output: tail(said + r.output) } }
     const after = holdsPinGate(node, afterFacts, pol)
     if (!after.ok) return { status: 'failed', reason: `after the upgrade: ${after.reason} — not repaired; a person must look`, output: tail(said + r.output) }
     if (!this.remote) return { status: 'ok', output: tail(said + r.output) }

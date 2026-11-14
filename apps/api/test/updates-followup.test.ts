@@ -159,9 +159,9 @@ test('fence: options such as --quiet before the unit do not let a Ceph start thr
 // --- 4. Left-overs from a killed run are reported -----------------------------------------------------
 
 test('node facts report a left-over fence', () => {
-  assert.equal(parseNodeFacts('HP_FREE 100\nHP_FENCE_LEFT').fence, 'ours')
-  assert.equal(parseNodeFacts('HP_FREE 100\nHP_FENCE_SAVED').fence, 'saved')
-  assert.equal(parseNodeFacts('HP_FREE 100').fence, null)
+  assert.equal(parseNodeFacts('HP_FREE 100\nHP_HOLDS_BEGIN\nHP_HOLDS_END\nHP_PIN_BEGIN\nHP_PIN_END\nHP_FENCE_LEFT')!.fence, 'ours')
+  assert.equal(parseNodeFacts('HP_FREE 100\nHP_HOLDS_BEGIN\nHP_HOLDS_END\nHP_PIN_BEGIN\nHP_PIN_END\nHP_FENCE_SAVED')!.fence, 'saved')
+  assert.equal(parseNodeFacts('HP_FREE 100\nHP_HOLDS_BEGIN\nHP_HOLDS_END\nHP_PIN_BEGIN\nHP_PIN_END')!.fence, null)
 })
 
 test('a fence left by a killed run is reported at the start of the next run, with a notification', async () => {

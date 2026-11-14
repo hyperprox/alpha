@@ -215,7 +215,8 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
 
   // --- Ceph -------------------------------------------------------------------------
   if (nodePhase && ceph.version && !ctx.remote) {
-    const cephNodes = ordered.filter(n => n.cephPending)
+    // A node whose holds and pin are unknown takes no part in the Ceph phase either.
+    const cephNodes = ordered.filter(n => n.cephPending && !n.factsUnknown)
     for (const n of cephNodes) add(n.node, 'ceph', `${DETAIL.cephInstall} ${ceph.version}`)
     for (const d of ['mon', 'mgr', 'osd'] as const) {
       for (const n of cephNodes) add(n.node, 'ceph', `${DETAIL.cephRestart} ${d}`)

@@ -182,8 +182,15 @@ function between(lines: string[], begin: string, end: string): string[] {
   return a >= 0 && b > a ? lines.slice(a + 1, b) : []
 }
 
-export function parseNodeFacts(output: string): NodeFacts {
-  const lines = output.split('\n').map(l => l.trim())
+/**
+ * What NODE_FACTS_COMMAND printed, or null when it is not a whole answer: both the holds and the kernel-pin markers
+ * (begin and end, in order) must be there. Missing markers are unknown, never "no holds and no pin": garbled output
+ * read as "nothing held" could let a dist-upgrade replace a held, pinned kernel.
+ */
+export function parseNodeFacts(output: string): NodeFacts | null {
+  const lines = String(output ?? '').split('\n').map(l => l.trim())
+  const marked = (b: string, e: string) => { const i = lines.indexOf(b), j = lines.indexOf(e); return i >= 0 && j > i }
+  if (!marked('HP_HOLDS_BEGIN', 'HP_HOLDS_END') || !marked('HP_PIN_BEGIN', 'HP_PIN_END')) return null
   const free = lines.find(l => l.startsWith('HP_FREE '))?.slice(8).trim()
   const kern = lines.find(l => l.startsWith('HP_KERNEL '))?.slice(10).trim()
 

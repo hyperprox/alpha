@@ -6,6 +6,8 @@ import { UpdatesRunner, PolicyRequiredError } from '../src/lib/updates/runner'
 import { MemoryStore, ActiveJobError, type StepRecord } from '../src/lib/updates/store'
 import { readInventory } from '../src/lib/updates/inventory'
 import { FakeCluster, node, guest, pkg, policyLoad, FAST } from './updates-fake'
+import { parsePolicy } from '../src/lib/updates/policy'
+import { NODE_FACTS_COMMAND } from '../src/lib/updates/commands'
 import type { UpdatesWsPayload } from '../src/lib/updates/types'
 
 const POLICY = `
@@ -501,4 +503,34 @@ test('a publisher that throws never fails the job', async () => {
   const runner = new UpdatesRunner({ store, exec: fake, loadPolicy: policyLoad(POLICY), timing: FAST, hostname: 'not-a-guest', publish: async () => { throw new Error('bus down') } })
   const job = await runner.start('run', 'schedule'); await settle(runner)
   assert.equal((await store.getJob(job.id))!.status, 'done')
+})
+
+// ---- review B3: unknown holds or pin never let an upgrade through ----------------------------------------------
+
+test('garbled node facts (no hold or pin markers) are unknown: no plan step for that node, and the run refuses it', async () => {
+  const fake = new FakeCluster({ nodes: [node('gpu-node', { holds: ['proxmox-default-kernel'], pinned: '7.0.1-1-pve', kernel: '7.0.1-1-pve' }), node('node-b')] })
+  const garbled = { code: 0, output: 'HP_FREE 9000\nHP_KERNEL 7.0.1-1-pve\nsomething else entirely', timedOut: false }
+  fake.inject = (w, c) => (w === 'gpu-node' && c === NODE_FACTS_COMMAND ? garbled : undefined)
+  const { runner, store } = setup(fake, GPU_POLICY)
+  const job = await runner.start('run', 'manual'); await settle(runner)
+  const steps = await store.getSteps(job.id)
+  assert.equal(byAction(steps, 'gpu-node', 'node-upgrade'), undefined, 'not planned')
+  const j = (await store.getJob(job.id))!
+  assert.equal(j.status, 'failed', 'the run is refused')
+  assert.match(j.pauseReason ?? '', /gpu-node: .*holds and pin unknown|could not read holds and pin/)
+  // Even with a step forced into the plan, the runner refuses it and installs nothing on that node.
+  const out = await (runner as any).nodeUpgrade('x', 'gpu-node', parsePolicy(GPU_POLICY), () => {})
+  assert.equal(out.status, 'failed')
+  assert.match(out.reason, /refusing to upgrade gpu-node: .*could not be read/)
+  assert.equal(fake.cmds('gpu-node').some(c => /apt-get (-y )?.*(dist-)?upgrade$/.test(c) && !/-s /.test(c)), false)
+})
+
+test('a node-facts command that exits non-zero is unknown, and a node outside the policy with unknown facts is never upgraded', async () => {
+  const fake = new FakeCluster({ nodes: [node('node-x', { pending: [pkg('curl', '8.1-2')] }), node('node-b')] })
+  fake.inject = (w, c) => (w === 'node-x' && c === NODE_FACTS_COMMAND ? { code: 2, output: 'HP_HOLDS_BEGIN\nHP_HOLDS_END\nHP_PIN_BEGIN\nHP_PIN_END', timedOut: false } : undefined)
+  const { runner, store } = setup(fake)
+  const job = await runner.start('run', 'manual'); await settle(runner)
+  const steps = await store.getSteps(job.id)
+  assert.equal(byAction(steps, 'node-x', 'node-upgrade'), undefined, 'node-x is not named in the policy, and its facts are unknown: no upgrade')
+  assert.equal(fake.cmds('node-x').some(c => /apt-get -y .*upgrade/.test(c)), false)
 })

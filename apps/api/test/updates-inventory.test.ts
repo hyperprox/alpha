@@ -87,3 +87,16 @@ test('a guest that never answers is reported after the deadline instead of holdi
   assert.match(stuck.error!, /no answer within/)
   assert.ok(inventory.guests.some(g => g.vmid !== 101 && g.managed), 'the other guests were still read')
 })
+
+test('review B3: a node-facts command that exits non-zero, or answers without its markers, is unknown, never "no holds"', async () => {
+  const { NODE_FACTS_COMMAND } = await import('../src/lib/updates/commands')
+  const f = new FakeCluster({ nodes: [node('node-a'), node('node-b'), node('node-c')] })
+  f.inject = (w, c) => c !== NODE_FACTS_COMMAND ? undefined
+    : w === 'node-a' ? { code: 1, output: 'HP_HOLDS_BEGIN\nHP_HOLDS_END\nHP_PIN_BEGIN\nHP_PIN_END', timedOut: false }
+    : w === 'node-b' ? { code: 0, output: 'HP_FREE 100', timedOut: false } : undefined
+  const { inventory } = await readInventory(f, parsePolicy('nodes:\n  default: { upgrade: dist-upgrade, reboot: auto }\n'))
+  const by = (n: string) => inventory.nodes.find(x => x.node === n)!
+  assert.equal(by('node-a').factsUnknown, true)
+  assert.equal(by('node-b').factsUnknown, true)
+  assert.equal(by('node-c').factsUnknown, undefined)
+})
