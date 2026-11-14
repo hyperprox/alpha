@@ -940,12 +940,35 @@ ask_token_name() {
   ask_value TOKEN_NAME "$free" "Proxmox API token" "A token named ${TOKEN_TAKEN} exists already; its secret was shown only once, so HyperProx cannot use it. Which name should the new one get?" \
     "Enter makes ${free}. Type ${TOKEN_TAKEN} to leave it as it is; the setup page then asks for its secret." check_token_name Name "$TOKEN_TAKEN"
 }
-# ENV_SET_KV: set_kv KEY VALUE for the container's .env ($f), as a shell function to run in it. The new file is
-# written root-only beside the old one and moved over it, so .env is never half-written or briefly readable.
+# ── hpx-env-lock begin ── identical in install.sh, bootstrap.sh and bin/hyperprox-config (scripts/test-env-lock.sh
+# checks), and the same convention as apps/setup/env-file.js, so every writer of .env excludes every other:
+# <file>.lock is made with O_EXCL (set -C) and holds its owner's token; a lock older than 30 s is a dead writer's
+# and is taken over by renaming it to a name of our own first (only one of two writers can); it is removed only
+# while it still holds our token.
+env_lock() {   # env_lock FILE
+  local l="$1.lock" n=0 m
+  HPX_ENV_LOCK_TOKEN="$$:$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  until ( set -C; umask 077; printf '%s' "$HPX_ENV_LOCK_TOKEN" > "$l" ) 2>/dev/null; do
+    m="$(stat -c %Y "$l" 2>/dev/null)" || continue
+    if [ $(( $(date +%s) - m )) -gt 30 ]; then mv -f "$l" "$l.stale-$$" 2>/dev/null && rm -f "$l.stale-$$"; continue; fi
+    n=$((n + 1)); [ "$n" -le 200 ] || { echo "$1 is being changed by another writer ($l)" >&2; return 1; }
+    sleep 0.025
+  done
+}
+env_unlock() {   # env_unlock FILE
+  [ "$(cat "$1.lock" 2>/dev/null)" = "${HPX_ENV_LOCK_TOKEN:-}" ] && rm -f "$1.lock"
+  return 0
+}
+# ── hpx-env-lock end ──
+# ENV_SET_KV: set_kv KEY VALUE for the container's .env ($f), as a shell function to run in it, with env_lock and
+# env_unlock (above) carried along. Under the .env lock, the new file is written root-only beside the old one and
+# moved over it, so .env is never half-written, briefly readable, or changed by two writers at once.
 # shellcheck disable=SC2016  # expanded in the container, not here
-ENV_SET_KV='set_kv() { local t; t="$(umask 077; mktemp "$f.XXXXXX")" || return 1
-  K="$1" V="$2" awk '"'"'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; d = 0 } !d && index($0, k "=") == 1 { print k "=" v; d = 1; next } { print } END { if (!d) print k "=" v }'"'"' "$f" > "$t" \
-    && chmod 600 "$t" && mv -f "$t" "$f" || { rm -f "$t"; return 1; }; }'
+ENV_SET_KV="$(declare -f env_lock env_unlock)"'
+set_kv() { local t; env_lock "$f" || return 1; t="$(umask 077; mktemp "$f.XXXXXX")" || { env_unlock "$f"; return 1; }
+  if K="$1" V="$2" awk '"'"'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; d = 0 } !d && index($0, k "=") == 1 { print k "=" v; d = 1; next } { print } END { if (!d) print k "=" v }'"'"' "$f" > "$t" \
+    && chmod 600 "$t" && mv -f "$t" "$f"; then env_unlock "$f"; return 0; fi
+  rm -f "$t"; env_unlock "$f"; return 1; }'
 # save_password FILE: the root password into FILE, mode 600, owned by root; never through a link.
 save_password() {
   [ ! -L "$1" ] || { warn "$1 is a symbolic link; the root password is not written there."; return 1; }

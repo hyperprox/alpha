@@ -1002,14 +1002,34 @@ EOF
 # The in-app updater (Updates page) follows the source this install came from: HYPERPROX_REPO_URL's mirror or
 # fork, and the branch --ref named (a tag or commit follows main). Written when missing, and replaced when this
 # run was told a source; a re-run with neither keeps what is there.
-set_env_line() {  # set_env_line <file> <KEY> <value>: replace the KEY= line, or append it
-  local f="$1" k="$2" v="$3"
-  if grep -qE "^${k}=" "$f" 2>/dev/null; then
-    local tmp; tmp="$(mktemp "${f}.XXXX")"
-    awk -v k="$k" -v v="$v" 'BEGIN{FS=OFS="="} $1==k{print k "=" v; next} {print}' "$f" > "$tmp" && cat "$tmp" > "$f"; rm -f "$tmp"
-  else
-    printf '%s=%s\n' "$k" "$v" >> "$f"
-  fi
+# ── hpx-env-lock begin ── identical in install.sh, bootstrap.sh and bin/hyperprox-config (scripts/test-env-lock.sh
+# checks), and the same convention as apps/setup/env-file.js, so every writer of .env excludes every other:
+# <file>.lock is made with O_EXCL (set -C) and holds its owner's token; a lock older than 30 s is a dead writer's
+# and is taken over by renaming it to a name of our own first (only one of two writers can); it is removed only
+# while it still holds our token.
+env_lock() {   # env_lock FILE
+  local l="$1.lock" n=0 m
+  HPX_ENV_LOCK_TOKEN="$$:$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  until ( set -C; umask 077; printf '%s' "$HPX_ENV_LOCK_TOKEN" > "$l" ) 2>/dev/null; do
+    m="$(stat -c %Y "$l" 2>/dev/null)" || continue
+    if [ $(( $(date +%s) - m )) -gt 30 ]; then mv -f "$l" "$l.stale-$$" 2>/dev/null && rm -f "$l.stale-$$"; continue; fi
+    n=$((n + 1)); [ "$n" -le 200 ] || { echo "$1 is being changed by another writer ($l)" >&2; return 1; }
+    sleep 0.025
+  done
+}
+env_unlock() {   # env_unlock FILE
+  [ "$(cat "$1.lock" 2>/dev/null)" = "${HPX_ENV_LOCK_TOKEN:-}" ] && rm -f "$1.lock"
+  return 0
+}
+# ── hpx-env-lock end ──
+set_env_line() {  # set_env_line <file> <KEY> <value>: replace the KEY= line, or append it; under the .env lock,
+  # written to a root-only temp file beside it and moved over it, so the file is never half-written.
+  local f="$1" k="$2" v="$3" tmp
+  env_lock "$f" || return 1
+  tmp="$(umask 077; mktemp "${f}.XXXXXX")" || { env_unlock "$f"; return 1; }
+  if K="$k" V="$v" awk 'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; d = 0 } !d && index($0, k "=") == 1 { print k "=" v; d = 1; next } { print } END { if (!d) print k "=" v }' "$f" > "$tmp" \
+     && chmod 600 "$tmp" && mv -f "$tmp" "$f"; then env_unlock "$f"; return 0; fi
+  rm -f "$tmp"; env_unlock "$f"; return 1
 }
 
 configure_update_source() {

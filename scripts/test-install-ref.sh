@@ -15,7 +15,7 @@ die()  { echo "die: $*"; return 1; }
 pass() { echo "ok    $1"; }
 bad()  { echo "FAIL  $1${2:+ ($2)}"; fail=1; }
 check() { if eval "$2"; then pass "$1"; else bad "$1" "$2"; fi; }
-for f in checkout_ref set_env_line configure_update_source; do
+for f in env_lock env_unlock checkout_ref set_env_line configure_update_source; do
   eval "$(sed -n "/^${f}() {/,/^}/p" "${here}/install.sh")"
   declare -F "$f" >/dev/null || { echo "FAIL  ${f} not found in install.sh"; exit 1; }
 done

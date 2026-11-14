@@ -48,10 +48,32 @@ cfg_get() {
   [[ -r "${2:-$ENV_FILE}" ]] || return 0
   grep -m1 -E "^$1=" "${2:-$ENV_FILE}" | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//" || true
 }
-# cfg_set KEY VALUE [FILE]: replace the first KEY= line, or append one. The file keeps its mode.
+# ── hpx-env-lock begin ── identical in install.sh, bootstrap.sh and bin/hyperprox-config (scripts/test-env-lock.sh
+# checks), and the same convention as apps/setup/env-file.js, so every writer of .env excludes every other:
+# <file>.lock is made with O_EXCL (set -C) and holds its owner's token; a lock older than 30 s is a dead writer's
+# and is taken over by renaming it to a name of our own first (only one of two writers can); it is removed only
+# while it still holds our token.
+env_lock() {   # env_lock FILE
+  local l="$1.lock" n=0 m
+  HPX_ENV_LOCK_TOKEN="$$:$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  until ( set -C; umask 077; printf '%s' "$HPX_ENV_LOCK_TOKEN" > "$l" ) 2>/dev/null; do
+    m="$(stat -c %Y "$l" 2>/dev/null)" || continue
+    if [ $(( $(date +%s) - m )) -gt 30 ]; then mv -f "$l" "$l.stale-$$" 2>/dev/null && rm -f "$l.stale-$$"; continue; fi
+    n=$((n + 1)); [ "$n" -le 200 ] || { echo "$1 is being changed by another writer ($l)" >&2; return 1; }
+    sleep 0.025
+  done
+}
+env_unlock() {   # env_unlock FILE
+  [ "$(cat "$1.lock" 2>/dev/null)" = "${HPX_ENV_LOCK_TOKEN:-}" ] && rm -f "$1.lock"
+  return 0
+}
+# ── hpx-env-lock end ──
+# cfg_set KEY VALUE [FILE]: replace the first KEY= line, or append one, under the file's .env lock. The file keeps
+# its mode.
 cfg_set() {
   local file="${3:-$ENV_FILE}" tmp
-  tmp="$(mktemp "${file}.XXXXXX")"
+  env_lock "$file" || return 1
+  tmp="$(umask 077; mktemp "${file}.XXXXXX")" || { env_unlock "$file"; return 1; }
   K="$1" V="$2" awk '
     BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; done = 0 }
     !done && index($0, k "=") == 1 { print k "=" v; done = 1; next }
@@ -60,6 +82,7 @@ cfg_set() {
   ' "$file" > "$tmp"
   chmod --reference="$file" "$tmp" 2>/dev/null || chmod 600 "$tmp"
   mv -f "$tmp" "$file"
+  env_unlock "$file"
 }
 
 # ── METRICS_TOKEN ────────────────────────────────────────────────────────────
@@ -220,10 +243,12 @@ follow_address() {
 cfg_drop() {
   local file="${2:-$ENV_FILE}" tmp
   cfg_has "$1" "$file" || return 0
-  tmp="$(mktemp "${file}.XXXXXX")"
+  env_lock "$file" || return 1
+  tmp="$(umask 077; mktemp "${file}.XXXXXX")" || { env_unlock "$file"; return 1; }
   K="$1" awk 'BEGIN { k = ENVIRON["K"] } index($0, k "=") != 1 { print }' "$file" > "$tmp"
   chmod --reference="$file" "$tmp" 2>/dev/null || chmod 600 "$tmp"
   mv -f "$tmp" "$file"
+  env_unlock "$file"
 }
 # The vault has an owner. SETUP_COMPLETE=true alone is not enough to drop the setup key: the wizard records it
 # before the owner exists, and /login needs the key to create the owner.
