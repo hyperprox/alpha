@@ -49,6 +49,8 @@ services:
   # API is the only thing that talks to it. Signups are off - accounts exist only by invitation.
   # Version: Vaultwarden 1.37.4 (multi-arch index digest). To update, change the tag AND the digest together.
   vault:
+# 1.37.x reports a Manager as type 4 (Custom); HyperProx's roles rely on that (apps/api/src/lib/users/roles.ts
+# VAULT_REPORTS_MANAGER_AS_CUSTOM; test/vault-members.test.ts fails when this tag leaves 1.37).
     image: vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
     container_name: hyperprox-vault
     restart: unless-stopped

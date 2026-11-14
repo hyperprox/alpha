@@ -32,7 +32,7 @@ import { snapshotChanged } from './snapshot'
 import { GROUP_OPERATORS, GROUP_VIEWERS } from './bw-crypto'
 import { VaultOwnerOnlyError, isOwnerOnlyRefusal, keyFingerprint, memberStatus, memberTypeFor, type GrantableRole, type VaultMember } from './members'
 import { INVITE_TTL_MS } from '../users/invitations'
-import { memberRoles, resolveRole, roleFromMemberType as rolesFromType } from '../users/roles'
+import { memberRoles, recordAgrees, resolveRole, roleFromMemberType as rolesFromType } from '../users/roles'
 
 // ---------------------------------------------------------------------------
 //  Contract types
@@ -158,16 +158,25 @@ async function ownerOnly<T>(p: Promise<T>): Promise<T> {
   }
 }
 
-/** A vault membership type as a role (lib/users/roles.ts: a Manager reads back as 4, Custom, and is operator). */
+/** A vault membership type as a role, from the vault alone (lib/users/roles.ts; a 4 is at most a viewer). */
 export function roleFromMemberType(type: number): Role {
   return rolesFromType(type)
 }
 
-/** The role someone signs in with or is listed as: HyperProx's own record first, the vault's type as fallback. */
-function memberRole(type: number, email: string): Role {
+/**
+ * The role someone signs in with or is listed as: the vault's type decides; HyperProx's record only settles
+ * whether a type 4 (Custom) is an operator (lib/users/roles.ts resolveRole). It never raises anyone.
+ */
+function memberRole(type: number, email: string, permissions?: unknown): Role {
   let recorded = null
-  try { recorded = memberRoles().get(email) } catch { /* unreadable record: the vault's type */ }
-  return resolveRole(type, recorded)
+  try { recorded = memberRoles().get(email) } catch { /* unreadable record: the vault alone */ }
+  return resolveRole(type, recorded, { permissions })
+}
+
+/** Keep HyperProx's role record to what HyperProx made: an operator on a 3 or 4. Stores only that. */
+function recordRole(email: string, role: GrantableRole): void {
+  if (role === 'operator') memberRoles().set(email, role)
+  else memberRoles().remove(email)
 }
 
 /** Maps a CLI / server message to a contract error code; null if it is not an auth failure. */
@@ -538,14 +547,20 @@ export class CliVaultBroker implements VaultBroker {
   async members(sid: string): Promise<VaultMember[]> {
     return this.withFast(sid, async v => {
       const out: VaultMember[] = []
-      for (const m of await v.orgMembers()) {
+      const list = await v.orgMembers()
+      for (const m of list) {
         const status = memberStatus(Number(m.status))
         const userId = m.userId ? String(m.userId) : null
         let fingerprint: string | null = null
         if (status === 'accepted' && userId) fingerprint = await v.userPublicKey(userId).then(keyFingerprint).catch(() => null)
         out.push({ id: String(m.id), userId, email: String(m.email ?? ''), name: m.name ? String(m.name) : null,
-          role: memberRole(Number(m.type), String(m.email ?? '')), status, twoFactor: m.twoFactorEnabled === true, fingerprint })
+          role: memberRole(Number(m.type), String(m.email ?? ''), m.permissions), status, twoFactor: m.twoFactorEnabled === true, fingerprint })
       }
+      // Records for people no longer in the organisation, or whose vault type no longer fits one, are dropped.
+      try {
+        const types = new Map(out.map((x, i) => [normalizeEmail(x.email), Number(list[i].type)]))
+        memberRoles().retain((e, r) => types.has(e) && recordAgrees(types.get(e)!, r))
+      } catch { /* the record is advisory; the listing stands */ }
       return out.sort((a, b) => a.email.localeCompare(b.email))
     })
   }
@@ -559,12 +574,14 @@ export class CliVaultBroker implements VaultBroker {
       if (existing) {
         // Invited before and never joined (a lost or expired link): the same membership, with the role asked for now.
         if (memberStatus(Number(existing.status)) !== 'invited') throw new Error(`${e} is already a member`)
+        if (role !== 'operator') memberRoles().remove(e)
         if (Number(existing.type) !== type) await ownerOnly(v.orgEdit(String(existing.id), type, await this.groupsFor(v, role)))
-        memberRoles().set(e, role)
+        recordRole(e, role)
         return { reused: true }
       }
+      if (role !== 'operator') memberRoles().remove(e)
       await ownerOnly(v.orgInvite(e, type, await this.groupsFor(v, role)))
-      memberRoles().set(e, role)
+      recordRole(e, role)
       return { reused: false }
     })
   }
@@ -612,9 +629,17 @@ export class CliVaultBroker implements VaultBroker {
       if (!m) throw new Error('no such member')
       if (Number(m.type) === MEMBER_TYPE.Owner) throw new Error('the owner\'s role is not changed here')
       if (String(m.userId ?? '') === s.userId) throw new Error('you cannot change your own role')
+      const email = normalizeEmail(String(m.email ?? ''))
+      // Anything but operator: the record goes before the vault changes, so no old "operator" can outlive it.
+      if (role !== 'operator') memberRoles().remove(email)
       await v.orgEdit(memberId, memberTypeFor(role), await this.groupsFor(v, role))
-      // HyperProx's own record, once the vault took the change: the vault reads a Manager back as Custom (4).
-      memberRoles().set(String(m.email ?? ''), role)
+      if (role !== 'operator') return
+      // Operator: recorded only if they are still a member of that type now (a removal can race the change).
+      // Without the record a 4 reads as viewer, never higher, so a write that fails leaves them lower, not higher.
+      const now = (await v.orgMembers()).find(x => String(x.id) === memberId && normalizeEmail(String(x.email ?? '')) === email)
+      if (!now || !recordAgrees(Number(now.type), 'operator')) return
+      try { memberRoles().set(email, 'operator') }
+      catch (e: any) { throw new Error(`the vault made ${email} a Manager, but HyperProx could not record it, so they read as a viewer until it can: ${e?.message ?? e}`) }
     })
   }
 

@@ -66,7 +66,7 @@ import { INVITE_TTL_MS } from '../src/lib/users/invitations'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { RoleStore, resolveRole, setMemberRoles } from '../src/lib/users/roles'
+import { RoleStore, resolveRole, setMemberRoles, VAULT_REPORTS_MANAGER_AS_CUSTOM } from '../src/lib/users/roles'
 import { roleFromMemberType } from '../src/lib/vault/broker'
 
 // The role record goes to a temporary file, never the repo's data/.
@@ -85,7 +85,8 @@ function brokerWith(members: any[], opts: { refuse?: string } = {}) {
     orgMembers: async () => members,
     orgGroups: async () => [{ id: 'g-op', name: 'HyperProx operators' }, { id: 'g-view', name: 'HyperProx viewers' }],
     orgInvite: async (email: string, type: number, groups: string[]) => { refuse('x'); calls.push(['invite', email, type, groups]) },
-    orgEdit: async (id: string, type: number, groups: string[]) => { refuse('x'); calls.push(['edit', id, type, groups]) },
+    // As Vaultwarden 1.37 does: the edit lands, and a Manager is listed back as 4 (Custom).
+    orgEdit: async (id: string, type: number, groups: string[]) => { refuse('x'); calls.push(['edit', id, type, groups]); const m = members.find(x => String(x.id) === id); if (m) m.type = type === 3 ? 4 : type },
     orgRemove: async (id: string) => { refuse('x'); calls.push(['remove', id]) },
     orgConfirm: async (id: string) => { refuse('x'); calls.push(['confirm', id]) },
     close() {},
@@ -204,34 +205,49 @@ test('delete one item: only the chosen id is trashed, never a same-named twin, n
 
 // ---- roles: Vaultwarden reports a Manager as 4 (Custom); HyperProx's own record wins -------------------------
 
-test('a Manager reads back as operator whether the vault says 3 or 4 (Custom); Owner, Admin, User as before', () => {
+test('from the vault alone: Owner, Admin, Manager (3), User; a 4 (Custom) is never more than viewer', () => {
   assert.equal(roleFromMemberType(0), 'owner')
   assert.equal(roleFromMemberType(1), 'admin')
   assert.equal(roleFromMemberType(2), 'viewer')
   assert.equal(roleFromMemberType(3), 'operator')
-  assert.equal(roleFromMemberType(4), 'operator')
+  assert.equal(roleFromMemberType(4), 'viewer')
   assert.equal(roleFromMemberType(99), 'viewer')
 })
 
-test('HyperProx\'s record is the role; the vault type is the fallback; nobody records their way to owner', () => {
-  assert.equal(resolveRole(2, 'operator'), 'operator')
-  assert.equal(resolveRole(4, null), 'operator')
-  assert.equal(resolveRole(2, null), 'viewer')
+test('the record only settles a 4: it never raises anyone above what the vault holds', () => {
+  assert.equal(resolveRole(4, 'operator'), 'operator', 'pinned 1.37: a Manager is reported as 4')
+  assert.equal(resolveRole(4, null), 'viewer', 'an unrecorded 4 is refused above viewer')
+  assert.equal(resolveRole(4, 'admin'), 'viewer')
+  assert.equal(resolveRole(2, 'operator'), 'viewer', 'demoted in the vault: the vault wins')
+  assert.equal(resolveRole(1, 'viewer'), 'admin', 'promoted in the vault: the vault wins')
   assert.equal(resolveRole(0, 'viewer'), 'owner')
+  // Upstream main with EXPERIMENTAL_CUSTOM_ROLES: 4 is a real Custom role; only a Manager's permissions count.
+  assert.equal(resolveRole(4, 'operator', { managerAsCustom: false }), 'viewer')
+  assert.equal(resolveRole(4, 'operator', { managerAsCustom: false, permissions: { editAnyCollection: true } }), 'operator')
+  assert.equal(resolveRole(4, null, { managerAsCustom: false, permissions: { editAnyCollection: true } }), 'viewer')
+})
+
+test('the pinned Vaultwarden is 1.37.x, the release whose Manager-as-4 the roles rely on', () => {
+  const root = path.join(__dirname, '..', '..', '..')
+  const compose = fs.readFileSync(path.join(root, 'docker-compose.yml'), 'utf8')
+  const install = fs.readFileSync(path.join(root, 'install.sh'), 'utf8')
+  assert.match(compose, /image: vaultwarden\/server:1\.37\.\d+@sha256:/, 'moving the image off 1.37: check VAULT_REPORTS_MANAGER_AS_CUSTOM (lib/users/roles.ts)')
+  assert.match(install, /VAULT_IMAGE="vaultwarden\/server:1\.37\.\d+@sha256:/)
+  assert.equal(VAULT_REPORTS_MANAGER_AS_CUSTOM, true)
 })
 
 test('a role change sticks: the list reads the new role back even though the vault reports 4', async () => {
   resetRoles()
-  // The vault took the change to Manager but lists the member as type 4, as Vaultwarden 1.3x does.
+  // The vault takes the change to Manager and lists the member as type 4, as Vaultwarden 1.37 does.
   const members = [{ id: MEMBER, userId: USER, email: 'op@example.com', status: 2, type: 2 }]
   const { b, calls } = brokerWith(members)
   await b.setMemberRole(SID, MEMBER, 'operator')
   assert.deepEqual(calls(), [['edit', MEMBER, 3, ['g-op']]])
-  members[0].type = 4
+  assert.equal(members[0].type, 4)
   assert.equal((await b.members!(SID))[0].role, 'operator')
-  // Back to viewer: the record follows, even though the vault would still have said 4 had it lagged.
   await b.setMemberRole(SID, MEMBER, 'viewer')
   assert.equal((await b.members!(SID))[0].role, 'viewer')
+  assert.equal(new RoleStore(rolesFile).get('op@example.com'), null, 'the record went with the demotion')
 })
 
 test('an invitation records the role it was made with; withdrawing it removes the record', async () => {
@@ -239,6 +255,8 @@ test('an invitation records the role it was made with; withdrawing it removes th
   const { b } = brokerWith([])
   await b.inviteMember(SID, 'New@Example.com', 'operator')
   assert.equal(new RoleStore(rolesFile).get('new@example.com'), 'operator')
+  await b.inviteMember(SID, 'viewer@example.com', 'viewer')
+  assert.equal(new RoleStore(rolesFile).get('viewer@example.com'), null, 'only operators are recorded')
   const pending = brokerWith([{ id: INVITED, email: 'new@example.com', status: 0, type: 4 }])
   assert.equal(await pending.b.removePendingMember(SID, 'new@example.com'), true)
   assert.equal(new RoleStore(rolesFile).get('new@example.com'), null)
@@ -257,4 +275,50 @@ test('broker removeMember: takes a joined member out of the org and its role rec
   assert.equal(new RoleStore(rolesFile).get('acc@example.com'), null)
   await assert.rejects(b.removeMember!(SID, INVITED), /owner cannot be removed/)
   await assert.rejects(b.removeMember!(SID, ORG), /owner cannot be removed|cannot remove yourself/)
+})
+
+// ---- the vault decides; the record cannot outlive or outrank it (review B2) --------------------------------
+
+test('(a) demoted in the vault itself: listed as viewer, and the stale record is dropped', async () => {
+  resetRoles()
+  new RoleStore(rolesFile).set('op@example.com', 'operator')
+  const { b } = brokerWith([{ id: MEMBER, userId: USER, email: 'op@example.com', status: 2, type: 2 }])
+  assert.equal((await b.members!(SID))[0].role, 'viewer')
+  assert.equal(new RoleStore(rolesFile).get('op@example.com'), null)
+})
+
+test('(b) removed, then added again as a User: a viewer, whatever an old record said', async () => {
+  resetRoles()
+  new RoleStore(rolesFile).set('back@example.com', 'operator')
+  const gone = brokerWith([])
+  await gone.b.members!(SID)
+  assert.equal(new RoleStore(rolesFile).get('back@example.com'), null, 'gone from the org: record dropped')
+  new RoleStore(rolesFile).set('back@example.com', 'operator')   // even if it were still there
+  const again = brokerWith([{ id: MEMBER, userId: USER, email: 'back@example.com', status: 2, type: 2 }])
+  assert.equal((await again.b.members!(SID))[0].role, 'viewer')
+})
+
+test('(c) removed while their role was being raised: no record is written for someone who is gone', async () => {
+  resetRoles()
+  const members: any[] = [{ id: MEMBER, userId: USER, email: 'race@example.com', status: 2, type: 2 }]
+  const { b } = brokerWith(members)
+  // The vault takes the edit, and the member is removed before HyperProx reads the list again.
+  const v = (b as any).sessions.get(SID).vault
+  const edit = v.orgEdit
+  v.orgEdit = async (...a: any[]) => { await edit(...a); members.splice(0, 1) }
+  await b.setMemberRole(SID, MEMBER, 'operator')
+  assert.equal(new RoleStore(rolesFile).get('race@example.com'), null)
+})
+
+test('(d) the record cannot be written after the vault took the change: an error, and they read lower, never higher', async () => {
+  resetRoles()
+  const members = [{ id: MEMBER, userId: USER, email: 'fail@example.com', status: 2, type: 2 }]
+  const { b } = brokerWith(members)
+  class Broken extends RoleStore { set(): void { throw new Error('disk full') } }
+  setMemberRoles(new Broken(rolesFile))
+  try {
+    await assert.rejects(b.setMemberRole(SID, MEMBER, 'operator'), /could not record it, so they read as a viewer/)
+    assert.equal(members[0].type, 4, 'the vault did make them a Manager')
+    assert.equal((await b.members!(SID))[0].role, 'viewer', 'without the record: viewer, not higher')
+  } finally { setMemberRoles(new RoleStore(rolesFile)) }
 })

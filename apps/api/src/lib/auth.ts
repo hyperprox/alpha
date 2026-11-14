@@ -57,6 +57,22 @@ export function allSessions(): ActiveSession[] {
   return [...sessions.values()]
 }
 
+/**
+ * End every session of one person (by vault user id or email): after they are removed, or their role changes,
+ * nothing they were signed in with may keep the old role. Returns the sids ended.
+ */
+export function endSessionsOf(who: { userId?: string | null; email?: string | null }): string[] {
+  const email = (who.email ?? '').trim().toLowerCase()
+  const ended: string[] = []
+  for (const s of allSessions()) {
+    if ((who.userId && s.userId === who.userId) || (email && s.email.trim().toLowerCase() === email)) {
+      removeSession(s.sid)
+      ended.push(s.sid)
+    }
+  }
+  return ended
+}
+
 export function markReconfirmed(sid: string, now = Date.now()): number {
   const s = sessions.get(sid)
   if (!s) return 0

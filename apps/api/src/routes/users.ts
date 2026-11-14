@@ -35,10 +35,13 @@ import { getBroker, VaultAuthError, BootstrapNotPendingError, type VaultBroker }
 import { isGrantable, needsVaultOwner, VaultOwnerOnlyError, VAULT_ID, type GrantableRole } from '../lib/vault/members'
 import { InvitationStore } from '../lib/users/invitations'
 import { auditOrThrow } from '../lib/audit'
+import { endSessionsOf } from '../lib/auth'
 import { requestHost } from '../lib/gate'
 
 export interface UserRouteDeps {
   broker?(): VaultBroker
+  /** End one person's sessions (default: lib/auth.ts endSessionsOf, and their vault sessions signed out). */
+  endSessions?(who: { userId: string | null; email: string }): Promise<number>
   invitations?: InvitationStore
   audit?(action: string, resource: string, details?: Record<string, unknown>): Promise<void>
 }
@@ -67,6 +70,11 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
   const broker = deps.broker ?? getBroker
   const store = deps.invitations ?? new InvitationStore()
   const audit = deps.audit ?? auditOrThrow
+  const endSessions = deps.endSessions ?? (async (who: { userId: string | null; email: string }) => {
+    const sids = endSessionsOf(who)
+    for (const sid of sids) await broker().signOut(sid).catch(() => undefined)
+    return sids.length
+  })
 
   return async (fastify) => {
     const needs = (role: Role) => async (req: FastifyRequest, reply: FastifyReply) => {
@@ -157,9 +165,14 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       if (!isGrantable(role)) return reply.status(400).send({ ok: false, error: 'The role is admin, operator or viewer.' })
       const b = broker()
       if (!b.setMemberRole) return unsupported(reply)
+      let member
+      try { member = b.members ? (await b.members(req.session!.sid)).find(m => m.id === id) : undefined } catch (e) { return failed(reply, e) }
+      if (b.members && !member) return reply.status(404).send({ ok: false, error: 'No such member' })
       if (!(await audited(reply, 'users.role', `member:${id}`, { by: req.session!.email, role }))) return
       try { await b.setMemberRole(req.session!.sid, id, role as GrantableRole) } catch (e) { return failed(reply, e) }
-      return { ok: true, data: { id, role } }
+      // Their sessions end, so the new role applies at once (a demotion included); they sign in again with it.
+      const signedOut = member ? await endSessions({ userId: member.userId, email: member.email }) : 0
+      return { ok: true, data: { id, role, signedOut } }
     })
 
     // Remove someone who joined: admin (a viewer) or owner (anyone but the owner), master password re-entered
@@ -180,7 +193,9 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       try { await b.removeMember(req.session!.sid, id) }
       catch (e) { return failed(reply, e, { action: 'users.remove', resource: `member:${id}`, details }) }
       for (const i of store.list()) if (i.email === member.email) store.remove(i.hash)
-      return { ok: true, data: { id, removed: true } }
+      // Signed out everywhere at once: a session they already had keeps no access (sessions last up to 12 hours).
+      const signedOut = await endSessions({ userId: member.userId, email: member.email })
+      return { ok: true, data: { id, removed: true, signedOut } }
     })
 
     fastify.delete<{ Params: { hash: string } }>('/invitations/:hash', { preHandler: needs('admin') }, async (req, reply) => {

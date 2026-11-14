@@ -141,13 +141,13 @@ export default function UsersPage() {
   useEffect(() => { if (canUse) void load() }, [canUse, load])
 
   const changeRole = (m: Member, next: Grantable) => run(() => apiJson(`/api/users/${m.id}/role`, 'PUT', { role: next }), r => {
-    if (!r.ok) setError(r.error ?? 'Could not change the role'); else { setToast(`${m.email} is now ${next}.`); void load() }
+    if (!r.ok) setError(r.error ?? 'Could not change the role'); else { setToast(`${m.email} is now ${next}. They were signed out, and get the new role when they sign in again.`); void load() }
   })
   // Removing someone who joined: confirmed in words, then the master password again (useReconfirmed), audited.
   const [removing, setRemoving] = useState<Member | null>(null)
   const remove = (m: Member) => run(() => apiJson(`/api/users/${m.id}`, 'DELETE'), r => {
     setRemoving(null)
-    if (!r.ok) setError(r.error ?? 'Could not remove them'); else { setToast(`${m.email} was removed and can no longer sign in.`); void load() }
+    if (!r.ok) setError(r.error ?? 'Could not remove them'); else { setToast(`${m.email} was removed: signed out now, and can no longer sign in.`); void load() }
   })
   const withdraw = (i: Invitation) => run(() => apiJson(`/api/users/invitations/${i.id}`, 'DELETE'), r => {
     if (!r.ok) setError(r.error ?? 'Could not withdraw it'); else { setToast(`The link for ${i.email} no longer works.`); void load() }
@@ -228,7 +228,8 @@ export default function UsersPage() {
         <Modal title={`Remove ${removing.email}?`} onClose={() => setRemoving(null)}>
           <div className="space-y-4">
             <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
-              They are taken out of HyperProx&apos;s vault organisation and can no longer sign in. Their own vault account stays,
+              They are taken out of HyperProx&apos;s vault organisation, signed out of any session they have now, and can no
+              longer sign in. Their own vault account stays,
               and nothing they made is deleted. You will be asked for your master password, and the removal is audited.
             </p>
             <div className="flex gap-2 justify-end">

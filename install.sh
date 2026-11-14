@@ -1029,6 +1029,7 @@ configure_update_source() {
 # ── Vault gate settings ───────────────────────────────────────────────────────
 # Idempotent: runs for fresh installs and for existing .env files that predate the vault. Existing values
 # are never overwritten, so re-running the installer keeps the admin token that is already in force.
+# 1.37.x reports a Manager as type 4 (Custom); HyperProx's roles rely on that (apps/api/src/lib/users/roles.ts).
 VAULT_IMAGE="vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055"
 
 env_has() { grep -qE "^$1=" "${ENV_FILE}" 2>/dev/null; }

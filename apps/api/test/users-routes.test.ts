@@ -57,9 +57,10 @@ function rig(role: Role, opts: { token?: boolean; auditFails?: boolean; faults?:
   app.addHook('onRequest', async req => {
     if (req.url.startsWith('/api/users')) (req as any).session = { sid: opts.token ? 'token:t1' : 'a'.repeat(32), role, email: `${role}@example.com` }
   })
-  app.register(buildUserRoutes({ broker: () => broker, invitations, audit }), { prefix: '/api/users' })
+  const ended: Array<{ userId: string | null; email: string }> = []
+  app.register(buildUserRoutes({ broker: () => broker, invitations, audit, endSessions: async who => { ended.push(who); return 1 } }), { prefix: '/api/users' })
   app.register(buildJoinRoutes({ broker: () => broker, invitations, audit }), { prefix: '/api/auth/join' })
-  return { app, calls, audits, invitations, dir, broker }
+  return { app, calls, audits, invitations, dir, broker, ended }
 }
 
 test('the gate: listing is admin, every change is re-confirmed, the join calls are public', () => {
@@ -363,4 +364,31 @@ test('remove a member: no audit row, no change; an API token cannot', async () =
 test('removing a member is admin at least, with the master password re-entered', () => {
   assert.equal(requiredRole('DELETE', `/api/users/${M2}`), 'admin')
   assert.equal(needsReconfirm('DELETE', `/api/users/${M2}`), true)
+})
+
+test('removing someone, or changing their role, ends their live sessions at once', async () => {
+  const x = rig('owner') as any
+  let r = await x.app.inject({ method: 'DELETE', url: `/api/users/${M3}` })
+  assert.equal(r.statusCode, 200, r.body)
+  assert.deepEqual(x.ended.at(-1), { userId: 'u3', email: 'op@example.com' })
+  assert.equal(r.json().data.signedOut, 1)
+  r = await x.app.inject({ method: 'PUT', url: `/api/users/${M2}/role`, payload: { role: 'operator' } })
+  assert.equal(r.statusCode, 200, r.body)
+  assert.deepEqual(x.ended.at(-1), { userId: 'u2', email: 'new@example.com' })
+  const refused = rig('owner', { faults: { ownerOnly: true } }) as any
+  await refused.app.inject({ method: 'DELETE', url: `/api/users/${M3}` })
+  assert.equal(refused.ended.length, 0, 'nothing ended when the vault refused')
+})
+
+test('endSessionsOf ends every session of that person, by user id or email, and nobody else\'s', async () => {
+  const { addSession, allSessions, endSessionsOf, clearSessions } = await import('../src/lib/auth')
+  clearSessions()
+  addSession({ sid: 'a'.repeat(32), email: 'Op@Example.com', role: 'operator', userId: 'u3' })
+  addSession({ sid: 'b'.repeat(32), email: 'op@example.com', role: 'operator', userId: 'u3' })
+  addSession({ sid: 'c'.repeat(32), email: 'other@example.com', role: 'admin', userId: 'u9' })
+  assert.deepEqual(endSessionsOf({ userId: null, email: 'op@example.com' }).length, 2)
+  assert.deepEqual(allSessions().map(s => s.email), ['other@example.com'])
+  addSession({ sid: 'd'.repeat(32), email: 'renamed@example.com', role: 'viewer', userId: 'u4' })
+  assert.equal(endSessionsOf({ userId: 'u4', email: 'nobody@example.com' }).length, 1)
+  clearSessions()
 })
