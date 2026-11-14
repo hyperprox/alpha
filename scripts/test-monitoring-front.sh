@@ -35,6 +35,10 @@ mkdir -p "${tmp}/config/prometheus/rules" "${tmp}/config/prometheus/targets" "${
 # that Prometheus could not write a root-owned directory and crash-looped on every fresh install).
 HYPERPROX_DIR="${tmp}" ENV_FILE=/dev/null bash -c "$(sed -n '/^ensure_prometheus_data() {/,/^}/p' "${here}/bin/hyperprox-config"); log() { :; }; warn() { :; }; PROMETHEUS_UID=65534; ensure_prometheus_data"
 cp -r "${here}/config/grafana" "${tmp}/config/grafana"
+# The cluster dashboard as an install has it: bin/hyperprox-config draws provisioning/dashboards/hyperprox-cluster.json
+# from config/grafana/dashboards/ for the GPUs found (it is git-ignored, so a copy of the repo alone has none).
+node "${here}/packages/hardware/dashboard.js" "${tmp}" >/dev/null \
+  && [[ -s "${tmp}/config/grafana/provisioning/dashboards/hyperprox-cluster.json" ]] || { echo "could not draw the cluster dashboard"; exit 1; }
 sed -i 's|http://127.0.0.1:9090|http://127.0.0.1:19090|' "${tmp}/config/grafana/provisioning/datasources/prometheus.yml"
 grep -q 19090 "${tmp}/config/grafana/provisioning/datasources/prometheus.yml" || { echo "could not retarget the datasource"; exit 1; }
 # Prometheus scrapes only itself here (the shipped config also scrapes the API on :3002, the real one).
