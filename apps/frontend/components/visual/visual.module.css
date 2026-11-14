@@ -49,8 +49,8 @@
 @keyframes hxScan { from { transform: translateY(-100%); } to { transform: translateY(250%); } }
 .hudIcon { color: var(--hx-accent); display: flex; }
 .hudRight { display: flex; flex-direction: column; gap: 12px; min-width: 0; position: relative; }
-.hudTitle { margin: 0; font: 700 2rem/1 var(--font-display); letter-spacing: .04em; text-transform: uppercase; color: var(--text-bright); overflow-wrap: anywhere; }
-.hudEyebrow { display: block; font: 500 .75rem var(--font-mono); color: var(--hx-accent); letter-spacing: .14em; margin-bottom: 6px; text-transform: uppercase; overflow-wrap: anywhere; }
+.hudTitle { margin: 0; font: 700 2rem/1 var(--font-display); letter-spacing: .04em; text-transform: uppercase; color: var(--text-bright); overflow-wrap: break-word; }
+.hudEyebrow { display: block; font: 500 .75rem var(--font-mono); color: var(--hx-accent); letter-spacing: .14em; margin-bottom: 6px; text-transform: uppercase; overflow-wrap: break-word; }
 .hudActions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .chips { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: 8px; }
 .chip { background: var(--ground-deep); border: 1px solid var(--hx-line); border-radius: 10px; padding: 8px 10px; min-width: 0; }
@@ -219,7 +219,8 @@ a.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* ── the HUD core: concentric rings ── */
 .core { position: relative; width: 170px; height: 170px; flex: 0 0 auto; }
 .core svg { position: absolute; inset: 0; width: 170px; height: 170px; }
-.coreMid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 30px; }
+.coreMid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 30px; min-width: 0; }
+.coreMid > * { max-width: 100%; }
 .coreMid b { font: 700 2rem/1 var(--font-display); color: var(--text-bright); }
 .coreMid span { font: 500 .58rem var(--font-mono); letter-spacing: .14em; color: var(--text-muted); text-transform: uppercase; }
 .coreMid em { font: 600 .8rem var(--font-display); font-style: normal; letter-spacing: .12em; text-transform: uppercase; margin-top: 4px; color: var(--good); }
@@ -286,7 +287,7 @@ a.ptile:hover { border-color: color-mix(in srgb, var(--hx-accent) 45%, transpare
 .tile span { font: 500 .6rem var(--font-mono); letter-spacing: .1em; color: var(--text-muted); text-transform: uppercase; }
 .pill { display: inline-flex; align-items: center; gap: 5px; font: 500 .66rem var(--font-mono); letter-spacing: .06em; text-transform: uppercase;
   border: 1px solid var(--hx-line-hi); border-radius: 999px; padding: 2px 8px; color: var(--text-soft); white-space: nowrap; }
-.pill { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.pill { max-width: 100%; white-space: normal; overflow-wrap: break-word; word-break: normal; }   /* "CONTAINER 216" breaks at the space, never "CONTAIN/ER" */
 .pill[data-tone="good"] { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); background: color-mix(in srgb, var(--good) var(--tint), transparent); }
 .pill[data-tone="warn"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) var(--tint), transparent); }
 .pill[data-tone="bad"] { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 45%, transparent); background: color-mix(in srgb, var(--crit) var(--tint), transparent); }
@@ -339,8 +340,13 @@ a.ptile:hover { border-color: color-mix(in srgb, var(--hx-accent) 45%, transpare
   .topoWide { display: none; }
   .topoTall { display: block; }
   .bar { grid-template-columns: minmax(0, 6.5rem) minmax(0, 1fr) 3.4rem; }
-  .core { width: 150px; height: 150px; }
-  .core svg { width: 150px; height: 150px; }
+  /* The ring keeps its full size on a phone: at 150px its centre (the inner ring is 55/170 of it) was narrower than
+     "28/34" over "GUESTS RUNNING", which ran into the ring. The words shrink a little instead. */
+  .core { width: 170px; height: 170px; }
+  .core svg { width: 170px; height: 170px; }
+  .coreMid { padding: 0 34px; }
+  .coreMid b { font-size: 1.7rem; }
+  .coreMid span { font-size: .52rem; letter-spacing: .08em; }
   .talk { grid-template-columns: minmax(0, 6.5rem) minmax(0, 1fr) 4.4rem; }
 }
 

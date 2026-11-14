@@ -15,6 +15,7 @@ import { SessionBadge } from './SessionBadge'
 import { versionLabel, GIT_DESCRIBE } from './version'
 import { NAV, isActive } from './nav'
 import { useSession } from '@/lib/session'
+import { navHasMoreBelow } from '@/lib/nav-scroll'
 import { DemoBadge } from './TopBar'
 import s from './shell.module.css'
 
@@ -27,6 +28,21 @@ export function Sidebar() {
   const { status, email } = useSession()
   const menuBtn = useRef<HTMLButtonElement>(null)
   const railRef = useRef<HTMLElement>(null)
+  // The menu scrolls on its own. When more of it is below the fold (APPS at 1440x900), it fades out at the
+  // bottom and a "More" button says so; nothing hidden without a cue.
+  const navRef = useRef<HTMLElement>(null)
+  const [more, setMore] = useState(false)
+  useEffect(() => {
+    const el = navRef.current
+    if (!el) return
+    const check = () => setMore(navHasMoreBelow(el))
+    check()
+    el.addEventListener('scroll', check, { passive: true })
+    window.addEventListener('resize', check)
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(check) : null
+    ro?.observe(el)
+    return () => { el.removeEventListener('scroll', check); window.removeEventListener('resize', check); ro?.disconnect() }
+  }, [collapsed])
 
   useEffect(() => {
     try { setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1') } catch { /* private mode */ }
@@ -99,7 +115,13 @@ export function Sidebar() {
           )
           return (
             <>
-              <nav className={`${s.nav} ${s.navScroll}`} aria-label="Main">{NAV.slice(0, -1).map(render)}</nav>
+              <nav ref={navRef} className={`${s.nav} ${s.navScroll}`} data-more={more ? 'true' : undefined} aria-label="Main">{NAV.slice(0, -1).map(render)}</nav>
+              {more && (
+                <button type="button" className={s.navMore} onClick={() => navRef.current?.scrollBy({ top: navRef.current.clientHeight * 0.8, behavior: 'smooth' })}
+                  aria-label="Scroll the menu: more below">
+                  <span>More</span> <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden><path d="m6 9 6 6 6-6" /></svg>
+                </button>
+              )}
               <nav className={`${s.nav} ${s.navPinned}`} aria-label="Settings">{render(NAV[NAV.length - 1], NAV.length - 1)}</nav>
             </>
           )

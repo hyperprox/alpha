@@ -124,9 +124,11 @@ export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction,
 }) {
   const all = rows.length > 0 && rows.every(r => selected.has(r.id))
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
+    // On a phone the table stacks: one card per machine, each provider under it with its name, so no column is
+    // cut off past the screen's edge.
+    <div className="overflow-x-auto max-sm:overflow-visible">
+      <table className="w-full text-sm max-sm:block">
+        <thead className="max-sm:hidden">
           <tr style={THEAD_STYLE}>
             {admin && (
               <th scope="col" className={TH} style={{ width: 36 }}>
@@ -137,15 +139,15 @@ export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction,
             {PROVIDERS.map(p => <th key={p} scope="col" className={TH}>{PROVIDER_LABEL[p].toUpperCase()}</th>)}
           </tr>
         </thead>
-        <tbody>
+        <tbody className="max-sm:block">
           {rows.map(r => (
-            <tr key={r.id} style={{ borderBottom: '1px solid var(--border-dim)', verticalAlign: 'top' }}>
+            <tr key={r.id} className="max-sm:block max-sm:py-2" style={{ borderBottom: '1px solid var(--border-dim)', verticalAlign: 'top' }}>
               {admin && (
-                <td className="px-4 py-2.5">
+                <td className="px-4 py-2.5 max-sm:float-left max-sm:px-2 max-sm:py-1">
                   <input type="checkbox" aria-label={`Select ${r.name}`} disabled={!!r.self || !!r.excluded} checked={selected.has(r.id)} onChange={e => onSelect([r.id], e.target.checked)} />
                 </td>
               )}
-              <td className="px-4 py-2.5">
+              <td className="px-4 py-2.5 max-sm:block max-sm:px-2 max-sm:py-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{r.name}</span>
                   <Badge tone={r.kind === 'node' ? 'violet' : 'muted'}>{KIND_LABEL[r.kind]}{r.vmid ? ` ${r.vmid}` : ''}</Badge>
@@ -156,7 +158,8 @@ export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction,
                 {r.node && r.kind !== 'node' && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>on {r.node}</div>}
               </td>
               {PROVIDERS.map(p => (
-                <td key={p} className="px-4 py-2.5">
+                <td key={p} className="px-4 py-2.5 max-sm:block max-sm:px-2 max-sm:py-1.5">
+                  <div className="sm:hidden font-mono text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-dimmer)' }} aria-hidden>{PROVIDER_LABEL[p]}</div>
                   <Cell row={r} provider={p} cell={r.cells[p]} admin={admin} busy={busy} configured={!!configured[p]} onAction={onAction} />
                 </td>
               ))}
