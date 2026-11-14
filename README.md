@@ -258,13 +258,22 @@ In a Proxmox container:
   the container's network settings at every start. If it uses DHCP, the installer shows the exact
   `pct set <ID> --net0 …` line that keeps its current address, to run on the node.
 
-First install the two things the steps below use, then clone and run, as root:
+First install the two things the steps below use, then clone and run, as root. The install takes several
+minutes; run it inside `tmux` or `screen` (`apt install -y tmux`, then `tmux`), so a dropped SSH session does
+not stop it half-way (if it does stop, run it again: see below):
 
 ```bash
 apt update && apt install -y git curl
 git clone https://github.com/hyperprox/alpha.git /opt/hyperprox
 bash /opt/hyperprox/install.sh
 ```
+
+**A version, a branch or a mirror.** `install.sh --ref=<tag|branch|commit>` (or `HYPERPROX_REF=...`) installs
+that instead of `main`: a branch is checked out as that branch, a tag or commit puts `main` at it.
+`HYPERPROX_REPO_URL=<git URL>` clones a mirror or fork instead of GitHub. The installer writes both into `.env`
+as `HYPERPROX_UPDATE_REPO` and `HYPERPROX_UPDATE_BRANCH`, so the in-app updater follows the same source: a
+branch install is offered that branch's new commits on the alpha channel, a mirror install updates from the
+mirror. A re-run that names neither keeps what `.env` already says.
 
 The installer sets everything up in `/opt/hyperprox`: it installs what HyperProx runs on (Docker,
 Node.js 20 and pnpm 10), builds HyperProx, creates its built-in vault and starts its services, then checks
@@ -281,7 +290,8 @@ holds only the start-up keys HyperProx's own services need before anyone signs i
 passwords, the vault's admin key, Grafana's encryption key and the key Prometheus uses to read plug-in
 metrics.
 
-Two more keys are there only for a short while. The setup key is removed when you create the owner account. Grafana's
+Two more keys are there only for a short while. The setup key is removed from `.env` when the owner account is
+created (at the owner's first sign-in), and stays removed. Grafana's
 first admin password moves into the vault when you create the owner account. Until then there is no
 vault to hold anything, so the access key HyperProx makes for itself in Proxmox waits in `.env` and also
 moves into the vault at that first sign-in. Anything you type during setup, such as a node login or a DNS
@@ -293,12 +303,16 @@ with an overlay error:
 ```bash
 pct create <ctid> <template-storage>:vztmpl/<debian-template>.tar.zst \
   --hostname hyperprox --cores 4 --memory 8192 --rootfs <storage>:100 \
-  --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+  --net0 name=eth0,bridge=vmbr0,ip=192.0.2.50/24,gw=192.0.2.1 \
   --unprivileged 0 --features keyctl=1,nesting=1 --onboot 1 --start 1
 ```
 
+Use your own free address and gateway in `ip=…/24,gw=…`: a fixed address set in Proxmox is the one that stays
+(with `ip=dhcp` the installer shows the `pct set` line that pins the address it got).
+
 No API token is needed for this path: the setup wizard makes one from your Proxmox login. Re-running
-`install.sh` is safe; it keeps an existing `.env`, certificates and data.
+`install.sh` is safe, also after an install that was interrupted: it first finishes any package installs left
+half-done (`dpkg --configure -a`), and it keeps an existing `.env`, certificates and data.
 
 ### HTTPS
 
@@ -339,7 +353,7 @@ header to the `:443` server in `config/nginx/conf.d/hyperprox.conf`.
 The installer prints a wizard link with a setup key: `https://<container-ip>/setup#k=<key>`. Keep it
 private. If you lose it before setup is done, run `grep SETUP_SECRET /opt/hyperprox/.env` on the
 HyperProx machine. The same key is needed to create the owner account, so it stays until the owner's first
-sign-in removes it. The wizard saves its progress, so reloading it resumes at the step you reached.
+sign-in removes it from `.env`; nothing writes it back after that. The wizard saves its progress, so reloading it resumes at the step you reached.
 
 1. **Connect your Proxmox.** Sign in with your Proxmox web login (two-factor codes are supported).
    HyperProx uses it once to create its own API token, `hyperprox-<hostname>-<install id>`, and a
@@ -350,7 +364,11 @@ sign-in removes it. The wizard saves its progress, so reloading it resumes at th
    has: its GPUs, built in or dedicated.
 3. **Services.** Finds Nginx Proxy Manager, Ollama and Proxmox Backup Server already on your network,
    and asks whether you want charts and dashboards (Prometheus and Grafana). To run Nginx Proxy Manager,
-   install it from the [Catalogue](#catalogue) after setup.
+   install it from the [Catalogue](#catalogue) after setup. **Found is not connected:** the wizard asks for
+   no logins, so a Nginx Proxy Manager or Proxmox Backup Server it found is listed at the end as *found at
+   host:port, not connected yet*, with a button to where you add its login (Settings → Proxy, or the Proxmox
+   Backup Server plug-in). Until then Proxy, Certificates and the plug-in show it as not set up. Ollama needs
+   no login, so it is connected.
 4. **Options.** The same yes/no questions as `bootstrap.sh`, only those that apply (see
    [Monitoring, power, GPUs and more](#monitoring-power-gpus-and-more)). If you say yes to anything on
    your nodes, it asks once for the login you use to SSH to them (usually root), tests it on every node,
@@ -407,7 +425,8 @@ is. HyperProx checks every 6 hours, and when you press **Check now**.
 - **Channel.** *Stable* (the default) offers GitHub Releases newer than your version that contain the commit you
   run (never an older one, whatever its tag says). Pre-releases are included while **Include pre-releases** is
   on, which it is by default because every HyperProx release is an `-alpha` for now. *Alpha* follows every
-  commit on `main`. Before you install you see the version, its date, the release notes (or, on alpha, the
+  commit on `main` (or on the branch the install came from, `HYPERPROX_UPDATE_BRANCH`), and only ever offers a
+  commit newer than yours. Before you install you see the version, its date, the release notes (or, on alpha, the
   commits since yours in plain words), and flags for breaking changes, database migrations, and a keyholder
   change (which locks HyperProx once, so you sign in again).
 - **Install.** Admins only, with your master password re-entered; an API token can never do it. **Preview**
@@ -420,8 +439,8 @@ is. HyperProx checks every 6 hours, and when you press **Check now**.
   3. fetch the new version from the configured upstream only, check it is the commit you were shown, that it
      is on the release tag (a tag made under another name is refused) or on `main`, that it contains the commit
      you run, that its version is the one offered, and its signature when the tag is signed; look it over in a
-     staging copy, then check it out. A version that does not contain yours (upstream rewrote its history)
-     installs only after you type its name;
+     staging copy, then check it out. A version that does not contain yours (local commits, or upstream rewrote its
+     history) is never offered, so an update never moves you to an older commit;
   4. run `deploy.sh` from the new version: dependencies, build, migrations, restart (you stay signed in);
   5. check that the API runs the new commit, the web app answers, and the sign-in page loads through nginx.
 
@@ -436,7 +455,9 @@ is. HyperProx checks every 6 hours, and when you press **Check now**.
   maintenance window you set, only with trusted keys configured, never from the mirror, and never retried for a
   version that did not succeed).
 - **Where updates come from** is set in `.env`, not in the app: `HYPERPROX_UPDATE_REPO` (default
-  `https://github.com/hyperprox/alpha.git`), `HYPERPROX_UPDATE_MIRROR` (a GitLab mirror, tried when GitHub does
+  `https://github.com/hyperprox/alpha.git`; `install.sh` writes the repository it installed from),
+  `HYPERPROX_UPDATE_BRANCH` (the branch the alpha channel follows; `install.sh` writes the branch it installed,
+  else `main`), `HYPERPROX_UPDATE_MIRROR` (a GitLab mirror, tried when GitHub does
   not answer or its hourly limit for requests without a token is used up), and `HYPERPROX_UPDATE_TRUSTED_KEYS`
   (an SSH `allowed_signers` file or a GPG key file, for signed releases). The self-update needs an install made
   by `install.sh` (a git checkout); it only ever updates HyperProx itself.
