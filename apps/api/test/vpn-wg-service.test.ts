@@ -8,7 +8,7 @@ import { RemoteAccessService } from '../src/lib/remote/service'
 import { MemoryRemoteStore } from '../src/lib/remote/store'
 import type { RemoteExecutor } from '../src/lib/remote/executor'
 import type { Machine } from '../src/lib/remote/types'
-import { WireguardService, publicOf, type WgVault } from '../src/lib/vpn/wireguard/service'
+import { WireguardService, publicOf, wgModuleVerdict, WG_MODULE_SCRIPT, type WgVault } from '../src/lib/vpn/wireguard/service'
 import { MemoryWgStore } from '../src/lib/vpn/wireguard/store'
 import type { RouterApi } from '../src/lib/vpn/wireguard/routeros'
 
@@ -374,4 +374,18 @@ test('no MikroTik set up: the router view is empty and says so, not an error on 
   assert.match(v.setupNote, /No MikroTik router is set up/)
   // Acting on the router still needs one.
   await assert.rejects(svc.routerInterfaces(), /No MikroTik router is configured/)
+})
+
+test('WireGuard in a container needs its node\'s module: the check says why and the one-line fix, and never loads it', async () => {
+  assert.deepEqual(wgModuleVerdict('HPX_WG_MOD=yes\n', 'node-a'), { ok: true, reason: null, fix: null })
+  const no = wgModuleVerdict('HPX_WG_MOD=no\n', 'node-a')
+  assert.equal(no.ok, false)
+  assert.match(no.reason!, /not loaded on node-a/)
+  assert.equal(no.fix, 'modprobe wireguard && echo wireguard > /etc/modules-load.d/wireguard.conf')
+  assert.equal(wgModuleVerdict('', 'node-a').ok, null)
+  assert.doesNotMatch(WG_MODULE_SCRIPT, /modprobe/, 'the check only looks')
+  // A new server in a container whose node lacks it is refused with the fix, before anything is installed.
+  const x = rig()
+  ;(x.svc as any).moduleCheck = async () => no
+  await assert.rejects(server(x), /not loaded on node-a.*modprobe wireguard/s)
 })

@@ -505,6 +505,23 @@ test('VPN: WireGuard without the kernel module on the node is skipped, and the n
     fs.rmSync(path.join(c.root, 'sys/module/wireguard'), { recursive: true })
     const out = plain(c.run(['-y', '--dry-run', '--vpn', 'wireguard']).stdout)
     assert.match(out, /WireGuard kernel module is not loaded/)
+    assert.match(out, /modprobe wireguard && echo wireguard > \/etc\/modules-load\.d\/wireguard\.conf/, 'the one-line fix')
+    assert.match(out, /VPN\s+not now/)
+    assert.doesNotMatch(c.calls(), /modprobe/)
+  } finally { c.cleanup() }
+})
+
+test('VPN at a terminal without the WireGuard module: the menu says why and how, and choosing it is refused', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' })
+  try {
+    fs.rmSync(path.join(c.root, 'sys/module/wireguard'), { recursive: true })
+    // ID, address: Enter; health, charts, dns, ai: no; VPN 2 (refused), then 3
+    const r = c.run(['--dry-run'], '', { HPX_TTY: c.tty('\n\nn\nn\nn\nn\n2\n3\n\n') })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 0, out)
+    assert.match(out, /WireGuard\s+not available: the wireguard module is not loaded on/)
+    assert.match(out, /modprobe wireguard && echo wireguard > \/etc\/modules-load\.d\/wireguard\.conf/)
+    assert.match(out, /WireGuard needs the wireguard module/)
     assert.match(out, /VPN\s+not now/)
     assert.doesNotMatch(c.calls(), /modprobe/)
   } finally { c.cleanup() }

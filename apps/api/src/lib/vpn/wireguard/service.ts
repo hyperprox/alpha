@@ -37,6 +37,18 @@ import {
 } from './routeros'
 import type { WgPeer, WgServer, WgStore } from './store'
 
+/** The node's wireguard module, seen from inside a container (one shared kernel). Prints HPX_WG_MOD=yes|no. */
+export const WG_MODULE_SCRIPT = 'if [ -d /sys/module/wireguard ]; then echo HPX_WG_MOD=yes; else echo HPX_WG_MOD=no; fi\n'
+
+/** The one-line fix on a node without the module: load it now, and at every boot. HyperProx never runs it. */
+export const WG_MODULE_FIX = 'modprobe wireguard && echo wireguard > /etc/modules-load.d/wireguard.conf'
+
+export function wgModuleVerdict(output: string, node: string): { ok: boolean | null; reason: string | null; fix: string | null } {
+  if (/HPX_WG_MOD=yes/.test(output)) return { ok: true, reason: null, fix: null }
+  if (/HPX_WG_MOD=no/.test(output)) return { ok: false, reason: `The wireguard kernel module is not loaded on ${node}, and a container uses its node's kernel.`, fix: WG_MODULE_FIX }
+  return { ok: null, reason: 'could not tell whether the wireguard module is loaded', fix: null }
+}
+
 /** What the VPN page says when no MikroTik is set up. */
 export const NO_ROUTER_NOTE = 'No MikroTik router is set up. Add the MikroTik plug-in to see and manage its WireGuard here.'
 
@@ -140,9 +152,30 @@ export class WireguardService {
   // ── Servers ───────────────────────────────────────────────────────────────
 
   /** Set up a WireGuard server in a container or VM (never on a Proxmox node). */
+  /**
+   * Whether WireGuard can run in this machine. A container shares its node's kernel, so the node must have the
+   * wireguard module loaded (/sys/module/wireguard, seen from inside the container); HyperProx never loads it.
+   * A VM has its own kernel. ok null: it could not be checked (the reason says why).
+   */
+  async moduleCheck(machineId: string): Promise<{ ok: boolean | null; reason: string | null; fix: string | null }> {
+    const m = await this.machine(machineId)
+    if (m.kind === 'qemu' || m.kind === 'host') return { ok: true, reason: null, fix: null }
+    if (m.kind === 'node') return { ok: false, reason: 'A WireGuard server runs in a container or VM, never on a Proxmox node.', fix: null }
+    try {
+      const r = await this.d.remote.run(this.job('check module', 'system'), m, WG_MODULE_SCRIPT, { timeoutMs: 30_000 })
+      return wgModuleVerdict(r.output, m.node ?? 'its node')
+    } catch (e: any) {
+      return { ok: null, reason: `could not check the wireguard module: ${e?.message ?? e}`, fix: null }
+    }
+  }
+
   async createServer(o: { machineId: string; iface?: string; listenPort?: number; address: string; endpoint: string; backupKey?: boolean }, by: string): Promise<WgServer & { log: string }> {
     const m = await this.machine(o.machineId)
     if (m.kind === 'node') throw new WgInputError('A WireGuard server runs in a container or VM, never on a Proxmox node.')
+    if (m.kind === 'lxc') {
+      const mod = await this.moduleCheck(m.id)
+      if (mod.ok === false) throw new WgInputError(`${mod.reason} ${mod.fix ? `Run on the node: ${mod.fix}` : ''}`.trim())
+    }
     const iface = o.iface ?? 'hp-wg0'
     const listenPort = o.listenPort ?? 51820
     const bad = checkSpec({ iface, address: o.address, listenPort, peers: [] })

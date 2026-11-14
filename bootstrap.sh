@@ -701,19 +701,28 @@ check_endpoint() { [ "$1" = lan ] || [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251
 
 # ask_vpn: sets VPN (tailscale | wireguard | none), and WG_SUBNET and WG_ENDPOINT for WireGuard. Not now is the
 # default; with -y or no terminal it is not asked, and only an auth key or --vpn turns it on.
+# The one-line fix for a node without the WireGuard module, shown wherever WireGuard is not offered for it.
+WG_MODULE_FIX="modprobe wireguard && echo wireguard > /etc/modules-load.d/wireguard.conf"
+wg_module_loaded() { [ -d "${HPX_SYSFS:-/sys}/module/wireguard" ]; }
+
 ask_vpn() {
-  local pick why
+  local pick why wg_row
   [ -n "$VPN" ] || [ -z "$TS_KEY" ] || VPN=tailscale
+  # Checked before it is offered: the menu says why WireGuard cannot be had here, and how to fix it.
+  if wg_module_loaded; then wg_row="WireGuard   own small VPN container, forward UDP ${WG_PORT}"
+  else wg_row="WireGuard   not available: the wireguard module is not loaded on ${THIS_NODE}"; fi
   if [ -z "$VPN" ]; then
     if [ "$ASK_PLACEMENT" -eq 1 ]; then
+      wg_module_loaded || note "To offer WireGuard, run on ${THIS_NODE} first (HyperProx never loads it for you): ${WG_MODULE_FIX}"
       while :; do
         ask_choice pick 3 "VPN" "How do you want to reach HyperProx when you are away from home?" 3 \
           "Tailscale   sign in with a link, nothing to open on router" \
-          "WireGuard   own small VPN container, forward UDP ${WG_PORT}" \
+          "$wg_row" \
           "Not now     add it later on the VPN page"
         case "${pick,,}" in
           1|tailscale) VPN=tailscale; break;;
-          2|wireguard) VPN=wireguard; break;;
+          2|wireguard) if wg_module_loaded; then VPN=wireguard; break; fi
+                       bad_answer "WireGuard needs the wireguard module on ${THIS_NODE}: ${WG_MODULE_FIX}. Choose 1 or 3.";;
           3|none|no|not*) VPN=none; break;;
           *) bad_answer "$pick is not one of the choices: type 1, 2 or 3.";;
         esac
@@ -727,9 +736,9 @@ ask_vpn() {
     VPN=none
   fi
   [ "$VPN" = wireguard ] || return 0
-  if [ ! -d "${HPX_SYSFS:-/sys}/module/wireguard" ]; then
+  if ! wg_module_loaded; then
     warn "The WireGuard kernel module is not loaded on ${THIS_NODE}, and HyperProx never changes a node to load it: WireGuard skipped."
-    note "To use it: load it there (modprobe wireguard, and add wireguard to /etc/modules), then add it on the VPN page; or choose Tailscale."
+    note "To use it, run on ${THIS_NODE}: ${WG_MODULE_FIX}; then add it on the VPN page, or choose Tailscale."
     VPN=none; return 0
   fi
   [ -n "$WG_SUBNET" ] || WG_SUBNET="$(wg_subnet_default)"

@@ -49,6 +49,14 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
   const [peers, setPeers] = useState<Peer[]>([])
   const [live, setLive] = useState<Record<string, Live[]>>({})
   const [router, setRouter] = useState<RouterView | null>(null)
+  // Whether WireGuard can run in the machine chosen for a new server (a container needs its node's module).
+  const [wgMod, setWgMod] = useState<{ ok: boolean | null; reason: string | null; fix: string | null } | null>(null)
+  const checkModule = async (machineId: string) => {
+    setWgMod(null)
+    if (!machineId) return
+    const r = await apiJson<{ ok: boolean | null; reason: string | null; fix: string | null }>(`/api/vpn/wg/module?machineId=${encodeURIComponent(machineId)}`)
+    setWgMod(r.ok && r.body ? r.body : { ok: null, reason: r.error ?? null, fix: null })
+  }
   const [routerErr, setRouterErr] = useState<string | null>(null)
   const [shown, setShown] = useState<{ title: string; config: string } | null>(null)
   const [form, setForm] = useState<null | 'server' | { device: string } | 'connect' | 'router-device'>(null)
@@ -176,7 +184,7 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
 
       {form === 'server' && (
         <ConfirmDialog title="New WireGuard server" onClose={() => setForm(null)}>
-          <select style={FIELD} value={f.machineId ?? ''} onChange={e => setF({ ...f, machineId: e.target.value })}>
+          <select style={FIELD} value={f.machineId ?? ''} onChange={e => { const id = e.target.value; setF({ ...f, machineId: id }); void checkModule(id) }}>
             <option value="">Choose a container or VM…</option>
             {guests.filter(m => m.kind !== 'node' && m.running).map(m => <option key={m.id} value={m.id}>{m.name} ({m.id})</option>)}
           </select>
@@ -186,8 +194,17 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
             <input type="checkbox" className="mt-1" checked={!!f.backupKey} onChange={e => setF({ ...f, backupKey: e.target.checked })} />
             <span>Also keep the server key in the vault. A rebuilt server then keeps its key and no peer needs changing; but anyone who can reveal secrets in the vault could impersonate the server.</span>
           </label>
+          {wgMod && wgMod.ok === false && (
+            <Notice tone="warn">
+              <div className="space-y-1">
+                <div>{wgMod.reason} HyperProx never loads it for you. Run this on the node, then choose the machine again:</div>
+                <pre className="whitespace-pre-wrap rounded border p-2 font-mono text-xs" style={{ borderColor: 'var(--border)' }}>{wgMod.fix}</pre>
+              </div>
+            </Notice>
+          )}
+          {wgMod && wgMod.ok === null && wgMod.reason && <p className="text-xs" style={{ color: 'var(--text-dim)' }}>{wgMod.reason}</p>}
           <div className="flex justify-end gap-2">
-            <Btn kind="primary" onClick={async () => done(await send('/api/vpn/wg/servers', 'POST', { ...f, listenPort: Number((f.endpoint ?? '').split(':').pop()) || 51820 }), 'WireGuard server ready.')}>Create</Btn>
+            <Btn kind="primary" disabled={wgMod?.ok === false} onClick={async () => done(await send('/api/vpn/wg/servers', 'POST', { ...f, listenPort: Number((f.endpoint ?? '').split(':').pop()) || 51820 }), 'WireGuard server ready.')}>Create</Btn>
             <Btn onClick={() => setForm(null)}>Cancel</Btn>
           </div>
         </ConfirmDialog>
@@ -232,7 +249,7 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
 
       {form === 'connect' && (
         <ConfirmDialog title="Connect a machine to WireGuard" onClose={() => setForm(null)}>
-          <select style={FIELD} value={f.machineId ?? ''} onChange={e => setF({ ...f, machineId: e.target.value })}>
+          <select style={FIELD} value={f.machineId ?? ''} onChange={e => { const id = e.target.value; setF({ ...f, machineId: id }); void checkModule(id) }}>
             <option value="">Choose a node or guest…</option>
             {guests.filter(m => m.running).map(m => <option key={m.id} value={m.id}>{m.name} ({m.id})</option>)}
           </select>

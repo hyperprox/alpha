@@ -150,6 +150,13 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
         return reply.status(201).send({ server: await service.createServer({ machineId: b.machineId, iface: b.iface, listenPort: b.listenPort, address: String(b.address ?? ''), endpoint: String(b.endpoint ?? ''), backupKey: b.backupKey === true }, by(req)) })
       } catch (e) { return sendError(reply, e) }
     })
+    // Before offering a new server in a machine: can WireGuard run there (a container needs its node's module)?
+    fastify.get<{ Querystring: { machineId?: string } }>('/wg/module', async (req, reply) => {
+      try {
+        if (!MACHINE.test(String(req.query?.machineId ?? ''))) throw new WgInputError('Choose a machine')
+        return await service.moduleCheck(String(req.query.machineId))
+      } catch (e) { return sendError(reply, e) }
+    })
     fastify.post<{ Body: any }>('/wg/servers/adopt', async (req, reply) => {
       try {
         const b: any = req.body ?? {}
