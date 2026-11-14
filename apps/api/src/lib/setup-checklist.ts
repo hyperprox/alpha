@@ -449,12 +449,13 @@ async function hostKeyItem(deps: ChecklistDeps, nodes: string[], addrs: Record<s
   return {
     id: 'host-keys', ask: "Are your nodes' SSH host keys verified?", notes: [], rows, state, needsNodeLogin: false,
     action: state === 'done' || state === 'not-applicable' ? null : 'Verify automatically',
-    what: 'HyperProx sends a node its login only when the node shows a key that is verified or confirmed. It verifies them by itself, ' +
-      "against your cluster's own record of each node's key, read on a node when HyperProx was installed from one, and then through nodes " +
-      'already verified, or over Tailscale or WireGuard. It does this after you sign in and whenever it meets a new node; there is nothing ' +
-      "to press when they show verified. If HyperProx was not installed from a node, run the command below once on any node's own " +
-      "console (its screen, IPMI or iKVM, or an SSH session whose key you already verified; not this HyperProx's Terminal on a key " +
-      'that is not verified yet) and paste what it prints.',
+    what: 'HyperProx sends a node its login only when the node shows a key that is verified or confirmed. After the owner signs in it ' +
+      "verifies them by itself, with no node login, against what was read on a node: the cluster's record, that node's own key files, " +
+      "and every other node's own key files, read over the cluster's own SSH trust (bootstrap.sh does this; so does the command below). " +
+      'A node it cannot prove that way (an older install, or a node that did not answer then) stays not pinned: press Verify automatically ' +
+      'after adding a node login (it then proves the rest through nodes already verified, or over Tailscale or WireGuard), or run the ' +
+      "command below once on any node's own console (its screen, IPMI or iKVM, or an SSH session whose key you already verified; not this " +
+      "HyperProx's Terminal on a key that is not verified yet) and paste what it prints.",
     ...(state === 'done' || state === 'not-applicable' ? {} : { command: ANCHOR_COMMAND }),
   }
 }

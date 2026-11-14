@@ -2125,7 +2125,7 @@ PVEYML
   # The cluster's own record of every node's SSH host key, and this node's own key files, read HERE, as root on a
   # node: public keys only. HyperProx takes it as the anchor for verifying its nodes' keys by itself, so nobody has to
   # compare fingerprints (lib/hostkey-verify.ts; the same output as the command it shows for installs made elsewhere).
-  _hostrec="$( { echo "@@hpx local $(basename "$(readlink -f /etc/pve/local)")"; for f in /etc/pve/nodes/*/ssh_known_hosts; do [ -f "$f" ] && echo "@@hpx node $(basename "$(dirname "$f")")" && cat -- "$f"; done; echo "@@hpx priv"; cat /etc/pve/priv/known_hosts 2>/dev/null; echo "@@hpx own"; cat /etc/ssh/ssh_host_*_key.pub; echo "@@hpx end"; } 2>/dev/null | base64 -w0 || true)"
+  _hostrec="$( { echo "@@hpx local $(basename "$(readlink -f /etc/pve/local)")"; for f in /etc/pve/nodes/*/ssh_known_hosts; do [ -f "$f" ] && echo "@@hpx node $(basename "$(dirname "$f")")" && cat -- "$f"; done; echo "@@hpx priv"; cat /etc/pve/priv/known_hosts 2>/dev/null; l="$(basename "$(readlink -f /etc/pve/local)")"; for d in /etc/pve/nodes/*/; do [ -d "$d" ] || continue; n="$(basename "$d")"; [ "$n" = "$l" ] && continue; k="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/pve/priv/known_hosts -o HostKeyAlias="$n" -o ConnectTimeout=5 "root@$n" 'cat /etc/ssh/ssh_host_*_key.pub' 2>/dev/null </dev/null)" && [ -n "$k" ] && { echo "@@hpx peer $n"; printf '%s\n' "$k"; }; done; echo "@@hpx own"; cat /etc/ssh/ssh_host_*_key.pub; echo "@@hpx end"; } 2>/dev/null | base64 -w0 || true)"
 
   _answers="$(mktemp)"; TMP_PATHS+=("$_answers"); chmod 600 "$_answers"
   {

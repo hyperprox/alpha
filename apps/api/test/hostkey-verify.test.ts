@@ -6,7 +6,7 @@ import { requestContext } from '../src/lib/auth'
 import { fingerprintOf } from '../src/lib/ssh-broker'
 import {
   verifyNodes, parseKnownHosts, namesHost, recordView, clusterRecordScript, OWN_KEYS_SCRIPT, tailnetIdentity, wireguardIdentity,
-  isTailnetAddress, parseTailscaleStatus, SessionKeyRefused, VerifyRefusal, algorithmsFor, parseAnchorOutput, ANCHOR_COMMAND,
+  isTailnetAddress, parseTailscaleStatus, SessionKeyRefused, VerifyRefusal, algorithmsFor, parseAnchorOutput, ANCHOR_COMMAND, PEER_KEYS_SH,
   parseWhois, type WgLink, type VerifyDeps, type PresentedKey, type TailnetStatus, type TailnetWhois, type SessionOpts,
 } from '../src/lib/hostkey-verify'
 import { assertSafeScript } from '../src/lib/clusters/script-guard'
@@ -270,6 +270,25 @@ test('anchor command output: parsed from base64, the install node keeps every ow
   assert.equal(parseAnchorOutput(text.replace('@@hpx end', '')), null, 'cut short')
   assert.equal(parseAnchorOutput('hello'), null)
   assert.match(ANCHOR_COMMAND, /readlink -f \/etc\/pve\/local/)
+})
+
+test('anchor output with peer sections: another node\'s own key files, read over SSH checked against the record', () => {
+  const rsa2 = key('rsa'), ed2 = key('ed25519'), rsa3 = key('rsa'), ed3 = key('ed25519'), forged = key('rsa')
+  const own1 = key('ed25519')
+  const text = ['@@hpx local node1', '@@hpx node node1', `node1 ${own1.line}`, '@@hpx node node2', `node2 ${rsa2.line}`,
+    '@@hpx node node3', `node3 ${rsa3.line}`, '@@hpx priv', '',
+    // node2: its files hold the recorded RSA key and an ed25519 one: both become its anchor.
+    '@@hpx peer node2', `${rsa2.line} root@node2`, `${ed2.line} root@node2`,
+    // node3: files that do not hold the recorded key: ignored, the record stands.
+    '@@hpx peer node3', `${forged.line} root@node3`, `${ed3.line} root@node3`,
+    '@@hpx own', `${own1.line} root@node1`, '@@hpx end', ''].join('\n')
+  const set = parseAnchorOutput(text)!
+  assert.deepEqual(set.nodes.node2.map(k => k.fingerprint).sort(), [rsa2.fp, ed2.fp].sort(), 'node2 can now be verified by its ed25519 key, no login needed')
+  assert.deepEqual(set.nodes.node3.map(k => k.fingerprint), [rsa3.fp])
+  assert.match(ANCHOR_COMMAND, /StrictHostKeyChecking=yes -o UserKnownHostsFile=\/etc\/pve\/priv\/known_hosts/)
+  assert.ok(ANCHOR_COMMAND.includes(PEER_KEYS_SH))
+  const boot = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../../bootstrap.sh'), 'utf8') as string
+  assert.ok(boot.includes(PEER_KEYS_SH), 'bootstrap.sh reads the same peer keys')
 })
 
 // ---------------------------------------------------------------------------

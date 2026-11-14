@@ -182,7 +182,14 @@ export function algorithmsFor(types: string[]): string[] {
  * node's name, the cluster's record of every node's key, and the node's own public key files, as one base64 line.
  * Public keys only; nothing secret.
  */
-export const ANCHOR_COMMAND = `{ echo "${MARK} local $(basename "$(readlink -f /etc/pve/local)")"; for f in /etc/pve/nodes/*/ssh_known_hosts; do [ -f "$f" ] && echo "${MARK} node $(basename "$(dirname "$f")")" && cat -- "$f"; done; echo "${MARK} priv"; cat /etc/pve/priv/known_hosts 2>/dev/null; echo "${MARK} own"; cat /etc/ssh/ssh_host_*_key.pub; echo "${MARK} end"; } | base64 -w0; echo`
+/**
+ * Each other node's own key files, read over the cluster's own SSH trust (root's key that Proxmox shares between
+ * nodes), checked against the cluster's record (StrictHostKeyChecking, /etc/pve/priv/known_hosts, the node's name as
+ * the alias): only a node that proves it holds its recorded key is read. No login of HyperProx's is involved; this
+ * runs where the command runs, as root on a node. A node that does not answer in 5 s is left out.
+ */
+export const PEER_KEYS_SH = `l="$(basename "$(readlink -f /etc/pve/local)")"; for d in /etc/pve/nodes/*/; do [ -d "$d" ] || continue; n="$(basename "$d")"; [ "$n" = "$l" ] && continue; k="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/pve/priv/known_hosts -o HostKeyAlias="$n" -o ConnectTimeout=5 "root@$n" 'cat /etc/ssh/ssh_host_*_key.pub' 2>/dev/null </dev/null)" && [ -n "$k" ] && { echo "${MARK} peer $n"; printf '%s\\n' "$k"; }; done;`
+export const ANCHOR_COMMAND = `{ echo "${MARK} local $(basename "$(readlink -f /etc/pve/local)")"; for f in /etc/pve/nodes/*/ssh_known_hosts; do [ -f "$f" ] && echo "${MARK} node $(basename "$(dirname "$f")")" && cat -- "$f"; done; echo "${MARK} priv"; cat /etc/pve/priv/known_hosts 2>/dev/null; ${PEER_KEYS_SH} echo "${MARK} own"; cat /etc/ssh/ssh_host_*_key.pub; echo "${MARK} end"; } | base64 -w0; echo`
 
 export interface AnchorSet { local: string; nodes: Record<string, RecordedKey[]> }
 
@@ -234,11 +241,29 @@ export function parseAnchorOutput(raw: string): AnchorSet | null {
   if (!names.includes(local)) names.push(local)
   const ownStart = lines.findIndex(l => l === `${MARK} own`), end = lines.findIndex(l => l === `${MARK} end`)
   if (ownStart < 0 || end < ownStart) return null
-  const view = recordView(lines.filter((l, i) => !(i > ownStart && i < end) && l !== `${MARK} own` && !l.startsWith(`${MARK} local `)).join('\n'), names)
+  // "peer <node>" sections: another node's own key files, read over SSH that checked its recorded key (PEER_KEYS_SH).
+  const peers = new Map<string, string[]>()
+  let peer: string | null = null
+  const recordLines: string[] = []
+  lines.forEach((l, i) => {
+    if (l.startsWith(`${MARK} peer `)) { const n = l.slice(MARK.length + 6).trim(); peer = NODE_RE.test(n) ? n : null; if (peer) peers.set(peer, []); return }
+    if (l.startsWith(MARK)) peer = null
+    if (peer) { peers.get(peer)!.push(l); return }
+    if (!(i > ownStart && i < end) && l !== `${MARK} own` && !l.startsWith(`${MARK} local `)) recordLines.push(l)
+  })
+  const view = recordView(recordLines.join('\n'), names)
   if (!view) return null
   const own = ownKeyFingerprints(lines.slice(ownStart + 1, end).join('\n'))
   if (!own.length) return null
   view[local] = own.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint))
+  for (const [n, body] of peers) {
+    if (n === local || !names.includes(n)) continue
+    const files = ownKeyFingerprints(body.join('\n'))
+    const rec = view[n] ?? []
+    // The read was checked against the record, so the files must hold every recorded key; if not, keep the record.
+    if (!files.length || !rec.every(k => files.some(f => f.fingerprint === k.fingerprint))) continue
+    view[n] = files.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint))
+  }
   return { local, nodes: view }
 }
 
