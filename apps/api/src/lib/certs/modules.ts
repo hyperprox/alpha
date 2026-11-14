@@ -86,9 +86,15 @@ export interface CertsSources {
 
 const certId = (v: unknown): number | null => (typeof v === 'number' && v > 0 ? v : null)
 
+/** No Nginx Proxy Manager is connected: nothing of its to list or tidy, which is a state, not a failure. */
+export class ProxyNotConfigured extends Error {
+  readonly code = 'proxy_not_configured'
+  constructor() { super('Nginx Proxy Manager is not configured'); this.name = 'ProxyNotConfigured' }
+}
+
 async function npmClient(): Promise<NPMClient> {
   const c = await getProviderCredentials('proxy', 'npm')
-  if (!c?.url || !c?.email || !c?.password) throw new Error('Nginx Proxy Manager is not configured')
+  if (!c?.url || !c?.email || !c?.password) throw new ProxyNotConfigured()
   return new NPMClient(c.url, c.email, c.password)
 }
 

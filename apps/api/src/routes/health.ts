@@ -13,3 +13,11 @@ export const healthRoute: FastifyPluginAsync = async (fastify) => {
     }
   })
 }
+
+/**
+ * GET /api/health: the unauthenticated liveness probe (answers while the vault is locked). Status only: no
+ * version, no host names, no uptime. The detailed answer stays on /health, which nginx does not publish.
+ */
+export const publicHealthRoute: FastifyPluginAsync = async (fastify) => {
+  fastify.get('/', async () => ({ status: 'ok' }))
+}

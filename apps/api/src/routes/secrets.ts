@@ -3,13 +3,15 @@
 //  Names only by default. Reveal needs owner/admin and a fresh re-confirmation
 //  (enforced by the gate). Send creates an expiring, view-limited Bitwarden
 //  Send. Generate creates a password and stores it in the vault without
-//  showing it.
+//  showing it. Delete moves one item to the vault's trash: owner/admin,
+//  re-confirmed (gate) and audited before anything is removed.
 // =============================================================================
 
 import type { FastifyPluginAsync } from 'fastify'
 import { randomInt } from 'crypto'
 import { getBroker, type SecretItem } from '../lib/vault/broker'
-import { cachedSecret, cachedSecrets, putCachedSecret } from '../lib/vault/state'
+import { cachedSecret, cachedSecrets, putCachedSecret, removeCachedSecret } from '../lib/vault/state'
+import { auditOrThrow } from '../lib/audit'
 import { ITEM_PREFIX } from '../lib/credentials'
 
 const CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_.!@#%^*+='
@@ -102,6 +104,32 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.status(502).send({ ok: false, error: e?.message ?? 'Could not create the Send' })
       }
     })
+
+  // POST /api/secrets/delete { name } — owner/admin, re-confirmed (gate, lib/roles.ts), audited first: no audit row,
+  // no delete. HyperProx's own settings (hyperprox:…) are removed where they are used, never from here, so a
+  // stored login or key cannot vanish from under the feature that needs it.
+  fastify.post<{ Body: { name?: string } }>('/delete', async (req, reply) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name : ''
+    if (!name) return reply.status(400).send({ ok: false, error: 'name is required' })
+    if (name.startsWith(ITEM_PREFIX)) {
+      return reply.status(400).send({ ok: false, code: 'managed', error: 'This is one of HyperProx\'s own settings. Remove it where it is used (its plug-in or Settings page), not here.' })
+    }
+    const item = await find(req.session!.sid, name)
+    if (!item) return reply.status(404).send({ ok: false, error: 'No such secret' })
+    try {
+      await auditOrThrow('secret.delete', `vault:${name}`, { by: req.session!.email, fields: Object.keys(item.fields) })
+    } catch (e: any) {
+      return reply.status(503).send({ ok: false, error: 'The audit log could not be written, so nothing was deleted. Try again.' })
+    }
+    try {
+      await getBroker().deleteSecret(req.session!.sid, name)
+    } catch (e: any) {
+      return reply.status(502).send({ ok: false, error: e?.message ?? 'Could not delete from the vault' })
+    }
+    removeCachedSecret(name)
+    req.log.info({ name, by: req.session!.email }, '[secrets] deleted')
+    return { ok: true, data: { name, trashed: true } }
+  })
 
   // POST /api/secrets/generate { name, purpose, length? } — owner/admin. The value is never returned.
   fastify.post<{ Body: { name?: string; purpose?: string; length?: number } }>('/generate', async (req, reply) => {

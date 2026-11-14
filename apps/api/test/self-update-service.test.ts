@@ -27,8 +27,9 @@ import type { Upstream } from '../src/lib/self-update/upstream'
 
 const A = 'a'.repeat(40), B = 'b'.repeat(40)
 
-interface World { dirty: string; lockBusy: boolean; unitActive: boolean; freeKiB: number; head: string; unlocked: boolean }
-function world(over: Partial<World> = {}): World { return { dirty: '', lockBusy: false, unitActive: false, freeKiB: 50_000_000, head: A, unlocked: true, ...over } }
+// describe: a release tag by default (it follows stable); an untagged one ("v0.1.0-alpha-5-g…") follows main unless a channel is chosen.
+interface World { dirty: string; lockBusy: boolean; unitActive: boolean; freeKiB: number; head: string; unlocked: boolean; describe: string }
+function world(over: Partial<World> = {}): World { return { dirty: '', lockBusy: false, unitActive: false, freeKiB: 50_000_000, head: A, unlocked: true, describe: 'v0.2.0-alpha', ...over } }
 
 function fakeShell(w: World): Shell & { calls: string[] } {
   const calls: string[] = []
@@ -41,7 +42,7 @@ function fakeShell(w: World): Shell & { calls: string[] } {
         args = args.filter((x, i) => !(x === '-c' || args[i - 1] === '-c'))
         if (args[0] === 'rev-parse') return ok(w.head + '\n')
         if (args[0] === 'symbolic-ref') return ok('main\n')
-        if (args[0] === 'describe') return ok('v0.1.0-alpha-5-gaaaaaaa\n')
+        if (args[0] === 'describe') return ok(w.describe + '\n')
         if (args[0] === 'status') return ok(w.dirty)
       }
       if (cmd === 'df') return ok(`h\n/dev/x 1 1 ${w.freeKiB} 1% /\n`)

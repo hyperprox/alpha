@@ -96,6 +96,8 @@ export type CertsPolicyStatus = {
   error?:   string
   acme:     { directory: string; staging: boolean; email: string | null }
   schedule: { cron: string; nextRun: string | null }
+  /** HyperProx created the policy file itself (safe defaults), because there was none. */
+  created?: boolean
 }
 
 export type CertsOverview = {
@@ -104,4 +106,6 @@ export type CertsOverview = {
   probes:    CertsProbe[]
   managed:   CertsManaged[]
   checkedAt: string | null
+  /** The first check of a fresh install is running: nothing has been probed yet, so nothing is called healthy. */
+  checking?: boolean
 }

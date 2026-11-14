@@ -34,7 +34,8 @@ import { publish } from './notify'
 const run = promisify(execFile)
 
 export type ItemId = 'node-health' | 'power' | 'gpu' | 'igpu-access' | 'charts' | 'proxmox-metrics' | 'dns' | 'ai' | 'targets' | 'old-backups' | 'host-keys'
-export type ItemState = 'done' | 'partly' | 'not-done' | 'not-applicable'
+/** failed: it was set up, but checking the outcome found it not working (the row or note says why). */
+export type ItemState = 'done' | 'partly' | 'not-done' | 'not-applicable' | 'failed'
 
 export interface NodeRow { node: string; state: ItemState; reason: string; host?: string; port?: number; fingerprint?: string }
 export interface ChecklistItem {
@@ -75,6 +76,36 @@ export interface ChecklistDeps {
   presentedKey(host: string, port: number): Promise<string>
   /** Verify the home nodes' host keys with evidence, no comparing by hand (lib/hostkey-verify.ts). */
   verifyHostKeys?(by: string): Promise<NodeVerdict[]>
+  /** Does Prometheus answer a query (`up`)? Without it, the outcome is read through promQuery('up'). */
+  promReady?(): Promise<PromReadiness>
+}
+
+export interface PromReadiness { ok: boolean; reason: string }
+
+/**
+ * Charts are done when Prometheus answers a query, not when the compose profile says it should run: the
+ * outcome, not the intention. `get` is one GET returning the parsed JSON (tests pass a fake server).
+ */
+export async function prometheusReadiness(base: string, get: (url: string) => Promise<any> = async url => (await axios.get(url, { timeout: 5000 })).data): Promise<PromReadiness> {
+  const url = `${base.replace(/\/+$/, '')}/api/v1/query?query=up`
+  try {
+    const data = await get(url)
+    if (data?.status !== 'success') return { ok: false, reason: `Prometheus at ${base} answered, but not with a result (${String(data?.error ?? data?.status ?? 'no status').slice(0, 120)})` }
+    const rows: any[] = Array.isArray(data?.data?.result) ? data.data.result : []
+    const up = rows.filter(r => String(r?.value?.[1]) === '1').length
+    return { ok: true, reason: `Prometheus answers queries: ${up} of ${rows.length} target(s) up` }
+  } catch (e: any) {
+    const status = e?.response?.status
+    return { ok: false, reason: `Prometheus at ${base} did not answer a query (${status ? `HTTP ${status}` : e?.code ?? e?.message ?? 'no answer'})` }
+  }
+}
+
+async function promReadiness(deps: ChecklistDeps): Promise<PromReadiness> {
+  if (deps.promReady) return deps.promReady().catch((e: any) => ({ ok: false, reason: e?.message ?? String(e) }))
+  try {
+    const rows = await deps.promQuery('up')
+    return { ok: true, reason: `Prometheus answers queries: ${rows.filter(r => r.value === 1).length} of ${rows.length} target(s) up` }
+  } catch (e: any) { return { ok: false, reason: `Prometheus did not answer a query (${e?.message ?? e})` } }
 }
 
 export function productionChecklistDeps(): ChecklistDeps {
@@ -115,6 +146,7 @@ export function productionChecklistDeps(): ChecklistDeps {
     pins: () => listPins(),
     presentedKey: (host, port) => probeHostKey(host, port, 5000),
     verifyHostKeys: by => verifyHomeHostKeys(by),
+    promReady: async () => prometheusReadiness(await resolvePrometheusUrl()),
   }
 }
 
@@ -196,9 +228,13 @@ export async function checklistState(deps: ChecklistDeps = productionChecklistDe
       action: ['done', 'not-applicable'].includes(roll(ig)) ? null : 'Open the built-in graphics to containers' })
   }
 
-  const charts = composeProfiles(deps.envFile).includes('monitoring')
-  items.push({ ...base('charts'), rows: [], state: charts ? 'done' : 'not-done', needsNodeLogin: false,
-    action: charts ? null : 'Start Prometheus and Grafana on this machine' })
+  // Done only when Prometheus answers a query; switched on but silent is a failure with its reason.
+  const chartsOn = composeProfiles(deps.envFile).includes('monitoring')
+  const prom = chartsOn ? await promReadiness(deps) : null
+  const chartsState: ItemState = !chartsOn ? 'not-done' : prom!.ok ? 'done' : 'failed'
+  items.push({ ...base('charts'), state: chartsState, needsNodeLogin: false,
+    rows: prom ? [{ node: 'Prometheus', state: prom.ok ? 'done' : 'failed', reason: prom.reason }] : [],
+    action: chartsState === 'done' ? null : chartsState === 'failed' ? 'Start Prometheus and Grafana again' : 'Start Prometheus and Grafana on this machine' })
 
   const exp = await deps.pveExporter().catch(() => ({ configured: false, readOnly: null }))
   const pveDone = exp.configured && exp.readOnly === true
@@ -330,6 +366,13 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
     await deps.compose(['up', '-d', 'prometheus', 'grafana', 'pve-exporter'])
     await deps.syncTargets().catch(() => undefined)
     job.results.push({ label: 'Charts', status: 'done', reason: 'Prometheus and Grafana started' })
+    // The outcome, not the command: Prometheus has to answer a query. It takes a few seconds to come up.
+    let ready = await promReadiness(deps)
+    for (let i = 0; !ready.ok && i < Number(process.env.HPX_CHECKLIST_PROM_TRIES ?? 6); i++) {
+      await new Promise(r => setTimeout(r, Number(process.env.HPX_CHECKLIST_SETTLE_MS ?? 5_000)))
+      ready = await promReadiness(deps)
+    }
+    job.checks.push({ status: ready.ok ? 'ok' : 'failed', reason: ready.reason })
     // A Grafana that just set up a new database gets the vault's admin password, never admin/admin.
     const g = await ensureGrafanaAdmin(undefined, by).catch((e: any) => `failed: ${e?.message ?? e}`)
     if (g === 'applied' || g === 'generated') job.results.push({ label: 'Grafana admin password', status: 'done', reason: 'set from the vault' })

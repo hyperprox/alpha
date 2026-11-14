@@ -110,8 +110,12 @@ export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPl
       if (!req.session) return reply.status(401).send({ ok: false, code: 'unauthenticated', error: 'Authentication required' })
       const c = svc.lastCheck()
       const job = await svc.job()
+      const inst = await svc.installed().catch(() => null)
       return {
         version: APP_VERSION.version, commit: APP_VERSION.sha,
+        // What this install calls itself: its tag, or "0.2.0-alpha+main.1a2b3c4" when it is not a release.
+        label: inst?.label ?? null, display: inst?.display ?? null, tagged: inst?.tagged ?? null,
+        channel: svc.channelInfo().channel,
         available: c?.available ? { label: c.available.label, version: c.available.version, channel: c.available.channel } : null,
         updating: job?.status === 'running',
       }
@@ -122,6 +126,8 @@ export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPl
       const cfg = svc.config()
       return {
         installed, running: { version: APP_VERSION.version, commit: APP_VERSION.sha },
+        // The channel in effect, whether someone chose it or it follows the install's kind, and why.
+        channel: svc.channelInfo(),
         settings: svc.settings(), locks: svc.locks(), autoInstallBlocked: svc.autoInstallBlocked(), check: svc.lastCheck(), job,
         upstream: { repoUrl: cfg.repoUrl, mirrorUrl: cfg.mirrorUrl, trustedKeys: !!cfg.trustedKeys },
       }

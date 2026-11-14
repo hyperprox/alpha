@@ -191,7 +191,7 @@ export class ProxmoxClient {
   }
 
   async vmAction(node: string, vmid: number, type: 'qemu' | 'lxc', action: 'start' | 'stop' | 'reboot' | 'shutdown') {
-    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/status/${action}`, 'POST')
+    return this.fetchStrict<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/status/${action}`, 'POST')
   }
 
   async getVMConfig(node: string, vmid: number, type: 'qemu' | 'lxc') {
@@ -203,21 +203,23 @@ export class ProxmoxClient {
   }
 
   async createSnapshot(node: string, vmid: number, type: 'qemu' | 'lxc', name: string, description = '') {
-    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot`, 'POST',
-      JSON.stringify({ snapname: name, description }))
+    // Form-encoded, as Proxmox reads it (a JSON body is refused with a 400); strict so the refusal reaches the caller.
+    const body = new URLSearchParams({ snapname: name })
+    if (description) body.set('description', description)
+    return this.fetchStrict<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot`, 'POST', body.toString())
   }
 
   async deleteSnapshot(node: string, vmid: number, type: 'qemu' | 'lxc', snapname: string) {
-    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot/${seg(snapname)}`, 'DELETE')
+    return this.fetchStrict<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot/${seg(snapname)}`, 'DELETE')
   }
 
   async rollbackSnapshot(node: string, vmid: number, type: 'qemu' | 'lxc', snapname: string) {
-    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot/${seg(snapname)}/rollback`, 'POST')
+    return this.fetchStrict<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot/${seg(snapname)}/rollback`, 'POST')
   }
 
   async migrateVM(node: string, vmid: number, type: 'qemu' | 'lxc', target: string, online = true) {
-    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/migrate`, 'POST',
-      JSON.stringify({ target, online: online ? 1 : 0 }))
+    const body = new URLSearchParams({ target, online: online ? '1' : '0' })
+    return this.fetchStrict<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/migrate`, 'POST', body.toString())
   }
 
   async getStorage(node: string): Promise<PVEStorage[]> {
@@ -269,8 +271,8 @@ export class ProxmoxClient {
   async getHAResources() { return this.fetchNode<any[]>('/cluster/ha/resources') }
 
   async setHAState(sid: string, state: 'started' | 'stopped' | 'disabled') {
-    await this.fetchNode(`/cluster/ha/resources/${encodeURIComponent(sid)}`, 'PUT',
-      JSON.stringify({ state }))
+    await this.fetchStrict(`/cluster/ha/resources/${encodeURIComponent(sid)}`, 'PUT',
+      new URLSearchParams({ state }).toString())
   }
 
   async getNodeTasks(node: string, limit = 20) {
@@ -414,7 +416,7 @@ export class ProxmoxClient {
       agent:   1,
       start:   params.start ? 1 : 0,
     }
-    const vmParams = new URLSearchParams(); Object.entries(body).forEach(([k,v]) => vmParams.append(k, String(v))); return this.fetchNode(`/nodes/${seg(node)}/qemu`, 'POST', vmParams.toString())
+    const vmParams = new URLSearchParams(); Object.entries(body).forEach(([k,v]) => vmParams.append(k, String(v))); return this.fetchStrict(`/nodes/${seg(node)}/qemu`, 'POST', vmParams.toString())
   }
 
   async getISOs(): Promise<Array<{ node: string; storage: string; volid: string; name: string; size: number }>> {
@@ -455,11 +457,11 @@ export class ProxmoxClient {
   }
 
   async deleteLXC(node: string, vmid: number): Promise<any> {
-    return this.fetchNode(`/nodes/${seg(node)}/lxc/${seg(vmid)}`, 'DELETE')
+    return this.fetchStrict(`/nodes/${seg(node)}/lxc/${seg(vmid)}`, 'DELETE')
   }
 
   async deleteVM(node: string, vmid: number): Promise<any> {
-    return this.fetchNode(`/nodes/${seg(node)}/qemu/${seg(vmid)}`, 'DELETE')
+    return this.fetchStrict(`/nodes/${seg(node)}/qemu/${seg(vmid)}`, 'DELETE')
   }
 
   async getVMStorageBreakdown(): Promise<Array<{

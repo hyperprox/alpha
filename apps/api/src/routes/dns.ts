@@ -25,9 +25,19 @@ const defaultDeps: DnsRouteDeps = {
   audit: auditCredentialUse,
 }
 
+/** No DNS provider has been set up yet: a state to show ("Connect a DNS provider"), not a failure. */
+export class DnsNotConfigured extends Error {
+  readonly code = 'not_configured'
+  constructor() { super('No DNS provider is connected yet. Connect GoDaddy or Cloudflare under Settings → DNS.') }
+}
+
 const wrap = async (reply: any, fn: () => Promise<any>) => {
   try   { return { success: true, data: await fn() } }
-  catch (e: any) { return reply.status(e?.statusCode === 400 ? 400 : 500).send({ success: false, error: e.message }) }
+  catch (e: any) {
+    // 409: the request is fine, the install is not set up for it yet. The page shows its empty state.
+    if (e instanceof DnsNotConfigured) return reply.status(409).send({ success: false, configured: false, code: e.code, error: e.message })
+    return reply.status(e?.statusCode === 400 ? 400 : 500).send({ success: false, error: e.message })
+  }
 }
 
 /**
@@ -56,7 +66,7 @@ export function publicDomain(d: any): Record<string, unknown> {
 export function makeDnsRoutes(deps: DnsRouteDeps = defaultDeps): FastifyPluginAsync {
   const router = async (): Promise<DnsRouter> => {
     const r = await deps.router()
-    if (!r) throw new Error('No DNS provider is configured. Add GoDaddy or Cloudflare under Settings → DNS.')
+    if (!r) throw new DnsNotConfigured()
     return r
   }
   /** One audit row per write: who, which provider, which zone, type and name. Never a value or a credential. */
@@ -78,8 +88,13 @@ export function makeDnsRoutes(deps: DnsRouteDeps = defaultDeps): FastifyPluginAs
     }))
 
     // GET /api/dns/domains — every zone from every provider, each with its provider
-    fastify.get('/domains', async (_, r) =>
-      wrap(r, async () => ((await (await router()).getDomains()) ?? []).map(publicDomain)))
+    // With no provider connected: an empty list that says so (configured: false), never a 500.
+    fastify.get('/domains', async (_, r) => {
+      let rt: DnsRouter | null
+      try { rt = await deps.router() } catch (e) { return wrap(r, async () => { throw e }) }
+      if (!rt) return { success: true, configured: false, code: 'not_configured', message: new DnsNotConfigured().message, data: [] }
+      return wrap(r, async () => ((await rt.getDomains()) ?? []).map(publicDomain))
+    })
 
     // GET /api/dns/domains/:domain
     fastify.get<{ Params: { domain: string } }>('/domains/:domain', async (req, r) =>

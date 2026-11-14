@@ -93,7 +93,7 @@ export function productionRemoteExecutor(
 
   async function nodeCred(node: string): Promise<TerminalCredential> {
     const c = await nodeCredential(node)
-    if (!c) throw new TransportError(`No login saved for node ${node}. Add one in the Terminal (node logins are never borrowed from guests).`)
+    if (!c) throw new TransportError(`No login saved for node ${node}. Add one under Settings → Setup checklist (Add node login); node logins are never borrowed from guests.`)
     return c
   }
 

@@ -47,6 +47,14 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
   strictParams(fastify)   // node, vmid, type and snapshot names are checked before any handler (lib/route-params.ts)
 
   fastify.get('/ping',      async (_, r) => wrap(r, () => getClient().ping()))
+  // The cluster's own name (PVE /cluster/status), for the page header. null on a standalone node or when unreachable.
+  fastify.get('/cluster-name', async () => {
+    try {
+      const rows = await getClient().fetchStrict<any[]>('/cluster/status')
+      const name = (rows ?? []).find(x => x?.type === 'cluster')?.name
+      return { name: typeof name === 'string' && name ? name : null }
+    } catch { return { name: null } }
+  })
   fastify.get('/nodes',     async (_, r) => wrap(r, () => getClient().getNodes()))
   fastify.get('/resources', async (_, r) => wrap(r, () => getClient().getClusterResources()))
   fastify.get('/storage',   async (_, r) => wrap(r, () => getClient().getAllStorage()))

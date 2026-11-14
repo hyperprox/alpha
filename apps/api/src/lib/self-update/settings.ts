@@ -89,6 +89,19 @@ export function inWindow(w: MaintenanceWindow, at: Date): boolean {
 
 export class SettingsStore {
   constructor(private file: string) {}
+  /** Someone chose a channel (the file names one). Without a choice, the install's kind decides (channel.ts). */
+  chosenChannel(): Channel | null {
+    try {
+      const c = JSON.parse(fs.readFileSync(this.file, 'utf8'))?.channel
+      return c === 'stable' || c === 'alpha' ? c : null
+    } catch { return null }
+  }
+  /** Save, leaving the channel out when it was not chosen, so the default keeps following the install. */
+  saveWithout(s: SelfUpdateSettings, omitChannel: boolean): void {
+    if (!omitChannel) return this.save(s)
+    const { channel: _drop, ...rest } = s
+    writeJsonAtomic(this.file, rest)
+  }
   load(): SelfUpdateSettings {
     try { return mergeSettings(DEFAULT_SETTINGS, JSON.parse(fs.readFileSync(this.file, 'utf8'))) }
     catch { return { ...DEFAULT_SETTINGS, window: { ...DEFAULT_SETTINGS.window } } }

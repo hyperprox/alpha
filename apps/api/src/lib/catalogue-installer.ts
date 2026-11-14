@@ -453,7 +453,7 @@ async function runJob(
     if (!cred) {
       throw new Error(
         `No SSH login stored for node ${job.node}. HyperProx runs the install with ` +
-        `\`pct exec\` from the node, which needs one. Add it under Settings → Nodes.`)
+        `\`pct exec\` from the node, which needs one. Add it under Settings → Setup checklist (Add node login).`)
     }
     const nodeIp = await nodeAddress(deps.client, job.node!)
     // A recipe that takes its admin login from the environment gets a generated one. It travels in

@@ -350,7 +350,7 @@ async function stepInstallService(job: JobState, step: StepState, d: ExecDeps): 
     step.commands = commands
     step.status = 'skipped'
     return `NOT INSTALLED — no SSH login is stored for node ${node}, so the commands below have to be run by hand ` +
-           `inside CT ${vmid}. Add one under Settings → Nodes and the wizard will do this itself next time.`
+           `inside CT ${vmid}. Add one under Settings → Setup checklist (Add node login) and the wizard will do this itself next time.`
   }
 
   try {

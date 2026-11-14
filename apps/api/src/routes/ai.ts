@@ -68,9 +68,15 @@ import { wizardView, placementFor, previewInstall, proposeFor, readLiveAddresses
 import { runPluginDetail } from '../lib/plugin-host'
 import type { HAControlService } from '../lib/ha-control/service'
 import {
-  callStructured, listProviders, activeProvider, setActiveProvider,
+  callStructured, listProviders, activeProvider, setActiveProvider, ModelCallError,
   type ProviderId, type ProviderInfo,
 } from '../lib/ai/providers'
+
+/**
+ * Said instead of an error when a request needs a model and none can be reached. Questions HyperProx can answer
+ * by code (and every action, which is read by code) still work without one.
+ */
+export const NEEDS_MODEL = 'That needs an AI model, and none is connected yet. Without one I answer from what HyperProx reads directly: try "Is my NAS healthy?", "What alerts are firing?" or "How is each cluster doing?". Connect a model in the Settings tab for more: planning deployments and open questions.'
 
 const PROVIDER_IDS: ProviderId[] = ['anthropic', 'openai', 'ollama']
 
@@ -658,6 +664,12 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         try {
           s = await startLoop(prompt, loopDeps)
         } catch (err: any) {
+          // No model to ask (none configured, or it cannot be reached): an answer saying so, not an error.
+          const info = (await deps.listProviders().catch(() => [] as ProviderInfo[])).find(p => p.id === chosen)
+          if (err instanceof ModelCallError || !info?.configured) {
+            return reply.send({ ok: true, conversational: true, needsModel: true, provider: chosen,
+              message: err instanceof ModelCallError ? `${err.message} ${NEEDS_MODEL}` : NEEDS_MODEL })
+          }
           return reply.status(502).send({ ok: false, provider: chosen, error: err.message })
         }
 

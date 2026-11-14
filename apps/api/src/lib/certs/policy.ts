@@ -230,6 +230,62 @@ export function parseCertsPolicy(text: string): CertsPolicy {
   return p
 }
 
+/**
+ * The policy a fresh install starts with: safe defaults only. ACME on Let's Encrypt staging (untrusted, generous
+ * limits), no certificates, no extra probes, no targets: nothing is issued or deployed until someone adds it.
+ * The example follows as comments, so the file explains itself.
+ */
+export function starterCertsPolicy(exampleText: string | null): string {
+  const head = [
+    '# =============================================================================',
+    '#  HyperProx — Certificates policy',
+    '#',
+    '#  Made by HyperProx because there was none, with safe defaults: nothing is issued',
+    '#  or deployed until you add a certificate below. Discovered endpoints (proxy hosts,',
+    '#  node consoles) are probed either way. Edit and save; the page reads it again.',
+    '#  The example at the end shows every option.',
+    '# =============================================================================',
+    '',
+    'acme:',
+    '  directory: staging           # switch to production once a staging certificate has reached its target',
+    '',
+    'schedule:',
+    '  check: "15 6 * * *"',
+    '',
+    'alerts:',
+    '  warn_fraction: 0.33',
+    '  critical_days: 7',
+    '',
+    'certificates: {}',
+    'probes: []',
+    'targets: {}',
+    '',
+  ]
+  const example = exampleText
+    ? ['# ---- The example (config/certs.example.yaml), for reference --------------------', ...exampleText.split('\n').map(l => (l ? `# ${l}` : '#'))]
+    : []
+  return [...head, ...example].join('\n').replace(/\n*$/, '\n')
+}
+
+/**
+ * Create the policy file from the example when there is none, so a fresh install is not asked to copy a file by
+ * hand. Never overwrites (exclusive create), never throws: a read-only config directory is reported, not fatal.
+ */
+export function ensureCertsPolicy(file = certsPolicyPath(), examplePath = path.join(path.dirname(file), 'certs.example.yaml')): { created: boolean; error?: string } {
+  if (fs.existsSync(file)) return { created: false }
+  let example: string | null = null
+  try { example = fs.readFileSync(examplePath, 'utf8') } catch { /* the starter stands on its own */ }
+  const text = starterCertsPolicy(example)
+  try { parseCertsPolicy(text) } catch (e: any) { return { created: false, error: `The starter policy did not validate: ${e.message}` } }
+  try {
+    fs.writeFileSync(file, text, { flag: 'wx', mode: 0o640 })
+    return { created: true }
+  } catch (e: any) {
+    if (e?.code === 'EEXIST') return { created: false }
+    return { created: false, error: `Could not create ${file}: ${e?.message ?? e}` }
+  }
+}
+
 /** Read the policy file. Never throws: a missing or broken file reports why and yields the defaults. */
 export function loadCertsPolicy(path = certsPolicyPath()): { loaded: boolean; path: string; error?: string; policy: CertsPolicy } {
   let text: string

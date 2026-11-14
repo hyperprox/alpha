@@ -1,16 +1,18 @@
 // =============================================================================
-//  HyperProx — service discovery
+//  HyperProx — service discovery (the Plug-ins page's view of the shared scan)
 //
 //  HyperProx already knows every guest on the cluster and its address. Asking
 //  someone to type those addresses into a settings form is asking them to tell
 //  the software something it can see for itself.
 //
-//  Each probe is a cheap unauthenticated request to a port a service is known to
-//  answer on, matched against something only that service returns. A probe never
-//  sends a credential — there is nothing to send yet — and never writes.
+//  The probes are no longer kept here: they live in one list,
+//  @hyperprox/hardware/service-probes, read by the setup wizard, the Plug-ins
+//  page's Scan and the Catalogue alike (lib/service-scan.ts runs it). This file
+//  keeps the plug-in-shaped view of that list and a single-probe helper.
 // =============================================================================
 
-import { ProxmoxClient } from './proxmox-client'
+import { PROBES as SHARED, probeHost } from '@hyperprox/hardware/service-probes'
+import { realProbeGet, pluginFindings, sharedServiceScan } from './service-scan'
 
 export interface Probe {
   /** Which bundled plug-in this configures. */
@@ -27,58 +29,10 @@ export interface Probe {
   needs?:   string[]
 }
 
-export const PROBES: Probe[] = [
-  {
-    pluginId: 'arrstack', setting: 'qbit_url', label: 'qBittorrent',
-    port: 8080, path: '/api/v2/app/version',
-    // Answers with a bare version string like "v4.6.5" and nothing else.
-    match: (s, b) => s === 200 && /^v?\d+\.\d+/.test(b.trim()),
-  },
-  {
-    pluginId: 'unmanic', setting: 'url', label: 'Unmanic',
-    port: 8888, path: '/unmanic/api/v2/workers/status',
-    match: (s, b) => s === 200 && b.includes('workers_status'),
-  },
-  {
-    pluginId: 'arrstack', setting: 'sonarr_url', label: 'Sonarr',
-    port: 8989, path: '/ping',
-    match: (s, b) => s === 200 && b.includes('"status"'),
-    needs: ['sonarr_key'],
-  },
-  {
-    pluginId: 'arrstack', setting: 'radarr_url', label: 'Radarr',
-    port: 7878, path: '/ping',
-    match: (s, b) => s === 200 && b.includes('"status"'),
-    needs: ['radarr_key'],
-  },
-  {
-    pluginId: 'arrstack', setting: 'lidarr_url', label: 'Lidarr',
-    port: 8686, path: '/ping',
-    match: (s, b) => s === 200 && b.includes('"status"'),
-    needs: ['lidarr_key'],
-  },
-  {
-    pluginId: 'arrstack', setting: 'prowlarr_url', label: 'Prowlarr',
-    port: 9696, path: '/api/v1/system/status',
-    // Answers 401 without a key, which is itself proof it is Prowlarr.
-    match: (s, b) => s === 401 || (s === 200 && b.includes('appName')),
-    needs: ['prowlarr_key'],
-  },
-  {
-    pluginId: 'plex', setting: 'plex_url', label: 'Plex',
-    port: 32400, path: '/identity',
-    // Plex answers /identity without a token, with its machine identifier.
-    match: (s, b) => s === 200 && /machineIdentifier/.test(b),
-    needs: ['plex_token'],
-  },
-  {
-    pluginId: 'plex', setting: 'url', label: 'Tautulli (optional, for richer Plex stats)',
-    port: 8181, path: '/status',
-    // Tautulli answers /status without a key; the login page also names itself.
-    match: (s, b) => s < 500 && /tautulli/i.test(b),
-    needs: ['apikey'],
-  },
-]
+/** The shared probes that configure a plug-in. */
+export const PROBES: Probe[] = SHARED.filter(p => p.pluginId && p.setting).map(p => ({
+  pluginId: p.pluginId!, setting: p.setting!, label: p.label, port: p.port, path: p.path, scheme: p.scheme, match: p.match, needs: p.needs,
+}))
 
 export interface Finding {
   pluginId: string
@@ -90,85 +44,12 @@ export interface Finding {
   needs:    string[]
 }
 
-/** One probe against one address. Never throws; a miss is just a miss. */
-export async function probeOne(host: string, probe: Probe): Promise<boolean> {
-  const scheme = probe.scheme ?? 'http'
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 2500)
-  try {
-    const res = await fetch(`${scheme}://${host}:${probe.port}${probe.path}`, {
-      signal: controller.signal,
-      // Not followed: a probe answers on the address it was sent to, or it is a miss. A redirect could point the
-      // scan at any address, inside the network or out.
-      redirect: 'manual',
-    })
-    if (res.status >= 300 && res.status < 400) return false
-    const body = (await res.text()).slice(0, 4000)
-    return probe.match(res.status, body)
-  } catch {
-    return false
-  } finally {
-    clearTimeout(timer)
-  }
+/** One probe against one address. Never throws; a miss is just a miss, and so is a redirect off its own origin. */
+export async function probeOne(host: string, probe: Pick<Probe, 'port' | 'path' | 'match'> & { scheme?: 'http' | 'https' }): Promise<boolean> {
+  return probeHost(realProbeGet, host, { key: 'one', label: '', recipeId: null, pluginId: null, setting: null, needs: [], multiple: false, scheme: probe.scheme ?? 'http', port: probe.port, path: probe.path, match: probe.match })
 }
 
-/** Pull an IPv4 out of an LXC netN line. */
-function ipFromConfig(config: Record<string, any>): string | null {
-  for (const [k, v] of Object.entries(config)) {
-    if (!/^net\d+$/.test(k) || typeof v !== 'string') continue
-    const m = v.match(/(?:^|,)ip=([0-9.]+)/)
-    if (m && m[1] !== '0.0.0.0') return m[1]
-  }
-  return null
-}
-
-/**
- * Scan every running guest for services HyperProx has a plug-in for.
- *
- * Only guests the cluster already knows about — this is not a network sweep,
- * and it will not find anything Proxmox cannot see.
- */
-export async function discoverServices(pve: ProxmoxClient): Promise<Finding[]> {
-  const resources = await pve.getClusterResources()
-  const guests = (resources as any[]).filter(r =>
-    (r.type === 'lxc' || r.type === 'qemu') && r.status === 'running')
-
-  // Addresses first. LXC gives one up from its config; a VM needs the guest
-  // agent, which many do not run, so those are simply skipped.
-  const targets: Array<{ ip: string; name: string }> = []
-  await Promise.all(guests.map(async g => {
-    if (g.type !== 'lxc') return
-    try {
-      const config = await pve.getVMConfig(g.node, Number(g.vmid), 'lxc')
-      const ip = ipFromConfig(config as Record<string, any>)
-      if (ip) targets.push({ ip, name: `${g.name} (${g.vmid})` })
-    } catch { /* an unreadable config is not worth failing a scan over */ }
-  }))
-
-  const findings: Finding[] = []
-  await Promise.all(targets.flatMap(t =>
-    PROBES.map(async probe => {
-      if (await probeOne(t.ip, probe)) {
-        findings.push({
-          pluginId: probe.pluginId,
-          setting:  probe.setting,
-          label:    probe.label,
-          address:  `http://${t.ip}:${probe.port}`,
-          source:   t.name,
-          needs:    probe.needs ?? [],
-        })
-      }
-    })))
-
-  // Unmanic legitimately runs on several nodes; everything else, keep the first.
-  const seen = new Set<string>()
-  return findings
-    .sort((a, b) => a.label.localeCompare(b.label))
-    .filter(f => {
-      if (f.pluginId === 'unmanic') return true
-      const key = `${f.pluginId}:${f.setting}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
+/** Scan for services HyperProx has a plug-in for: the shared scan (lib/service-scan.ts), asked afresh. */
+export async function discoverServices(): Promise<Finding[]> {
+  return pluginFindings((await sharedServiceScan().result(true)).findings)
 }

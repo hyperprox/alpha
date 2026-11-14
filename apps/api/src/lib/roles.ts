@@ -66,6 +66,11 @@ const PUBLIC_AUTH = new Set([
   // The setup wizard handing over what it held before the vault existed. It answers only to loopback,
   // unproxied, with the setup key (routes/auth.ts).
   '/api/auth/setup-handoff',
+  // ── Joining from an invitation link (routes/users.ts buildJoinRoutes). The link's token is the credential,
+  // it fixes the email, and the account still needs an admin's confirmation before it can read anything. ──
+  '/api/auth/join/check',
+  '/api/auth/join/register',
+  '/api/auth/join/totp',
 ])
 
 /**
@@ -81,7 +86,7 @@ const TOKENS = /^\/api\/auth\/tokens(\/|$)/
 /** /health* and /api/auth/* (except token management) answer while locked; everything else gets 423. */
 export function bypassesLock(path: string): boolean {
   if (TOKENS.test(path)) return false
-  return path === '/health' || path.startsWith('/health/') || path === '/api/auth' || path.startsWith('/api/auth/')
+  return path === '/health' || path.startsWith('/health/') || path === '/api/health' || path === '/api/auth' || path.startsWith('/api/auth/')
 }
 
 // Arr Stack queue actions (routes/arr-queue.ts POST /queue/actions): removing, blocklisting, searching, retrying
@@ -287,6 +292,8 @@ export function requiredRole(method: string, path: string): Role | null {
   const p = normalisePath(path)
 
   if (p === '/health' || p.startsWith('/health/')) return null
+  // The public liveness probe (routes/health.ts publicHealthRoute): status only, GET/HEAD, nothing else under it.
+  if (p === '/api/health' && (m === 'GET' || m === 'HEAD')) return null
   if (PUBLIC_AUTH.has(p)) return null
   // Authenticates itself with METRICS_TOKEN (a scraper has no session).
   if (p === '/api/plugins/metrics' && (m === 'GET' || m === 'HEAD')) return null
@@ -335,6 +342,8 @@ export function requiredRole(method: string, path: string): Role | null {
     if (p === '/api/certs' || p.startsWith('/api/certs/')) return 'admin'
     if (REMOTE_JOBS.test(p)) return 'admin'
     if (VPN.test(p)) return 'admin'
+    // ── People in the vault (routes/users.ts): who has access, with their roles and emails. ──
+    if (p === '/api/users' || p.startsWith('/api/users/')) return 'admin'
     return 'viewer'
   }
 
@@ -390,5 +399,9 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m !== 'GET' && m !== 'HEAD' && LOCAL.test(p)) return true
   if (m === 'POST' && p === '/api/self-update/install') return true
   if (m === 'PUT' && p === '/api/self-update/settings') return true
+  // ── Vault items and people (routes/secrets.ts delete, routes/users.ts) ─────
+  // Deleting a vault item, inviting a person, changing their role or confirming them into the vault.
+  if (m === 'POST' && p === '/api/secrets/delete') return true
+  if (m !== 'GET' && m !== 'HEAD' && /^\/api\/users(\/|$)/.test(p)) return true
   return false
 }

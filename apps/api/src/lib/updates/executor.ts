@@ -165,7 +165,7 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
     const cred = await nodeCredential(node)
     if (!cred) throw new Error(remote
       ? `No saved login for node ${node} on this server. Add one under Edit server, Nodes and logins.`
-      : `No saved login for node ${node}. Add one in the Terminal before running updates.`)
+      : `No saved login for node ${node}. Add one under Settings → Setup checklist (Add node login) before running updates.`)
     return cred
   }
 

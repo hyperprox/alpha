@@ -23,6 +23,12 @@ export interface Installed {
   branch:  string | null
   /** false: not a git checkout (an unpacked archive), which cannot update itself. */
   git:     boolean
+  /** describe is exactly a release tag (lib/self-update/channel.ts). */
+  tagged?: boolean
+  /** What it calls itself: the tag, or "0.2.0-alpha+main.1a2b3c4" (semver build metadata) when untagged. */
+  label?:  string
+  /** The same in words: "0.2.0-alpha (main @ 1a2b3c4, untagged)". */
+  display?: string
 }
 
 export interface UpdateCommit { sha: string; text: string; date: string | null }
@@ -143,7 +149,8 @@ export async function findUpdate(installed: Installed, channel: Channel, up: Ups
   const best = candidates[0]
   const installedVersion = isVersion(installed.version) ? installed.version : null
   const cmpV = installedVersion ? compareVersions(best.version!, installedVersion) : 1
-  if (cmpV < 0) return { available: null, note: `This install (${installed.version}) is newer than the newest release, ${best.tag}.` }
+  // Never a downgrade: a release older than the install is not offered, and the note says where newer code is.
+  if (cmpV < 0) return { available: null, note: `This install (${installed.version}) is newer than the newest release, ${best.tag}, so stable has nothing newer to offer. The alpha channel follows main.` }
   const tag = await up.tag(best.tag)
   if (tag.commit === installed.sha) return { available: null, note: `You are on the newest release, ${best.tag}.` }
   const cmp = await up.compare(installed.sha, tag.commit)

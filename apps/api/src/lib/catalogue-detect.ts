@@ -142,7 +142,12 @@ export interface Running {
   publicUrl: string | null
   domains: string[]
   version: string | null
-  via: 'probe' | 'site-scan'
+  /** probe: through a proxy host's fingerprint; site-scan: a look inside the container; port-scan: the shared service scan (lib/service-scan.ts). */
+  via: 'probe' | 'site-scan' | 'port-scan'
+  /** For a port-scan finding: which service answered (Sonarr, Radarr... for the Arr Stack). */
+  service?: string
+  /** For a port-scan finding: the service's own address (scheme://host:port). */
+  url?: string
   /** For WordPress and static: the Sites candidate, so "Add to Sites" can open on it. */
   candidateId?: string
   alreadyASite?: boolean

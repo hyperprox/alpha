@@ -175,6 +175,6 @@ test('admin: probe validates input, 404s an endpoint it does not know, probes al
 test('admin: housekeeping list, and apply of an item that does not exist is 404', async () => {
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const list = await app.inject({ method: 'GET', url: '/api/certs/housekeeping', headers: { cookie } })
-  assert.deepEqual(list.json(), { items: [] })
+  assert.deepEqual(list.json(), { configured: true, items: [] })
   assert.equal((await app.inject({ method: 'POST', url: '/api/certs/housekeeping/npm:1/apply', headers: { cookie } })).statusCode, 404)
 })

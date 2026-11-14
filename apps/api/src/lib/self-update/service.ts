@@ -21,6 +21,8 @@ import { makeRedactor, envSecrets, type Redactor } from './redact'
 import { findUpdate, type AvailableUpdate, type CheckResult, type Installed } from './check'
 import { RateLimitedError, type Upstream } from './upstream'
 import { inWindow, mergeSettings, SettingsError, SettingsStore, type SelfUpdateSettings } from './settings'
+import { effectiveChannel, installedLabel, type ChannelSource } from './channel'
+import type { Channel } from './state'
 import { upstreamAllowed } from './runner'
 
 export interface Refusal { code: string; text: string; detail?: string[] }
@@ -72,6 +74,8 @@ export class SelfUpdateService {
   private store: SettingsStore
   private timer: NodeJS.Timeout | null = null
   private checking: Promise<CheckResult> | null = null
+  /** The last installed() answer, so the sync settings() can default the channel from it. */
+  private lastInstalled: Installed | null = null
   private redact: Redactor
   constructor(private d: SelfUpdateDeps) {
     this.p = PATHS(d.dataDir)
@@ -89,7 +93,17 @@ export class SelfUpdateService {
   settings(): SelfUpdateSettings {
     const s = this.store.load()
     if (this.d.config.trustedKeys) s.requireSigned = true
+    s.channel = this.channelInfo(s).channel
     return s
+  }
+  /** Which channel is in effect and why: a chosen one, or the default for this kind of install (channel.ts). */
+  channelInfo(s = this.store.load()): { channel: Channel; source: ChannelSource; why: string } {
+    return effectiveChannel({ chosen: this.store.chosenChannel(), installed: this.lastInstalled, autoInstall: s.autoInstall })
+  }
+  /** settings(), after reading what is installed (the channel default depends on it). */
+  async effectiveSettings(): Promise<SelfUpdateSettings> {
+    await this.installed().catch(() => null)
+    return this.settings()
   }
   /** Settings the page cannot change, and why. */
   locks(): { requireSigned?: string } {
@@ -101,12 +115,14 @@ export class SelfUpdateService {
     return null
   }
   async saveSettings(patch: unknown, by: string): Promise<SelfUpdateSettings> {
-    const before = this.store.load()
+    // From the settings in effect: saving the window must not quietly switch a defaulted channel.
+    const before = await this.effectiveSettings()
+    const chosen = this.store.chosenChannel() !== null || (patch as any)?.channel !== undefined
     if (this.d.config.trustedKeys && (patch as any)?.requireSigned === false) throw new SettingsError(this.locks().requireSigned!)
     const next = mergeSettings(before, patch)
     if (this.d.config.trustedKeys) next.requireSigned = true
     if (next.autoInstall) { const why = this.autoInstallBlocked(next); if (why) throw new SettingsError(why) }
-    this.store.save(next)
+    this.store.saveWithout(next, !chosen)
     const changed = Object.keys(next).filter(k => JSON.stringify((next as any)[k]) !== JSON.stringify((before as any)[k]))
     await this.d.audit('self-update.settings', { by, changed, channel: next.channel, autoInstall: next.autoInstall, requireSigned: next.requireSigned })
     return next
@@ -125,11 +141,15 @@ export class SelfUpdateService {
     if (!/^[0-9a-f]{40}$/.test(sha)) {
       // An unpacked archive: VERSION carries what `git archive` wrote into it.
       const v = readVersionFile(this.d.dir)
-      return { version: v?.version || version, sha: v?.sha ?? '', describe: v?.describe || version, branch: null, git: false }
+      const inst: Installed = { version: v?.version || version, sha: v?.sha ?? '', describe: v?.describe || version, branch: null, git: false }
+      const l = installedLabel(inst)
+      return (this.lastInstalled = { ...inst, tagged: l.tagged, label: l.label, display: l.display })
     }
     const branch = await git(['symbolic-ref', '--short', '-q', 'HEAD'])
     const describe = await git(['describe', '--tags', '--always'])
-    return { version, sha, describe: describe || sha.slice(0, 7), branch: branch || null, git: true }
+    const inst: Installed = { version, sha, describe: describe || sha.slice(0, 7), branch: branch || null, git: true }
+    const l = installedLabel(inst)
+    return (this.lastInstalled = { ...inst, tagged: l.tagged, label: l.label, display: l.display })
   }
 
   // --- check -------------------------------------------------------------------------------------------
@@ -145,8 +165,8 @@ export class SelfUpdateService {
   }
 
   private async doCheck(): Promise<CheckResult> {
-    const s = this.settings()
     const inst = await this.installed()
+    const s = this.settings()
     const errors: string[] = []
     let result: CheckResult | null = null
     if (!inst.git) {
@@ -245,7 +265,7 @@ export class SelfUpdateService {
   async preview() {
     const check = this.lastCheck()
     const available = check?.available ?? null
-    const settings = this.settings()
+    const settings = await this.effectiveSettings()
     const { refusals, inst, untracked } = await this.refusals(available, settings)
     const warnings: string[] = []
     const free = await this.freeMiB()
@@ -288,7 +308,7 @@ export class SelfUpdateService {
   async install(by: string, sha: string, how: 'manual' | 'auto' = 'manual', opts: { confirmUnrelated?: string } = {}): Promise<UpdateState> {
     const check = this.lastCheck()
     const available = check?.available ?? null
-    const settings = this.settings()
+    const settings = await this.effectiveSettings()
     const { refusals, inst } = await this.refusals(available, settings)
     if (available && sha !== available.sha) refusals.push({ code: 'stale_target', text: 'The update on offer has changed since this page loaded. Check again.' })
     if (how === 'auto' && (available?.channel !== 'stable' || settings.channel !== 'stable')) refusals.push({ code: 'auto_stable_only', text: 'Automatic install only installs stable releases.' })
@@ -367,7 +387,7 @@ export class SelfUpdateService {
   /** Every minute: a check when one is due, then an automatic install when everything allows it. */
   async tick(): Promise<void> {
     await this.reportFinished().catch(() => false)
-    const s = this.settings()
+    const s = await this.effectiveSettings()
     const last = this.lastCheck() as (CheckResult & { channel?: string }) | null
     const due = !last || last.channel !== s.channel || Date.parse(last.checkedAt) + s.checkEveryHours * 3_600_000 <= this.now().getTime()
     const result = due ? await this.check() : last!

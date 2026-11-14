@@ -58,8 +58,11 @@ test('providers: nothing set up lists both as not configured', async () => {
   const r = await app.inject({ method: 'GET', url: '/api/dns/providers' })
   assert.deepEqual(r.json().data.map((p: any) => [p.id, p.configured]), [['godaddy', false], ['cloudflare', false]])
   const d = await app.inject({ method: 'GET', url: '/api/dns/domains' })
-  assert.equal(d.statusCode, 500)
-  assert.match(d.json().error, /No DNS provider is configured/)
+  // Not a failure: an empty list that says no provider is connected yet (the page shows "Connect a DNS provider").
+  assert.equal(d.statusCode, 200)
+  assert.equal(d.json().configured, false)
+  assert.deepEqual(d.json().data, [])
+  assert.match(d.json().message, /No DNS provider is connected yet/)
 })
 
 test('domains carry their provider; registrar secrets never reach the browser', async () => {

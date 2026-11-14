@@ -16,6 +16,7 @@ import {
   CertsBusyError, CertsInputError, CertsNotFoundError, CertsService, RenewingError, productionCertsService,
 } from '../lib/certs/service'
 import { CertsScheduler } from '../lib/certs/scheduler'
+import { ProxyNotConfigured } from '../lib/certs/modules'
 
 export interface CertsRouteDeps {
   service?:   CertsService
@@ -104,8 +105,14 @@ export function buildCertsRoutes(deps: CertsRouteDeps = {}): FastifyPluginAsync 
     })
 
     fastify.get('/housekeeping', async (_req, reply) => {
-      try { return { items: await service.housekeeping() } }
-      catch (e) { return sendError(reply, e) }
+      try { return { configured: true, items: await service.housekeeping() } }
+      catch (e) {
+        // No proxy connected yet (a fresh install): nothing to tidy, said as such, not a 503.
+        if (e instanceof ProxyNotConfigured || (e as any)?.code === 'proxy_not_configured') {
+          return { configured: false, items: [], reason: 'No Nginx Proxy Manager is connected, so there are no proxy certificates to tidy.' }
+        }
+        return sendError(reply, e)
+      }
     })
 
     fastify.post<{ Params: { id: string } }>('/housekeeping/:id/apply', async (req, reply) => {

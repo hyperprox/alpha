@@ -22,13 +22,14 @@
 
 import crypto from 'node:crypto'
 import {
-  COLLECTION_NAME, KDF_PBKDF2, ORG_NAME,
+  COLLECTION_NAME, KDF_PBKDF2, MEMBER_TYPE, ORG_NAME,
   VaultHttpError, VaultwardenApi,
-  base64Url, decRsaEncString, decString2, encString2, localPasswordHash, makeMasterKeyFor, masterPasswordHash,
+  base64Url, decRsaEncString, decString2, encString2, encString4, localPasswordHash, makeMasterKeyFor, masterPasswordHash,
   sendKeyFromSeed, sendPasswordHash, stretchMasterKey, symKeyFromBytes,
   type IdentityToken, type KdfConfig, type SymKey,
 } from './bw-crypto'
 import { snapshotChanged } from './snapshot'
+import { VAULT_ID, keyFingerprint } from './members'
 
 const FRESH_SYNC_MS = 30_000
 const DEVICE_NAME = 'hyperprox'
@@ -414,6 +415,61 @@ export class NativeVaultSession {
     } finally {
       seed.fill(0); zero(key)
     }
+  }
+
+  // ---- organization members (Settings → Users, ./members.ts) ----------------
+
+  private orgPath(rest: string): string {
+    if (!VAULT_ID.test(this.orgId)) throw new Error('organization id is not a vault id')
+    return `/api/organizations/${this.orgId}${rest}`
+  }
+
+  /** Every member of the HyperProx organization, as the vault lists them (with their groups). */
+  async orgMembers(): Promise<any[]> {
+    const r = await this.call('GET', this.orgPath('/users?includeGroups=true'))
+    return Array.isArray(r?.data) ? r.data : Array.isArray(r?.Data) ? r.Data : Array.isArray(r) ? r : []
+  }
+
+  async orgGroups(): Promise<Array<{ id: string; name: string }>> {
+    const r = await this.call('GET', this.orgPath('/groups'))
+    return (r?.data ?? r?.Data ?? []).map((g: any) => ({ id: String(g.id), name: String(g.name) }))
+  }
+
+  /** Invite one email with a membership type and groups. Without mail the vault records an invitation instead. */
+  async orgInvite(email: string, type: number, groupIds: string[]): Promise<void> {
+    await this.call('POST', this.orgPath('/users/invite'), {
+      emails: [email], type, groups: groupIds, collections: [], accessAll: type === MEMBER_TYPE.Admin, permissions: {},
+    })
+  }
+
+  /** A user's public key (DER), from the vault. */
+  async userPublicKey(userId: string): Promise<Buffer> {
+    if (!VAULT_ID.test(userId)) throw new Error('not a vault user id')
+    const r = await this.call('GET', `/api/users/${userId}/public-key`)
+    const k = str(r?.publicKey ?? r?.PublicKey)
+    if (!k) throw new Error('the vault has no public key for this person yet')
+    return Buffer.from(k, 'base64')
+  }
+
+  /**
+   * Confirm an accepted member: the organization key, wrapped with their public key. Refused when the key's
+   * fingerprint is not the one the admin compared (`expect`), so a key swapped in between is never trusted.
+   */
+  async orgConfirm(memberId: string, userId: string, expect: string): Promise<void> {
+    if (!VAULT_ID.test(memberId)) throw new Error('not a vault member id')
+    const pub = await this.userPublicKey(userId)
+    if (keyFingerprint(pub) !== expect) throw new Error('the key fingerprint is not the one you compared; nothing was confirmed')
+    const raw = Buffer.concat([this.orgKey.enc, this.orgKey.mac])
+    try { await this.call('POST', this.orgPath(`/users/${memberId}/confirm`), { key: encString4(raw, pub) }) }
+    finally { raw.fill(0) }
+  }
+
+  /** Change a member's type and groups. */
+  async orgEdit(memberId: string, type: number, groupIds: string[]): Promise<void> {
+    if (!VAULT_ID.test(memberId)) throw new Error('not a vault member id')
+    await this.call('PUT', this.orgPath(`/users/${memberId}`), {
+      type, groups: groupIds, collections: [], accessAll: type === MEMBER_TYPE.Admin, permissions: {},
+    })
   }
 
   // ---- password check / end -----------------------------------------------

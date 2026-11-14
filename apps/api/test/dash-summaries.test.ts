@@ -46,13 +46,14 @@ test("HA: counts service entries from the status feed, not a per-guest field", (
     { id: "service:vm:102", type: "service", crm_state: "stopped" },
     { id: "service:ct:103", type: "service", crm_state: "started" },
   ])
-  assert.deepEqual(h, { state: "ok", services: 3, started: 2 })
+  // vm:102 is stopped and nothing asks for it: on purpose, so HA is asked to keep 2 running, not 3.
+  assert.deepEqual(h, { state: "ok", services: 3, started: 2, stopped: 1, wanted: 2 })
 })
 
 test("HA: no data is unavailable, never zero; a live cluster with no HA guests is a true zero", () => {
   assert.deepEqual(summarizeHA(null), { state: "unavailable" })
   assert.deepEqual(summarizeHA([]), { state: "unavailable" })
-  assert.deepEqual(summarizeHA([{ id: "quorum", type: "quorum" }]), { state: "ok", services: 0, started: 0 })
+  assert.deepEqual(summarizeHA([{ id: "quorum", type: "quorum" }]), { state: "ok", services: 0, started: 0, stopped: 0, wanted: 0 })
 })
 
 test("power: shown when anything reports; otherwise hidden with the reason", () => {

@@ -6,8 +6,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import { FastifyPluginAsync } from 'fastify'
 import { PLUGINS, findPlugin } from '../plugins'
 import { PLUGIN_IDEAS, repoSlug } from '../lib/plugin-wishlist'
-import { ProxmoxClient }        from '../lib/proxmox-client'
-import { discoverServices }     from '../lib/discovery'
+import { sharedServiceScan, pluginFindings } from '../lib/service-scan'
 import { homeAssistantDetail }  from './ha-control'
 import {
   describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail,
@@ -83,15 +82,12 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
   // Find services already running on the cluster. Read-only: every probe is an
   // unauthenticated GET against a port a known service answers on, and nothing
   // is written until the user applies a finding.
-  fastify.get('/discover', async (_req, reply) => {
+  fastify.get<{ Querystring: { refresh?: string } }>('/discover', async (req, reply) => {
     try {
-      const pve = new ProxmoxClient(
-        process.env.PROXMOX_HOST!,
-        Number(process.env.PROXMOX_PORT ?? 8006),
-        `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
-        process.env.PROXMOX_TOKEN_SECRET!,
-      )
-      const findings = await discoverServices(pve)
+      // The shared scan (lib/service-scan.ts): the same probes and the same result the Catalogue's "already
+      // here" reads. Scan asks afresh unless the caller says a recent answer will do.
+      const r = await sharedServiceScan().result(req.query?.refresh !== '0')
+      const findings = pluginFindings(r.findings)
       fastify.log.info({ found: findings.length }, '[plugin] discovery scan')
       return { success: true, data: findings }
     } catch (e: any) {

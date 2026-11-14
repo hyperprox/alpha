@@ -26,6 +26,7 @@ import { pickerFacts } from '../lib/arr/catalogue'
 import { ProxmoxClient } from '../lib/proxmox-client'
 import { DetectionCache, type DetectResult, type FingerprintList } from '../lib/catalogue-detect'
 import { sharedCandidateCache } from './site-metrics'
+import { sharedServiceScan, mergeDetection } from '../lib/service-scan'
 import { hasRole, type Role } from '../lib/roles'
 import { knownNas, listExports } from '../lib/pbs/nas-list'
 import { pbsSetupNodeRunner } from '../lib/pbs/setup-deps'
@@ -89,8 +90,17 @@ export function catalogueFingerprints(): FingerprintList {
 }
 
 let detection: DetectionCache | null = null
-const realDetected = (refresh: boolean) =>
-  (detection ??= new DetectionCache(r => sharedCandidateCache().get(r), undefined, undefined, catalogueFingerprints(), {})).result(refresh)
+/**
+ * "Already here": the proxy-host fingerprints, merged with the shared service scan the Plug-ins page's Scan and
+ * the setup wizard use (lib/service-scan.ts), so the three cannot disagree about what runs.
+ */
+const realDetected = async (refresh: boolean) => {
+  const [fp, scan] = await Promise.all([
+    (detection ??= new DetectionCache(r => sharedCandidateCache().get(r), undefined, undefined, catalogueFingerprints(), {})).result(refresh),
+    sharedServiceScan().result(refresh),
+  ])
+  return mergeDetection(fp, scan)
+}
 
 /** The catalogue's own list: every recipe except websites, which have their own section (/sites). */
 export const isCatalogueListed = (r: { category: string }) => r.category !== 'web'

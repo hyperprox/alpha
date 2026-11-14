@@ -209,7 +209,7 @@ export class GuestConfigService {
     if (opts.cachedOnly) return hit?.inv ?? { node, devices: [], majors: {}, nvidiaNodes: [], collectedAt: this.d.now(), problem: `${node}’s devices have not been read yet; an admin can refresh them.` }
     let inv: NodeInventory
     const r = await this.d.shell.run(node, PROBE_SCRIPT, 30_000).catch((e: any) => ({ code: -1, output: '', err: String(e?.message ?? e) }) as any)
-    if (!r) inv = { node, devices: [], majors: {}, nvidiaNodes: [], collectedAt: this.d.now(), problem: `No login for ${node}: add one under Settings → Nodes to list its devices.` }
+    if (!r) inv = { node, devices: [], majors: {}, nvidiaNodes: [], collectedAt: this.d.now(), problem: `No login for ${node}: add one under Settings → Setup checklist (Add node login) to list its devices.` }
     else if (r.code !== 0 && !r.output) inv = { node, devices: [], majors: {}, nvidiaNodes: [], collectedAt: this.d.now(), problem: `The device probe on ${node} failed${(r as any).err ? `: ${(r as any).err}` : ''}.` }
     else inv = parseProbe(node, r.output, this.d.now())
     // Proxmox's own PCI list fills in names when lspci is missing.
@@ -434,7 +434,7 @@ export class GuestConfigService {
       if (g.type !== 'lxc') plan.errors.push('Raw lines are a container feature.')
       else {
         const r = await this.d.shell.run(g.node, readScript(g.node, g.vmid), 20_000).catch(() => null)
-        if (!r) plan.errors.push(`Raw lines are written over ${g.node}’s node login, and there is none (or HyperProx is locked). Add one under Settings → Nodes.`)
+        if (!r) plan.errors.push(`Raw lines are written over ${g.node}’s node login, and there is none (or HyperProx is locked). Add one under Settings → Setup checklist (Add node login).`)
         else if (r.code !== 0) plan.errors.push(`The config file could not be read on ${g.node}.`)
         else {
           try {

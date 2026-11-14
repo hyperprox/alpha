@@ -212,6 +212,16 @@ function sanName(s: string): string {
   return s.replace(/^(DNS|IP Address|IP):/i, '').trim()
 }
 
+/** Names that only mean "this machine": every Proxmox certificate carries them, and none is a real endpoint. */
+const LOOPBACK_NAME = /^(127(\.\d{1,3}){3}|::1|0:0:0:0:0:0:0:1|localhost(\.localdomain)?)$/i
+
+/** A node certificate's names: the node first, then the rest, without loopback names. */
+export function nodeCertNames(node: string, san: string[] | undefined): string[] {
+  const names = (san ?? []).map(sanName).filter(n => n && !LOOPBACK_NAME.test(n))
+  const ordered = names.includes(node) ? [node, ...names.filter(n => n !== node)] : names
+  return ordered.length ? [...new Set(ordered)] : [node]
+}
+
 function nodeDrafts(nodes: Awaited<ReturnType<InventoryDeps['nodeCertificates']>>, d: InventoryDeps): Draft[] {
   const out: Draft[] = []
   for (const n of nodes) {
@@ -226,7 +236,7 @@ function nodeDrafts(nodes: Awaited<ReturnType<InventoryDeps['nodeCertificates']>
       const { verdict, reason } = dateVerdict(notBefore, notAfter, d.now, d.policy)
       out.push({
         id: `pve:${n.node}:${c.filename}`, source: 'pve',
-        names: (c.san ?? []).map(sanName).filter(Boolean),
+        names: nodeCertNames(n.node, c.san),
         issuer: c.issuer || null, notBefore: iso(notBefore), notAfter: iso(notAfter),
         renewal: PUBLIC_ACME.test(c.issuer) ? 'Proxmox ACME' : 'Proxmox internal CA',
         selfSigned: false, staging: STAGING_ISSUERS.test(c.issuer),

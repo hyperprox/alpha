@@ -33,6 +33,7 @@ import {
   type IssuedBundle, type ProbeOptions, type ProbeResult, type ProbeTarget, type TargetSpec, type AlertState,
 } from './modules'
 import { deployBundle, guestRunner, installHyperproxCert, sameFingerprint, type DeployDeps } from './deploy'
+import { ensureCertsPolicy } from './policy'
 import {
   PrismaCertsStore, RenewingError, eventView, iso, probeView,
   type CertsStore, type ManagedRecord, type ProbeRecord, type TargetRecord,
@@ -144,6 +145,10 @@ export interface CertsServiceDeps {
   housekeepingExec?(vmid: number, script: string): Promise<{ code: number; output: string }>
   /** The notification bus (lib/notify). Without it, alerts are only recorded in the history. */
   publish?(e: NotifyEventInput): Promise<void>
+  /** Create the policy file with safe defaults when there is none (policy.ts ensureCertsPolicy). Production only. */
+  ensurePolicy?(path?: string): { created: boolean; error?: string }
+  /** Probe once by itself on a fresh install (never checked), so the page does not wait for the daily run. */
+  autoFirstCheck?: boolean
 }
 
 const INVENTORY_TTL_MS = 5 * 60_000
@@ -193,12 +198,27 @@ export class CertsService {
   /** Challenge values this process has presented and not yet cleaned up; a sweep never touches these. */
   private liveChallenges = new Set<string>()
 
+  private policyEnsured = false
+  private policyCreated = false
+  private policyCreateError: string | null = null
+  private firstCheck: Promise<unknown> | null = null
+  private firstCheckRunning = false
+
   constructor(private deps: CertsServiceDeps) {}
 
   private now(): Date { return this.deps.now ? this.deps.now() : new Date() }
   private get m(): CertsModules { return this.deps.modules }
 
-  policy(): PolicyLoad { return this.m.loadCertsPolicy(this.deps.policyPath) }
+  policy(): PolicyLoad {
+    // Once per process: a fresh install gets a policy file with safe defaults instead of a request to copy one.
+    if (!this.policyEnsured && this.deps.ensurePolicy) {
+      this.policyEnsured = true
+      const r = this.deps.ensurePolicy(this.deps.policyPath)
+      if (r.created) { this.policyCreated = true; this.deps.log('[certs] created the certificates policy with safe defaults (nothing is issued until a certificate is added)') }
+      if (r.error) { this.policyCreateError = r.error; this.deps.log(`[certs] ${r.error}`) }
+    }
+    return this.m.loadCertsPolicy(this.deps.policyPath)
+  }
 
   /** Resolves when every issuance and deploy started so far has settled. For tests and shutdown. */
   async idle(): Promise<void> {
@@ -299,7 +319,8 @@ export class CertsService {
       acme: { directory: load.policy.acme.directoryUrl, staging: load.policy.acme.staging, email: load.policy.acme.email },
       schedule: { cron: load.policy.schedule.check, nextRun: next },
     }
-    if (load.error) s.error = load.error
+    if (load.error) s.error = this.policyCreateError ? `${load.error}. ${this.policyCreateError}` : load.error
+    if (this.policyCreated) s.created = true
     return s
   }
 
@@ -388,7 +409,16 @@ export class CertsService {
       this.inventoryCache = { at: this.now().getTime(), cluster, entries }
     }
     const checked = await this.deps.store.getState<string>('lastCheck')
-    return { policy: this.policyStatus(load), inventory: this.inventoryCache!.entries, probes, managed, checkedAt: checked }
+    // Never checked (a fresh install): start the first check now rather than at tomorrow's schedule. Until it
+    // finishes the overview says it is checking, so nothing is called healthy before it was looked at.
+    if (this.deps.autoFirstCheck && !checked && !probes.length && !this.firstCheck) {
+      this.firstCheckRunning = true
+      this.firstCheck = this.probeAll()
+        .catch(e => this.deps.log(`[certs] first check failed: ${msg(e)}`))
+        .finally(() => { this.firstCheckRunning = false })
+    }
+    return { policy: this.policyStatus(load), inventory: this.inventoryCache!.entries, probes, managed, checkedAt: checked,
+      ...(this.firstCheckRunning ? { checking: true } : {}) }
   }
 
   // --- Probes ---------------------------------------------------------------------------------------
@@ -825,5 +855,7 @@ export function productionCertsService(db: PrismaClient, log: (m: string) => voi
     sources: productionSources(),
     log,
     publish,
+    ensurePolicy: ensureCertsPolicy,
+    autoFirstCheck: true,
   })
 }

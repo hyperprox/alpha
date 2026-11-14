@@ -6,7 +6,7 @@ import rateLimit  from '@fastify/rate-limit'
 import websocket  from '@fastify/websocket'
 import { serverOptions } from './lib/server-options'
 
-import { healthRoute }          from './routes/health'
+import { healthRoute, publicHealthRoute } from './routes/health'
 import { proxmoxRoutes }        from './routes/proxmox'
 import { proxyService } from './lib/proxy'
 import { proxyRoutes }          from './routes/proxy'
@@ -30,6 +30,7 @@ import { enableGrafanaAdminSync } from './lib/grafana-admin'
 import { authRoutes }             from './routes/auth'
 import { apiTokenRoutes }         from './routes/api-tokens'
 import { secretsRoutes }          from './routes/secrets'
+import { userRoutes, joinRoutes }   from './routes/users'
 import { terminalRoutes }             from './routes/terminal'
 import { pluginRoutes }           from './routes/plugins'
 import { PLUGINS }                from './plugins'
@@ -140,7 +141,10 @@ async function main() {
   await server.register(authRoutes,           { prefix: '/api/auth' })
   await server.register(apiTokenRoutes,       { prefix: '/api/auth/tokens' })
   await server.register(secretsRoutes,        { prefix: '/api/secrets' })
+  await server.register(userRoutes,           { prefix: '/api/users' })
+  await server.register(joinRoutes,           { prefix: '/api/auth/join' })
   await server.register(healthRoute,          { prefix: '/health' })
+  await server.register(publicHealthRoute,    { prefix: '/api/health' })
   await server.register(proxmoxRoutes,        { prefix: '/api/proxmox' })
   await server.register(proxyRoutes,          { prefix: '/api/proxy' })
   await server.register(dnsRoutes,            { prefix: '/api/dns' })

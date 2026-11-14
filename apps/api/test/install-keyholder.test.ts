@@ -41,6 +41,8 @@ esac
 
 test('first run: installs the unit and the API drop-in, starts the keyholder, warns about the one last lock', () => {
   const t = setup()
+  // An install in use (setup done): the API restart that follows does lock it, once.
+  fs.writeFileSync(path.join(t.hp, '.env'), 'SETUP_COMPLETE=true\n')
   const r = t.run()
   assert.equal(r.status, 0, r.stderr)
   const unit = fs.readFileSync(path.join(t.tmp, 'systemd', 'hyperprox-keyholder.service'), 'utf8')
@@ -116,4 +118,13 @@ test('a changed program whose restart fails: the drop-in is removed too', () => 
   assert.notEqual(r.status, 0)
   assert.equal(fs.existsSync(path.join(t.tmp, 'systemd', 'hyperprox-api.service.d', 'keyholder.conf')), false)
   assert.ok(t.callsNow().includes('daemon-reload'))
+})
+
+test('first run on a fresh install: no warning about a lock, since nobody has signed in yet', () => {
+  const t = setup()
+  fs.writeFileSync(path.join(t.hp, '.env'), 'SETUP_COMPLETE=false\n')
+  const r = t.run()
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /keyholder started/)
+  assert.doesNotMatch(r.stdout, /ONE last time|First install of the keyholder/)
 })

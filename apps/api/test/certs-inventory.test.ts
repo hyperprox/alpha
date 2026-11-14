@@ -122,7 +122,7 @@ test('merge: sources, renewal wording, usedBy, days and lifetime', async () => {
 
   const a = byId.get('pve:node-a:pve-ssl.pem')!
   assert.equal(a.renewal, 'Proxmox internal CA')
-  assert.deepEqual(a.names, ['10.0.0.11', 'node-a'])
+  assert.deepEqual(a.names, ['node-a', '10.0.0.11'], 'named by the node first')
   assert.deepEqual(a.usedBy, ['node-a console (10.0.0.11:8006)'])
   // pveproxy-ssl.pem is what node-b serves; its unused pve-ssl.pem and every root CA are left out.
   const b = byId.get('pve:node-b:pveproxy-ssl.pem')!

@@ -29,6 +29,8 @@ import { bwErrorMessage, encodeJson, runBw } from './bw-cli'
 import { fastSignInEnabled, sessionRoot, vaultAdminToken, vaultCaCert, vaultPublicUrl, vaultUrl } from './config'
 import { FastPathFailed, NativeSessionExpired, NativeVaultSession, NotMemberError, type DecryptedItem, type NativeSessionSnapshot } from './native'
 import { snapshotChanged } from './snapshot'
+import { GROUP_OPERATORS, GROUP_VIEWERS } from './bw-crypto'
+import { keyFingerprint, memberStatus, memberTypeFor, type GrantableRole, type VaultMember } from './members'
 
 // ---------------------------------------------------------------------------
 //  Contract types
@@ -99,6 +101,19 @@ export interface VaultBroker {
    */
   exportSessions?(): unknown
   importSessions?(data: unknown): Promise<void>
+
+  // ---- People (Settings → Users, ./members.ts). Additive, optional: a broker without them has no Users page. ----
+  /** The HyperProx organization's members, with the session's own rights. */
+  members?(sid: string): Promise<VaultMember[]>
+  /** Invite an email with a role. The vault sends nothing; the caller hands out a link. */
+  inviteMember?(sid: string, email: string, role: GrantableRole): Promise<void>
+  /** Confirm an accepted member whose key fingerprint the admin compared. */
+  confirmMember?(sid: string, memberId: string, fingerprint: string): Promise<void>
+  setMemberRole?(sid: string, memberId: string, role: GrantableRole): Promise<void>
+  /** The join page, step 1: register an invited email with its master password. No session involved. */
+  registerInvitee?(email: string, masterPassword: string, opts?: { alreadyRegistered?: boolean }): Promise<{ totpSecret: string; otpauthUri: string; fingerprint: string }>
+  /** The join page, step 2: turn on two-step login with the first code. */
+  confirmInviteeTotp?(email: string, masterPassword: string, code: string): Promise<void>
 }
 
 /** One vault session in the keyholder's snapshot. */
@@ -464,6 +479,104 @@ class CliVaultBroker implements VaultBroker {
     })
     s.queue = run.catch(() => undefined)
     return run
+  }
+
+  // ---- people (Settings → Users) ----------------------------------------------------
+
+  /** Organization management runs on the fast session, which holds the organization key confirmation needs. */
+  private withFast<T>(sid: string, fn: (v: NativeVaultSession, s: FastSession) => Promise<T>): Promise<T> {
+    return this.withSession(sid, async s => {
+      if (s.kind !== 'fast') throw new Error('Managing people needs the fast vault session. Sign out and sign in again, then retry.')
+      return fn(s.vault, s)
+    })
+  }
+
+  private async groupsFor(v: NativeVaultSession, role: GrantableRole): Promise<string[]> {
+    if (role === 'admin') return []
+    const want = role === 'operator' ? GROUP_OPERATORS : GROUP_VIEWERS
+    const g = (await v.orgGroups()).find(x => x.name === want)
+    if (!g) throw new Error(`the vault has no "${want}" group; the owner's setup did not finish`)
+    return [g.id]
+  }
+
+  async members(sid: string): Promise<VaultMember[]> {
+    return this.withFast(sid, async v => {
+      const out: VaultMember[] = []
+      for (const m of await v.orgMembers()) {
+        const status = memberStatus(Number(m.status))
+        const userId = m.userId ? String(m.userId) : null
+        let fingerprint: string | null = null
+        if (status === 'accepted' && userId) fingerprint = await v.userPublicKey(userId).then(keyFingerprint).catch(() => null)
+        out.push({ id: String(m.id), userId, email: String(m.email ?? ''), name: m.name ? String(m.name) : null,
+          role: roleFromMemberType(Number(m.type)), status, twoFactor: m.twoFactorEnabled === true, fingerprint })
+      }
+      return out.sort((a, b) => a.email.localeCompare(b.email))
+    })
+  }
+
+  async inviteMember(sid: string, email: string, role: GrantableRole): Promise<void> {
+    const e = normalizeEmail(email)
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) throw new Error('a valid email address is required')
+    return this.withFast(sid, async v => {
+      if ((await v.orgMembers()).some(m => normalizeEmail(String(m.email ?? '')) === e)) throw new Error(`${e} is already a member`)
+      await v.orgInvite(e, memberTypeFor(role), await this.groupsFor(v, role))
+    })
+  }
+
+  async confirmMember(sid: string, memberId: string, fingerprint: string): Promise<void> {
+    return this.withFast(sid, async v => {
+      const m = (await v.orgMembers()).find(x => String(x.id) === memberId)
+      if (!m) throw new Error('no such member')
+      if (memberStatus(Number(m.status)) !== 'accepted') throw new Error('only a member who has joined and is waiting can be confirmed')
+      if (m.twoFactorEnabled !== true) throw new Error('this person has not turned on two-step login yet; they finish it on the join page')
+      await v.orgConfirm(memberId, String(m.userId), fingerprint)
+    })
+  }
+
+  async setMemberRole(sid: string, memberId: string, role: GrantableRole): Promise<void> {
+    return this.withFast(sid, async (v, s) => {
+      const m = (await v.orgMembers()).find(x => String(x.id) === memberId)
+      if (!m) throw new Error('no such member')
+      if (Number(m.type) === MEMBER_TYPE.Owner) throw new Error('the owner\'s role is not changed here')
+      if (String(m.userId ?? '') === s.userId) throw new Error('you cannot change your own role')
+      await v.orgEdit(memberId, memberTypeFor(role), await this.groupsFor(v, role))
+    })
+  }
+
+  private pendingInvitee = new Map<string, string>() // email -> TOTP secret, between join steps 1 and 2
+
+  async registerInvitee(email: string, masterPassword: string, opts: { alreadyRegistered?: boolean } = {}) {
+    const e = normalizeEmail(email)
+    if (masterPassword.length < 12) throw new Error('the master password must be at least 12 characters')
+    const api = this.api()
+    // Already registered (HyperProx restarted between the two steps): the sign-in below checks the password.
+    if (!opts.alreadyRegistered) await registerAccount(api, e, masterPassword)
+    const mk = await makeMasterKey(masterPassword, e)
+    const hash = await masterPasswordHash(mk, masterPassword)
+    mk.fill(0)
+    let token
+    try { token = await api.passwordLogin(e, hash) } catch (err) { throw this.httpAuthError(err) }
+    const keys = await api.api('GET', '/api/accounts/keys', token.accessToken)
+    const pub = keys?.publicKey ?? keys?.PublicKey
+    if (!pub) throw new Error('the new account has no public key')
+    const secret = newTotpSecret()
+    this.pendingInvitee.set(e, secret)
+    return { totpSecret: secret, otpauthUri: otpauthUri(secret, e), fingerprint: keyFingerprint(Buffer.from(String(pub), 'base64')) }
+  }
+
+  async confirmInviteeTotp(email: string, masterPassword: string, code: string): Promise<void> {
+    const e = normalizeEmail(email)
+    const secret = this.pendingInvitee.get(e)
+    if (!secret) throw new BootstrapNotPendingError()
+    if (!/^\d{6}$/.test(code.trim()) || !totpMatches(secret, code)) throw new VaultAuthError('totp_invalid')
+    const api = this.api()
+    const mk = await makeMasterKey(masterPassword, e)
+    const hash = await masterPasswordHash(mk, masterPassword)
+    mk.fill(0)
+    let token
+    try { token = await api.passwordLogin(e, hash) } catch (err) { throw this.httpAuthError(err) }
+    await enableAuthenticator(api, token.accessToken, hash, secret, code.trim())
+    this.pendingInvitee.delete(e)
   }
 
   async verifyPassword(sid: string, masterPassword: string): Promise<boolean> {
