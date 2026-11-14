@@ -183,6 +183,8 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
   const [rescuing, setRescuing] = useState<string | null>(null)
   const [rescueNote, setRescueNote] = useState<string | null>(null)
   const [detail, setDetail] = useState<Detail | null>(null)
+  /** Set up or not, from the plug-in list (null until read). Nothing polls a plug-in that is not set up. */
+  const [configured, setConfigured] = useState<boolean | null>(null)
   const [name,   setName]   = useState(params.id)
   const [loading, setLoading] = useState(true)
   const [everySeconds, setEverySeconds] = useState(0)
@@ -204,12 +206,19 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     inFlight.current = true
     if (!quiet) setLoading(true)
     try {
-      const [meta, d] = await Promise.all([
-        fetch('/api/plugins').then(r => r.json()),
-        fetch(`/api/plugins/${params.id}/detail`).then(r => r.json()),
-      ])
+      // Whether it is set up comes first: a plug-in that is not set up is never asked for data (no detail, no
+      // stuck-import scan, no live polling), so its page says so instead of showing a 502 as "not reporting".
+      const meta = await fetch('/api/plugins').then(r => r.json())
       const m = meta?.data?.find((p: any) => p.id === params.id)
       if (m) { setName(m.name); setEverySeconds(Number(m.refreshSeconds ?? 0)) }
+      const isSetUp = m ? m.configured !== false : true
+      setConfigured(isSetUp)
+      if (!isSetUp) {
+        setDetail({ ok: false, error: `Not set up yet: add ${m?.name ?? 'its'} settings on the Plug-ins page.` })
+        setFetchedAt(Date.now())
+        return
+      }
+      const d = await fetch(`/api/plugins/${params.id}/detail`).then(r => r.json())
       setDetail(d.success ? d.data : { ok: false, error: d.error })
       setFetchedAt(Date.now())
     } catch (e: any) {
@@ -228,14 +237,15 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     if (r?.success) setStuck(r.data)
   }, [params.id])
 
-  useEffect(() => { load(); loadStuck() }, [load, loadStuck])
+  useEffect(() => { load() }, [load])
+  useEffect(() => { if (configured === true) loadStuck() }, [configured, loadStuck])
 
   // Poll only when the plug-in asked to be polled, the reader has it switched
   // on, and the tab is actually being looked at. A hidden tab polling a router
   // forever is the failure mode worth designing out: nobody sees the cost, so
   // nobody turns it off.
   useEffect(() => {
-    if (!everySeconds || !live) return
+    if (!everySeconds || !live || configured !== true) return
     let timer: ReturnType<typeof setInterval> | null = null
     const start = () => {
       if (timer) return
@@ -248,7 +258,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     start()
     document.addEventListener('visibilitychange', onVisibility)
     return () => { stop(); document.removeEventListener('visibilitychange', onVisibility) }
-  }, [everySeconds, live, load])
+  }, [everySeconds, live, load, configured])
 
   // Plex: now streaming and bandwidth every five seconds, from one light call, merged into the page in place so
   // nothing flickers and the posters stay put. A change in who is watching what also re-reads the whole page.
@@ -267,12 +277,12 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
   // "See the queue" on a downloading item: the Queue tab.
   const showArrQueue = () => { setArrTab('queue'); window.scrollTo({ top: 0 }) }
   // The grouped queue every few seconds from one light call (like Plex's /live), paused while the tab is hidden.
-  const arrQ = useArrQueue(isArr && live)
+  const arrQ = useArrQueue(isArr && live && configured === true)
   const setPlexTab = (t: 'now' | 'clearout' | 'library') => { setPlexTabRaw(t); try { window.localStorage.setItem('hp.plex.tab', t) } catch { /* no storage */ } }
   const [liveAt, setLiveAt] = useState<number | null>(null)
   const sessionKeys = useRef<string | null>(null)
   useEffect(() => {
-    if (!isPlex || !live) return
+    if (!isPlex || !live || configured !== true) return
     let timer: ReturnType<typeof setInterval> | null = null
     let busy = false
     const tick = async () => {
@@ -299,7 +309,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     void tick(); start()
     document.addEventListener('visibilitychange', onVisibility)
     return () => { stop(); document.removeEventListener('visibilitychange', onVisibility) }
-  }, [isPlex, live, load])
+  }, [isPlex, live, load, configured])
 
   // Re-render once a second purely so the "12s ago" label stays honest.
   const [, tick] = useState(0)

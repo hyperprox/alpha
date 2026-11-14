@@ -50,6 +50,8 @@ test('a plug-in that was never set up is not unreachable', () => {
   assert.equal(isNotConfigured(p.error), true)
   assert.equal(pluginKind(p), 'not-set-up'); assert.equal(pluginWord(p), 'Not set up')
   assert.equal(pluginWord({ error: 'connect ECONNREFUSED' }), 'Needs attention: unreachable')
+  // One word for not set up: a plug-in with no settings (off) reads the same as one whose answer says so.
+  assert.equal(pluginKind({ off: true }), 'not-set-up'); assert.equal(pluginWord({ off: true }), 'Not set up')
 })
 
 test('template architecture and node default', () => {

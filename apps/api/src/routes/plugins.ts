@@ -9,7 +9,7 @@ import { PLUGIN_IDEAS, repoSlug } from '../lib/plugin-wishlist'
 import { sharedServiceScan, pluginFindings } from '../lib/service-scan'
 import { homeAssistantDetail }  from './ha-control'
 import {
-  describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail,
+  describeSettings, getSettings, missingSettings, pluginConfigured, runPlugin, runPluginDetail,
   runPluginMetrics, renderExposition, saveSettings,
   type PluginMetric,
   runPluginRescueScan, runPluginRescueRun, PluginSettingsError,
@@ -69,7 +69,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
           ...p.manifest,
           hasDetail:  typeof p.detail === 'function',
           settings:   await describeSettings(p.manifest),
-          configured: missing.length === 0,
+          configured: await pluginConfigured(p, stored),
           missing,
         }
       }))
@@ -113,6 +113,8 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
     const plugin = findPlugin(req.params.id)
     if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })
     if (!plugin.rescueScan) return reply.send({ success: true, data: [] })
+    // Not set up is a normal state, not a 502: nothing to scan yet.
+    if (!(await pluginConfigured(plugin, await getSettings(plugin.manifest.id)))) return reply.send({ success: true, data: [], configured: false })
     try {
       return reply.send({ success: true, data: await runPluginRescueScan(plugin) })
     } catch (e: any) {

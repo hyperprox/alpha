@@ -10,7 +10,9 @@ export function isNotConfigured(error: string | undefined | null): boolean {
 }
 
 export function pluginKind(p: PluginReading): PluginKind {
-  if (p.off) return 'off'
+  // Not set up has one name everywhere: a plug-in with no settings (off) and one whose own answer says it has
+  // nothing to talk to read the same, "Not set up", on the dashboard, the gallery and the detail page.
+  if (p.off) return 'not-set-up'
   if (p.error) return isNotConfigured(p.error) ? 'not-set-up' : 'unreachable'
   if (p.tone === 'bad' || p.tone === 'warn') return 'attention'
   return 'active'

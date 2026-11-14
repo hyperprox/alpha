@@ -178,6 +178,11 @@ export interface Plugin {
    * season and episode out of the filename. No amount of waiting fixes one.
    */
   rescueScan?(ctx: PluginContext): Promise<PluginStuckImport[]>
+  /**
+   * Whether the plug-in is really set up, when its required settings cannot say (MeshCentral's are all optional).
+   * Optional; see pluginConfigured for the default.
+   */
+  isConfigured?(stored: Record<string, string>): boolean | Promise<boolean>
   /** Act on one of them, by the id rescueScan reported. */
   rescueRun?(ctx: PluginContext, id: string): Promise<string>
   /**
@@ -517,6 +522,24 @@ export async function describeSettings(manifest: PluginManifest) {
     value: s.type === 'secret' ? '' : (stored[s.key] ?? ''),
     isSet: Boolean(stored[s.key]),
   }))
+}
+
+/** How many devices a plug-in with its own instance list (ASUS, QNAP, PBS) has saved; 0 for none or unreadable. */
+export function instanceCount(stored: Record<string, string>): number {
+  try { const j = JSON.parse(stored.instances ?? '[]'); return Array.isArray(j) ? j.length : 0 } catch { return 0 }
+}
+
+/**
+ * The one answer to "is this plug-in set up", for the gallery's count and pills, the dashboard and the detail
+ * page alike: every required setting is stored; a plug-in with its own device list (a core transport with no
+ * settings: ASUS, QNAP, PBS) has at least one device saved; and a plug-in's own isConfigured, when it has one,
+ * agrees. Before this, a plug-in with no required settings counted as set up on a fresh install.
+ */
+export async function pluginConfigured(plugin: Plugin, stored: Record<string, string>): Promise<boolean> {
+  if (missingSettings(plugin.manifest, stored).length) return false
+  if (plugin.isConfigured) { try { return !!(await plugin.isConfigured(stored)) } catch { return false } }
+  if (plugin.manifest.coreTransport && !plugin.manifest.settings.length) return instanceCount(stored) > 0
+  return true
 }
 
 export function missingSettings(manifest: PluginManifest, stored: Record<string, string>): string[] {
