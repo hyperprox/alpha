@@ -159,7 +159,10 @@ export function hardwareOf(type: GuestType, config: Record<string, unknown> | nu
       if (/host=/.test(v) || /mapping=/.test(v)) push({ key, what: `a USB device (${v.split(',')[0]})`, kind: 'usb', required: false, nodes: here })
       continue
     }
-    if (type === 'lxc' && /^dev\d+$/.test(key)) { push({ key, what: `a host device (${v.split(',')[0]})`, kind: 'dev', required: true, nodes: here }); continue }
+    if (type === 'lxc' && /^dev\d+$/.test(key)) {
+      if (standardDevice(v.split(',')[0])) continue
+      push({ key, what: `a host device (${v.split(',')[0]})`, kind: 'dev', required: true, nodes: here }); continue
+    }
   }
   // Raw lxc.* lines, as /config returns them: { lxc: [["lxc.cgroup2.devices.allow", "c 195:* rwm"], ...] }
   const rawLxc = (config as any).lxc
@@ -168,6 +171,7 @@ export function hardwareOf(type: GuestType, config: Record<string, unknown> | nu
   if (type === 'lxc') for (const [k, v] of Object.entries(config)) if (/^lxc\./.test(k)) lines.push([k, String(v)])
   for (const [k, v] of lines) {
     if (!/^lxc\.(cgroup2?\.devices\.allow|mount\.entry)/.test(k)) continue
+    if (standardDevice(v.trim().split(/\s+/)[0])) continue
     const d = lxcDevice(v)
     if (!d) continue
     // A cgroup permission alone never blocks a start; a mount entry does unless it is marked optional.
@@ -177,6 +181,18 @@ export function hardwareOf(type: GuestType, config: Record<string, unknown> | nu
   // A device that is also mounted optionally is optional overall.
   hw.devices = hw.devices.filter(d => d.required || !hw.devices.some(x => x !== d && x.what === d.what && x.required))
   return hw
+}
+
+/**
+ * Character devices every Proxmox node has (the kernel makes them; no hardware behind them): a guest that uses
+ * one can start on any node, so it is no reason to stay put. /dev/net/tun (VPNs), /dev/fuse, /dev/kvm and the
+ * usual /dev/null family.
+ */
+const STANDARD_DEVICES = new Set(['/dev/net/tun', '/dev/fuse', '/dev/kvm', '/dev/null', '/dev/zero', '/dev/full',
+  '/dev/random', '/dev/urandom', '/dev/tty', '/dev/ptmx', '/dev/loop-control', '/dev/vhost-net', '/dev/vhost-vsock'])
+export function standardDevice(path: string): boolean {
+  const p = path.startsWith('/') ? path : `/${path}`
+  return STANDARD_DEVICES.has(p.replace(/\/+$/, ''))
 }
 
 function lxcDevice(v: string): { what: string; kind: DeviceKind } | null {

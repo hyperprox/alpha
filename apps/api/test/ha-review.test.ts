@@ -380,3 +380,15 @@ test('re-check 3: PCI classes are keyed by full address; a whole device is class
   assert.deepEqual(hw.devices.map(d => d.kind), ['gpu', 'pci', 'nic'])
   assert.match(hw.devices[1].what, /0000:01:00\.1/)
 })
+
+test('a standard char device (/dev/net/tun, /dev/fuse, /dev/kvm) is on every node: no "cannot start" warning', () => {
+  const hw = hardwareOf('lxc', {
+    dev0: '/dev/net/tun', dev1: '/dev/fuse,mode=0666', dev2: '/dev/kvm', rootfs: 'shared-rbd:subvol-1',
+    'lxc.mount.entry': '/dev/net/tun dev/net/tun none bind,create=file',
+    'lxc.cgroup2.devices.allow': 'c 10:200 rwm',
+  }, ['shared-rbd'])
+  assert.deepEqual(hw.devices, [], JSON.stringify(hw.devices))
+  // A real device beside them still counts.
+  const real = hardwareOf('lxc', { dev0: '/dev/net/tun', dev1: '/dev/ttyUSB0' }, [])
+  assert.deepEqual(real.devices.map(d => d.key), ['dev1'])
+})
