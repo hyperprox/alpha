@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { useFocusTrap } from '@/lib/focus-trap'
 import { alpha } from '@/lib/theme'
 import { dnsLoadState, CONNECT_DNS_HREF } from '@/lib/dns-state'
 import { Details, GlowBars, HudHeader, Page, Panel, Pill, styles, type StatChip } from '@/components/visual/kit'
@@ -550,6 +551,8 @@ function DeleteModal({ record, domain, onClose, onDelete }: {
   onDelete: () => void
 }) {
   const [deleting, setDeleting] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  useFocusTrap(box, onClose)
 
   const handleDelete = async () => {
     setDeleting(true)
@@ -562,9 +565,10 @@ function DeleteModal({ record, domain, onClose, onDelete }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
-      <div className="w-full max-w-sm rounded-xl border p-6 overflow-y-auto overscroll-contain max-h-[calc(100dvh-2rem)]"
+      <div ref={box} role="dialog" aria-modal="true" aria-labelledby="dns-delete-title" tabIndex={-1}
+        className="w-full max-w-sm rounded-xl border p-6 overflow-y-auto overscroll-contain max-h-[calc(100dvh-2rem)]"
         style={{ background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--crit-2) 15%, transparent)' }}>
-        <h2 className="font-display mb-2" style={{ color: 'var(--crit-2)', fontSize: 22, fontWeight: 600 }}>Delete Record</h2>
+        <h2 id="dns-delete-title" className="font-display mb-2" style={{ color: 'var(--crit-2)', fontSize: 22, fontWeight: 600 }}>Delete Record</h2>
         <p className="text-sm mb-1" style={{ color: 'var(--text-soft)' }}>This will permanently delete:</p>
         <p className="text-sm font-mono mb-1" style={{ color: 'var(--text-bright)' }}>
           <span style={{ color: TYPE_COLORS[record.type] }}>{record.type}</span> {record.name}.{domain}

@@ -286,3 +286,10 @@ test('services: sanitizeServiceHosts keeps only private addresses for known keys
   assert.deepEqual(setup.sanitizeServiceHosts({ npm: '10.0.2.31', pbs: '8.8.8.8', ollama: 'evil.example', x: '10.0.0.1' }), { npm: '10.0.2.31' })
   assert.deepEqual(setup.sanitizeServiceHosts(null), {})
 })
+
+test('the wizard service toggles are keyboard switches: focusable, announced on or off, Space and Enter toggle', () => {
+  const html = setup.WIZARD_HTML
+  const sw = html.match(/class="svc-card [^"]*"[^>]*role="switch" tabindex="0" aria-checked="[^"]*"[^>]*onkeydown="[^"]*event\.key===' '\|\|event\.key==='Enter'/g) || []
+  assert.equal(sw.length, 2, 'the found-service cards and the install cards')
+  assert.match(html, /\.svc-card:focus-visible\{outline/)
+})

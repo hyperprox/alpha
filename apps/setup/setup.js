@@ -652,6 +652,7 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-
 .svc-card{border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;transition:.15s}
 .svc-card:hover{border-color:#2e3f5c}
 .svc-card.on{border-color:var(--cyan);background:rgba(0,200,224,.05)}
+.svc-card:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
 .svc-name{font-size:14px;font-weight:600}
 .svc-detail{font-size:12px;color:var(--muted);font-family:'IBM Plex Mono',monospace;margin-top:2px}
 .toggle{width:36px;height:20px;border-radius:10px;border:1px solid var(--border);background:#0d1624;position:relative;transition:.2s;flex-shrink:0}
@@ -842,7 +843,7 @@ function stepServices(){
             <input type="radio" name="svc-\${escHtml(s.key)}" \${s.chosen ? '' : 'checked'} onclick="chooseSvc('\${escHtml(s.key)}','')">
             <span class="svc-detail" style="margin:0">None of these</span></label>
         </div>\`
-      : \`<div class="svc-card \${s.enabled?'on':''}" onclick="toggleSvc('\${escHtml(s.key)}')">
+      : \`<div class="svc-card \${s.enabled?'on':''}" role="switch" tabindex="0" aria-checked="\${s.enabled?'true':'false'}" aria-label="\${escHtml(s.name)}" onclick="toggleSvc('\${escHtml(s.key)}')" onkeydown="if(event.key===' '||event.key==='Enter'){event.preventDefault();toggleSvc('\${escHtml(s.key)}')}">
           <div>
             <div class="svc-name">\${escHtml(s.name)}</div>
             <div class="svc-detail">\${s.found ? escHtml(s.detail) : 'Not detected on this cluster'}</div>
@@ -858,7 +859,7 @@ function stepServices(){
   const installCards = [
     { key:'prometheus', name:'Prometheus',           desc:'Metrics collection — on this machine only, read through HyperProx' },
     { key:'grafana',    name:'Grafana',              desc:'Dashboards on the Monitoring page — for signed-in users only' },
-  ].map(s => \`<div class="svc-card \${inst[s.key]?'on':''}" onclick="toggleInstall('\${s.key}')">
+  ].map(s => \`<div class="svc-card \${inst[s.key]?'on':''}" role="switch" tabindex="0" aria-checked="\${inst[s.key]?'true':'false'}" aria-label="\${s.name}" onclick="toggleInstall('\${s.key}')" onkeydown="if(event.key===' '||event.key==='Enter'){event.preventDefault();toggleInstall('\${s.key}')}">
     <div>
       <div class="svc-name">\${s.name}</div>
       <div class="svc-detail">\${s.desc}</div>

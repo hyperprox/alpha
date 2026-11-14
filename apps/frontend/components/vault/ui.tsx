@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useRef, useState } from 'react'
+import { useFocusTrap } from '@/lib/focus-trap'
 import v from './vault.module.css'
 
 // The shared vault controls: inputs, buttons, notices and the dialog frame used by every master-password,
@@ -68,15 +69,13 @@ export function BusyNote({ children }: { children: React.ReactNode }) {
  * bottom, and only what is between them scrolls. Without `footer` the buttons scroll with the body.
  */
 export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode }) {
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
-  }, [onClose])
+  // Escape closes it; Tab stays inside it; focus goes back where it was (lib/focus-trap.ts).
+  const box = useRef<HTMLDivElement>(null)
+  useFocusTrap(box, onClose)
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
          onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div role="dialog" aria-modal="true" aria-label={title} className={v.dialog}>
+      <div ref={box} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} className={v.dialog}>
         <div className={v.head}>
           <h2 className={v.title}>{title}</h2>
           <button type="button" onClick={onClose} aria-label="Close" className={v.close}>✕</button>

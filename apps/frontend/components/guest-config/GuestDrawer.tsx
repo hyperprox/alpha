@@ -3,7 +3,8 @@
 // One guest: live stats and every existing action (power with HA awareness, HA state, migrate, delete),
 // the config editor, network, GPU and devices, snapshots, console, history with revert, and the VPN slot.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useFocusTrap } from '@/lib/focus-trap'
 import { useRouter } from 'next/navigation'
 import { apiJson } from '@/lib/api'
 import { isUpid, taskWords, upidNode, waitForTask, type TaskStatus } from '@/lib/pve-task'
@@ -41,12 +42,14 @@ export function GuestDrawer({ row, nodes, canOperate, canAdmin, onClose, onRefre
     if (r.ok) { setView(r.body!.data); setViewErr(null) } else setViewErr(r.error ?? 'Could not read the config')
   }, [row.node, row.type, row.vmid])   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { void loadView() }, [loadView])
-  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h) }, [onClose])
+  // A modal drawer: Escape closes it, Tab stays inside it, focus goes back where it was (lib/focus-trap.ts).
+  const box = useRef<HTMLDivElement>(null)
+  useFocusTrap(box, onClose)
   const saved = () => { void loadView(); onRefresh() }
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" style={{ background: 'var(--scrim)' }} onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="h-full w-full sm:max-w-3xl flex flex-col border-l" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)' }}>
+      <div ref={box} role="dialog" aria-modal="true" aria-label={row.name} tabIndex={-1} className="h-full w-full sm:max-w-3xl flex flex-col border-l" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)' }}>
         <div className="px-4 sm:px-5 pt-4 pb-2 border-b" style={{ borderColor: 'var(--border-dim)' }}>
           <div className="flex items-center gap-2">
             <StatusDot status={row.status} />

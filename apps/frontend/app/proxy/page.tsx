@@ -8,7 +8,8 @@
 //  previewed first, then applied, then read back from the proxy.
 // =============================================================================
 
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { useFocusTrap } from '@/lib/focus-trap'
 import { alpha } from '@/lib/theme'
 import { atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
@@ -97,9 +98,11 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 }
 
 function Modal({ title, eyebrow, onClose, children, wide }: { title: string; eyebrow?: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  const box = useRef<HTMLDivElement>(null)
+  useFocusTrap(box, onClose)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'var(--scrim)' }} onClick={onClose}>
-      <div className="rounded-lg border w-full overflow-y-auto" onClick={e => e.stopPropagation()}
+      <div ref={box} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} className="rounded-lg border w-full overflow-y-auto" onClick={e => e.stopPropagation()}
         style={{ maxWidth: wide ? 720 : 560, maxHeight: 'calc(100dvh - 32px)', overscrollBehavior: 'contain', background: 'var(--surface)', borderColor: 'var(--border-strong)' }}>
         <div className="flex items-start justify-between p-5 border-b" style={{ borderColor: 'var(--border-soft)' }}>
           <div>
