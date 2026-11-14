@@ -7,6 +7,7 @@ import { FastifyPluginAsync } from 'fastify'
 import { getGPUInfo }         from '../lib/gpu'
 import { NPMClient }          from '../lib/npm-client'
 import { withCephMon, CephUnavailableError } from '../lib/ceph'
+import { noteHomeClusterName } from '../lib/clusters/registry'
 import { getProviderCredentials } from '../lib/credentials'
 import { pveFromEnv } from '../lib/pve-env'
 import { npmHealth, withTimeout } from '../lib/service-health'
@@ -52,7 +53,10 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const rows = await getClient().fetchStrict<any[]>('/cluster/status')
       const name = (rows ?? []).find(x => x?.type === 'cluster')?.name
-      return { name: typeof name === 'string' && name ? name : null }
+      const n = typeof name === 'string' && name ? name : null
+      // The cluster list then says this name for home too (lib/clusters/registry.ts homeDisplayName).
+      if (!isRemoteContext()) noteHomeClusterName(n)
+      return { name: n }
     } catch { return { name: null } }
   })
   fastify.get('/nodes',     async (_, r) => wrap(r, () => getClient().getNodes()))

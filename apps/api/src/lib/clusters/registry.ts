@@ -56,14 +56,29 @@ export async function loadClusters(): Promise<void> {
 export function clustersLoaded(): boolean { return loaded }
 
 const homeDefaults = (): ClusterRow => ({
-  id: HOME_ID, name: 'Home cluster', kind: 'home', address: '', port: 8006, note: '',
+  id: HOME_ID, name: HOME_DEFAULT_NAME, kind: 'home', address: '', port: 8006, note: '',
   certFingerprint: null, certConfirmedAt: null, certConfirmedBy: null, nodeAddresses: {}, allowedRoots: [], monitoring: {},
   plexUrl: null, createdBy: 'system', createdAt: new Date(0), updatedAt: new Date(0),
 })
 
+/** The default name the home cluster has until someone names it. */
+export const HOME_DEFAULT_NAME = 'Home cluster'
+let homeProxmoxName: string | null = null
+/**
+ * Proxmox's own name for the home cluster (/cluster/status), as the header shows it. While the home row still has
+ * the default name, it is listed under this one, so Updates and the AI page say the name the header does.
+ */
+export function noteHomeClusterName(name: string | null | undefined): void {
+  const n = String(name ?? '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 60)
+  homeProxmoxName = n || null
+}
+export function homeDisplayName(stored: string, proxmoxName: string | null = homeProxmoxName): string {
+  return stored === HOME_DEFAULT_NAME && proxmoxName ? proxmoxName : stored
+}
+
 function view(r: ClusterRow): ClusterInfo {
   return {
-    id: r.id, name: r.name, kind: r.kind, address: r.kind === 'home' ? '' : r.address, port: r.port, note: r.note,
+    id: r.id, name: r.kind === 'home' ? homeDisplayName(r.name) : r.name, kind: r.kind, address: r.kind === 'home' ? '' : r.address, port: r.port, note: r.note,
     cert: { fingerprint: r.certFingerprint, confirmedAt: r.certConfirmedAt ? r.certConfirmedAt.toISOString() : null, confirmedBy: r.certConfirmedBy, verified: certVerifiedWords(r.certConfirmedBy) },
     nodeAddresses: { ...r.nodeAddresses }, allowedRoots: [...r.allowedRoots], monitoring: structuredClone(r.monitoring), plexUrl: r.plexUrl,
     ignoredGuests: [...(r.ignoredGuests ?? [])],

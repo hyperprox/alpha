@@ -125,7 +125,8 @@ export function fmtTime(iso?: string | null): string {
 
 export const REASONS: Record<string, string> = {
   'excluded':    'excluded by policy',
-  'not-running': 'not running',
+  // Why that matters, not only that it is so: nothing inside a stopped guest can be read or upgraded.
+  'not-running': 'stopped, so it cannot be read or upgraded; start it, then Check again to include it',
   'no-apt':      'no apt (not a Debian-family guest)',
   'no-agent':    'no guest agent',
   'windows':     'Windows guest',
