@@ -1,6 +1,7 @@
 import { test, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, statSync, existsSync, readdirSync } from 'fs'
+import { mkdtempSync, writeFileSync, readFileSync, statSync, existsSync, readdirSync, utimesSync } from 'fs'
+import { updateEnvFile } from '../src/lib/env-file'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { FakeBroker } from './fakes/fake-broker'
@@ -179,4 +180,66 @@ test('a read-back mismatch stops before rows or .env are touched', async () => {
   } finally { broker.listSecrets = realList }
   assert.equal(table.deleted.length, 0)
   assert.equal(readFileSync(envPath, 'utf8'), original)
+})
+
+// ---- the setup key must stay gone: the migration re-reads .env under the shared lock ------------------------
+
+test('the owner\'s first sign-in removes the setup key, and the migration writing .env afterwards keeps it removed', async () => {
+  const app = await appP
+  const { envPath } = setup()
+  writeFileSync(envPath, readFileSync(envPath, 'utf8') + 'SETUP_SECRET=setup-key-123\n')
+  process.env.ENCRYPTION_KEY = KEY
+  process.env.ENV_FILE_PATH = envPath
+  process.env.SETUP_SECRET = 'setup-key-123'
+  process.env.PROXMOX_TOKEN_SECRET = 'pve-token-from-env'
+  setCredentialTable(makeTable([
+    { id: '1', category: 'dns', provider: 'godaddy', key: 'api_key', value: encrypt('gd-key'), updatedAt: new Date() },
+  ]))
+  broker.items.clear()
+  await resetLock()
+  const { res } = await signIn(app, 'owner@example.com', 'owner master password')
+  assert.equal(res.statusCode, 200, res.body)
+  await migrationSettled()
+  const env = readFileSync(envPath, 'utf8')
+  assert.doesNotMatch(env, /^SETUP_SECRET=/m, 'the setup key does not come back')
+  assert.match(env, /^SETUP_COMPLETE=true$/m)
+  assert.match(env, /^PROXMOX_TOKEN_SECRET=$/m, 'and the migration still blanked what it moved')
+})
+
+test('a .env change made while the migration runs survives its write (it re-reads the file, it does not write back its old copy)', async () => {
+  const app = await appP
+  const { envPath } = setup()
+  process.env.ENCRYPTION_KEY = KEY
+  process.env.ENV_FILE_PATH = envPath
+  process.env.PROXMOX_TOKEN_SECRET = 'pve-token-from-env'
+  setCredentialTable(makeTable([]))
+  await resetLock()
+  // A viewer's sign-in unlocks without migrating; then the migration is run by hand as the owner would.
+  setCredentialTable(makeTable([{ id: '9', category: 'dns', provider: 'godaddy', key: 'api_key', value: encrypt('gd-key'), updatedAt: new Date() }]))
+  await signIn(app, 'viewer@example.com', 'viewer master password')
+  const owner = await signIn(app, 'owner@example.com', 'owner master password')
+  assert.equal(owner.res.statusCode, 200)
+  await migrationSettled()
+  // Put a secret back to be moved, start the migration, and change .env while it is between its read and write.
+  writeFileSync(envPath, readFileSync(envPath, 'utf8').replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET=again') + 'SETUP_SECRET=k\n')
+  process.env.JWT_SECRET = 'again'
+  const sid = [...broker.sessions.values()].at(-1)!.sid
+  const run = seedFromEnv(sid)
+  updateEnvFile(envPath, t => t.replace(/^SETUP_SECRET=.*\n/m, '') + 'WRITTEN_MEANWHILE=1\n')
+  await run
+  const env = readFileSync(envPath, 'utf8')
+  assert.doesNotMatch(env, /^SETUP_SECRET=/m, 'the removal made meanwhile stands')
+  assert.match(env, /^WRITTEN_MEANWHILE=1$/m)
+  assert.match(env, /^JWT_SECRET=$/m, 'and the migration\'s own blanking still happened')
+})
+
+test('the .env lock: a writer waits for another, and a stale lock is taken over', () => {
+  const { envPath } = setup()
+  writeFileSync(`${envPath}.lock`, '')
+  const old = new Date(Date.now() - 60_000)
+  utimesSync(`${envPath}.lock`, old, old)
+  assert.equal(updateEnvFile(envPath, t => t + 'A=1\n'), true)
+  assert.match(readFileSync(envPath, 'utf8'), /^A=1$/m)
+  assert.equal(existsSync(`${envPath}.lock`), false, 'the lock is released')
+  assert.equal(updateEnvFile(envPath, () => null), false, 'no change, no write')
 })

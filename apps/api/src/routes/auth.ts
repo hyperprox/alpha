@@ -120,13 +120,14 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     // values are served from memory. Progress: GET /api/auth/status → migration.
     let migration: { ok: boolean; running?: boolean; error?: string } | undefined
     if (vs.role === 'owner') {
+      // An owner exists, so setup is done: record it and drop the setup key from .env. First, before the
+      // migration below starts its own (locked, re-reading) .env write.
+      try { if (markSetupDone()) req.log.info('[setup] owner exists: setup recorded as done, setup key removed') } catch { /* .env not writable */ }
       const m = await startMigration(vs.sid, (msg, err) => req.log.error({ err }, msg))
       if (m.error) migration = { ok: false, error: m.error }
       else if (m.started) migration = { ok: true, running: true }
       // The old Updates/Certificates webhooks become notification channels (once), after the migration.
       void getNotifyService()?.seedOnOwnerUnlock()
-      // An owner exists, so setup is done: record it and drop the setup key from .env.
-      try { if (markSetupDone()) req.log.info('[setup] owner exists: setup recorded as done, setup key removed') } catch { /* .env not writable */ }
       // What the setup wizard held in memory for want of a vault (a node login, a DNS key) goes in now.
       // Then the home nodes' host keys are verified with evidence (no fingerprints to compare), as this owner, whose
       // sign-in unlocked the vault. Nothing happens when every node is already verified or confirmed.

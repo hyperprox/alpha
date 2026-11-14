@@ -10,7 +10,8 @@
 //  them again. That is the price of never writing them down.
 // =============================================================================
 
-import { readFileSync, writeFileSync, renameSync, chmodSync, mkdirSync, rmSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, chmodSync, mkdirSync, rmSync } from 'fs'
+import { updateEnvFile } from './env-file'
 import { dirname, join } from 'path'
 import { saveCredential } from './ssh-broker'
 import { pinHostKeyIfFree } from './node-exec'
@@ -125,18 +126,18 @@ export function holdValidated(v: HeldSecrets): ReturnType<typeof heldSummary> {
  * key. (An install made before setup recorded it can have an owner and no SETUP_COMPLETE line.)
  */
 export function markSetupDone(envPath = process.env.ENV_FILE_PATH || '/opt/hyperprox/.env'): boolean {
-  let text: string
-  try { text = readFileSync(envPath, 'utf8') } catch { return false }
-  // Only an install still holding a setup key needs this; anything else is left exactly as it is.
-  if (!/^SETUP_SECRET=/m.test(text)) return false
-  let next = text.split('\n').filter(l => !/^SETUP_SECRET=/.test(l)).join('\n')
-  if (/^SETUP_COMPLETE=/m.test(next)) next = next.replace(/^SETUP_COMPLETE=.*$/m, 'SETUP_COMPLETE=true')
-  else next = `${next.replace(/\n?$/, '\n')}SETUP_COMPLETE=true\n`
-  if (next === text) return false
-  const tmp = `${envPath}.hpx-tmp`
-  writeFileSync(tmp, next, { mode: 0o600 }); chmodSync(tmp, 0o600); renameSync(tmp, envPath)
-  delete process.env.SETUP_SECRET
-  return true
+  if (!existsSync(envPath)) return false
+  // Under the lock every .env writer shares (lib/env-file.ts), on the file as it is now.
+  const changed = updateEnvFile(envPath, text => {
+    // Only an install still holding a setup key needs this; anything else is left exactly as it is.
+    if (!/^SETUP_SECRET=/m.test(text)) return null
+    let next = text.split('\n').filter(l => !/^SETUP_SECRET=/.test(l)).join('\n')
+    if (/^SETUP_COMPLETE=/m.test(next)) next = next.replace(/^SETUP_COMPLETE=.*$/m, 'SETUP_COMPLETE=true')
+    else next = `${next.replace(/\n?$/, '\n')}SETUP_COMPLETE=true\n`
+    return next
+  })
+  if (changed) delete process.env.SETUP_SECRET
+  return changed
 }
 
 /**

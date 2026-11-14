@@ -14,7 +14,8 @@
 // =============================================================================
 
 import { PrismaClient } from '@prisma/client'
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
+import { updateEnvFile } from './env-file'
 import { decrypt, mask } from './crypto'
 import { getBroker, type SecretItem } from './vault/broker'
 import { isUnlocked, cachedSecret, putCachedSecret, removeCachedSecret, onLock, onUnlock } from './vault/state'
@@ -689,16 +690,15 @@ export async function seedFromEnv(sidArg?: string, opts: { onCacheReady?: (hasWo
       const v = cachedSecret(itemName(def.category, def.provider))?.fields[def.key]
       if (v === undefined || v === '') keys.delete(def.envKey)
     }
-    const { text, blanked } = blankEnv(envText, keys)
     // No plaintext backup: every value blanked here was written to the vault and read back above (or
     // was already there), so a copy of the old file would only be a second, unprotected store of it.
-    if (blanked.length) {
-      const tmp = `${envPath}.hpx-tmp`
-      writeFileSync(tmp, text, { mode: 0o600 })
-      chmodSync(tmp, 0o600)
-      renameSync(tmp, envPath)
+    // .env is read again here, under the lock every writer shares: the copy read at the start is minutes old
+    // by now, and writing it back would undo what others wrote meanwhile (the setup key's removal).
+    updateEnvFile(envPath, current => {
+      const { text, blanked } = blankEnv(current, keys)
       result.envBlanked = blanked
-    }
+      return blanked.length ? text : null
+    })
   }
 
   for (const k of RETIRED_ENV_KEYS) delete process.env[k]

@@ -14,6 +14,7 @@ const path      = require('path')
 const crypto    = require('crypto')
 const { exec }  = require('child_process')
 const exporter  = require('./pve-exporter')
+const { updateEnvFile } = require('./env-file')
 const onboard   = require('./onboarding')
 const core      = require('./wizard-core')
 
@@ -48,9 +49,13 @@ function readEnv() {
 }
 
 function writeEnv(updates) {
-  let raw = ''
-  try { raw = fs.readFileSync(ENV_PATH, 'utf8') } catch {}
+  // Read, change and write under the lock every .env writer shares (env-file.js).
+  updateEnvFile(ENV_PATH, raw => envWithUpdates(raw, updates))
+  fs.chmodSync(ENV_PATH, 0o600)
+  Object.assign(process.env, updates)
+}
 
+function envWithUpdates(raw, updates) {
   const lines    = raw.split('\n')
   const updated  = new Set()
 
@@ -68,23 +73,18 @@ function writeEnv(updates) {
     if (!updated.has(k)) newLines.push(`${k}=${v}`)
   }
 
-  // .env holds the Proxmox token and every secret not yet in the vault: owner-only, whatever mode it had.
-  fs.writeFileSync(ENV_PATH, newLines.join('\n'), { encoding: 'utf8', mode: 0o600 })
-  fs.chmodSync(ENV_PATH, 0o600)
-  Object.assign(process.env, updates)
+  // .env holds the Proxmox token and every secret not yet in the vault: owner-only (env-file.js writes 0600).
+  return newLines.join('\n')
 }
 
 /** Remove keys from .env entirely (SETUP_SECRET once setup is done). */
 function removeEnv(keys) {
-  let raw = ''
-  try { raw = fs.readFileSync(ENV_PATH, 'utf8') } catch { return }
+  if (!fs.existsSync(ENV_PATH)) return
   const drop = new Set(keys)
-  const kept = raw.split('\n').filter(line => {
+  updateEnvFile(ENV_PATH, raw => raw.split('\n').filter(line => {
     const t = line.trim(); const eq = t.indexOf('=')
     return !(eq > 0 && !t.startsWith('#') && drop.has(t.slice(0, eq).trim()))
-  })
-  fs.writeFileSync(ENV_PATH, kept.join('\n'), { encoding: 'utf8', mode: 0o600 })
-  fs.chmodSync(ENV_PATH, 0o600)
+  }).join('\n'))
   for (const k of keys) delete process.env[k]
 }
 
