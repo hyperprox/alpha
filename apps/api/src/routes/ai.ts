@@ -12,7 +12,7 @@ import { detail as metricsDetail } from '../lib/site-metrics/view'
 import { metricsStore } from '../lib/site-metrics/store'
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { randomUUID }         from 'crypto'
-import { setCredential }      from '../lib/credentials'
+import { getCredential, setCredential } from '../lib/credentials'
 import { executeDeployJob, getJob, type DeployRun, type JobState } from '../lib/wizard-executor'
 import { gatherTemplateFacts } from '../lib/ai/facts'
 import { PreparedStore }      from '../lib/ai/prepared'
@@ -76,6 +76,22 @@ import {
  * Said instead of an error when a request needs a model and none can be reached. Questions HyperProx can answer
  * by code (and every action, which is read by code) still work without one.
  */
+
+/**
+ * Remember the model a request picked, for the dropdown and the next request. Only when an Ollama is connected
+ * and the model changed: with none connected there is nothing to remember it for, and writing it made an
+ * empty-looking vault item (hyperprox:ai/ollama) as a side effect of asking a question.
+ */
+export async function saveOllamaModel(model: string,
+  get: (c: string, p: string, k: string) => Promise<string | null> = getCredential,
+  set: (c: string, p: string, k: string, v: string, masked?: boolean) => Promise<void> = setCredential): Promise<boolean> {
+  const url = (await get('ai', 'ollama', 'url')) || process.env.OLLAMA_URL || ''
+  if (!url) return false
+  if ((await get('ai', 'ollama', 'model')) === model) return false
+  await set('ai', 'ollama', 'model', model, false)
+  return true
+}
+
 export const NEEDS_MODEL = 'That needs an AI model, and none is connected yet. Without one I answer from what HyperProx reads directly: try "Is my NAS healthy?", "What alerts are firing?" or "How is each cluster doing?". Connect a model in the Settings tab for more: planning deployments and open questions.'
 
 const PROVIDER_IDS: ProviderId[] = ['anthropic', 'openai', 'ollama']
@@ -211,7 +227,7 @@ function defaultDeps(): AiRouteDeps {
     prepared: new PreparedStore<DeployRun>(),
     job: getJob,
     whoami: () => ownerOf(currentContext()),
-    saveModel: model => setCredential('ai', 'ollama', 'model', model, false),
+    saveModel: model => saveOllamaModel(model).then(() => undefined),
     activeProvider,
     listProviders,
     sources: (facts, prisma) => productionClusterSources(homeRef(), facts, prisma),

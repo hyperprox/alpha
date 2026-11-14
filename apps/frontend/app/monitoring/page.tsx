@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { PluginCards } from '@/components/plugins/PluginCards'
 import { WebsitesPanel, fetchSiteAlerts, siteAlertAsMonitoringAlert } from '@/components/sites/metrics/WebsitesPanel'
 import { apiJson, atLeast } from '@/lib/api'
-import { monitoringTitle, criticalCount } from '@/lib/monitoring-title'
+import { monitoringTitle, criticalCount, cephAlerts, withCephAlerts, type CephReading } from '@/lib/monitoring-title'
 import { useSession } from '@/lib/session'
 import { Page, Panel, HudHeader, Feed, NodeTile, NodeTiles, GlowBars, Pill, Spark, styles, type StatChip, type FeedTone } from '@/components/visual/kit'
 
@@ -116,7 +116,10 @@ function PveExporterPanel() {
 export default function MonitoringPage() {
   const [tab, setTab]           = useState<'overview' | 'grafana' | 'alerts'>('overview')
   const [grafanaDash, setGrafanaDash] = useState(DASHBOARDS[0].uid)
-  const [alerts, setAlerts]     = useState<Alert[]>([])
+  const [promAlerts, setAlerts] = useState<Alert[]>([])
+  const [ceph, setCeph] = useState<CephReading | null>(null)
+  // Prometheus's alerts and Ceph's health checks, as one list: Monitoring and the dashboard agree.
+  const alerts = withCephAlerts(promAlerts, cephAlerts(ceph)) as Alert[]
   const [nodes, setNodes]       = useState<NodeStat[]>([])
   const [history, setHistory]   = useState<Record<string, number[]>>({})
   const [loading, setLoading]   = useState(true)
@@ -130,11 +133,14 @@ export default function MonitoringPage() {
   // -------------------------------------------------------------------------
   const fetchData = useCallback(async () => {
     try {
-      const [alertsRes, nodesRes, siteAlerts] = await Promise.all([
+      const [alertsRes, nodesRes, siteAlerts, cephRes] = await Promise.all([
         fetch('/api/prometheus/alerts'),
         fetch('/api/prometheus/nodes'),
         fetchSiteAlerts().catch(() => []),
+        // Ceph's own health checks, which the dashboard lists too (a cluster without Ceph answers nothing).
+        fetch('/api/proxmox/ceph/status').then(r => r.json()).catch(() => null),
       ])
+      setCeph(cephRes?.success ? (cephRes.data as CephReading) : null)
 
       const alertsJson = await alertsRes.json().catch(() => ({ success: false, error: 'No readable answer from the API' }))
       const nodesJson  = await nodesRes.json().catch(() => ({ success: false }))

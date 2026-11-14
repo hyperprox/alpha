@@ -153,6 +153,7 @@ export function placeOf(labels: Record<string, string>, clusterName: (id: string
     const node = labels.hpx_node || (labels.node ?? '').split('@')[0] || 'a server'
     return `${node} (${clusterName(cid) ?? 'a remote cluster'})`
   }
+  if (labels.scope === 'cluster') return 'the cluster'
   if (labels.node) return labels.node
   if (labels.job) return `the ${labels.job} monitoring job`
   return 'HyperProx'

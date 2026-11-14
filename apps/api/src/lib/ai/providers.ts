@@ -195,8 +195,11 @@ export class StructuredOutputError extends Error {
  * A model call that failed for a reason a person can act on. The message is written to be shown as is:
  * it names the cause and never quotes the provider's body, which can echo the prompt.
  */
+/** What an open question, or anything else that needs a model, says when no model is connected at all. */
+export const NO_MODEL_MESSAGE = 'No AI model is connected: connect a model under AI → Providers to answer open questions.'
+
 export class ModelCallError extends Error {
-  constructor(message: string, readonly kind: 'unreachable' | 'model-missing' | 'timeout' | 'rejected') {
+  constructor(message: string, readonly kind: 'unreachable' | 'model-missing' | 'timeout' | 'rejected' | 'not-configured') {
     super(message)
     this.name = 'ModelCallError'
   }
@@ -360,14 +363,14 @@ export function anthropicText(response: { stop_reason?: string | null; content?:
 async function httpSend(provider: ProviderId, body: Record<string, unknown>): Promise<string> {
   if (provider === 'anthropic') {
     const apiKey = await cred('anthropic', 'api_key')
-    if (!apiKey) throw new Error('Anthropic is not configured — add an API key in Settings.')
+    if (!apiKey) throw new ModelCallError(NO_MODEL_MESSAGE, 'not-configured')
     const client = new Anthropic({ apiKey })
     const response = await client.messages.create(body as any, { timeout: 180_000 })
     return anthropicText(response as any)
   }
   if (provider === 'openai') {
     const apiKey = await cred('openai', 'api_key')
-    if (!apiKey) throw new Error('OpenAI is not configured — add an API key in Settings.')
+    if (!apiKey) throw new ModelCallError(NO_MODEL_MESSAGE, 'not-configured')
     const base = ((await cred('openai', 'base_url')) || OPENAI_DEFAULT_BASE).replace(/\/+$/, '')
     const res = await fetch(`${base}/chat/completions`, {
       method: 'POST',
@@ -379,7 +382,7 @@ async function httpSend(provider: ProviderId, body: Record<string, unknown>): Pr
     return openaiText(await res.json())
   }
   const url = (await cred('ollama', 'url')) || process.env.OLLAMA_URL || ''
-  if (!url) throw new Error('Ollama is not configured — add its address in Settings.')
+  if (!url) throw new ModelCallError(NO_MODEL_MESSAGE, 'not-configured')
   const { timeoutMs, unreadable } = await ollamaSettings()
   if (unreadable) throw new Error(`Ollama's settings could not be read: ${unreadable}`)
   return ollamaSend(url, body, timeoutMs)

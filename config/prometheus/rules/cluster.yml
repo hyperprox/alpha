@@ -66,21 +66,25 @@ groups:
   - name: ceph
     rules:
 
+      # Ceph health is the cluster's, not a node's: max() drops the instance and node labels of whichever node's
+      # exporter reported it, so the alert is never attributed to that one node (dashboard, AI answers, messages).
       - alert: CephHealthError
-        expr: ceph_health_status == 2
+        expr: max(ceph_health_status) == 2
         for: 1m
         labels:
           severity: critical
+          scope: cluster
         annotations:
           summary: "CEPH cluster is in ERROR state"
           title: "Ceph storage in error"
           plain: "Ceph reports HEALTH_ERR. Some data may be unavailable; check the Storage page."
 
       - alert: CephHealthWarning
-        expr: ceph_health_status == 1
+        expr: max(ceph_health_status) == 1
         for: 5m
         labels:
           severity: warning
+          scope: cluster
         annotations:
           summary: "CEPH cluster is in WARNING state"
           title: "Ceph storage warning"

@@ -13,6 +13,15 @@ import { prometheusBase } from '../lib/service-health'
 // Prometheus listens on 127.0.0.1 only; this used to be HOST_IP, which it no longer answers on.
 const PROMETHEUS = prometheusBase()
 
+/**
+ * The node an alert is about, or '' for one about the whole cluster (scope="cluster", Ceph health): a cluster-wide
+ * alert carried the instance of whichever node's exporter reported it, and was shown as that node's.
+ */
+export function alertNode(labels: Record<string, string> | undefined): string {
+  if (!labels || labels.scope === 'cluster' || /^CephHealth/.test(labels.alertname ?? '')) return ''
+  return labels.node || labels.instance || ''
+}
+
 export async function prometheusRoutes(fastify: FastifyInstance) {
 
   // -------------------------------------------------------------------------
@@ -28,7 +37,7 @@ export async function prometheusRoutes(fastify: FastifyInstance) {
         name:        a.labels?.alertname || 'Unknown',
         severity:    a.labels?.severity  || 'info',
         state:       a.state,
-        node:        a.labels?.node      || a.labels?.instance || '',
+        node:        alertNode(a.labels),
         summary:     a.annotations?.summary     || '',
         description: a.annotations?.description || '',
         firedAt:     a.activeAt,

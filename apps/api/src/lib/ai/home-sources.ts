@@ -192,7 +192,7 @@ export async function alertsSummary(d: AlertsDeps): Promise<SourceSummary> {
     const w = wording(a, place)
     const since = a.activeAt && !Number.isNaN(Date.parse(a.activeAt)) ? now - Date.parse(a.activeAt) : null
     const name = a.labels.alertname ?? 'alert'
-    rows.push({ name, place, node: low(a.labels.hpx_node || (a.labels.node ?? '').split('@')[0] || ''), title: clean(w.title), plain: clean(w.plain),
+    rows.push({ name, place, node: a.labels.scope === 'cluster' || /^CephHealth/.test(a.labels.alertname ?? '') ? '' : low(a.labels.hpx_node || (a.labels.node ?? '').split('@')[0] || ''), title: clean(w.title), plain: clean(w.plain),
       severity: toSeverity(a.labels.severity), state: a.state as 'firing' | 'pending', sinceMs: since, forwarded: forwarded.has(`${name}|${place}`), muted: muted.has(name) })
   }
   const firing = rows.filter(r => r.state === 'firing'), pending = rows.filter(r => r.state === 'pending')
