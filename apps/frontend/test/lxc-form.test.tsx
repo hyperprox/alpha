@@ -1,7 +1,7 @@
 // The +LXC form's use of the server's numbering proposal (lib/lxc-form.ts): what lands in the form, and what does not.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyProposal, proposedNet0, defaultNode } from '../lib/lxc-form'
+import { applyProposal, proposedNet0, defaultNode, pickRootStorage, templateOptions, nestingByDefault } from '../lib/lxc-form'
 
 // What POST /api/catalogue/wizard/propose answers on a cluster numbered <node#><two digits> <-> .2<digits>.
 const convention = { vmid: 701, ip: '192.0.2.201/24', gateway: '192.0.2.1', bridge: 'vmbr0' }
@@ -39,4 +39,37 @@ test('versionLabel (the About Build row, the sidebar and Updates): "v0.2.0-alpha
   process.env.NEXT_PUBLIC_GIT_SHA = ''
   const without = await load('?no-sha')
   assert.equal(without.versionLabel(), 'v0.2.0-alpha')
+})
+
+test('the root disk starts on block storage, never on a CIFS share that has more room', () => {
+  const s = [
+    { storage: 'nas', type: 'cifs', shared: 1, avail: 9e12 },
+    { storage: 'backups', type: 'nfs', shared: 1, avail: 8e12 },
+    { storage: 'local', type: 'dir', avail: 5e11 },
+    { storage: 'local-lvm', type: 'lvmthin', avail: 2e11 },
+  ]
+  assert.equal(pickRootStorage(s), 'local-lvm')
+  assert.equal(pickRootStorage([...s, { storage: 'ceph', type: 'rbd', shared: 1, avail: 1e11 }]), 'ceph', 'shared block storage beats local block storage')
+  assert.equal(pickRootStorage(s.filter(x => x.type !== 'lvmthin')), 'local', 'a directory before a share')
+})
+
+test('templates: each once, labelled with its storage, only those the chosen node can read', () => {
+  const t = [
+    { volid: 'local:vztmpl/debian-13.tar.zst', name: 'debian-13', storage: 'local', node: 'a' },
+    { volid: 'nas:vztmpl/debian-13.tar.zst', name: 'debian-13', storage: 'nas', node: 'a' },
+    { volid: 'nas:vztmpl/debian-13.tar.zst', name: 'debian-13', storage: 'nas', node: 'b' },
+    { volid: 'local:vztmpl/alpine.tar.xz', name: 'alpine', storage: 'local', node: 'b' },
+  ]
+  assert.deepEqual(templateOptions(t, 'a').map(o => o.label), ['debian-13 (local)', 'debian-13 (nas)'])
+  assert.deepEqual(templateOptions(t, 'b').map(o => o.label), ['alpine (local)', 'debian-13 (nas)'])
+  assert.equal(templateOptions(t, null).length, 3, 'no node yet: every volume once')
+})
+
+test('nesting is on by default for unprivileged Debian 12+ and other systemd templates only', () => {
+  assert.equal(nestingByDefault('local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst', true), true)
+  assert.equal(nestingByDefault('local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst', true), true)
+  assert.equal(nestingByDefault('local:vztmpl/debian-11-standard_11.7-1_amd64.tar.zst', true), false)
+  assert.equal(nestingByDefault('local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst', true), true)
+  assert.equal(nestingByDefault('local:vztmpl/alpine-3.22-default_20250617_amd64.tar.xz', true), false)
+  assert.equal(nestingByDefault('local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst', false), false, 'privileged: off')
 })

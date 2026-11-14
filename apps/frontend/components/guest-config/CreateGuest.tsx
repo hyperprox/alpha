@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
-import { applyProposal, defaultNode, hostArch, pickRootStorage, storagesFor, templatesForArch, type FormNode } from '@/lib/lxc-form'
+import { applyProposal, defaultNode, hostArch, nestingByDefault, pickRootStorage, storagesFor, templateOptions, templatesForArch, type FormNode } from '@/lib/lxc-form'
 import { ConfirmOverride, confirmNeeded, type NamingSettingsView, type Proposal } from '@/components/catalogue/NamingProposal'
 
 type PVENode = FormNode & { status: string }
@@ -19,11 +19,12 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
   const [createForm, setCreateForm] = useState({
     node: '', hostname: '', vmid: '', ostemplate: '', storage: '',
     cores: '1', memory: '512', swap: '512', rootfs_size: '8',
-    net0: 'name=eth0,bridge=vmbr0,ip=dhcp', password: '', start: true, unprivileged: true,
+    net0: 'name=eth0,bridge=vmbr0,ip=dhcp', password: '', start: true, unprivileged: true, nesting: false,
     // VM specific
     name: '', disk_size: '32', iso: '', ostype: 'l26',
   })
   const [nodeStorages, setNodeStorages] = useState<any[]>([])
+  const [nestingTouched, setNestingTouched] = useState(false)
   const [isos, setISOs] = useState<any[]>([])
   const [nodeLoading, setNodeLoading] = useState(false)
   const [nodeSpec, setNodeSpec] = useState<{cpus:number,maxmem:number}|null>(null)
@@ -128,6 +129,7 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
         password: createForm.password,
         start: createForm.start,
         unprivileged: createForm.unprivileged,
+        ...(createForm.nesting ? { features: 'nesting=1' } : {}),
       } : {
         vmid: Number(createForm.vmid),
         name: createForm.name,
@@ -209,9 +211,9 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
               {createType === 'lxc' ? (
                 <div>
                   <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Template</label>
-                  <select style={SELECT} value={createForm.ostemplate} onChange={e=>setCreateForm(f=>({...f,ostemplate:e.target.value}))}>
+                  <select style={SELECT} value={createForm.ostemplate} onChange={e=>{ const v = e.target.value; setCreateForm(f=>({...f,ostemplate:v, nesting: nestingTouched ? f.nesting : nestingByDefault(v, f.unprivileged)})) }}>
                     <option value="">— select template —</option>
-                    {templatesForArch(templates, nodeArch).map(t=><option key={t.volid} value={t.volid}>{t.name}</option>)}
+                    {templateOptions(templatesForArch(templates, nodeArch), createForm.node).map(t=><option key={t.volid} value={t.volid}>{t.label}</option>)}
                   </select>
                 </div>
               ) : (
@@ -289,8 +291,13 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
                   {/* Options */}
                   <div className="flex gap-4">
                     <label className="flex items-center gap-2 text-sm cursor-pointer" style={{color:'var(--text-muted)'}}>
-                      <input type="checkbox" checked={createForm.unprivileged} onChange={e=>setCreateForm(f=>({...f,unprivileged:e.target.checked}))}/>
+                      <input type="checkbox" checked={createForm.unprivileged} onChange={e=>{ const u = e.target.checked; setCreateForm(f=>({...f,unprivileged:u, nesting: nestingTouched ? f.nesting : nestingByDefault(f.ostemplate, u)})) }}/>
                       Unprivileged
+                    </label>
+                    <label className="flex items-center gap-2 text-sm cursor-pointer" style={{color:'var(--text-muted)'}}
+                      title="systemd in Debian 12 and later needs it in an unprivileged container; on by default there">
+                      <input type="checkbox" checked={createForm.nesting} onChange={e=>{ setNestingTouched(true); setCreateForm(f=>({...f,nesting:e.target.checked})) }}/>
+                      Nesting
                     </label>
                     <label className="flex items-center gap-2 text-sm cursor-pointer" style={{color:'var(--text-muted)'}}>
                       <input type="checkbox" checked={createForm.start} onChange={e=>setCreateForm(f=>({...f,start:e.target.checked}))}/>

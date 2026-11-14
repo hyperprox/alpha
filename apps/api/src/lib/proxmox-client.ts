@@ -310,9 +310,10 @@ export class ProxmoxClient {
         } catch {}
       }))
     }))
-    // Deduplicate by volid
-    const seen = new Set()
-    return results.filter(t => { if (seen.has(t.volid)) return false; seen.add(t.volid); return true })
+    // Each volume once per node: a shared storage is listed by every node, and the form needs to know which
+    // node can read which template (a node-local one only its own).
+    const seen = new Set<string>()
+    return results.filter(t => { const k = `${t.node}\u0000${t.volid}`; if (seen.has(k)) return false; seen.add(k); return true })
   }
 
   async createLXC(node: string, params: {

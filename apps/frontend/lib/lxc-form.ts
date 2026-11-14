@@ -46,7 +46,7 @@ export function templatesForArch<T extends { volid?: string; name?: string }>(te
   })
 }
 
-export interface FormStorage { storage: string; shared?: number | boolean; content?: string; avail?: number; active?: number; node?: string }
+export interface FormStorage { storage: string; type?: string; shared?: number | boolean; content?: string; avail?: number; active?: number; node?: string }
 
 /** Storages a guest's disk can live on: rootdir for a container, images for a VM. */
 export function storagesFor(type: 'lxc' | 'qemu', storages: FormStorage[], node?: string): FormStorage[] {
@@ -55,12 +55,59 @@ export function storagesFor(type: 'lxc' | 'qemu', storages: FormStorage[], node?
 }
 
 /**
- * The storage a new disk starts on: shared storage first (the guest can then move between nodes and fail over),
- * then the one with the most room. Never chosen just because it is first in the list, which put local-lvm there.
+ * How good a storage type is for a guest's root disk, as bootstrap.sh's pick_rootfs_storage ranks it: block
+ * storage first (rbd, ZFS, LVM), then a local directory, and a network share (NFS, CIFS, CephFS) last, because
+ * a container's root disk on a file share is slow and breaks on a share outage.
+ */
+export function storageTier(type: string | undefined): number {
+  if (/^(rbd|zfspool|lvmthin|lvm|iscsidirect)$/.test(type ?? '')) return 1
+  if (/^(dir|btrfs|zfs)$/.test(type ?? '')) return 2
+  return 3
+}
+
+/**
+ * The storage a new disk starts on: the best tier (block storage before a directory before a network share),
+ * then shared over node-local (the guest can then move between nodes and fail over), then the most room.
+ * Never chosen just because it is first in the list, which put local-lvm there; never a CIFS share over a pool.
  */
 export function pickRootStorage(storages: FormStorage[]): string | null {
-  const rank = (s: FormStorage) => (Number(s.shared) === 1 || s.shared === true ? 1 : 0)
-  return [...storages].sort((a, b) => rank(b) - rank(a) || (b.avail ?? 0) - (a.avail ?? 0) || a.storage.localeCompare(b.storage))[0]?.storage ?? null
+  const shared = (s: FormStorage) => (Number(s.shared) === 1 || s.shared === true ? 1 : 0)
+  return [...storages].sort((a, b) => storageTier(a.type) - storageTier(b.type) || shared(b) - shared(a)
+    || (b.avail ?? 0) - (a.avail ?? 0) || a.storage.localeCompare(b.storage))[0]?.storage ?? null
+}
+
+export interface FormTemplate { volid: string; name?: string; storage?: string; node?: string }
+
+/**
+ * The template choices for a node: the ones on a storage that node can read, each volume once, labelled with its
+ * storage so two copies of one template on two storages can be told apart.
+ */
+export function templateOptions<T extends FormTemplate>(templates: T[], node?: string | null): Array<T & { label: string }> {
+  const here = node && templates.some(t => t.node === node) ? templates.filter(t => !t.node || t.node === node) : templates
+  const seen = new Set<string>()
+  const out: Array<T & { label: string }> = []
+  for (const t of here) {
+    if (seen.has(t.volid)) continue
+    seen.add(t.volid)
+    const name = t.name ?? t.volid.split('/').pop() ?? t.volid
+    out.push({ ...t, label: t.storage ? `${name} (${t.storage})` : name })
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label))
+}
+
+/**
+ * Nesting on by default for an unprivileged container from a systemd distribution (Debian 12 and later, Ubuntu
+ * 22.04 and later, Fedora, the RHEL family, Arch, openSUSE): their systemd needs it to start its own services
+ * cleanly, which is why Proxmox's own wizard turns it on. Not for a privileged container, nor Alpine and the like.
+ */
+export function nestingByDefault(ostemplate: string, unprivileged: boolean): boolean {
+  if (!unprivileged) return false
+  const t = (ostemplate.split('/').pop() ?? '').toLowerCase()
+  const deb = /^debian-(\d+)/.exec(t)
+  if (deb) return Number(deb[1]) >= 12
+  const ubu = /^ubuntu-(\d+)/.exec(t)
+  if (ubu) return Number(ubu[1]) >= 22
+  return /^(fedora|rockylinux|almalinux|centos-(9|1\d)|archlinux|opensuse|oracle|devuan-(5|[6-9]))/.test(t)
 }
 
 export interface FormProposal { vmid: number; ip: string; gateway?: string; bridge?: string; vlan?: number }
