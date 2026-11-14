@@ -164,12 +164,13 @@ export default function VpnPage() {
     installed: rows.filter(r => r.cells[x.p.id].managed && r.cells[x.p.id].state !== 'not-installed').length })) : []
   const connectedTotal = totals.connected
   const troubled = totals.down
-  const noLoginCount = rows.filter(r => Object.values(r.cells).some(c => c.state === 'unchecked' && isNoLoginText(c.lastError))).length
+  // Running machines, as "not checked yet" counts them, so the two numbers can be compared.
+  const noLoginCount = rows.filter(r => r.running !== false && Object.values(r.cells).some(c => c.state === 'unchecked' && isNoLoginText(c.lastError))).length
   const chips: StatChip[] = ov ? [
     { label: 'machines', value: rows.length },
     { label: 'tunnels connected', value: connectedTotal, tone: connectedTotal ? 'good' : undefined },
     { label: 'down or signed out', value: troubled, tone: troubled ? 'warn' : undefined },
-    { label: 'not checked yet', value: totals.notChecked, tone: totals.notChecked ? 'warn' : undefined },
+    { label: 'machines not checked yet', value: totals.notChecked, tone: totals.notChecked ? 'warn' : undefined },
     { label: 'waiting for approval', value: ov.pendingDevices.length, tone: ov.pendingDevices.length ? 'warn' : undefined },
   ] : []
   const title = !ov ? (err ? 'VPN unavailable' : 'Reading VPN status')

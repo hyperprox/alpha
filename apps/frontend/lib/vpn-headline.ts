@@ -24,7 +24,10 @@ export function vpnTotals<P extends VpnProviderLite>(rows: RemoteMachineRow[], p
   const per = providers.map(p => ({ p, ...vpnTally(rows, p.id) }))
   const connected = per.reduce((n, x) => n + x.connected, 0)
   const down = per.reduce((n, x) => n + x.down, 0) + providers.filter(p => p.error).length
-  const notChecked = per.reduce((n, x) => n + x.notChecked, 0)
+  // Machines, not tunnels: the page's other counts ("39 machines", "N could not be checked") count machines, and
+  // a sum over providers counted a machine once per provider (64 "not checked" of 39 machines).
+  const ids = new Set(providers.map(p => p.id))
+  const notChecked = rows.filter(r => r.running !== false && Object.entries(r.cells).some(([id, c]) => ids.has(id as RemoteProviderId) && c?.state === 'unchecked')).length
   return { per, connected, down, notChecked }
 }
 

@@ -1,7 +1,7 @@
 // Pure logic behind the install-test fixes. Run with the frontend test command (see install-handoff.test.tsx).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { vpnHeadline, vpnTally } from '../lib/vpn-headline'
+import { vpnHeadline, vpnTally, vpnTotals } from '../lib/vpn-headline'
 import { buildAttention, attentionItems, attentionTitle } from '../components/dashboard/attention'
 import { summarizeHA, cephHealthWord, isDeliberatelyStopped } from '../components/dashboard/summaries'
 import { pluginKind, pluginWord, isNotConfigured } from '../lib/plugin-status'
@@ -21,6 +21,14 @@ test('VPN headline counts only checked-and-down tunnels', () => {
   assert.equal(vpnHeadline({ ...t, notChecked: 10 }), 'Tunnels not checked yet')
   const down = vpnTally([row(cell('offline', { managed: true }))], 'tailscale')
   assert.equal(vpnHeadline(down), '1 tunnel is down or signed out')
+})
+
+test('VPN "not checked yet" counts machines, as the machine count does, not one per provider', () => {
+  // Two running machines unchecked on both providers, one stopped: 2, not 4 (and never more than the machines).
+  const rows = [row(cell('unchecked')), row(cell('unchecked')), row(cell('unchecked'), false)]
+  const t = vpnTotals(rows, [{ id: 'tailscale' }, { id: 'netbird' }])
+  assert.equal(t.notChecked, 2)
+  assert.ok(t.notChecked <= rows.length)
 })
 
 test('a stopped HA guest is not attention, and the headline count equals the list', () => {

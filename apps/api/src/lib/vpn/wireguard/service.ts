@@ -37,6 +37,9 @@ import {
 } from './routeros'
 import type { WgPeer, WgServer, WgStore } from './store'
 
+/** What the VPN page says when no MikroTik is set up. */
+export const NO_ROUTER_NOTE = 'No MikroTik router is set up. Add the MikroTik plug-in to see and manage its WireGuard here.'
+
 export class WgInputError extends Error { constructor(m: string) { super(m); this.name = 'WgInputError' } }
 export class WgNotFoundError extends Error { constructor(m: string) { super(m); this.name = 'WgNotFoundError' } }
 
@@ -494,6 +497,7 @@ export class WireguardService {
   // ── The router ────────────────────────────────────────────────────────────
 
   private async api(): Promise<RouterApi> {
+    // (routerView answers an empty view instead; everything that acts on the router needs one.)
     const a = await this.d.router?.()
     if (!a) throw new WgInputError('No MikroTik router is configured (the MikroTik plug-in has no address).')
     return a
@@ -505,10 +509,14 @@ export class WireguardService {
 
   /** The router's WireGuard as it is: interfaces, peers with handshakes and traffic, and whether HyperProx may write. */
   async routerView(): Promise<{
+    configured: boolean
     interfaces: Array<RouterWgInterface & { firewallOk: boolean | null; firewallCommand: string | null }>
     peers: RouterWgPeer[]; writable: boolean; setup: string[] | null; setupNote: string
   }> {
-    const api = await this.api()
+    // No MikroTik set up is a normal state, read on every VPN page load: an empty view, not a 400.
+    const a = await this.d.router?.()
+    if (!a) return { configured: false, interfaces: [], peers: [], writable: false, setup: null, setupNote: NO_ROUTER_NOTE }
+    const api = a
     const [ifs, peers, rules] = await Promise.all([
       api.read('/rest/interface/wireguard'), api.read('/rest/interface/wireguard/peers'), api.read('/rest/ip/firewall/filter').catch(() => null),
     ])
@@ -518,7 +526,7 @@ export class WireguardService {
         firewallOk: rules && i.listenPort ? firewallAllows(rules, i.listenPort) : null,
         firewallCommand: rules && i.listenPort && !firewallAllows(rules, i.listenPort) ? firewallRule(i.listenPort, i.name).command : null,
       })),
-      peers: mapPeers(peers), writable: !!api.write,
+      configured: true, peers: mapPeers(peers), writable: !!api.write,
       setup: api.write ? null : WRITE_ACCESS_COMMANDS, setupNote: WRITE_ACCESS_NOTE,
     }
   }

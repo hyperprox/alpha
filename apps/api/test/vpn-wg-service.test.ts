@@ -364,3 +364,14 @@ test('a phone reaches the tunnel and HyperProx itself by default; the whole home
   // Server side, each peer is still only its own address: this is the client's config, not a node's.
   assert.deepEqual(two.peer.allowedIps, [two.peer.address])
 })
+
+test('no MikroTik set up: the router view is empty and says so, not an error on every VPN page load', async () => {
+  const x = rig()
+  const svc = new WireguardService({ remote: (x.svc as any).d.remote, exec: x.f.exec, store: new MemoryWgStore(), vault: vault(), router: async () => null as any })
+  const v = await svc.routerView()
+  assert.equal(v.configured, false)
+  assert.deepEqual(v.interfaces, []); assert.deepEqual(v.peers, [])
+  assert.match(v.setupNote, /No MikroTik router is set up/)
+  // Acting on the router still needs one.
+  await assert.rejects(svc.routerInterfaces(), /No MikroTik router is configured/)
+})

@@ -19,6 +19,8 @@ interface Server { id: string; machineId: string; iface: string; listenPort: num
 interface Peer { id: string; serverId: string | null; routerIface: string | null; routerPeerId: string | null; kind: 'device' | 'machine'; name: string; machineId: string | null; publicKey: string; address: string; allowedIps: string[]; clientAllowedIps: string[]; previousUntil: string | null }
 interface Live { publicKey: string; latestHandshake: string | null; rx: number; tx: number; endpoint: string | null }
 interface RouterView {
+  /** false: no MikroTik is set up (an empty view, with setupNote saying so). */
+  configured?: boolean
   interfaces: Array<{ id: string; name: string; listenPort: number | null; publicKey: string | null; running: boolean; firewallOk: boolean | null; firewallCommand: string | null }>
   peers: Array<{ id: string; interface: string; name: string | null; allowedAddress: string[]; currentEndpoint: string | null; lastHandshake: string | null; rx: number; tx: number; comment: string | null; managed: boolean }>
   writable: boolean; setup: string[] | null; setupNote: string
@@ -126,7 +128,8 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
         <div className="space-y-2">
           <h3 className="font-display font-semibold" style={{ fontSize: 18, color: 'var(--text-bright)' }}>Router</h3>
           {routerErr && <p className="text-sm" style={{ color: 'var(--text-dim)' }}>{routerErr}</p>}
-          {router && (
+          {router && router.configured === false && <p className="text-sm" style={{ color: 'var(--text-dim)' }}>{router.setupNote}</p>}
+          {router && router.configured !== false && (
             <>
               {!router.writable && (
                 <Notice tone="info">
