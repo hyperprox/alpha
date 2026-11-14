@@ -196,7 +196,8 @@ async function ensureToken(pve, { userid, name, held, installId: id, comment }) 
     if (!id || !String(existing.comment || '').includes(`[install ${id}]`)) {
       throw new Error(`A Proxmox token named ${userid}!${name} already exists and was not made by this HyperProx, so it was left alone. Remove it in Proxmox, or paste a token under Advanced.`)
     }
-    await pve.deleteToken(name)
+    // Its ACL lines first: Proxmox keeps them after the token is gone (pve-exporter.js removeTokenCleanly).
+    await exporter.removeTokenCleanly(pve, userid, name)
     action = 'recreate'
   }
   const tok = await pve.createToken(name, comment)
@@ -255,8 +256,8 @@ function pveAdapter(host, port, auth, userid) {
     getToken:    (name, user = userid) => pveCall(host, port, 'GET',
       `/access/users/${encodeURIComponent(user)}/token/${encodeURIComponent(name)}`, null, auth),
     listAcl:     () => pveCall(host, port, 'GET', '/access/acl', null, auth),
-    setAcl:      ({ path: p, role, token }) => pveCall(host, port, 'PUT', '/access/acl',
-      { path: p, roles: role, tokens: token, propagate: '1' }, auth),
+    setAcl:      ({ path: p, role, token, delete: del }) => pveCall(host, port, 'PUT', '/access/acl',
+      del ? { path: p, roles: role, tokens: token, delete: '1' } : { path: p, roles: role, tokens: token, propagate: '1' }, auth),
     tokenWorks:  (id, secret) => tokenWorks(host, port, id, secret),
   }
 }

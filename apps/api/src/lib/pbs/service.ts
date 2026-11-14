@@ -224,7 +224,12 @@ export class PbsService {
     })
     const secret = await step('make_the_token', async () => {
       const tokens = await api.call('GET', `/access/users/${enc(U)}/token`)
-      if ((Array.isArray(tokens) ? tokens : []).some((t: any) => t?.tokenid === TID || t?.['token-name'] === T)) await api.call('DELETE', `/access/users/${enc(U)}/token/${enc(T)}`)
+      if ((Array.isArray(tokens) ? tokens : []).some((t: any) => t?.tokenid === TID || t?.['token-name'] === T)) {
+        // The old token's ACL lines first, so none outlives it; the new token is granted its own below.
+        const acl = await api.call('GET', '/access/acl')
+        for (const r of (Array.isArray(acl) ? acl : []).filter((x: any) => x?.ugid === TID)) await api.call('PUT', '/access/acl', { path: r.path, role: r.roleid, 'auth-id': TID, delete: true })
+        await api.call('DELETE', `/access/users/${enc(U)}/token/${enc(T)}`)
+      }
       const made = await api.call('POST', `/access/users/${enc(U)}/token/${enc(T)}`, { comment: 'HyperProx read-only' })
       if (typeof made?.value !== 'string' || !made.value) throw new PbsUnreachableError('The server did not return a token secret.')
       return made.value as string

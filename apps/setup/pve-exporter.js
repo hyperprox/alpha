@@ -116,6 +116,22 @@ async function checkReadOnly(pve, name, user) {
 }
 
 /**
+ * Delete a Proxmox API token and, first, every ACL line that names it. Proxmox does not remove a token's ACL
+ * lines when the token goes: they stay in user.cfg and are logged as "ignore invalid acl token" from then on,
+ * and a later token of the same name would inherit them. `pve` needs listAcl(), setAcl({ ..., delete }) and
+ * deleteToken(name); an adapter without listAcl just deletes the token.
+ */
+async function removeTokenCleanly(pve, userid, name) {
+  const tokenId = `${userid}!${name}`
+  if (typeof pve.listAcl === 'function') {
+    for (const a of ((await pve.listAcl()) || [])) {
+      if (a && a.type === 'token' && a.ugid === tokenId) await pve.setAcl({ path: a.path, role: a.roleid, token: tokenId, delete: true })
+    }
+  }
+  await pve.deleteToken(name)
+}
+
+/**
  * Make sure the exporter token exists, is read-only, and return what pve.yml should hold.
  * `pve`: the cluster through HyperProx's own access (a sign-in session, or its admin token):
  *   { listTokens(), getToken(name, user?), createToken(name, { privsep, comment }), deleteToken(name),
@@ -133,7 +149,7 @@ async function ensureExporterToken(pve, { userid, adminTokenName, held, fresh = 
   const fullTokenId = `${userid}!${name}`
   const comment = exporterComment(userid, adminTokenName)
 
-  // The setup wizard asks to adopt: bootstrap.sh already made `<user>!hyperprox-exporter` and wrote its
+  // Adopting: bootstrap.sh already made `<user>!<token>-exporter` (an older one `<user>!hyperprox-exporter`) and wrote its
   // pve.yml, so a held token that works under ANY name and is read-only is kept instead of minting a second
   // one named after the wizard's own token. A held token that is not read-only is not adopted (and not
   // an error): the wizard then makes its own.
@@ -158,8 +174,8 @@ async function ensureExporterToken(pve, { userid, adminTokenName, held, fresh = 
     if (!String(existing.comment || '').includes(`[exporter for ${userid}!${adminTokenName}]`)) {
       throw new Error(`A Proxmox token named ${fullTokenId} already exists and was not made by HyperProx, so it was left alone. Remove it in Proxmox, then try again.`)
     }
-    // Deleting a token removes its ACLs with it, so the new one starts with none.
-    await pve.deleteToken(name)
+    // Proxmox keeps a deleted token's ACL lines ("ignore invalid acl token"), so they go first.
+    await removeTokenCleanly(pve, userid, name)
     action = 'recreate'
   }
   const tok = await pve.createToken(name, { privsep: 1, comment })
@@ -173,4 +189,5 @@ async function ensureExporterToken(pve, { userid, adminTokenName, held, fresh = 
 module.exports = {
   EXPORTER_ROLE, EXPORTER_UID, exporterTokenName, exporterComment,
   renderPveYml, parsePveYml, readPveYml, writePveYml, ensureExporterToken, checkReadOnly, NotReadOnlyError,
+  removeTokenCleanly,
 }

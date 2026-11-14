@@ -183,7 +183,9 @@ Then it does the work:
   nothing answers a ping on it. Otherwise it offers the next free ID and DHCP. With `-y` or no terminal it
   takes what it offers without asking.
 - It makes the API token `root@pam!hyperprox` (privilege separation off, so it has root's rights) and,
-  if you want Proxmox's own metrics, a read-only `root@pam!hyperprox-exporter` (`PVEAuditor` on `/`).
+  if you want Proxmox's own metrics, a read-only `root@pam!hyperprox-exporter` (`PVEAuditor` on `/`). The
+  exporter token is always named after the main one (`--token-name hp2` makes `hp2` and `hp2-exporter`), the
+  same name the setup wizard and `hyperprox pve-exporter` use, so there is never a second one.
   A token named `hyperprox` that already exists is left alone, and the setup wizard makes its own.
 - It carries out your answers on each node, one node at a time, over the cluster's own SSH trust, then
   checks them over the network from the node you ran it on: each exporter answers, and power reads above
@@ -378,6 +380,23 @@ It checks the services and containers, the local health endpoints, DNS and HTTPS
 downloads from (GitHub, Docker Hub, npm, NodeSource, Debian), whether HTTPS is being intercepted by a corporate
 proxy or firewall, proxy settings, Proxmox reachability, the firewall, and the install log. The report is saved
 to `/tmp/hyperprox-diagnose-<time>.txt`; read it before you share it.
+
+### Removing HyperProx's Proxmox tokens
+
+Proxmox does not delete a token's permissions when the token is deleted: the ACL lines stay behind, and the
+node logs `ignore invalid acl token` from then on. HyperProx's installers and the setup wizard remove the ACL
+lines first whenever they delete a token. To remove HyperProx's tokens yourself, on any node, do the same:
+
+```bash
+pveum acl list                                         # find the lines for root@pam!hyperprox...
+pveum acl delete / --tokens 'root@pam!hyperprox-exporter' --roles PVEAuditor
+pveum user token remove root@pam hyperprox-exporter
+pveum acl delete / --tokens 'root@pam!hyperprox' --roles Administrator   # only if the installer gave it one
+pveum user token remove root@pam hyperprox
+```
+
+Use your own names if you chose one (`--token-name`), or the wizard's `hyperprox-<hostname>-<install id>`
+and its `-exporter`. `pveum user token list root@pam` lists them.
 
 ### Updating HyperProx
 

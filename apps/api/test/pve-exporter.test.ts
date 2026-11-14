@@ -44,7 +44,7 @@ function fakePve(tokens: Tok[], acls: Acl[] = [], user = 'root@pam'): ExporterPv
     async deleteToken(name) {
       calls.push(`delete ${name}`)
       tokens.splice(tokens.findIndex(t => t.tokenid === name), 1)
-      for (let i = acls.length - 1; i >= 0; i--) if (acls[i].ugid === `${user}!${name}`) acls.splice(i, 1)   // as PVE does
+      // As PVE really does: the token's ACL lines stay behind ("ignore invalid acl token") unless removed first.
     },
     async createToken(name, o) {
       calls.push(`create ${name} privsep=${o.privsep}`)
@@ -53,6 +53,11 @@ function fakePve(tokens: Tok[], acls: Acl[] = [], user = 'root@pam'): ExporterPv
       return { value: secret }
     },
     async setAcl(a) {
+      if (a.delete) {
+        calls.push(`acl-delete ${a.path} ${a.role} ${a.token}`)
+        for (let i = acls.length - 1; i >= 0; i--) if (acls[i].path === a.path && acls[i].roleid === a.role && acls[i].ugid === a.token) acls.splice(i, 1)
+        return
+      }
       calls.push(`acl ${a.path} ${a.role} ${a.token}`)
       if (!acls.some(x => x.path === a.path && x.roleid === a.role && x.ugid === a.token)) acls.push({ path: a.path, roleid: a.role, type: 'token', ugid: a.token })
     },
@@ -108,6 +113,38 @@ test('an ACL for another token or a user does not count against it', async () =>
   assert.equal((await shared.ensureExporterToken(pve, opts(HELD))).action, 'reuse')
 })
 
+test('a token is deleted only after its ACL lines: Proxmox would otherwise keep them for a dead token', async () => {
+  const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: MARK, privsep: 0 }],
+    [{ path: '/', roleid: 'Administrator', type: 'token', ugid: FULL }, { path: '/vms', roleid: 'PVEVMAdmin', type: 'token', ugid: FULL },
+     { path: '/', roleid: 'Administrator', type: 'token', ugid: 'root@pam!other' }])
+  await shared.removeTokenCleanly(pve, 'root@pam', EXP)
+  const del = pve.calls.indexOf(`delete ${EXP}`)
+  assert.ok(pve.calls.indexOf(`acl-delete / Administrator ${FULL}`) >= 0 && pve.calls.indexOf(`acl-delete / Administrator ${FULL}`) < del)
+  assert.ok(pve.calls.indexOf(`acl-delete /vms PVEVMAdmin ${FULL}`) < del)
+  assert.deepEqual(pve.acls.map(a => a.ugid), ['root@pam!other'], 'another token\'s line is left alone')
+})
+
+test('the exporter token is named after HyperProx\'s token, as bootstrap.sh names it', () => {
+  assert.equal(shared.exporterTokenName('hyperprox'), 'hyperprox-exporter')
+  assert.equal(shared.exporterTokenName('hyperprox-2'), 'hyperprox-2-exporter')
+  const boot = fs.readFileSync(path.join(__dirname, '../../../bootstrap.sh'), 'utf8')
+  assert.match(boot, /EXPORTER_TOKEN="\$\{TOKEN_NAME\}-exporter"/)
+  assert.doesNotMatch(boot, /EXPORTER_TOKEN="hyperprox-exporter"/)
+})
+
+test('`hyperprox pve-exporter` adopts a working read-only token pve.yml holds under an older name, not a duplicate', async () => {
+  const OLD = 'root@pam!hyperprox-exporter'
+  const pve = fakePve([{ tokenid: ACCESS.tokenName, secret: 'admin-secret', privsep: 0 },
+    { tokenid: 'hyperprox-exporter', secret: 'old', comment: '[exporter for root@pam!hyperprox]', privsep: 1 }], [auditor(OLD)])
+  const dir = tmp()
+  const file = path.join(dir, 'pve.yml')
+  fs.writeFileSync(file, shared.renderPveYml({ user: 'root@pam', tokenName: 'hyperprox-exporter', secret: 'old' }))
+  const r = await provisionPveExporter({ access: ACCESS, pve, file, restart: async () => true })
+  assert.equal(r.action, 'reuse')
+  assert.equal(r.tokenId, OLD)
+  assert.ok(!pve.calls.some(c => c.startsWith('create ')), 'no second exporter token')
+})
+
 test('fresh replaces our not-read-only token with a new one; its old ACLs go with it', async () => {
   const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: MARK, privsep: 0 }],
     [{ path: '/', roleid: 'Administrator', type: 'token', ugid: FULL }])
@@ -134,7 +171,7 @@ test('our token with its secret lost is made again; nothing else is touched', as
   const pve = fakePve([{ tokenid: EXP, secret: 'gone', comment: MARK }, { tokenid: 'other', secret: 'x' }], [auditor(FULL)])
   const r = await shared.ensureExporterToken(pve, opts({ ...HELD, secret: 'wrong' }))
   assert.equal(r.action, 'recreate')
-  assert.deepEqual(pve.calls, ['list', `delete ${EXP}`, `create ${EXP} privsep=1`, `acl / PVEAuditor ${FULL}`, `get ${FULL}`, 'acls'])
+  assert.deepEqual(pve.calls, ['list', 'acls', `acl-delete / PVEAuditor ${FULL}`, `delete ${EXP}`, `create ${EXP} privsep=1`, `acl / PVEAuditor ${FULL}`, `get ${FULL}`, 'acls'])
   assert.ok(pve.tokens.some(t => t.tokenid === 'other'))
 })
 
@@ -253,6 +290,7 @@ test('the adapter: the Proxmox calls it makes with HyperProx\'s admin token', as
   await pve.createToken('n-exporter', { privsep: 1, comment: 'c [x]' })
   await pve.deleteToken('n-exporter')
   await pve.setAcl({ path: '/', role: 'PVEAuditor', token: 'root@pam!n-exporter' })
+  await pve.setAcl({ path: '/', role: 'PVEAuditor', token: 'root@pam!n-exporter', delete: true })
   await pve.getToken('n-exporter')
   await pve.getToken('ro', 'metrics@pve')
   await pve.listAcl()
@@ -261,6 +299,7 @@ test('the adapter: the Proxmox calls it makes with HyperProx\'s admin token', as
     'root@pam!hyperprox-node-a-0a1b2c3d POST /access/users/root%40pam/token/n-exporter privsep=1&comment=c+%5Bx%5D',
     'root@pam!hyperprox-node-a-0a1b2c3d DELETE /access/users/root%40pam/token/n-exporter',
     'root@pam!hyperprox-node-a-0a1b2c3d PUT /access/acl path=%2F&roles=PVEAuditor&tokens=root%40pam%21n-exporter&propagate=1',
+    'root@pam!hyperprox-node-a-0a1b2c3d PUT /access/acl path=%2F&roles=PVEAuditor&tokens=root%40pam%21n-exporter&delete=1',
     'root@pam!hyperprox-node-a-0a1b2c3d GET /access/users/root%40pam/token/n-exporter',
     'root@pam!hyperprox-node-a-0a1b2c3d GET /access/users/metrics%40pve/token/ro',
     'root@pam!hyperprox-node-a-0a1b2c3d GET /access/acl',

@@ -121,6 +121,10 @@ case "$*" in
                  [ -n "\${FAKE_TOKEN_RACE:-}" ] && [ "$5" = hyperprox ] && { echo "Token already exists." >&2; exit 255; }
                  echo '{"value":"tok-secret"}';;
   *"token remove"*) grep -vxF "$5" $t > $t.new; mv $t.new $t;;
+  # ACL lines, kept as Proxmox keeps them: a removed token's lines stay until deleted.
+  "acl modify "*) printf '{"path":"%s","roleid":"%s","type":"token","ugid":"%s"}\n' "$3" "$7" "$5" >> ${root}/acls;;
+  "acl delete "*) [ -f ${root}/acls ] && grep -vF "\"ugid\":\"$5\"" ${root}/acls > ${root}/acls.new; mv ${root}/acls.new ${root}/acls 2>/dev/null;;
+  "acl list"*) printf '['; paste -sd, ${root}/acls 2>/dev/null | tr -d '\n'; echo ']';;
 esac; exit 0`)
   // Exporters "answer" from here when the fixture says they would after the step: the stand-in curl
   // serves metrics for any node address on 9100, a rising RAPL counter, and the GPU ports. The node
@@ -822,6 +826,11 @@ test('a failed install undoes what it made, and never touches what was there bef
     assert.match(out, /Stopped — undoing what this run created/)
     assert.match(c.calls(), /^pct destroy 900 --purge$/m)
     assert.match(c.calls(), /^pveum user token remove root@pam hyperprox-exporter$/m)
+    // Its ACL line goes first: Proxmox keeps a removed token's lines ("ignore invalid acl token").
+    const calls = c.calls()
+    const aclDel = calls.search(/^pveum acl delete \/ --tokens root@pam!hyperprox-exporter --roles PVEAuditor$/m)
+    assert.ok(aclDel >= 0 && aclDel < calls.search(/^pveum user token remove root@pam hyperprox-exporter$/m), calls)
+    assert.doesNotMatch(calls, /^pveum acl delete \S+ --tokens root@pam!hyperprox /m, 'the kept token\'s lines are not touched')
     assert.doesNotMatch(c.calls(), /^pveum user token remove root@pam hyperprox$/m, 'the token that was there before stays')
     assert.doesNotMatch(c.calls(), /^pveum acl modify \/ --token root@pam!hyperprox --role/m, 'and its permissions are not changed')
     assert.deepEqual(c.tokens(), ['hyperprox'])

@@ -25,7 +25,7 @@ export interface ExporterPve {
   listAcl(): Promise<Array<{ path: string; roleid: string; type: string; ugid: string }>>
   createToken(name: string, opts: { privsep: number; comment: string }): Promise<{ value?: string; 'full-tokenid'?: string }>
   deleteToken(name: string): Promise<unknown>
-  setAcl(acl: { path: string; role: string; token: string }): Promise<unknown>
+  setAcl(acl: { path: string; role: string; token: string; delete?: boolean }): Promise<unknown>
   tokenWorks(fullTokenId: string, secret: string): Promise<boolean>
 }
 
@@ -36,9 +36,11 @@ interface Shared {
   parsePveYml(text: string): ExporterToken | null
   readPveYml(file: string): ExporterToken | null
   writePveYml(file: string, content: string, uid?: number): boolean
-  ensureExporterToken(pve: ExporterPve, o: { userid: string; adminTokenName: string; held: ExporterToken | null; fresh?: boolean }):
+  ensureExporterToken(pve: ExporterPve, o: { userid: string; adminTokenName: string; held: ExporterToken | null; fresh?: boolean; adoptHeld?: boolean }):
     Promise<{ action: 'reuse' | 'create' | 'recreate'; user: string; tokenName: string; fullTokenId: string; secret: string }>
   checkReadOnly(pve: ExporterPve, name: string, user: string): Promise<{ readOnly: boolean; reasons: string[] }>
+  /** Delete a token after its ACL lines (Proxmox keeps a deleted token's lines). */
+  removeTokenCleanly(pve: ExporterPve, userid: string, name: string): Promise<void>
   NotReadOnlyError: new (tokenId: string, reasons: string[]) => Error & { code: string; reasons: string[] }
 }
 
@@ -82,8 +84,9 @@ export function tokenPve(
     createToken: (name, o) => admin.fetchStrict<any>(`${tokens}/${encodeURIComponent(name)}`, 'POST',
       form({ privsep: String(o.privsep), comment: o.comment })),
     deleteToken: (name) => admin.fetchStrict(`${tokens}/${encodeURIComponent(name)}`, 'DELETE'),
-    setAcl:      (acl) => admin.fetchStrict('/access/acl', 'PUT',
-      form({ path: acl.path, roles: acl.role, tokens: acl.token, propagate: '1' })),
+    setAcl:      (acl) => admin.fetchStrict('/access/acl', 'PUT', acl.delete
+      ? form({ path: acl.path, roles: acl.role, tokens: acl.token, delete: '1' })
+      : form({ path: acl.path, roles: acl.role, tokens: acl.token, propagate: '1' })),
     tokenWorks:  async (id, secret) => {
       try { await client(id, secret).fetchStrict('/version'); return true }
       catch (e: any) { if (/HTTP 401\b/.test(String(e?.message))) return false; throw e }
@@ -122,6 +125,9 @@ export async function provisionPveExporter(deps: {
   const pve = deps.pve ?? tokenPve(deps.access)
   const r = await shared.ensureExporterToken(pve, {
     userid: deps.access.user, adminTokenName: deps.access.tokenName, held: shared.readPveYml(file), fresh: deps.fresh,
+    // A working read-only token pve.yml already holds is kept whatever its name (an older install's
+    // hyperprox-exporter), as the wizard does, instead of making a second one beside it.
+    adoptHeld: true,
   })
   const changed = shared.writePveYml(file, shared.renderPveYml({ user: r.user, tokenName: r.tokenName, secret: r.secret }))
   const restarted = changed ? await (deps.restart ?? restartExporter)() : false

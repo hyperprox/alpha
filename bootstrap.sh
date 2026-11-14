@@ -955,6 +955,21 @@ guest_conf() {   # the config file of guest ID anywhere in the cluster, if there
 }
 # Read whole before searching: with pipefail, `cmd | grep -q` fails when grep stops reading early.
 token_exists() { grep -q "\"$1\"" <<< "$(pveum user token list root@pam --output-format json 2>/dev/null)"; }
+# The ACL lines that name one token, as "path<TAB>role", from `pveum acl list --output-format json` on stdin.
+token_acl_lines() {  # token_acl_lines <user!token>
+  sed 's/},{/}\n{/g' | grep -F "\"ugid\":\"$1\"" | while IFS= read -r l; do
+    printf '%s\t%s\n' "$(grep -oP '"path":"\K[^"]*' <<< "$l")" "$(grep -oP '"roleid":"\K[^"]*' <<< "$l")"
+  done
+}
+# Delete a root@pam token, its ACL lines first: Proxmox keeps a deleted token's lines in user.cfg (and logs
+# "ignore invalid acl token" from then on), and a later token of the same name would inherit them.
+remove_token() {  # remove_token <name>
+  local id="root@pam!$1" p r
+  while IFS=$'\t' read -r p r; do
+    [ -n "$p" ] && [ -n "$r" ] && pveum acl delete "$p" --tokens "$id" --roles "$r" >/dev/null 2>&1
+  done < <(pveum acl list --output-format json 2>/dev/null | token_acl_lines "$id")
+  pveum user token remove root@pam "$1" >/dev/null 2>&1
+}
 # The path of a template on its storage, or nothing if the storage cannot say.
 template_path() { pvesm path "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" 2>/dev/null || true; }
 
@@ -989,12 +1004,10 @@ rollback() {
     fi
   fi
   if [ "$XTOKEN_TRY" -eq 1 ] && [ "$XTOKEN_EXISTED" -eq 0 ] && token_exists "$EXPORTER_TOKEN"; then
-    pveum user token remove root@pam "$EXPORTER_TOKEN" >/dev/null 2>&1 \
-      && ok "Removed token root@pam!$EXPORTER_TOKEN" || warn "Could not remove token root@pam!$EXPORTER_TOKEN"
+    remove_token "$EXPORTER_TOKEN" && ok "Removed token root@pam!$EXPORTER_TOKEN" || warn "Could not remove token root@pam!$EXPORTER_TOKEN"
   fi
   if [ "$TOKEN_TRY" -eq 1 ] && [ "$TOKEN_EXISTED" -eq 0 ] && token_exists "$TOKEN_NAME"; then
-    pveum user token remove root@pam "$TOKEN_NAME" >/dev/null 2>&1 \
-      && ok "Removed token root@pam!$TOKEN_NAME" || warn "Could not remove token root@pam!$TOKEN_NAME"
+    remove_token "$TOKEN_NAME" && ok "Removed token root@pam!$TOKEN_NAME" || warn "Could not remove token root@pam!$TOKEN_NAME"
   fi
   tp=""; [ "$TPL_TRY" -eq 1 ] && tp="$(template_path)"
   if [ -n "$tp" ] && [ -e "$tp" ]; then
@@ -1702,8 +1715,10 @@ main() {
   [ -n "$GATEWAY" ] && NETCONF="${NETCONF},gw=${GATEWAY}"
   [ -n "$PASSWORD" ] || PASSWORD="$(openssl rand -base64 18 2>/dev/null | tr -d '/+=' | head -c 20 || true)"
   [ -n "$PASSWORD" ] || die "Could not generate a root password; pass --password."
-  EXPORTER_TOKEN="hyperprox-exporter"
   ask_token_name
+  # Named after HyperProx's own token, as apps/setup/pve-exporter.js names it, so `hyperprox pve-exporter`
+  # and the setup wizard find this one instead of making a second.
+  EXPORTER_TOKEN="${TOKEN_NAME}-exporter"
   token_exists "$TOKEN_NAME" && TOKEN_EXISTED=1
   token_exists "$EXPORTER_TOKEN" && XTOKEN_EXISTED=1
 
