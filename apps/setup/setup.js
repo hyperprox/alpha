@@ -15,6 +15,7 @@ const crypto    = require('crypto')
 const { exec }  = require('child_process')
 const exporter  = require('./pve-exporter')
 const onboard   = require('./onboarding')
+const core      = require('./wizard-core')
 
 const PORT     = parseInt(process.env.SETUP_PORT || '3001', 10)
 const ENV_PATH = path.resolve(process.env.ENV_FILE_PATH || '/opt/hyperprox/.env')
@@ -276,8 +277,12 @@ function restartExporter() {
  * exporter only when the file changed. `pve` is pveAdapter() for HyperProx's user.
  */
 async function setupExporter(pve, userid, adminTokenName, file = exporterConfigPath(), restart = restartExporter) {
-  const r = await exporter.ensureExporterToken(pve, { userid, adminTokenName, held: exporter.readPveYml(file) })
-  const changed = exporter.writePveYml(file, exporter.renderPveYml({ user: r.user, tokenName: r.tokenName, secret: r.secret }))
+  // adoptHeld: bootstrap.sh may already have made root@pam!hyperprox-exporter and written this file; a working
+  // read-only token there is kept, not joined by a second one named after the wizard's token.
+  const held = exporter.readPveYml(file)
+  const r = await exporter.ensureExporterToken(pve, { userid, adminTokenName, held, adoptHeld: true })
+  const same = r.action === 'reuse' && held && held.user === r.user && held.tokenName === r.tokenName && held.secret === r.secret
+  const changed = same ? false : exporter.writePveYml(file, exporter.renderPveYml({ user: r.user, tokenName: r.tokenName, secret: r.secret }))
   if (changed) restart()
   console.log(`[setup] exporter token ${r.fullTokenId}: ${r.action}`)
   return { ok: true, action: r.action, tokenId: r.fullTokenId }
@@ -301,7 +306,7 @@ function heldToken(env, host, port) {
 
 async function testProxmox(host, port, tokenId, tokenSecret) {
   const version  = await pveRequest(host, port, tokenId, tokenSecret, '/version')
-  const nodes    = await pveRequest(host, port, tokenId, tokenSecret, '/nodes')
+  const nodes    = (await pveRequest(host, port, tokenId, tokenSecret, '/nodes') || []).slice().sort((a, b) => String(a.node).localeCompare(String(b.node)))
   const status   = await pveRequest(host, port, tokenId, tokenSecret, '/cluster/status')
   const cluster  = status.find(e => e.type === 'cluster') || {}
 
@@ -322,6 +327,7 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
     if (cs && cs.health) {
       ceph = {
         healthy: cs.health.status === 'HEALTH_OK',
+        health: String(cs.health.status || ''),
         // The pool count lives in pgmap; /cluster/ceph/status has no top-level
         // `pools` key, so the old `(cs.pools || []).length` was always 0.
         pools:   (cs.pgmap && cs.pgmap.num_pools) || 0,
@@ -356,7 +362,8 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
 
   return {
     name:       cluster.name || host,
-    version:    `${version.version}-${version.release}`,
+    // /version answers { version: '9.2.26', release: '9.2' }: the release is the start of the version, so show the version once.
+    version:    String(version.version || version.release || ''),
     nodes:      nodes || [],
     quorate:    Boolean(cluster.quorate),
     nodeCount:  (nodes || []).length,
@@ -368,16 +375,140 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
 }
 
 /**
- * The step a (re)loaded wizard opens on, decided by what .env already records rather than by the tab:
- *   0 Proxmox    - no saved connection, or the saved token no longer authenticates
- *   1 Cluster    - connected; the service scan (step 2) is not persisted, so it reruns from here
- *   3 Providers  - the install choices from step 2 are saved
+ * The step a (re)loaded wizard opens on, decided by what really ran, never by the tab or by settings an
+ * installer pre-filled:
+ *   0 Proxmox  - no saved connection, or the saved token no longer authenticates
+ *   1 Cluster  - connected, but the service scan has not completed
+ *   2 Services - the scan completed (its result is in the progress file), the choices were not saved yet
+ *   3 Options  - the Services choices were saved
+ * `progress` is readProgress(). bootstrap.sh writes INSTALL_PROMETHEUS to .env before the wizard has been
+ * opened, so that setting says nothing about the wizard's own steps; it is only consulted when no progress
+ * object is given (the old behaviour, kept for callers that have none).
  * There is no resuming into step 4: once setup completes, this server exits for good.
  */
-function resumeStep(env, proxmoxOk) {
+function resumeStep(env, proxmoxOk, progress) {
   if (!env.PROXMOX_HOST || !env.PROXMOX_TOKEN_ID || !env.PROXMOX_TOKEN_SECRET || !proxmoxOk) return 0
-  if (!('INSTALL_PROMETHEUS' in env)) return 1
-  return 3
+  if (progress === undefined) return 'INSTALL_PROMETHEUS' in env ? 3 : 1
+  if (!progress || !progress.scan || !Array.isArray(progress.scan.services)) return 1
+  return progress.installsSaved ? 3 : 2
+}
+
+// ── What the wizard has really done: data/setup/wizard-progress.json next to .env (no secrets) ──────────
+function progressPath() { return path.join(path.dirname(ENV_PATH), 'data', 'setup', 'wizard-progress.json') }
+
+function readProgress() {
+  try { const p = JSON.parse(fs.readFileSync(progressPath(), 'utf8')); return p && typeof p === 'object' ? p : {} } catch { return {} }
+}
+
+/** Merge `patch` into the progress file (0600). A key set to null is removed. */
+function writeProgress(patch) {
+  const next = { ...readProgress(), ...patch }
+  for (const k of Object.keys(next)) if (next[k] === null) delete next[k]
+  fs.mkdirSync(path.dirname(progressPath()), { recursive: true })
+  fs.writeFileSync(progressPath(), JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 })
+  return next
+}
+
+function resetProgress() { try { fs.rmSync(progressPath(), { force: true }) } catch {} }
+
+/** Keep only { npm|pbs|ollama: boolean } from what a client sent. */
+function sanitizeServices(input) {
+  const out = {}
+  if (input && typeof input === 'object') for (const k of ['npm', 'pbs', 'ollama']) if (typeof input[k] === 'boolean') out[k] = input[k]
+  return out
+}
+
+/**
+ * What the "Existing services" toggles switch, given the scan that found them. A service is connected only
+ * when it was found AND its toggle is on (no toggle given: on for a found service, which is the page's default).
+ *   npm    -> NPM_ENABLED, NPM_HOST, NPM_PORT, and NPM_URL when none is set yet (the Proxy page's address)
+ *   pbs    -> PBS_ENABLED, PBS_HOST, PBS_PORT (the address is recorded for HyperProx's backup views)
+ *   ollama -> OLLAMA_URL, and the local Ollama install is skipped (a second one would compete for the port)
+ * Returns { env, applied: [{ key, name, found, enabled, host, port }], ollamaExisting }.
+ */
+function serviceEnv(toggles, scan, currentEnv) {
+  const t = toggles || {}
+  const env = {}, applied = []
+  let ollamaExisting = false
+  for (const svc of scan || []) {
+    if (!svc || !['npm', 'pbs', 'ollama'].includes(svc.key)) continue
+    const on = Boolean(svc.found) && (typeof t[svc.key] === 'boolean' ? t[svc.key] : true)
+    const port = String(svc.port)
+    applied.push({ key: svc.key, name: svc.name, found: Boolean(svc.found), enabled: on, host: on ? svc.host : null, port })
+    if (svc.key === 'npm') {
+      env.NPM_ENABLED = on ? 'true' : 'false'
+      if (on) { env.NPM_HOST = svc.host; env.NPM_PORT = port; if (!(currentEnv && currentEnv.NPM_URL)) env.NPM_URL = `http://${svc.host}:${port}` }
+    } else if (svc.key === 'pbs') {
+      env.PBS_ENABLED = on ? 'true' : 'false'
+      if (on) { env.PBS_HOST = svc.host; env.PBS_PORT = port }
+    } else if (on) {
+      env.OLLAMA_URL = `http://${svc.host}:${port}`
+      ollamaExisting = true
+    }
+  }
+  return { env, applied, ollamaExisting }
+}
+
+/** Write the toggles' effect to .env; returns serviceEnv's answer. Uses the scan that was really run. */
+function applyServices(toggles) {
+  const scan = (readProgress().scan || {}).services || []
+  const r = serviceEnv(toggles, scan, readEnv())
+  if (Object.keys(r.env).length) writeEnv(r.env)
+  return r
+}
+
+function gpuWords(g) { return `${g.name} (${g.kind === 'integrated' ? 'built in' : 'dedicated'})` }
+
+/** One readable line per node, sorted by name: "node-a: NVIDIA ... (dedicated); health monitoring already running". */
+function summaryLines(nodes) {
+  return (nodes || []).slice().sort((a, b) => String(a.node).localeCompare(String(b.node))).map(n => {
+    const gpu = (n.gpus || []).length ? n.gpus.map(gpuWords).join(', ') : 'no GPU'
+    const extra = []
+    if (n.rapl === 'none') extra.push('no power counters')
+    if (n.nodeExporter === 'running') extra.push('health monitoring already running')
+    return `${n.node}: ${gpu}${extra.length ? `; ${extra.join('; ')}` : ''}`
+  })
+}
+
+/**
+ * The node questions, per node: a question whose work every node already has is `satisfied` (answer false, shown
+ * as already done, no login needed for it); otherwise it defaults to Yes only for the nodes that still need it
+ * (`pending`), and says so. Uses the shared planner, so it agrees with what Apply would really do.
+ */
+function annotateQuestions(questions, nodes, hw = onboard.hw) {
+  const names = (nodes || []).map(n => n.node)
+  return questions.map(q => {
+    if (!q.nodeWork) return q
+    const pending = [...new Set(hw.planNodeWork({ [q.id]: true }, nodes).map(p => p.node))]
+    if (!pending.length) return { ...q, default: false, satisfied: true, pending: [], notes: [...(q.notes || []), 'Already in place on every node: nothing to do.'] }
+    const rest = names.filter(n => !pending.includes(n))
+    return { ...q, pending, satisfied: false,
+      notes: [...(q.notes || []), `Will be set up on: ${pending.join(', ')}.` + (rest.length ? ` Nothing to do on: ${rest.join(', ')}.` : '')] }
+  })
+}
+
+/** Ask Prometheus a real query; success means it answers. { ok, reason }. */
+async function verifyPrometheus(base, { get = onboard.getText, sleep = ms => new Promise(r => setTimeout(r, ms)), timeoutMs = 75_000, every = 3000 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  let reason = 'Prometheus is not answering on this machine'
+  do {
+    const t = await get(`${base}/api/v1/query?query=up`, 4000)
+    if (t) {
+      try {
+        const d = JSON.parse(t)
+        if (d.status === 'success') return { ok: true, reason: `answers a query (${(d.data && d.data.result || []).length} targets reporting)` }
+        reason = `Prometheus answered with an error: ${d.error || d.status}`
+      } catch { reason = 'Prometheus gave an answer that is not a query result' }
+    }
+    if (Date.now() >= deadline) break
+    await sleep(every)
+  } while (Date.now() < deadline)
+  return { ok: false, reason }
+}
+
+/** When bootstrap.sh's answers file was written: the readings in it are from then, not from now. */
+function bootstrapTakenAt(dir) {
+  try { return fs.statSync(path.join(dir, 'data/setup/bootstrap.json')).mtime.toISOString() } catch { return null }
 }
 
 /**
@@ -395,74 +526,27 @@ function composeProfiles(env) {
 // Service scanner
 // =============================================================================
 
-function probeHttp(host, port, path, match, timeoutMs = 2500, useHttps = false, hops = 2) {
-  return new Promise(resolve => {
-    let done = false
-    const finish = (val) => { if (!done) { done = true; resolve(val) } }
-    const hard = setTimeout(() => finish(false), timeoutMs)
-
-    const net = require('net')
-    const socket = net.createConnection({ host, port, timeout: timeoutMs })
-    socket.on('error', () => { clearTimeout(hard); finish(false) })
-    socket.on('timeout', () => { socket.destroy(); clearTimeout(hard); finish(false) })
-    socket.on('connect', () => {
-      socket.destroy()
-      const lib = useHttps ? require('https') : http
-      const req = lib.request({ hostname: host, port, path, method: 'GET', rejectUnauthorized: false }, res => {
-        // Follow a same-host redirect (a service answering /api with 302 -> /api/ is a service, not a miss).
-        const loc = res.headers.location
-        if (res.statusCode >= 300 && res.statusCode < 400 && loc && hops > 0) {
-          res.resume(); clearTimeout(hard)
-          try {
-            const u = new URL(loc, `${useHttps ? 'https' : 'http'}://${host}:${port}`)
-            if (u.hostname === host) {
-              return probeHttp(host, u.port || (u.protocol === 'https:' ? 443 : 80), u.pathname + u.search, match, timeoutMs, u.protocol === 'https:', hops - 1).then(finish)
-            }
-          } catch {}
-          return finish(false)
-        }
-        let body = ''
-        res.on('data', d => { body += d })
-        res.on('end', () => { clearTimeout(hard); finish(body.toLowerCase().includes(match.toLowerCase())) })
-      })
-      req.on('error', () => { clearTimeout(hard); finish(false) })
-      req.setTimeout(timeoutMs, () => { req.destroy(); clearTimeout(hard); finish(false) })
-      req.end()
-    })
-  })
-}
-
+// The same probes and verdicts the Catalogue and plug-in Scan use (packages/hardware/service-probes.js), so the
+// three never disagree about what is already here. Shaped as the wizard has always shown it: one row per service.
+const serviceProbes = require('../../packages/hardware/service-probes')
+const WIZARD_SERVICES = ['npm', 'ollama', 'pbs']
 async function scanServices(hosts) {
-  const probes = [
-    // '/' not '/api': NPM 2.16 redirects /api to /api/, whose JSON never names the product; the admin page's
-    // <title> does, on every version.
-    { key: 'npm',     name: 'Nginx Proxy Manager', port: 81,    path: '/',            match: 'nginx proxy manager' },
-    { key: 'ollama',  name: 'Ollama',               port: 11434, path: '/api/tags',    match: 'models' },
-    // the version endpoint needs a login (401), so it never matched; the web UI title does not.
-    { key: 'pbs',     name: 'Proxmox Backup Server',port: 8007,  path: '/',            match: 'proxmox backup server', https: true },
-  ]
-
-  const tasks = hosts.flatMap(host =>
-    probes.map(async p => {
-      const found = await probeHttp(host, p.port, p.path, p.match, 2500, p.https || false)
-      return { ...p, host, found, detail: found ? `${host}:${p.port}` : null }
-    })
-  )
-
-  const results = await Promise.all(tasks)
-
-  // Deduplicate — one entry per service key, prefer found=true
-  const best = {}
-  for (const r of results) {
-    if (!best[r.key] || (r.found && !best[r.key].found)) best[r.key] = r
-  }
-
-  return Object.values(best)
+  const probes = serviceProbes.PROBES.filter(p => WIZARD_SERVICES.includes(p.key))
+  const findings = await serviceProbes.scanHosts(hosts.map(h => ({ address: h, source: h })), serviceProbes.realGet, { probes })
+  return WIZARD_SERVICES.map(key => {
+    const p = probes.find(x => x.key === key)
+    const f = findings.find(x => x.key === key)
+    return { key, name: p ? p.label : key, port: f ? f.port : (p ? p.port : null), path: p ? p.path : '/',
+      host: f ? f.host : null, found: !!f, detail: f ? `${f.host}:${f.port}` : null }
+  })
 }
 
 // =============================================================================
 // Wizard HTML (single-page, no framework, no CDN)
 // =============================================================================
+
+// The pure helpers of wizard-core.js, as source, for the page's script (they are tested in Node as modules).
+const CORE_JS = Object.values(core).map(f => f.toString()).join('\n')
 
 const WIZARD_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -502,13 +586,14 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-
 .field input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(0,200,224,.12)}
 .row{display:flex;gap:8px}
 .row .field{flex:1}
-.btn{padding:10px 22px;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;transition:.15s;border:none;letter-spacing:.3px}
+.btn{white-space:nowrap;flex-shrink:0;padding:10px 22px;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;transition:.15s;border:none;letter-spacing:.3px}
 .btn-primary{background:var(--cyan);color:#050a10}
 .btn-primary:hover{opacity:.88}
 .btn-primary:disabled{opacity:.35;cursor:default}
 .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
 .btn-ghost:hover{border-color:var(--text);color:var(--text)}
-.btn-row{display:flex;justify-content:space-between;align-items:center;margin-top:1.5rem}
+.btn-row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:1.5rem}
+.btn-row .hint{min-width:0}
 .steps-box{background:#0f1b2b;border:1px solid rgba(47,214,232,.13);border-radius:8px;padding:1.25rem;margin-bottom:1.25rem}
 .steps-title{color:#2fd6e8;font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:1rem}
 .steps-method{margin-bottom:1rem}
@@ -558,6 +643,7 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-
 </div>
 
 <script>
+${CORE_JS}
 const STEPS = ['Proxmox','Cluster','Services','Options','Done']
 let cur = 0
 const S = {
@@ -566,6 +652,8 @@ const S = {
   services: {},
   installs: { grafana: true, prometheus: true },
   providers:{ godaddy:{ enabled:false, key:'', secret:'' }, npm:{ enabled:false, host:'', port:'81' } },
+  scan: { status: 'idle', error: '' },   // idle | running | done | failed: whether the service scan really ran
+  hwState: { status: 'idle', attempt: 0, error: '' },   // idle | loading | ok | failed
   hw: null, answers: {}, login: { username:'root', password:'', privateKey:'' }, loginRows: null, apply: null, finish: null
 }
 
@@ -600,12 +688,21 @@ const SETUP_KEY = (function(){
   try { return q || sessionStorage.getItem('hpx-setup-key') || '' } catch { return q || '' }
 })()
 
-async function api(method, path, body){
-  const r = await fetch(path, {
-    method,
-    headers:{ 'Content-Type':'application/json', 'X-Setup-Key': SETUP_KEY },
-    body: body ? JSON.stringify(body) : undefined
-  })
+async function api(method, path, body, timeoutMs){
+  // A request that never answers is an error to show, not an endless spinner.
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), timeoutMs || 60000)
+  let r
+  try {
+    r = await fetch(path, {
+      method,
+      headers:{ 'Content-Type':'application/json', 'X-Setup-Key': SETUP_KEY },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctl.signal
+    })
+  } catch (e) {
+    throw new Error(e && e.name === 'AbortError' ? 'No answer from the setup service.' : ((e && e.message) || 'Could not reach the setup service.'))
+  } finally { clearTimeout(timer) }
   if (r.status === 401) {
     document.body.innerHTML = '<div style="max-width:560px;margin:12vh auto;font:15px/1.6 system-ui;color:#e6edf3;background:#0a111c;padding:28px;border:1px solid #2fd6e8;border-radius:10px">' +
       '<h2 style="margin-top:0;color:#2fd6e8">Open the setup link from the installer</h2>' +
@@ -635,10 +732,27 @@ function stepProxmox(){
     </details>
     <div class="err" id="px-err"></div>
     <div class="btn-row">
-      <span class="hint">Nothing is changed on your cluster except one new access key for HyperProx.</span>
+      <span class="hint">Nothing is changed on your cluster except two new access keys: one for HyperProx and a read-only one for the metrics exporter (reused if one already exists).</span>
       <button class="btn btn-primary" id="btn-px">Connect →</button>
     </div>
   </div>\`
+}
+
+// The hardware look-up: loading, or the reason it failed and a way to try again (never an endless wait).
+// One line per node, not a wall of text.
+function hwLines(hw){
+  const lines = hw.lines && hw.lines.length ? hw.lines : [hw.summary]
+  return '<div style="margin-bottom:.35rem">' + escHtml('Found ' + (hw.nodes ? hw.nodes.length : lines.length) + ' node' + ((hw.nodes ? hw.nodes.length : lines.length) === 1 ? '' : 's') + (hw.nodes && hw.nodes.some(n => n.ceph) ? ', with Ceph storage' : '') + ':') + '</div>'
+    + lines.map(l => '<div style="font-family:monospace;font-size:12.5px">' + escHtml(l) + '</div>').join('')
+}
+function hwStatus(){
+  const h = S.hwState
+  if (h.status === 'failed') {
+    return '<div class="err" style="display:block;margin-top:1rem">Could not look at the hardware on your nodes: ' + escHtml(h.error || 'no answer') + '</div>'
+      + '<div style="margin-top:.6rem"><button class="btn btn-ghost" id="btn-hw-retry">Retry</button></div>'
+  }
+  return '<div class="field-hint" style="margin-top:1rem"><span class="spinner"></span>Looking at the hardware on each node...'
+    + (h.attempt > 1 ? ' (try ' + h.attempt + ' of 4)' : '') + '</div>'
 }
 
 // ── Step 1: Cluster info ──────────────────────────────────────────────────────
@@ -652,15 +766,16 @@ function stepCluster(){
       <div class="node-sub" style="color:\${n.status==='online'?'#22c55e':'#ef4444'}">\${n.status}</div>
     </div>\`).join('')
   return \`<div class="card">
+    <div class="eyebrow">\${stepLabel(1, STEPS.length)}</div>
     <div class="card-title">Cluster detected ✓</div>
     <div class="card-desc">HyperProx found your Proxmox cluster. Confirm the details look right before continuing.</div>
     <div class="detect-row"><span>Cluster name</span><span style="font-family:'IBM Plex Mono',monospace">\${c.name}</span><span class="badge badge-ok">online</span></div>
     <div class="detect-row"><span>Proxmox version</span><span style="font-family:'IBM Plex Mono',monospace">\${c.version}</span><span class="badge badge-ok">supported</span></div>
     <div class="detect-row"><span>Nodes</span><span style="font-family:'IBM Plex Mono',monospace">\${c.nodeCount} nodes</span><span class="badge \${c.quorate?'badge-ok':'badge-warn'}">\${c.quorate?'quorate':'no quorum'}</span></div>
     <div class="detect-row"><span>Running workloads</span><span style="font-family:'IBM Plex Mono',monospace">\${c.runningVms} VMs · \${c.runningCts} CTs</span><span class="badge badge-ok">✓</span></div>
-    \${c.ceph ? \`<div class="detect-row"><span>CEPH storage</span><span style="font-family:'IBM Plex Mono',monospace">\${c.ceph.pools} pools</span><span class="badge \${c.ceph.healthy?'badge-ok':'badge-warn'}">\${c.ceph.healthy?'healthy':'degraded'}</span></div>\` : ''}
+    \${c.ceph ? \`<div class="detect-row"><span>CEPH storage</span><span style="font-family:'IBM Plex Mono',monospace">\${c.ceph.pools} pools</span><span class="badge \${c.ceph.healthy?'badge-ok':'badge-warn'}">\${c.ceph.healthy?'healthy':(c.ceph.health==='HEALTH_ERR'?'error':'warning')}</span></div>\` : ''}
     <div class="node-grid">\${nodeCards}</div>
-    \${S.hw ? '<div class="card-desc" style="margin:1rem 0 0" id="hw-summary">' + escHtml(S.hw.summary) + '</div>' : '<div class="field-hint" style="margin-top:1rem">Looking at the hardware on each node...</div>'}
+    \${S.hw ? '<div class="card-desc" style="margin:1rem 0 0" id="hw-summary">' + hwLines(S.hw) + '</div>' : hwStatus()}
     \${S.exporter && !S.exporter.ok ? \`<div class="field-hint" style="margin-top:.75rem">Proxmox metrics: the exporter's read-only token could not be made (\${escHtml(S.exporter.error)}). After setup, run <code>hyperprox pve-exporter</code> on this machine.</div>\` : ''}
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(0)">← Back</button>
@@ -673,6 +788,8 @@ function stepCluster(){
 function stepServices(){
   const svcs = S.services
   const inst = S.installs
+  if (S.scan.status === 'running') return '<div class="card"><div class="eyebrow">' + stepLabel(2, STEPS.length) + '</div><div class="card-title">Existing services</div><div class="card-desc"><span class="spinner"></span>Looking for services that already run on your cluster...</div></div>'
+  if (S.scan.status === 'failed') return '<div class="card"><div class="eyebrow">' + stepLabel(2, STEPS.length) + '</div><div class="card-title">Existing services</div><div class="err" style="display:block">The scan did not finish: ' + escHtml(S.scan.error || 'no answer') + '</div><div class="btn-row"><button class="btn btn-ghost" onclick="go(1)">← Back</button><button class="btn btn-primary" id="btn-scan-retry">Retry</button></div></div>'
   const cards = Object.values(svcs).length
     ? Object.values(svcs).map(s =>
         \`<div class="svc-card \${s.enabled?'on':''}" onclick="toggleSvc('\${s.key}')">
@@ -700,13 +817,14 @@ function stepServices(){
   </div>\`).join('')
 
   return \`<div class="card">
+    <div class="eyebrow">\${stepLabel(2, STEPS.length)}</div>
     <div class="card-title">Existing services</div>
     <div class="card-desc">HyperProx scanned your cluster. Enable what you want to manage, skip the rest — you can connect more later.</div>
     \${cards}
     <div class="card-title" style="margin-top:1.25rem">Do you want charts and dashboards (Prometheus and Grafana)?</div>
     <div class="card-desc">Runs Prometheus and Grafana on this machine. You reach them only through HyperProx.</div>
     \${installCards}
-    <div class="field-hint" style="margin-top:.75rem">Need Nginx Proxy Manager? Install it from the <strong>Catalogue</strong> after setup: it gets a container of its own, with ports 80 and 443 to itself.</div>
+    \${svcs.npm && svcs.npm.found ? '' : '<div class="field-hint" style="margin-top:.75rem">Need Nginx Proxy Manager? Install it from the <strong>Catalogue</strong> after setup: it gets a container of its own, with ports 80 and 443 to itself.</div>'}
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(1)">← Back</button>
       <button class="btn btn-primary" id="btn-installs">Continue →</button>
@@ -716,26 +834,31 @@ function stepServices(){
 
 // ── Step 3: Options — the installer's questions, then doing them ────────────
 function qOn(id){ return S.answers[id] === true }
-function anyNodeWork(){ return (S.hw && S.hw.questions || []).some(q => q.nodeWork && qOn(q.id)) }
+function anyNodeWork(){ return (S.hw && S.hw.questions || []).some(q => q.nodeWork && !q.satisfied && qOn(q.id)) }
 function checkRows(rows){
   return (rows||[]).map(r => {
-    const mark = (r.status==='done'||r.status==='already'||r.status==='ok') ? '<span class="badge badge-ok">done</span>'
-      : r.status==='skipped' ? '<span class="badge badge-off">skipped</span>' : '<span class="badge badge-warn">failed</span>'
+    const label = statusLabel(r.status)
+    const mark = (r.status==='done'||r.status==='already'||r.status==='ok') ? '<span class="badge badge-ok">' + label + '</span>'
+      : r.status==='skipped' ? '<span class="badge badge-off">skipped</span>' : '<span class="badge badge-warn">' + label + '</span>'
     return '<div class="detect-row"><span>' + escHtml((r.label||r.id||'') + (r.node ? ' · ' + r.node : '')) + '<br><span class="hint">' + escHtml(r.reason||'') + '</span></span>' + mark + '</div>'
   }).join('')
 }
 function stepProviders(){
   const hw = S.hw
-  if(!hw) return '<div class="card"><div class="card-title">Looking at your nodes...</div></div>'
+  if(!hw) return '<div class="card"><div class="eyebrow">' + stepLabel(3, STEPS.length) + '</div><div class="card-title">A few questions</div>' + hwStatus().replace('Looking at the hardware on each node...', 'Looking at your nodes...') + '<div class="btn-row"><button class="btn btn-ghost" onclick="go(2)">← Back</button><span></span></div></div>'
   const boot = hw.bootstrap
-  let h = '<div class="card"><div class="eyebrow">Step 4 of 5</div><div class="card-title">A few questions</div>'
-  h += '<div class="card-desc">' + escHtml(hw.summary) + ' HyperProx does each thing you say yes to, then checks that it worked.</div>'
-  if (boot) h += '<div class="field-hint" style="margin-bottom:1rem">You answered these when you ran bootstrap.sh, which did the node work already:</div>' + checkRows(boot.results)
+  let h = '<div class="card"><div class="eyebrow">' + stepLabel(3, STEPS.length) + '</div><div class="card-title">A few questions</div>'
+  h += '<div class="card-desc">' + hwLines(hw) + '<div style="margin-top:.5rem">HyperProx does each thing you say yes to, then checks that it worked.</div></div>'
+  if (boot) h += '<div class="field-hint" style="margin-bottom:1rem">' + escHtml(bootstrapSummary(boot.results, takenLabel(boot.takenAt))) + '</div>' + checkRows(boot.results)
   for (const q of hw.questions) {
     if (q.id === 'charts') continue
     if (boot && q.id !== 'dns') continue
     if (q.id === 'proxmox-metrics' && S.exporter && S.exporter.ok) {
-      h += '<div class="detect-row"><span>' + escHtml(q.ask) + '<br><span class="hint">Done: made when you connected.</span></span><span class="badge badge-ok">done</span></div>'
+      h += '<div class="detect-row"><span>' + escHtml(q.ask) + '<br><span class="hint">' + (S.exporter.action === 'reuse' ? 'Already in place: the read-only token that was made earlier is used.' : 'Done: made when you connected.') + '</span></span><span class="badge badge-ok">' + (S.exporter.action === 'reuse' ? 'already there' : 'done') + '</span></div>'
+      continue
+    }
+    if (q.satisfied) {
+      h += '<div class="detect-row"><span>' + escHtml(q.ask) + '<br><span class="hint">Already in place on every node: nothing to do.</span></span><span class="badge badge-ok">already there</span></div>'
       continue
     }
     const on = qOn(q.id)
@@ -849,30 +972,22 @@ function bind(){
   // Step 1 - cluster confirmed: scan for existing services, then move on
   const btnCl = document.getElementById('btn-cluster-ok')
   if(btnCl) btnCl.onclick = () => {
-    if(!S.hw) loadHardware()
-    btnCl.disabled = true
-    btnCl.innerHTML = '<span class="spinner"></span>Scanning...'
+    if(S.hwState.status !== 'loading' && !S.hw) loadHardware()
     go(2)
-    // Scan with hard 8s client timeout - auto-advance if hung
-    const scanDone = new Promise(resolve => {
-      api('GET','/api/setup/scan-services').then(r => {
-        if(r.ok && r.services){
-          S.services = {}
-          r.services.forEach(s => { S.services[s.key] = { ...s, enabled: s.found } })
-        }
-        resolve()
-      }).catch(() => resolve())
-    })
-    const scanTimeout = new Promise(resolve => setTimeout(resolve, 8000))
-    Promise.race([scanDone, scanTimeout]).then(() => render())
+    if(S.scan.status !== 'done') runScan()
   }
+  const btnScanRetry = document.getElementById('btn-scan-retry')
+  if(btnScanRetry) btnScanRetry.onclick = () => runScan()
+  const btnHwRetry = document.getElementById('btn-hw-retry')
+  if(btnHwRetry) btnHwRetry.onclick = () => loadHardware()
 
   // Step 2 — save installs
   const btnInst = document.getElementById('btn-installs')
   if(btnInst) btnInst.onclick = async () => {
     btnInst.disabled = true
     btnInst.innerHTML = '<span class="spinner"></span>Saving...'
-    await api('POST','/api/setup/save-installs', { installs: S.installs })
+    try { await api('POST','/api/setup/save-installs', { installs: S.installs, services: serviceToggles(S.services) }) }
+    catch (e) { btnInst.disabled = false; btnInst.textContent = 'Continue →'; return alert('Could not save: ' + e.message) }
     go(3)
   }
 
@@ -890,7 +1005,7 @@ function bind(){
     S.login.password = ''; S.login.privateKey = ''
     S.loginRows = t.nodes || null
     if(!t.ok){ render(); setErr('prov-err', t.error || 'That login did not work on any node.'); return }
-    await api('POST','/api/setup/apply', { answers: S.answers })
+    await api('POST','/api/setup/apply', { answers: S.answers, services: serviceToggles(S.services) })
     S.apply = { status: 'running', results: [], checks: [] }
     render()
     for(let i = 0; i < 600; i++){
@@ -908,7 +1023,7 @@ function bind(){
     if(!(await saveDns())) return
     btnProv.disabled = true
     btnProv.innerHTML = '<span class="spinner"></span>Finishing...'
-    const res = await api('POST','/api/setup/complete',{ answers: S.answers })
+    const res = await api('POST','/api/setup/complete',{ answers: S.answers, services: serviceToggles(S.services) })
     if(!res.ok){
       setErr('prov-err', (res.errors || [res.error]).join(' '))
       btnProv.disabled = false; btnProv.textContent = 'Finish setup →'; return
@@ -943,7 +1058,7 @@ async function saveDns(){
 }
 
 function toggleSvc(key){
-  if(S.services[key]) S.services[key].enabled = !S.services[key].enabled
+  if(S.services[key] && S.services[key].found) S.services[key].enabled = !S.services[key].enabled   // nothing to connect when not found
   render()
 }
 function toggleInstall(key){
@@ -955,8 +1070,24 @@ function toggleProv(key){
   render()
 }
 
-// Resume from what the server already knows: a reload, or the link opened again tomorrow, lands on the
-// step the setup actually reached instead of step 1.
+// The service scan: runs when the Cluster step is confirmed, and again on Retry. The result is kept by the server.
+async function runScan(){
+  S.scan = { status: 'running', error: '' }
+  if(cur === 2) render()
+  try {
+    const r = await api('GET','/api/setup/scan-services', null, 45000)
+    if(!r.ok) throw new Error(r.error || 'no answer')
+    S.services = servicesFromScan(r.services, null)
+    S.scan = { status: 'done', error: '' }
+  } catch (e) {
+    S.scan = { status: 'failed', error: (e && e.message) || 'no answer' }
+  }
+  if(cur === 2) render()
+}
+
+// Resume from what the server knows really ran: a reload lands on the step the setup actually reached. A
+// step is shown done only if it ran; the scan and the hardware look-up are redone when the server has no
+// record of them.
 async function init(){
   document.getElementById('wizard').innerHTML = '<div class="card"><div class="card-title">Loading...</div></div>'
   let st = null
@@ -968,23 +1099,51 @@ async function init(){
     S.cluster = st.cluster
     if (st.installs) S.installs = st.installs
     if (st.providers && st.providers.godaddy && st.providers.godaddy.enabled) Object.assign(S.providers.godaddy, { enabled: true, saved: true })
+    const pr = st.progress || {}
+    if (pr.answers) Object.assign(S.answers, pr.answers)
+    if (pr.scan && Array.isArray(pr.scan.services)) {
+      S.services = servicesFromScan(pr.scan.services, pr.services)
+      S.scan = { status: 'done', error: '' }
+    }
     cur = st.step
   }
   render()
   if (st && st.error) setErr('px-err', st.error)
   if (cur >= 1) loadHardware()
+  if (cur >= 3) restoreApply()
 }
 
-async function loadHardware(){
+// An apply that was running or finished before a reload is still held by the server: show what it did.
+async function restoreApply(){
   try {
-    const r = await api('GET','/api/setup/hardware')
-    if(r.ok){
-      S.hw = r
-      for (const q of r.questions) if (!(q.id in S.answers)) S.answers[q.id] = q.default
-      if (r.held && r.held.godaddy) S.providers.godaddy.saved = true
-      render()
-    }
+    const st = await api('GET','/api/setup/apply-status')
+    if (st.ok && st.job && st.job.status && st.job.status !== 'idle') { S.apply = st.job; render() }
   } catch {}
+}
+
+// The hardware look-up, retried with backoff (a node or the network can be slow for a moment); if it still
+// fails the page says why and offers Retry.
+async function loadHardware(){
+  if (S.hwState.status === 'loading') return
+  S.hwState = { status: 'loading', attempt: 1, error: '' }
+  keepFields()
+  render()
+  try {
+    const r = await retryAsync(async (attempt) => {
+      if (S.hwState.attempt !== attempt) { S.hwState.attempt = attempt; keepFields(); render() }
+      const res = await api('GET','/api/setup/hardware', null, 90000)
+      if (!res.ok) throw new Error(res.error || 'no answer')
+      return res
+    }, { tries: 4, delays: [1000, 2000, 4000], shouldRetry: e => !String(e && e.message).includes('setup key') })
+    S.hw = r
+    S.hwState = { status: 'ok', attempt: 0, error: '' }
+    for (const q of r.questions) if (!(q.id in S.answers)) S.answers[q.id] = q.default
+    if (r.held && r.held.godaddy) S.providers.godaddy.saved = true
+  } catch (e) {
+    S.hwState = { status: 'failed', attempt: 0, error: (e && e.message) || 'no answer' }
+  }
+  keepFields()
+  render()
 }
 
 init()
@@ -1036,11 +1195,14 @@ let finish = null
  * check the outcome in Prometheus, restart HyperProx, hand the held secrets to it, then remove the setup
  * key from .env and exit. Every step adds a line to the checklist the Done page shows.
  */
-async function finishSetup(answers) {
+async function finishSetup(answers, svc = { applied: [] }) {
   const list = finish.checklist
   const add = (label, status, reason) => list.push({ label, status, reason })
   const env = readEnv()
 
+  for (const a of (svc.applied || []).filter(a => a.found)) {
+    add(a.name, a.enabled ? 'done' : 'skipped', a.enabled ? `connected at ${a.host}:${a.port}` : 'found, and left off as you chose')
+  }
   const ai = answers.ai === true
   writeEnv({ SETUP_COMPLETE: 'true', INSTALL_OLLAMA: ai ? 'true' : 'false', ...(ai ? { OLLAMA_URL: 'http://127.0.0.1:11434', OLLAMA_MODEL: onboard.hw.AI_MODEL } : {}) })
   const profiles = composeProfiles(readEnv()).split(',').filter(Boolean)
@@ -1057,6 +1219,12 @@ async function finishSetup(answers) {
 
   const up = await runCmd('docker compose up -d --remove-orphans')
   add('Services', up.ok ? 'done' : 'failed', up.ok ? (profiles.length ? `started: ${profiles.join(', ')}` : 'started') : up.out.trim().split('\n').pop())
+
+  // "Started" is the compose command's word. For charts, ask Prometheus itself.
+  if (up.ok && profiles.includes('monitoring')) {
+    const v = await verifyPrometheus('http://127.0.0.1:9090', { timeoutMs: Number(process.env.HPX_SETUP_VERIFY_MS || 75_000), get: onboard.getText })
+    add('Charts and dashboards', v.ok ? 'done' : 'failed', v.ok ? `Prometheus ${v.reason}` : `Prometheus is not working: ${v.reason}. Check it with: docker compose logs prometheus`)
+  }
 
   if (ai && up.ok) {
     // About 2 GB: started in the background, and shown done on Settings → Setup checklist once it is there.
@@ -1195,12 +1363,14 @@ const server = http.createServer(async (req, res) => {
         try { cluster = await testProxmox(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006', fullTokenId, env.PROXMOX_TOKEN_SECRET) }
         catch { error = `The saved connection to ${env.PROXMOX_HOST} no longer works. Sign in again to renew HyperProx's access key.` }
       }
-      const step = resumeStep(env, Boolean(cluster))
+      const progress = readProgress()
+      const step = resumeStep(env, Boolean(cluster), progress)
       const installs = 'INSTALL_PROMETHEUS' in env
         ? { grafana: env.INSTALL_GRAFANA === 'true', prometheus: env.INSTALL_PROMETHEUS === 'true' }
         : null
       return sendJson(res, 200, {
         ok: true, step, cluster, error, installs,
+        progress: { scan: progress.scan || null, services: progress.services || {}, answers: progress.answers || {} },
         proxmox: { host: env.PROXMOX_HOST || '', port: env.PROXMOX_PORT || '8006', username: env.PROXMOX_USER || 'root@pam',
                    tokenId: fullTokenId, publicUrl: env.PROXMOX_PUBLIC_URL || '' },
         providers: { godaddy: { enabled: env.GODADDY_ENABLED === 'true' || onboard.heldSummary().godaddy } },
@@ -1230,6 +1400,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const { tokenId, tokenSecret, cluster, exporter: exp } = await connectWithLogin(host, port, username, password, otp, heldToken(readEnv(), host, port))
         const [proxmoxUser, proxmoxTokenId] = tokenId.split('!')
+        if (readEnv().PROXMOX_HOST !== host) resetProgress()   // another cluster: what ran against the old one does not count
         writeEnv({
           PROXMOX_HOST: host, PROXMOX_PORT: port, PROXMOX_USER: proxmoxUser, PROXMOX_TOKEN_ID: proxmoxTokenId,
           PROXMOX_TOKEN_SECRET: tokenSecret, CEPH_MON_NODE: '', ...(publicUrl ? { PROXMOX_PUBLIC_URL: publicUrl } : {}),
@@ -1255,6 +1426,7 @@ const server = http.createServer(async (req, res) => {
       // — even a correct detection expires at the next reboot. CEPH_MON_NODE
       // stays supported as a manual override for operators who want one.
       const cephMon = ''
+      if (readEnv().PROXMOX_HOST !== host) resetProgress()
       writeEnv({
         PROXMOX_HOST:         host,
         PROXMOX_PORT:         port,
@@ -1333,8 +1505,15 @@ const server = http.createServer(async (req, res) => {
       }
 
       console.log('[scan] probing hosts:', [...hosts])
-      const scanTimeout = new Promise(resolve => setTimeout(() => resolve([]), 20000))
+      // A scan that ran out of time found nothing out: that is an error to show with a Retry, never "no services".
+      const TIMED_OUT = Symbol('timeout')
+      let timer
+      const scanTimeout = new Promise(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), Number(process.env.HPX_SETUP_SCAN_MS || 20000)) })
       const services = await Promise.race([scanServices([...hosts]), scanTimeout])
+      clearTimeout(timer)
+      if (services === TIMED_OUT) return sendJson(res, 200, { ok: false, error: 'The scan took too long. Nothing was changed; try it again.' })
+      // Remembered, so a reload resumes after the scan instead of pretending it never happened or skipping it.
+      writeProgress({ scan: { at: new Date().toISOString(), services } })
       return sendJson(res, 200, { ok: true, services })
     }
 
@@ -1345,6 +1524,8 @@ const server = http.createServer(async (req, res) => {
         INSTALL_GRAFANA:    installs.grafana    ? 'true' : 'false',
         INSTALL_PROMETHEUS: installs.prometheus ? 'true' : 'false',
       })
+      // Step 3 is done only now: the choices (and the existing-service toggles, applied at /apply and /complete) are saved.
+      writeProgress({ installsSaved: true, services: sanitizeServices(body.services) })
       return sendJson(res, 200, { ok: true })
     }
 
@@ -1374,11 +1555,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && route === 'hardware') {
       const ctx = await clusterCtx()
       if (!ctx) return sendJson(res, 400, { ok: false, error: 'Connect your Proxmox first.' })
-      const nodes = onboard.job.nodes.length ? onboard.job.nodes : await onboard.detectFromProxmox(ctx.pve, ctx.nodes, ctx.addrs)
+      const nodes = (onboard.job.nodes.length ? onboard.job.nodes : await onboard.detectFromProxmox(ctx.pve, ctx.nodes, ctx.addrs))
+        .slice().sort((a, b) => String(a.node).localeCompare(String(b.node)))
       const env = readEnv()
-      const questions = onboard.hw.applicableQuestions(nodes, { charts: env.INSTALL_PROMETHEUS !== 'false' })
-      return sendJson(res, 200, { ok: true, summary: onboard.hw.summarise(nodes), nodes, questions,
-        bootstrap: onboard.bootstrapAnswers(HPX_DIR), held: onboard.heldSummary() })
+      const questions = annotateQuestions(onboard.hw.applicableQuestions(nodes, { charts: env.INSTALL_PROMETHEUS !== 'false' }), nodes)
+      // The host-key record bootstrap.sh keeps in its file is for the hand-over, not for the page.
+      const b = onboard.bootstrapAnswers(HPX_DIR)
+      const bootstrap = b ? { answers: b.answers || {}, results: b.results || [], takenAt: bootstrapTakenAt(HPX_DIR) } : null
+      return sendJson(res, 200, { ok: true, summary: onboard.hw.summarise(nodes), lines: summaryLines(nodes), nodes, questions,
+        bootstrap, held: onboard.heldSummary() })
     }
 
     // ── node-login: asked once, tested on every node, held in memory only ─────
@@ -1394,8 +1579,11 @@ const server = http.createServer(async (req, res) => {
       const ctx = await clusterCtx()
       if (!ctx) return sendJson(res, 400, { ok: false, error: 'Connect your Proxmox first.' })
       const answers = sanitizeAnswers(body.answers)
+      const services = sanitizeServices(body.services)
+      const svc = applyServices(services)   // the Existing-services toggles take effect here, not only at the end
+      writeProgress({ answers, services })
       void onboard.applyAnswers(answers, ctx, nodeRunner())
-      return sendJson(res, 200, { ok: true })
+      return sendJson(res, 200, { ok: true, services: svc.applied })
     }
     if (req.method === 'GET' && route === 'apply-status') {
       const j = onboard.job
@@ -1422,9 +1610,14 @@ const server = http.createServer(async (req, res) => {
       if (errors.length) return sendJson(res, 400, { ok: false, errors })
       if (finish && finish.status === 'running') return sendJson(res, 200, { ok: true })
       const answers = { ...(onboard.bootstrapAnswers(HPX_DIR) || {}).answers, ...sanitizeAnswers(body.answers) }
+      const services = sanitizeServices(body.services)
+      const svc = applyServices(services)
+      // An Ollama that already runs on the cluster is used as it is: a second, local one would not be wanted.
+      if (svc.ollamaExisting) answers.ai = false
+      writeProgress({ answers: sanitizeAnswers(body.answers), services })
       finish = { status: 'running', checklist: [] }
       sendJson(res, 200, { ok: true })
-      void finishSetup(answers).catch(e => {
+      void finishSetup(answers, svc).catch(e => {
         finish.status = 'failed'
         finish.checklist.push({ label: 'Finishing', status: 'failed', reason: e && e.message ? e.message : String(e) })
       })
@@ -1439,7 +1632,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-module.exports = { tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, setupExporter, pveAdapter, WIZARD_HTML }
+module.exports = { verifyPrometheus, annotateQuestions, summaryLines, applyServices, serviceEnv, sanitizeServices, readProgress, writeProgress, progressPath, bootstrapTakenAt, tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, setupExporter, pveAdapter, WIZARD_HTML }
 
 if (require.main === module) {
   setupSecret()

@@ -122,15 +122,28 @@ async function checkReadOnly(pve, name, user) {
  *     listAcl(), setAcl({ path, role, token }), tokenWorks(fullTokenId, secret) }
  * `held`: what pve.yml holds now ({ user, tokenName, secret }) or null.
  * `fresh`: replace the token even if pve.yml's secret still works (only one HyperProx made).
+ * `adoptHeld`: keep a working, read-only token pve.yml holds under another name (see above).
  * A held token that works is reused only if Proxmox says it is read-only; otherwise NotReadOnlyError.
  * A newly made token is checked the same way before it is handed out.
  * Returns { action, user, tokenName, fullTokenId, secret }.
  */
-async function ensureExporterToken(pve, { userid, adminTokenName, held, fresh = false }) {
+async function ensureExporterToken(pve, { userid, adminTokenName, held, fresh = false, adoptHeld = false }) {
   if (!userid || !adminTokenName) throw new Error('HyperProx has no Proxmox token yet, so there is nothing to name the exporter token after')
   const name = exporterTokenName(adminTokenName)
   const fullTokenId = `${userid}!${name}`
   const comment = exporterComment(userid, adminTokenName)
+
+  // The setup wizard asks to adopt: bootstrap.sh already made `<user>!hyperprox-exporter` and wrote its
+  // pve.yml, so a held token that works under ANY name and is read-only is kept instead of minting a second
+  // one named after the wizard's own token. A held token that is not read-only is not adopted (and not
+  // an error): the wizard then makes its own.
+  if (!fresh && adoptHeld && held && held.user === userid && held.tokenName && held.secret
+      && held.tokenName !== name && await pve.tokenWorks(`${userid}!${held.tokenName}`, held.secret)) {
+    const check = await checkReadOnly(pve, held.tokenName, userid)
+    if (check.readOnly) {
+      return { action: 'reuse', user: userid, tokenName: held.tokenName, fullTokenId: `${userid}!${held.tokenName}`, secret: held.secret }
+    }
+  }
 
   if (!fresh && held && held.user === userid && held.tokenName === name && held.secret
       && await pve.tokenWorks(fullTokenId, held.secret)) {
