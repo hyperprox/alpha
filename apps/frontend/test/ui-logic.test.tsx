@@ -102,3 +102,12 @@ test('deleting a guest needs its exact name', () => {
   assert.equal(deleteNameOk('Web', 'web'), false)
   assert.equal(deleteNameOk('', ''), false)
 })
+
+test('the dashboard and Monitoring count Ceph the same: its checks, not the summary alert as well', () => {
+  const checks = { POOL_NO_REDUNDANCY: {}, A: {}, B: {}, C: {}, D: {} }
+  const alert = { name: 'CephHealthWarning', severity: 'warning', state: 'firing', summary: 'CEPH cluster is in WARNING state' }
+  const items = buildAttention({ nodes: [], quorate: true, ceph: { status: 'HEALTH_WARN', checks }, storagePct: 10, ha: [], unreachable: [], alerts: [alert] })
+  assert.equal(attentionItems(items).length, 4, 'the four checks; the intentional one and the summary alert do not count')
+  const noChecks = buildAttention({ nodes: [], quorate: true, ceph: null, storagePct: 10, ha: [], unreachable: [], alerts: [alert] })
+  assert.equal(attentionItems(noChecks).length, 1, 'without the checks, the alert still counts')
+})

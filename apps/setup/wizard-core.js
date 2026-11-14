@@ -124,7 +124,7 @@ function bootstrapSummary(rows, taken) {
 
 /** The badge text for a result row's status. */
 function statusLabel(status) {
-  return ({ done: 'done', ok: 'checked', already: 'already there', skipped: 'skipped', failed: 'failed', found: 'found: add its login', unknown: 'unknown' })[status] || 'failed'
+  return ({ done: 'done', ok: 'checked', already: 'already there', skipped: 'skipped', failed: 'failed', found: 'found: add its login', unknown: 'unknown', partly: 'partly' })[status] || 'failed'
 }
 
 /** "Step 3 of 5" for the eyebrow above a step's title; index is 0-based. */

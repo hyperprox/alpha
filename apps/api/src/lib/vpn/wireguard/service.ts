@@ -174,7 +174,9 @@ export class WireguardService {
     if (m.kind === 'node') throw new WgInputError('A WireGuard server runs in a container or VM, never on a Proxmox node.')
     if (m.kind === 'lxc') {
       const mod = await this.moduleCheck(m.id)
+      // Not checked is not "loaded": a container whose node could not be asked is refused too, with why.
       if (mod.ok === false) throw new WgInputError(`${mod.reason} ${mod.fix ? `Run on the node: ${mod.fix}` : ''}`.trim())
+      if (mod.ok !== true) throw new WgInputError(`HyperProx could not check that the wireguard module is loaded on ${m.node ?? 'its node'} (${mod.reason ?? 'no answer'}), so it does not create a server there. Add a node login, or choose a VM.`)
     }
     const iface = o.iface ?? 'hp-wg0'
     const listenPort = o.listenPort ?? 51820

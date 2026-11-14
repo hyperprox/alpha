@@ -115,6 +115,9 @@ export function GuestsTab({ clusterId, clusterName, kind }: { clusterId: string;
   const [err, setErr] = useState<string | null>(null)
   const [act, setAct] = useState<{ g: GuestRow; a: GuestAction } | null>(null)
   const [open, setOpen] = useState<GuestRow | null>(null)
+  // The drawer follows the guest by type and ID through each re-read, so after a migration it asks the node the
+  // guest is on now, not the one it was opened on.
+  const openRow = open ? (rows ?? []).find(r => r.type === open.type && r.vmid === open.vmid) ?? open : null
   const [q, setQ] = useState('')
   const load = useCallback(async () => {
     const [o, n] = await Promise.all([apiJson<{ data: GuestRow[] }>('/api/infra/guest-config/overview'), apiJson<{ data: Array<{ node: string; status: string }> }>('/api/proxmox/nodes')])
@@ -173,7 +176,7 @@ export function GuestsTab({ clusterId, clusterName, kind }: { clusterId: string;
         </div>
         </>
       )}
-      {open && <GuestDrawer row={open} nodes={nodes} canOperate={canOperate} canAdmin={canAdmin} remote={kind === 'remote'} onClose={() => setOpen(null)} onRefresh={() => { void load() }} />}
+      {openRow && <GuestDrawer row={openRow} nodes={nodes} canOperate={canOperate} canAdmin={canAdmin} remote={kind === 'remote'} onClose={() => setOpen(null)} onRefresh={() => { void load() }} />}
     </div>
   )
 }

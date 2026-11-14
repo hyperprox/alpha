@@ -202,9 +202,9 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
               </div>
             </Notice>
           )}
-          {wgMod && wgMod.ok === null && wgMod.reason && <p className="text-xs" style={{ color: 'var(--text-dim)' }}>{wgMod.reason}</p>}
+          {wgMod && wgMod.ok === null && <Notice tone="warn">HyperProx could not check the wireguard module on this machine&apos;s node{wgMod.reason ? ` (${wgMod.reason})` : ''}, so it cannot create a server here. Add a node login (Settings → Setup checklist), or choose a VM.</Notice>}
           <div className="flex justify-end gap-2">
-            <Btn kind="primary" disabled={wgMod?.ok === false} onClick={async () => done(await send('/api/vpn/wg/servers', 'POST', { ...f, listenPort: Number((f.endpoint ?? '').split(':').pop()) || 51820 }), 'WireGuard server ready.')}>Create</Btn>
+            <Btn kind="primary" disabled={wgMod?.ok !== true} onClick={async () => done(await send('/api/vpn/wg/servers', 'POST', { ...f, listenPort: Number((f.endpoint ?? '').split(':').pop()) || 51820 }), 'WireGuard server ready.')}>Create</Btn>
             <Btn onClick={() => setForm(null)}>Cancel</Btn>
           </div>
         </ConfirmDialog>

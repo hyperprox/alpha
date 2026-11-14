@@ -43,6 +43,7 @@ function fleet() {
       if (script.includes('HP_BUSY=')) return say('HP_BUSY=')
       // The change shows only once the interface exists on that machine.
       if (script.includes('HP_SNAPSHOT_END')) return say([...confs.keys()].some(k => k.startsWith(`${m.id}/`)) ? SNAP(snapAfter) : SNAP())
+      if (script.includes('HPX_WG_MOD=')) return say('HPX_WG_MOD=yes')   // the node has the wireguard module
       if (script.includes('HP_OS_ID=')) return say(FACTS)
       if (script.includes('HP_WG_VERSION')) return say('HP_WG_VERSION=wireguard-tools v1.0.20210914')
       if (script.includes('hp_k=$(wg genkey)')) { const k = keypair(); return say(`HP_WG_PRIV=${k.priv}\nHP_WG_PUB=${k.pub}`) }
@@ -388,4 +389,10 @@ test('WireGuard in a container needs its node\'s module: the check says why and 
   const x = rig()
   ;(x.svc as any).moduleCheck = async () => no
   await assert.rejects(server(x), /not loaded on node-a.*modprobe wireguard/s)
+})
+
+test('a container whose node could not be checked for the module is refused too (not checked is not loaded)', async () => {
+  const x = rig()
+  ;(x.svc as any).moduleCheck = async () => ({ ok: null, reason: 'no saved node login', fix: null })
+  await assert.rejects(server(x), /could not check that the wireguard module is loaded/)
 })

@@ -39,6 +39,8 @@ export function NodesTable({ nodes, canReboot, rebootWhy, onReboot }: {
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   return (
+    <>
+    <p className={styles.scrollHint} aria-hidden>Swipe the table sideways for more →</p>
     <div className={styles.tableWrap}>
       <table className={styles.table} style={{ minWidth: '46rem' }}>
         <thead>
@@ -85,8 +87,9 @@ export function NodesTable({ nodes, canReboot, rebootWhy, onReboot }: {
                 </td>
                 <td className="px-4 py-2.5">
                   <div className="flex flex-wrap gap-1">
-                    {n.holdsOk === false && <Badge tone="crit" title="A required apt hold is missing; the run stops before touching this node">holds missing</Badge>}
-                    {n.pinOk === false && <Badge tone="crit" title="The required kernel pin is not set; the run stops before touching this node">pin missing</Badge>}
+                    {n.factsUnknown && n.online && <Badge tone="muted" title="Its holds and kernel pin could not be read (no node login). It is not upgraded until they can be.">holds/pin unknown</Badge>}
+                    {!n.factsUnknown && n.holdsOk === false && <Badge tone="crit" title="A required apt hold is missing; the run stops before touching this node">holds missing</Badge>}
+                    {!n.factsUnknown && n.pinOk === false && <Badge tone="crit" title="The required kernel pin is not set; the run stops before touching this node">pin missing</Badge>}
                     {n.holdsOk === true && <Badge tone="good">holds ok</Badge>}
                     {n.pinOk === true && <Badge tone="good">pin ok</Badge>}
                   </div>
@@ -122,5 +125,6 @@ export function NodesTable({ nodes, canReboot, rebootWhy, onReboot }: {
         </tbody>
       </table>
     </div>
+    </>
   )
 }

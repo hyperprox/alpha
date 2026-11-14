@@ -109,6 +109,8 @@ export function GuestsTable({ guests, acks = [], onAck, ackDisabled }: { guests:
   }
 
   return (
+    <>
+    <p className={styles.scrollHint} aria-hidden>Swipe the table sideways for more →</p>
     <div className={styles.tableWrap}>
       <table className={styles.table} style={{ minWidth: '48rem' }}>
         <thead>
@@ -136,5 +138,6 @@ export function GuestsTable({ guests, acks = [], onAck, ackDisabled }: { guests:
         </tbody>
       </table>
     </div>
+    </>
   )
 }

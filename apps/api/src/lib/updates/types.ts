@@ -54,6 +54,8 @@ export type UpdatesNode = {
   policy:         UpdatesNodePolicyView
   holdsOk:        boolean | null    // null: the policy requires none
   pinOk:          boolean | null
+  /** Its holds and kernel pin could not be read (no node login, or the read failed): unknown, not "none". */
+  factsUnknown?:  boolean
   isSelf:         boolean           // the node HyperProx itself runs on
   /** Packages on hold (`apt-mark showhold`): reported as held, never offered or installed. */
   held?:          string[]

@@ -24,8 +24,12 @@ export function buildAttention(i: AttnInput): AttnItem[] {
   for (const n of i.nodes) if (n.status !== 'online') out.push({ key: `node-${n.node}`, title: `${n.node} is offline`, tone: 'bad', meta: 'node' })
   if (i.quorate === false) out.push({ key: 'quorum', title: 'The cluster has no quorum', tone: 'bad', meta: 'cluster' })
   if (i.storagePct !== null && i.storagePct >= 85) out.push({ key: 'storage', title: `Storage is ${i.storagePct}% full`, tone: 'warn', meta: 'storage' })
+  // With Ceph's own checks listed below, its whole-cluster alert would count the same warning again (Monitoring
+  // drops it the same way: lib/monitoring-title.ts withCephAlerts), so both pages give the same number.
+  const cephChecks = Object.keys(i.ceph?.checks ?? {}).length > 0
   for (const a of i.alerts ?? []) {
     if (a.state !== 'firing') continue
+    if (cephChecks && /^CephHealth(Warning|Error)$/.test(a.name)) continue
     out.push({
       key: `alert-${a.name}-${a.node ?? ''}-${a.firedAt ?? ''}`, title: a.summary || a.name, detail: a.description || undefined,
       tone: a.severity === 'critical' ? 'bad' : 'warn',

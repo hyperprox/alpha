@@ -142,6 +142,7 @@ async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: str
 
   if (!factsRead) await readFacts()
   const f = facts as NodeFacts | null
+  if (!f) out.factsUnknown = true
   if (f) {
     out.rebootRequired = f.rebootRequired
     if (f.holds.length) out.held = [...f.holds].sort()

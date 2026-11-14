@@ -516,22 +516,33 @@ function upTargetsWords(result) {
 }
 
 /** Ask Prometheus a real query; success means it answers. { ok, reason }. */
-async function verifyPrometheus(base, { get = onboard.getText, sleep = ms => new Promise(r => setTimeout(r, ms)), timeoutMs = 75_000, every = 3000 } = {}) {
-  const deadline = Date.now() + timeoutMs
+/**
+ * Ask Prometheus a real query until every target it has is up. Done only then: a snapshot taken before the file_sd
+ * targets loaded said "1 of 2 targets up" and was shown as done. Once it answers, it gets `settleMs` more for the
+ * rest to come up; then the real state is reported, `partial` when it answers with some targets still down.
+ */
+async function verifyPrometheus(base, { get = onboard.getText, sleep = ms => new Promise(r => setTimeout(r, ms)), timeoutMs = 75_000, every = 3000, settleMs = 30_000 } = {}) {
+  let deadline = Date.now() + timeoutMs
   let reason = 'Prometheus is not answering on this machine'
+  let answered = null
   do {
     const t = await get(`${base}/api/v1/query?query=up`, 4000)
     if (t) {
       try {
         const d = JSON.parse(t)
-        if (d.status === 'success') return { ok: true, reason: upTargetsWords(d.data && d.data.result) }
-        reason = `Prometheus answered with an error: ${d.error || d.status}`
+        if (d.status === 'success') {
+          const rows = Array.isArray(d.data && d.data.result) ? d.data.result : []
+          const up = rows.filter(r => r && Array.isArray(r.value) && String(r.value[1]) === '1').length
+          if (rows.length && up === rows.length) return { ok: true, reason: upTargetsWords(rows) }
+          if (!answered) { answered = Date.now(); deadline = Math.min(deadline, answered + settleMs) }
+          reason = upTargetsWords(rows)
+        } else reason = `Prometheus answered with an error: ${d.error || d.status}`
       } catch { reason = 'Prometheus gave an answer that is not a query result' }
     }
     if (Date.now() >= deadline) break
     await sleep(every)
   } while (Date.now() < deadline)
-  return { ok: false, reason }
+  return answered ? { ok: false, partial: true, reason } : { ok: false, reason }
 }
 
 /** When bootstrap.sh's answers file was written: the readings in it are from then, not from now. */
@@ -1283,7 +1294,8 @@ async function finishSetup(answers, svc = { applied: [] }) {
   // "Started" is the compose command's word. For charts, ask Prometheus itself.
   if (up.ok && profiles.includes('monitoring')) {
     const v = await verifyPrometheus('http://127.0.0.1:9090', { timeoutMs: Number(process.env.HPX_SETUP_VERIFY_MS || 75_000), get: onboard.getText })
-    add('Charts and dashboards', v.ok ? 'done' : 'failed', v.ok ? `Prometheus ${v.reason}` : `Prometheus is not working: ${v.reason}. Check it with: docker compose logs prometheus`)
+    add('Charts and dashboards', v.ok ? 'done' : v.partial ? 'partly' : 'failed',
+      v.ok ? `Prometheus ${v.reason}` : v.partial ? `Prometheus ${v.reason}: the rest are not answering yet; Settings → Setup checklist shows them` : `Prometheus is not working: ${v.reason}. Check it with: docker compose logs prometheus`)
   }
 
   if (ai && up.ok) {

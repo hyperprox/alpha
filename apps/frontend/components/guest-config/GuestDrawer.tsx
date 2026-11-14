@@ -10,7 +10,8 @@ import { apiJson } from '@/lib/api'
 import { isUpid, taskWords, upidNode, waitForTask, type TaskStatus } from '@/lib/pve-task'
 import { formatBytes, formatUptime } from '@/lib/utils'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
-import { GhostButton, Notice, PrimaryButton, BusyNote, INPUT, LABEL } from '@/components/vault/ui'
+import { GhostButton, Modal, Notice, PrimaryButton, BusyNote, INPUT, LABEL } from '@/components/vault/ui'
+import { hasBindMount } from '@/lib/guest-mounts'
 import { deleteNameOk } from '@/lib/confirm-name'
 import { ConfigEditor, NetworkEditor, Section } from './ConfigEditor'
 import { GpuPanel } from './GpuPanel'
@@ -39,7 +40,12 @@ export function GuestDrawer({ row, nodes, canOperate, canAdmin, onClose, onRefre
 
   const loadView = useCallback(async () => {
     const r = await apiJson<{ data: GuestView }>(gpath(g))
-    if (r.ok) { setView(r.body!.data); setViewErr(null) } else setViewErr(r.error ?? 'Could not read the config')
+    if (r.ok) { setView(r.body!.data); setViewErr(null) }
+    else {
+      setViewErr(r.error ?? 'Could not read the config')
+      // The guest may have moved (a migration): re-read the list, which gives this drawer the node it is on now.
+      if (r.status >= 500 || r.status === 404) onRefresh()
+    }
   }, [row.node, row.type, row.vmid])   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { void loadView() }, [loadView])
   // A modal drawer: Escape closes it, Tab stays inside it, focus goes back where it was (lib/focus-trap.ts).
@@ -78,7 +84,7 @@ export function GuestDrawer({ row, nodes, canOperate, canAdmin, onClose, onRefre
           {tab === 'network' && (view ? <NetworkEditor view={view} canEdit={canAdmin} onSaved={saved} /> : <BusyNote>Reading the config…</BusyNote>)}
           {tab === 'devices' && (view ? <GpuPanel view={view} nodes={nodes.map(n => n.node)} canEdit={canAdmin} onSaved={saved} /> : <BusyNote>Reading the config…</BusyNote>)}
           {tab === 'ha' && <HaPanel type={row.type} vmid={row.vmid} onChanged={saved} />}
-          {tab === 'snapshots' && <SnapshotsTab row={row} canAdmin={canAdmin} onRefresh={onRefresh} />}
+          {tab === 'snapshots' && <SnapshotsTab row={row} config={view?.config ?? null} canAdmin={canAdmin} onRefresh={onRefresh} />}
           {tab === 'console' && <ConsoleTab row={row} />}
           {tab === 'history' && view && <HistoryTab view={view} canAdmin={canAdmin} onSaved={saved} />}
           {tab === 'vpn' && <VpnTab row={row} />}
@@ -101,6 +107,7 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
   const [target, setTarget] = useState('')
   const [restart, setRestart] = useState(false)
   const running = row.status === 'running'
+  const [ask, setAsk] = useState<Ask | null>(null)
   const sid = `${row.type === 'qemu' ? 'vm' : 'ct'}:${row.vmid}`
 
   const call = async (label: string, path: string, method: string, body?: unknown, after?: () => void) => {
@@ -126,6 +133,7 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
   return (
     <div className="space-y-6">
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
+      {ask && <AskModal ask={ask} onClose={() => setAsk(null)} />}
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
@@ -173,7 +181,12 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
               <option value="">Target node…</option>
               {nodes.filter(n => n.node !== row.node && n.status === 'online').map(n => <option key={n.node} value={n.node}>{n.node}</option>)}
             </select>
-            <GhostButton style={{ height: 42 }} disabled={!target || busy} onClick={() => call('Migration', `/api/infra/vms/${row.node}/${row.vmid}/${row.type}/migrate`, 'POST', { target })}>Migrate to {target || '…'}</GhostButton>
+            <GhostButton style={{ height: 42 }} disabled={!target || busy} onClick={() => {
+              const go = () => call('Migration', `/api/infra/vms/${row.node}/${row.vmid}/${row.type}/migrate`, 'POST', { target })
+              // A running container is stopped, moved and started again: say so before it happens.
+              if (running && row.type === 'lxc') setAsk({ title: `Migrate ${row.name} to ${target}?`, text: `${row.name} is running. A container migrates with a restart: it stops here and starts again on ${target}, so whatever it serves is down for that time.`, go: () => void go(), label: 'Migrate' })
+              else void go()
+            }}>Migrate to {target || '…'}</GhostButton>
           </div>
           <p className="text-[12px]" style={{ color: 'var(--text-dimmer)' }}>{row.type === 'qemu' ? 'Live migration: the VM keeps running.' : (running ? 'This container is running: it will be restarted on the target node. A plain bind mount blocks migration.' : 'A container migrates with a restart. A plain bind mount blocks it.')}</p>
         </Section>
@@ -183,7 +196,7 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
         <Section title="Danger zone">
           {!confirmDelete ? <GhostButton style={{ height: 36, color: 'var(--crit-soft)' }} disabled={busy || running} onClick={() => setConfirmDelete(true)}>Delete {row.type === 'lxc' ? 'container' : 'VM'}</GhostButton> : (
             <div className="space-y-2 rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--crit-2) 35%, transparent)' }}>
-              <p className="text-sm" style={{ color: 'var(--crit-soft)' }}>Delete {row.name} ({row.vmid}) and its disks? This cannot be undone. Type the name to confirm; your master password is asked for next.</p>
+              <p className="text-sm" style={{ color: 'var(--crit-soft)' }}>Delete {row.name} ({row.vmid}) and its disks? This cannot be undone. Type the name to confirm. If you have not confirmed your master password in the last few minutes, it is asked for next.</p>
               <div><label style={LABEL}>Type <b style={{ color: 'var(--text-bright)' }}>{row.name}</b> to delete it</label>
                 <input style={INPUT} value={typedName} onChange={e => setTypedName(e.target.value)} autoComplete="off" aria-label={`Type ${row.name} to confirm`} /></div>
               <div className="flex items-center gap-2 flex-wrap">
@@ -199,6 +212,22 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
   )
 }
 
+/** A confirmation in the app's own dialog (never the browser's confirm()). */
+interface Ask { title: string; text: string; label: string; go: () => void | Promise<void> }
+function AskModal({ ask, onClose }: { ask: Ask; onClose: () => void }) {
+  return (
+    <Modal title={ask.title} onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>{ask.text}</p>
+        <div className="flex gap-2 justify-end">
+          <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
+          <PrimaryButton type="button" onClick={() => { onClose(); void ask.go() }}>{ask.label}</PrimaryButton>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 /** One Proxmox task's state, through the API (routes/infrastructure.ts GET /tasks/:node/:upid). */
 async function readTask(upid: string): Promise<TaskStatus | null> {
   const node = upidNode(upid)
@@ -209,7 +238,7 @@ async function readTask(upid: string): Promise<TaskStatus | null> {
 
 // ── snapshots ────────────────────────────────────────────────────────────────
 
-function SnapshotsTab({ row, canAdmin, onRefresh }: { row: GuestRow; canAdmin: boolean; onRefresh: () => void }) {
+function SnapshotsTab({ row, config, canAdmin, onRefresh }: { row: GuestRow; config: Record<string, any> | null; canAdmin: boolean; onRefresh: () => void }) {
   const [snaps, setSnaps] = useState<any[] | null>(null)
   const [name, setName] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
@@ -219,6 +248,7 @@ function SnapshotsTab({ row, canAdmin, onRefresh }: { row: GuestRow; canAdmin: b
   const [busy, setBusy] = useState(false)
   /** Set after a rollback stopped a guest that was running: offers to start it again. */
   const [restartAfter, setRestartAfter] = useState(false)
+  const [ask, setAsk] = useState<Ask | null>(null)
   const act = async (label: string, path: string, method: string, body?: unknown): Promise<boolean> => {
     setBusy(true); setRestartAfter(false)
     const r = await apiJson<{ data?: unknown }>(path, method, body)
@@ -239,10 +269,11 @@ function SnapshotsTab({ row, canAdmin, onRefresh }: { row: GuestRow; canAdmin: b
   const rollback = async (snap: string) => {
     const running = row.status === 'running'
     // A rollback stops a running guest (a container always; a VM unless the snapshot holds its memory).
-    const warn = running ? `\n\n${row.name} is running: the rollback stops it, and it stays stopped. You can start it again afterwards.` : ''
-    if (!confirm(`Roll ${row.name} back to ${snap}? Everything since is lost.${warn}`)) return
-    const ok = await act('Rollback', `${base}/${encodeURIComponent(snap)}/rollback`, 'POST')
-    if (ok && running) setRestartAfter(true)
+    const warn = running ? ` ${row.name} is running: the rollback stops it, and it stays stopped. You can start it again afterwards.` : ''
+    setAsk({ title: `Roll ${row.name} back to ${snap}?`, text: `Everything since that snapshot is lost.${warn}`, label: 'Roll back', go: async () => {
+      const ok = await act('Rollback', `${base}/${encodeURIComponent(snap)}/rollback`, 'POST')
+      if (ok && running) setRestartAfter(true)
+    } })
   }
   const startAgain = async () => {
     setRestartAfter(false)
@@ -250,15 +281,16 @@ function SnapshotsTab({ row, canAdmin, onRefresh }: { row: GuestRow; canAdmin: b
   }
   return (
     <div className="space-y-3">
+      {ask && <AskModal ask={ask} onClose={() => setAsk(null)} />}
       {msg && <Notice kind="info">{msg}</Notice>}
       {restartAfter && canAdmin && <Notice kind="warn">{row.name} was running before the rollback and is stopped now. <PrimaryButton style={{ height: 30 }} disabled={busy} onClick={() => void startAgain()}>Start it again</PrimaryButton></Notice>}
       {canAdmin && <div className="flex gap-2"><input style={INPUT} value={name} placeholder="snapshot name" onChange={e => setName(e.target.value)} /><PrimaryButton disabled={busy || !name.trim()} onClick={() => { void act('Snapshot', base, 'POST', { name }); setName('') }}>Create</PrimaryButton></div>}
-      {snaps === null ? <BusyNote>Reading snapshots…</BusyNote> : snaps.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>No snapshots. (A guest with a bind mount cannot be snapshotted.)</p> : snaps.map(s => (
+      {snaps === null ? <BusyNote>Reading snapshots…</BusyNote> : snaps.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>No snapshots.{hasBindMount(config) ? ' This guest has a bind mount, so Proxmox cannot snapshot it.' : ''}</p> : snaps.map(s => (
         <div key={s.name} className="flex items-center gap-2 flex-wrap rounded-md border p-3" style={{ borderColor: 'var(--border-dim)', background: 'var(--ground-deep)' }}>
           <div className="min-w-0 flex-1"><div className="font-mono text-sm" style={{ color: 'var(--text-bright)' }}>{s.name}</div>
             <div className="text-xs" style={{ color: 'var(--text-dimmer)' }}>{s.snaptime ? new Date(s.snaptime * 1000).toLocaleString() : ''}{s.description ? ` · ${s.description}` : ''}</div></div>
           {canAdmin && <><GhostButton style={{ height: 32 }} disabled={busy} onClick={() => void rollback(s.name)}>Rollback</GhostButton>
-            <GhostButton style={{ height: 32, color: 'var(--crit-soft)' }} disabled={busy} onClick={() => { if (confirm(`Delete the snapshot ${s.name} of ${row.name}? You will not be able to roll back to it.`)) void act('Delete', `${base}/${encodeURIComponent(s.name)}`, 'DELETE') }}>Delete</GhostButton></>}
+            <GhostButton style={{ height: 32, color: 'var(--crit-soft)' }} disabled={busy} onClick={() => setAsk({ title: `Delete the snapshot ${s.name}?`, text: `You will not be able to roll ${row.name} back to it.`, label: 'Delete', go: () => void act('Delete', `${base}/${encodeURIComponent(s.name)}`, 'DELETE') })}>Delete</GhostButton></>}
         </div>
       ))}
     </div>

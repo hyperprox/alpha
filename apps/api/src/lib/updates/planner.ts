@@ -188,7 +188,8 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
   for (const n of ordered) {
     if (!n.online) { warnings.push(`${n.node} is offline — the run's preflight will stop`); nodePhase = false }
     else if (n.error) warnings.push(`${n.node}: ${n.error}`)
-    if (n.holdsOk === false) warnings.push(`${n.node}: required package holds are missing — the run stops before touching it`)
+    if (n.online && n.factsUnknown) warnings.push(`${n.node}: its package holds and kernel pin could not be read (add a node login), so it is not upgraded in this plan`)
+    if (n.holdsOk === false && !n.factsUnknown) warnings.push(`${n.node}: required package holds are missing — the run stops before touching it`)
     if (n.pinOk === false) warnings.push(`${n.node}: the required kernel pin is not in place — the run stops before touching it`)
     if (n.upgradeNote) warnings.push(n.upgradeNote)
     if (ctx.remote) {
@@ -228,6 +229,8 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
       const pol = nodePolicy(policy, n.node)
       // The verb the inventory settled on from the policy and the node's holds and pin (the runner decides again).
       const verb = n.policy.upgrade
+      // A node whose holds and pin are unknown is never proposed for an upgrade: unknown is not safe.
+      if (n.factsUnknown) continue
       const nonCeph = ctx.remote ? n.pending : n.pending.filter(p => !isCephPackage(p.name))
       if (nonCeph.length) add(n.node, 'node-upgrade', `apt-get ${verb} (${nonCeph.length} package${nonCeph.length === 1 ? '' : 's'})`)
       if (n.kernelPending || n.rebootRequired || n.preview?.rebootAfter) {

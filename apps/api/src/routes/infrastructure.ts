@@ -21,6 +21,16 @@ type ActionParams = { Params: { node: string; vmid: string; type: 'qemu' | 'lxc'
 const POWER_ACTIONS: string[] = ['start', 'stop', 'reboot', 'shutdown']
 type SnapParams   = { Params: { node: string; vmid: string; type: 'qemu' | 'lxc'; snapname: string } }
 
+/** A task status read; a timeout or a dropped connection reads as still running, with why. */
+export async function taskStatusOrRunning(read: () => Promise<{ status: string; exitstatus?: string }>): Promise<{ status: string; exitstatus?: string; unread?: string }> {
+  try { return await read() }
+  catch (e: any) {
+    const m = String(e?.message ?? e)
+    if (/no answer within|timed? ?out|ETIMEDOUT|ECONNRESET|socket hang up|EAI_AGAIN/i.test(m)) return { status: 'running', unread: m }
+    throw e
+  }
+}
+
 export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
   strictParams(fastify)   // node, vmid, type and snapshot names are checked before any handler (lib/route-params.ts)
   const pve = livePve()   // resolves the current token on every call (see lib/pve-env.ts)
@@ -88,6 +98,8 @@ export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
     wrap(r, () => pve.getNodeTasks(req.params.node)))
 
   // One task, for a page waiting on an action it started (snapshot, rollback, migration) to really finish.
+  // Proxmox can take longer than the client's 20 s to answer while a long task (a migration) keeps a node busy: that
+  // is "still running", not a failure, and the page asks again.
   fastify.get<{ Params: { node: string; upid: string } }>('/tasks/:node/:upid', async (req, r) =>
-    wrap(r, () => pve.getTaskStatus(req.params.node, req.params.upid)))
+    wrap(r, () => taskStatusOrRunning(() => pve.getTaskStatus(req.params.node, req.params.upid))))
 }

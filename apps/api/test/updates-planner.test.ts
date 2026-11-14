@@ -87,6 +87,14 @@ test('missing holds or pin are warned about in the plan', () => {
   assert.ok(p.warnings.some(w => /gpu-node: the required kernel pin/.test(w)))
 })
 
+test('a node whose holds and pin could not be read is not proposed for an upgrade, and the plan says why', () => {
+  const p = buildPlan(inv([n('gpu-node', { holdsOk: false, pinOk: false, factsUnknown: true }), n('node-b')], []), POLICY)
+  assert.ok(!p.steps.some(s => s.target === 'gpu-node'), 'unknown is not safe: no upgrade, no reboot')
+  assert.ok(p.steps.some(s => s.target === 'node-b' && s.action === 'node-upgrade'))
+  assert.ok(p.warnings.some(w => /gpu-node: its package holds and kernel pin could not be read/.test(w)))
+  assert.ok(!p.warnings.some(w => /gpu-node: required package holds are missing/.test(w)), 'not called missing when unknown')
+})
+
 test('reboot decisions: kernel pending + auto reboots, manual is left pending, nothing new means no reboot; cleanup follows a kernel', () => {
   const kernel = { name: 'proxmox-kernel-7.0.2-1-pve-signed', from: null, to: '7.0.2-1' }
   const p = buildPlan(inv([

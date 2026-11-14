@@ -207,8 +207,15 @@ test('page: compiles; step 3 has its label; Connect stays on one line; hardware 
 
 // ── charts verified, per-node defaults, readable summary, version ───────────────────────────────────
 test('verifyPrometheus: success only when a real query succeeds; the failure says why', async () => {
-  const ok = await setup.verifyPrometheus('http://x', { get: async (u) => (u.includes('query=up') ? JSON.stringify({ status: 'success', data: { result: [1, 2] } }) : null), timeoutMs: 10, sleep: async () => {} })
-  assert.equal(ok.ok, true); assert.match(ok.reason, /2 targets/)
+  const up = (...v) => JSON.stringify({ status: 'success', data: { result: v.map(x => ({ value: [0, String(x)] })) } })
+  const ok = await setup.verifyPrometheus('http://x', { get: async (u) => (u.includes('query=up') ? up(1, 1) : null), timeoutMs: 10, sleep: async () => {} })
+  assert.equal(ok.ok, true); assert.match(ok.reason, /2 of 2 targets up/)
+  // A snapshot before the file_sd targets loaded: it waits, then reports the real state.
+  let n = 0
+  const later = await setup.verifyPrometheus('http://x', { get: async () => (++n < 3 ? up(1, 0) : up(1, 1)), timeoutMs: 1000, every: 1, sleep: async () => {} })
+  assert.equal(later.ok, true, 'all up after a short wait')
+  const partial = await setup.verifyPrometheus('http://x', { get: async () => up(1, 0), timeoutMs: 1000, every: 1, settleMs: 5, sleep: async () => {} })
+  assert.equal(partial.ok, false); assert.equal(partial.partial, true); assert.match(partial.reason, /1 of 2 targets up/)
   const down = await setup.verifyPrometheus('http://x', { get: async () => null, timeoutMs: 5, every: 1, sleep: async () => {} })
   assert.equal(down.ok, false); assert.match(down.reason, /not answering/)
   const err = await setup.verifyPrometheus('http://x', { get: async () => JSON.stringify({ status: 'error', error: 'bad' }), timeoutMs: 5, sleep: async () => {} })
