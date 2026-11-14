@@ -5,6 +5,7 @@ import { Fragment, useState } from 'react'
 import type { UpdatesGuest } from '@hyperprox/types'
 import { Badge, TH, THEAD_STYLE, REASONS } from './ui'
 import { PendingCell, PkgList } from './NodesTable'
+import { isNoLoginText, unmanagedWords } from '@/lib/node-login'
 
 const byNodeThenId = (a: UpdatesGuest, b: UpdatesGuest) => a.node.localeCompare(b.node) || a.vmid - b.vmid
 
@@ -37,13 +38,13 @@ export function GuestsTable({ guests, acks = [], onAck, ackDisabled }: { guests:
           <td className="px-4 py-2.5 font-mono" style={{ color: 'var(--text-muted)' }}>{g.vmid}</td>
           <td className="px-4 py-2.5">
             <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{g.name}</span>
-            {g.error && <div className="mt-0.5 text-xs" style={{ color: 'var(--crit-soft)' }}>{g.error}</div>}
+            {g.error && <div className="mt-0.5 text-xs" style={{ color: 'var(--crit-soft)', overflowWrap: 'anywhere', minWidth: '12rem', maxWidth: '34ch' }}>{isNoLoginText(g.error) ? 'No saved node login' : g.error}</div>}
           </td>
           <td className="px-4 py-2.5"><span className="font-mono text-xs" style={{ color: g.type === 'lxc' ? 'var(--accent)' : 'var(--violet)' }}>{g.type === 'lxc' ? 'LXC' : 'VM'}</span></td>
           <td className="px-4 py-2.5" style={{ color: 'var(--text-soft)' }}>{g.node}</td>
           {dim ? (
             <td colSpan={4} className="px-4 py-2.5 text-sm" style={{ color: 'var(--text-muted)' }}>
-              Not managed: {g.unmanagedReason ? REASONS[g.unmanagedReason] ?? g.unmanagedReason : 'unknown reason'}
+              Not managed: {unmanagedWords(g, REASONS)}
             </td>
           ) : (
             <>
@@ -109,7 +110,7 @@ export function GuestsTable({ guests, acks = [], onAck, ackDisabled }: { guests:
 
   return (
     <div className={styles.tableWrap}>
-      <table className={styles.table}>
+      <table className={styles.table} style={{ minWidth: '48rem' }}>
         <thead>
           <tr style={THEAD_STYLE}>
             <th scope="col" className={TH}>ID</th>

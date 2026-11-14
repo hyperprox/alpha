@@ -8,7 +8,8 @@ import { useRouter } from 'next/navigation'
 import { apiJson } from '@/lib/api'
 import { formatBytes, formatUptime } from '@/lib/utils'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
-import { GhostButton, Notice, PrimaryButton, BusyNote, INPUT } from '@/components/vault/ui'
+import { GhostButton, Notice, PrimaryButton, BusyNote, INPUT, LABEL } from '@/components/vault/ui'
+import { deleteNameOk } from '@/lib/confirm-name'
 import { ConfigEditor, NetworkEditor, Section } from './ConfigEditor'
 import { GpuPanel } from './GpuPanel'
 import { PreviewDialog } from './PreviewDialog'
@@ -92,6 +93,7 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
   const [msg, setMsg] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [typedName, setTypedName] = useState('')
   const [target, setTarget] = useState('')
   const [restart, setRestart] = useState(false)
   const running = row.status === 'running'
@@ -168,10 +170,14 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
       {canAdmin && (
         <Section title="Danger zone">
           {!confirmDelete ? <GhostButton style={{ height: 36, color: 'var(--crit-soft)' }} disabled={busy || running} onClick={() => setConfirmDelete(true)}>Delete {row.type === 'lxc' ? 'container' : 'VM'}</GhostButton> : (
-            <div className="flex items-center gap-2 flex-wrap rounded-md border p-2" style={{ borderColor: 'color-mix(in srgb, var(--crit-2) 35%, transparent)' }}>
-              <span className="text-sm" style={{ color: 'var(--crit-soft)' }}>Delete {row.name} ({row.vmid})? This cannot be undone.</span>
-              <GhostButton style={{ height: 32, color: 'var(--crit-soft)' }} disabled={busy} onClick={() => call('Delete', `/api/proxmox/nodes/${row.node}/${row.type}/${row.vmid}`, 'DELETE', undefined, onClose)}>Delete</GhostButton>
-              <GhostButton style={{ height: 32 }} onClick={() => setConfirmDelete(false)}>Cancel</GhostButton>
+            <div className="space-y-2 rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--crit-2) 35%, transparent)' }}>
+              <p className="text-sm" style={{ color: 'var(--crit-soft)' }}>Delete {row.name} ({row.vmid}) and its disks? This cannot be undone. Type the name to confirm; your master password is asked for next.</p>
+              <div><label style={LABEL}>Type <b style={{ color: 'var(--text-bright)' }}>{row.name}</b> to delete it</label>
+                <input style={INPUT} value={typedName} onChange={e => setTypedName(e.target.value)} autoComplete="off" aria-label={`Type ${row.name} to confirm`} /></div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <GhostButton style={{ height: 32, color: 'var(--crit-soft)' }} disabled={busy || !deleteNameOk(typedName, row.name)} onClick={() => call('Delete', `/api/proxmox/nodes/${row.node}/${row.type}/${row.vmid}`, 'DELETE', undefined, onClose)}>Delete</GhostButton>
+                <GhostButton style={{ height: 32 }} onClick={() => { setConfirmDelete(false); setTypedName('') }}>Cancel</GhostButton>
+              </div>
             </div>
           )}
           {running && <p className="text-[12px]" style={{ color: 'var(--text-dimmer)' }}>Stop it before deleting.</p>}
@@ -202,7 +208,7 @@ function SnapshotsTab({ row, canAdmin, onRefresh }: { row: GuestRow; canAdmin: b
           <div className="min-w-0 flex-1"><div className="font-mono text-sm" style={{ color: 'var(--text-bright)' }}>{s.name}</div>
             <div className="text-xs" style={{ color: 'var(--text-dimmer)' }}>{s.snaptime ? new Date(s.snaptime * 1000).toLocaleString() : ''}{s.description ? ` · ${s.description}` : ''}</div></div>
           {canAdmin && <><GhostButton style={{ height: 32 }} onClick={() => { if (confirm(`Roll ${row.name} back to ${s.name}? Everything since is lost.`)) void act('Rollback', `${base}/${encodeURIComponent(s.name)}/rollback`, 'POST') }}>Rollback</GhostButton>
-            <GhostButton style={{ height: 32, color: 'var(--crit-soft)' }} onClick={() => void act('Delete', `${base}/${encodeURIComponent(s.name)}`, 'DELETE')}>Delete</GhostButton></>}
+            <GhostButton style={{ height: 32, color: 'var(--crit-soft)' }} onClick={() => { if (confirm(`Delete the snapshot ${s.name} of ${row.name}? You will not be able to roll back to it.`)) void act('Delete', `${base}/${encodeURIComponent(s.name)}`, 'DELETE') }}>Delete</GhostButton></>}
         </div>
       ))}
     </div>

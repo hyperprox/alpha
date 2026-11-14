@@ -14,6 +14,8 @@ import { DevicesPanel } from '@/components/guest-config/DevicesPanel'
 import { CreateGuestModal } from '@/components/guest-config/CreateGuest'
 import { API, type GuestRow } from '@/components/guest-config/types'
 import { useHaBadges } from '@/components/ha'
+import { ActionDialog } from '@/components/clusters/GuestActions'
+import { useClusters } from '@/lib/clusters'
 import { formatUptime } from '@/lib/utils'
 import { Page, Panel, HudHeader, NodeTile, NodeTiles, Pill, styles, type StatChip } from '@/components/visual/kit'
 
@@ -38,6 +40,7 @@ export default function InfrastructurePage() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
   const [lastSync, setLastSync] = useState<Date | null>(null)
+  const [gpuNodes, setGpuNodes] = useState<Set<string>>(new Set())
   const [nodePower, setNodePower] = useState<Record<string, number | null>>({})
   const [status, setStatus] = useState<StatusFilter>('all')
   const [type, setType] = useState<TypeFilter>('all')
@@ -51,6 +54,10 @@ export default function InfrastructurePage() {
   const [msg, setMsg] = useState<string | null>(null)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const haBadges = useHaBadges()
+  // The home cluster's id, for the same backup dialog every cluster uses (read back from Proxmox when it ends).
+  const { clusters } = useClusters()
+  const home = clusters?.find(c => c.kind === 'home') ?? null
+  const [backup, setBackup] = useState<GuestRow | null>(null)
 
   useEffect(() => { try { setGroup(localStorage.getItem('infra.group') === '1') } catch { /* private mode */ } }, [])
   const toggleGroup = () => setGroup(g => { try { localStorage.setItem('infra.group', g ? '0' : '1') } catch { /* ignore */ } return !g })
@@ -62,6 +69,11 @@ export default function InfrastructurePage() {
     setLoading(false)
   }, [])
   useEffect(() => { void fetchData(); const t = setInterval(fetchData, 8000); return () => clearInterval(t) }, [fetchData])
+  const backupDone = useCallback(() => { void fetchData() }, [fetchData])
+  // Nodes with a detected GPU of any kind (an integrated one too), whether or not a guest uses it yet.
+  useEffect(() => {
+    apiJson<{ data: Array<{ node: string; gpus: unknown[] }> }>('/api/gpu/all/metrics-status').then(r => { if (r.ok && Array.isArray(r.body?.data)) setGpuNodes(new Set(r.body!.data.filter(n => n.gpus?.length).map(n => n.node))) })
+  }, [])
   useEffect(() => {
     apiJson<{ data: { nodes: Array<{ node: string; total: number | null }> } }>('/api/prometheus/power')
       .then(r => { if (r.ok) setNodePower(Object.fromEntries(r.body!.data.nodes.map(x => [x.node, x.total]))) })
@@ -114,7 +126,8 @@ export default function InfrastructurePage() {
   return (
     <Page>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
-      {create && <CreateGuestModal type={create} nodes={nodes} onClose={() => { setCreate(null); void fetchData() }} />}
+      {backup && home && <ActionDialog g={backup} act={{ kind: 'backup' }} clusterId={home.id} clusterName={home.name} kind="home" onClose={() => setBackup(null)} onDone={backupDone} />}
+      {create && <CreateGuestModal type={create} nodes={nodes} viewedNode={node === 'all' ? null : node} onClose={() => { setCreate(null); void fetchData() }} />}
 
       <HudHeader level={2} label="Compute status" eyebrow="Compute" title={title} chips={chips}
         ring={{ value: liveRows.length ? running / liveRows.length : 0, text: `${running}/${liveRows.length}`, label: 'guests running' }}
@@ -138,7 +151,7 @@ export default function InfrastructurePage() {
           {sortedNodes.map(n => {
             const nr = liveRows.filter(r => r.node === n.node)
             const on = nr.filter(r => r.status === 'running').length
-            const gpu = nr.some(r => r.gpu.vendors.length)
+            const gpu = nr.some(r => r.gpu.vendors.length) || gpuNodes.has(n.node)
             const active = node === n.node
             const off = n.status !== 'online'
             return (
@@ -177,7 +190,7 @@ export default function InfrastructurePage() {
               {groups.map(gr => (
                 <section key={gr.node ?? 'all'} className="space-y-2">
                   {gr.node && <h3 className="font-display font-semibold" style={{ fontSize: 16, color: 'var(--text-bright)' }}>{gr.node} <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{gr.rows.length}</span></h3>}
-                  <GuestTable rows={gr.rows} canOperate={canOperate} canAdmin={canAdmin} onOpen={r => setSelected({ type: r.type, vmid: r.vmid })} onPower={power} onRefresh={() => { void fetchData(); void haBadges.reload() }} ha={haBadges.get} />
+                  <GuestTable rows={gr.rows} canOperate={canOperate} canAdmin={canAdmin} onOpen={r => setSelected({ type: r.type, vmid: r.vmid })} onPower={power} onRefresh={() => { void fetchData(); void haBadges.reload() }} onBackup={home ? setBackup : undefined} ha={haBadges.get} />
                 </section>
               ))}
               {filtered.length === 0 && <p className={styles.empty}>No guests match.</p>}

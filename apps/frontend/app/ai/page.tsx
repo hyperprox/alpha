@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { wsBase } from '@/lib/ws'
 import { alpha } from '@/lib/theme'
 import { pickOllamaModel } from '@/lib/ollama-model'
+import { assistantMode, exampleChips, CONNECT_MODEL_WORDS } from '@/lib/ai-assistant-mode'
 import { BoxIcon, SplitIcon, GlobeIcon, HourglassIcon, LockIcon, GearIcon, BoltIcon } from './icons'
 import { CLUSTER_HEADER, apiJson } from '@/lib/api'
 import { Page, HudHeader, Panel, Tiles, styles } from '@/components/visual/kit'
@@ -499,6 +500,8 @@ export default function AIPage() {
   const providerReady  = activeProv === 'ollama'
     ? Boolean(status?.connected)
     : Boolean(activeInfo?.configured)
+  // Without a model the assistant still answers by code, so the input stays usable either way.
+  const mode = assistantMode({ providerReady, planning, providerName: activeInfo?.name, model: activeInfo?.model })
 
   const selectProvider = async (id: ProviderId) => {
     setActiveProv(id)
@@ -718,12 +721,10 @@ export default function AIPage() {
     <Page>
       {/* Header: the provider's state as a HUD, in words as well as colour */}
       <HudHeader level={2} icon="plugin" label="AI assistant status"
-        eyebrow={providerReady
-          ? `${activeInfo?.name ?? 'provider'} · ${activeInfo?.model ?? ''}`
-          : `${activeInfo?.name ?? 'no provider'} not ready — configure it in Settings`}
-        title={providerReady ? 'Ready to plan' : 'Not ready'}
+        eyebrow={mode.eyebrow}
+        title={mode.title}
         chips={[
-          { label: 'Status', value: providerReady ? 'READY' : 'NOT READY', tone: providerReady ? 'good' : 'crit' },
+          { label: 'Status', value: mode.status.value, tone: mode.status.tone },
           { label: 'Provider', value: activeInfo?.name ?? 'none' },
           { label: 'Model', value: activeInfo?.model || '—' },
           { label: 'Local model', value: status?.connected ? 'connected' : 'not connected', tone: status?.connected ? 'good' : 'dim' },
@@ -753,24 +754,21 @@ export default function AIPage() {
               onDone={() => setLiveJob(null)}
             />
           ) : (
-            <Panel title="Assistant" sub={providerReady ? 'ask or deploy' : 'not ready'}>
-              {!providerReady && (
-                <div style={{ background: `${alpha(ACCENT, 6)}`, border: `1px solid ${alpha(ACCENT, 15)}`, borderRadius: 10, padding: '1rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span style={{ display: 'flex', color: ACCENT }}><BoltIcon size={20} /></span>
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 600, color: ACCENT, marginBottom: 2 }}>
-                      {activeInfo?.name ?? 'No AI provider'} is not ready
-                    </div>
+            <Panel title="Assistant" sub={mode.panelSub}>
+              {mode.showConnectModel && (
+                <div role="note" aria-label={CONNECT_MODEL_WORDS.title} style={{ background: `${alpha(ACCENT, 6)}`, border: `1px solid ${alpha(ACCENT, 15)}`, borderRadius: 10, padding: '1rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+                  <span style={{ display: 'flex', color: ACCENT, paddingTop: 2 }}><BoltIcon size={20} /></span>
+                  <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: ACCENT, marginBottom: 4 }}>{CONNECT_MODEL_WORDS.title}</div>
+                    <div style={{ fontSize: 14, color: 'var(--text-soft)', marginBottom: 4 }}>{CONNECT_MODEL_WORDS.works}</div>
                     <div style={{ fontSize: 14, color: 'var(--text-soft)' }}>
-                      {activeInfo?.missing?.length
-                        ? `Add its ${activeInfo.missing.join(' and ')} in the `
-                        : 'Finish configuring it in the '}
-                      <button onClick={() => setTab('settings')} style={{ color: ACCENT, background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, textDecoration: 'underline' }}>
-                        Settings tab
-                      </button>
-                      {' '}to use the deployment wizard.
+                      {CONNECT_MODEL_WORDS.adds}
+                      {activeInfo?.missing?.length ? ` ${activeInfo.name} still needs its ${activeInfo.missing.join(' and ')}.` : ''}
                     </div>
                   </div>
+                  <button onClick={() => setTab('settings')} style={{ alignSelf: 'center', padding: '8px 16px', fontSize: 14, cursor: 'pointer', ...secondaryBtn }}>
+                    Connect a model
+                  </button>
                 </div>
               )}
               <ClusterPicker clusters={clusterList} value={clusterId} disabled={planning} onChange={id => { setClusterId(id); setActionCard(null); setPlan(null); setPlanId(null) }} />
@@ -780,19 +778,12 @@ export default function AIPage() {
                     <div style={{ fontSize: 32, marginBottom: 12 }}>✦</div>
                     <div className="font-display" style={{ marginBottom: 12, color: 'var(--text-bright)', fontSize: 22, fontWeight: 600 }}>Ask about your clusters, NAS, house and websites, or describe what to deploy</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 320, margin: '0 auto' }}>
-                      {[
-                        ...(clusterList.some(c => c.kind === 'remote') ? ['"How is each cluster doing?"'] : ['"Deploy Nextcloud at cloud.mydomain.com"']),
-                        '"Is my NAS healthy?"',
-                        '"What alerts are firing?"',
-                        '"Which lights are on in the living room?"',
-                        '"Is my website up?"',
-                        '"Create a WordPress website at blog.mydomain.com"',
-                      ].map(ex => (
-                        <button key={ex} onClick={() => setPrompt(ex.replace(/"/g, ''))}
+                      {exampleChips(clusterList.some(c => c.kind === 'remote')).map(ex => (
+                        <button key={ex} onClick={() => void handleWizardSubmit(ex)} disabled={!mode.inputEnabled}
                           style={{ padding: '8px 12px', borderRadius: 6, fontSize: 13, cursor: 'pointer', ...mono, background: 'var(--surface)', color: 'var(--text-soft)', border: `1px solid ${BORDER}`, textAlign: 'left', transition: 'border-color .15s' }}
                           onMouseEnter={e => (e.currentTarget as HTMLElement).style.borderColor = alpha(ACCENT, 25)}
                           onMouseLeave={e => (e.currentTarget as HTMLElement).style.borderColor = BORDER}
-                        >{ex}</button>
+                        >"{ex}"</button>
                       ))}
                     </div>
                   </div>
@@ -890,10 +881,10 @@ export default function AIPage() {
               <div style={{ display: 'flex', gap: 8 }}>
                 <input value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && void handleWizardSubmit()}
                   placeholder={clusterId === 'home' ? 'Deploy Nextcloud at cloud.mydomain.com, or ask how each cluster is doing...' : 'How is this server doing? Restart a guest, back one up...'}
-                  disabled={!providerReady || planning}
-                  style={{ flex: 1, padding: '11px 14px', ...inputStyle, fontSize: 15, opacity: (!providerReady || planning) ? 0.5 : 1 }} />
-                <button onClick={() => void handleWizardSubmit()} disabled={!prompt.trim() || !providerReady || planning}
-                  style={{ padding: '10px 22px', fontSize: 15, cursor: (!prompt.trim() || !providerReady || planning) ? 'default' : 'pointer', ...primaryBtn, opacity: (!prompt.trim() || !providerReady || planning) ? 0.4 : 1 }}>
+                  disabled={!mode.inputEnabled}
+                  style={{ flex: 1, padding: '11px 14px', ...inputStyle, fontSize: 15, opacity: !mode.inputEnabled ? 0.5 : 1 }} />
+                <button onClick={() => void handleWizardSubmit()} disabled={!prompt.trim() || !mode.inputEnabled}
+                  style={{ padding: '10px 22px', fontSize: 15, cursor: (!prompt.trim() || !mode.inputEnabled) ? 'default' : 'pointer', ...primaryBtn, opacity: (!prompt.trim() || !mode.inputEnabled) ? 0.4 : 1 }}>
                   {planning ? '...' : '→'}
                 </button>
               </div>

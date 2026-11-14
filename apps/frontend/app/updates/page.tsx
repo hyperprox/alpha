@@ -20,6 +20,8 @@ import { ClusterHeader, ClusterTag, CheckPanel, RebootPreviewList, useUpdatesClu
 import { Page, HudHeader, Tiles, GlowBars, type Tone } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { clusterColor } from '@/lib/clusters'
+import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
+import { isNoLoginText } from '@/lib/node-login'
 
 const ACTIVE = ['running', 'paused', 'awaiting-confirm']
 const LOG_CAP = 500
@@ -337,6 +339,7 @@ export default function UpdatesPage() {
   const total = inv ? inv.nodes.length + managedGuests : 0
   const behind = nodesWith.length + guestsWith.length
   const security = inv ? inv.nodes.filter(n => n.pending.some(p => p.security)).length + inv.guests.filter(g => g.pending.some(p => p.security)).length + appsWith.filter(r => r.a.isSecurity).length : 0
+  const needsLogin = !!inv && (inv.nodes.some(n => isNoLoginText(n.error)) || inv.guests.some(g => isNoLoginText(g.error)))
   const level: Tone = security ? 'crit' : behind || appsWith.length ? 'warn' : 'good'
   const verdict = !inv ? 'Reading the inventory' : security ? 'Security updates waiting' : behind || appsWith.length ? 'Updates are waiting' : 'Everything is current'
 
@@ -363,6 +366,15 @@ export default function UpdatesPage() {
                    onRefresh={refresh} onRun={start} scope={scope} onScope={setScope} />
 
       {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
+
+      {needsLogin && (
+        <Notice tone="warn">
+          <div className="flex flex-wrap items-center gap-3">
+            <span>Updates cannot read some machines: there is no saved node login.</span>
+            <NodeLoginAction small />
+          </div>
+        </Notice>
+      )}
 
       <CheckPanel status={check} error={checkErr} busy={busy} onCheck={checkNow} current={cluster.id} />
 

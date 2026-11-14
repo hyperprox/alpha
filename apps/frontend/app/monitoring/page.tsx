@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { PluginCards } from '@/components/plugins/PluginCards'
 import { WebsitesPanel, fetchSiteAlerts, siteAlertAsMonitoringAlert } from '@/components/sites/metrics/WebsitesPanel'
 import { apiJson, atLeast } from '@/lib/api'
+import { monitoringTitle, criticalCount } from '@/lib/monitoring-title'
 import { useSession } from '@/lib/session'
 import { Page, Panel, HudHeader, Feed, NodeTile, NodeTiles, GlowBars, Pill, Spark, styles, type StatChip, type FeedTone } from '@/components/visual/kit'
 
@@ -120,6 +121,8 @@ export default function MonitoringPage() {
   const [history, setHistory]   = useState<Record<string, number[]>>({})
   const [loading, setLoading]   = useState(true)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
+  // Prometheus did not answer the alerts or node reads: nothing below can be called clear.
+  const [promErr, setPromErr] = useState<string | null>(null)
 
 
   // -------------------------------------------------------------------------
@@ -133,8 +136,9 @@ export default function MonitoringPage() {
         fetchSiteAlerts().catch(() => []),
       ])
 
-      const alertsJson = await alertsRes.json()
-      const nodesJson  = await nodesRes.json()
+      const alertsJson = await alertsRes.json().catch(() => ({ success: false, error: 'No readable answer from the API' }))
+      const nodesJson  = await nodesRes.json().catch(() => ({ success: false }))
+      setPromErr(alertsJson.success || nodesJson.success ? null : (alertsJson.error ?? 'Prometheus did not answer'))
 
       // Website alerts (lib/site-metrics) sit beside Prometheus's in the same feed.
       if (alertsJson.success || siteAlerts.length) setAlerts([...(alertsJson.success ? alertsJson.data : []), ...siteAlerts.map(siteAlertAsMonitoringAlert)])
@@ -155,6 +159,7 @@ export default function MonitoringPage() {
       setLastUpdate(new Date())
     } catch (err) {
       console.error('Monitoring fetch error:', err)
+      setPromErr('The metrics could not be read')
     } finally {
       setLoading(false)
     }
@@ -204,13 +209,14 @@ export default function MonitoringPage() {
   // -------------------------------------------------------------------------
   const sortedNodes = [...nodes].sort((a, b) => a.node.localeCompare(b.node))
   const firing = alerts.filter(a => a.state === 'firing')
+  const promDown = promErr !== null
+  const critical = criticalCount(criticalAlerts.length, promDown)
   const chips: StatChip[] = [
-    { label: 'critical', value: criticalAlerts.length, tone: criticalAlerts.length ? 'crit' : 'dim' },
+    { label: 'critical', value: critical, tone: critical ? 'crit' : 'dim' },
     { label: 'warnings', value: warningAlerts.length, tone: warningAlerts.length ? 'warn' : 'dim' },
     { label: 'nodes reporting', value: nodes.length, tone: 'accent' },
   ]
-  const title = loading ? 'Reading the metrics…' : criticalAlerts.length ? `${criticalAlerts.length} critical alert${criticalAlerts.length === 1 ? '' : 's'} firing`
-    : warningAlerts.length ? `${warningAlerts.length} warning${warningAlerts.length === 1 ? '' : 's'} firing` : firingCount ? `${firingCount} alert${firingCount === 1 ? '' : 's'} firing` : 'All clear'
+  const title = monitoringTitle({ loading, promDown, critical: criticalAlerts.length, warning: warningAlerts.length, firing: firingCount })
   const tabs = ['overview', 'grafana', 'alerts'] as const
 
   return (
@@ -220,6 +226,12 @@ export default function MonitoringPage() {
         icon="alarm">
         <p style={{ margin: 0, color: 'var(--text-soft)', fontSize: 14 }}>{lastUpdate ? `Updated ${lastUpdate.toLocaleTimeString()}` : 'Loading...'}</p>
       </HudHeader>
+
+      {promDown && (
+        <div className={styles.callout} role="alert" style={{ borderColor: 'var(--crit)', color: 'var(--crit-soft)' }}>
+          Prometheus is not answering, so no alert or node reading on this page can be trusted: {promErr}
+        </div>
+      )}
 
       <div className={styles.row} role="group" aria-label="Monitoring view">
         {tabs.map(t => (
@@ -271,7 +283,7 @@ export default function MonitoringPage() {
             </Panel>
           )}
 
-          {firing.length === 0 && !loading && (
+          {firing.length === 0 && !loading && !promDown && (
             <Panel title="Alerts"><p className={styles.empty}>No active alerts — cluster is healthy</p></Panel>
           )}
         </>
@@ -306,7 +318,8 @@ export default function MonitoringPage() {
 
       {tab === 'alerts' && (
         <>
-          {alerts.length === 0 && !loading && <Panel title="Alerts"><p className={styles.empty}>No alerts — all systems healthy</p></Panel>}
+          {alerts.length === 0 && !loading && !promDown && <Panel title="Alerts"><p className={styles.empty}>No alerts — all systems healthy</p></Panel>}
+          {promDown && <Panel title="Alerts"><p className={styles.empty}>Alerts cannot be read while Prometheus is not answering.</p></Panel>}
           {['critical', 'warning', 'info'].map(sev => {
             const sevAlerts = alerts.filter(a => a.severity === sev)
             if (!sevAlerts.length) return null

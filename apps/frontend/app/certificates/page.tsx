@@ -12,6 +12,7 @@ import { ManagedList, neverIssued } from '@/components/certificates/Managed'
 import { Probes } from '@/components/certificates/Probes'
 import { HousekeepingList, KIND_EFFECT, KIND_LABEL } from '@/components/certificates/Housekeeping'
 import { EventsList } from '@/components/certificates/Events'
+import { certsHeadline, endpointsEmpty } from '@/lib/certs-summary'
 
 const POLL_BUSY_MS = 5_000
 const POLL_IDLE_MS = 60_000
@@ -38,6 +39,7 @@ export default function CertificatesPage() {
   const [evLabel, setEvLabel] = useState('')
   const [hk, setHk] = useState<CertsHousekeepingItem[] | null>(null)
   const [hkErr, setHkErr] = useState<string | null>(null)
+  const [hkNote, setHkNote] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState<Set<string>>(new Set())
@@ -61,8 +63,9 @@ export default function CertificatesPage() {
   }, [])
 
   const loadHk = useCallback(async () => {
-    const r = await apiJson<{ items: CertsHousekeepingItem[] }>('/api/certs/housekeeping')
-    if (r.ok && r.body) { setHk(r.body.items); setHkErr(null) } else { setHk(null); setHkErr(apiError(r, 'housekeeping')) }
+    const r = await apiJson<{ items: CertsHousekeepingItem[]; configured?: boolean; reason?: string }>('/api/certs/housekeeping')
+    if (r.ok && r.body) { setHk(r.body.items); setHkErr(null); setHkNote(r.body.configured === false ? (r.body.reason ?? 'No proxy is connected, so there is nothing to tidy.') : null) }
+    else { setHk(null); setHkNote(null); setHkErr(apiError(r, 'housekeeping')) }
   }, [])
 
   useEffect(() => {
@@ -162,17 +165,13 @@ export default function CertificatesPage() {
   const expiring = inventory.filter(e => e.daysLeft !== null && e.daysLeft <= 14).length
   const failing = inventory.filter(e => e.verdict === 'critical' || e.verdict === 'error').length
     + (ov?.managed.filter(m => m.status === 'failed').length ?? 0)
-  const problems = inventory.filter(e => e.verdict !== 'ok').length
   const chips: StatChip[] = ov ? [
     { label: 'managed', value: ov.managed.length },
     { label: 'expiring in 14 days', value: expiring, tone: expiring ? 'warn' : undefined },
     { label: 'failing', value: failing, tone: failing ? 'crit' : 'good' },
     { label: 'certificates seen', value: inventory.length },
   ] : []
-  const title = !ov ? (ovErr ? 'Certificates unavailable' : 'Reading certificates')
-    : failing ? `${failing} certificate${failing === 1 ? ' is' : 's are'} failing`
-    : problems ? `${problems} certificate${problems === 1 ? ' needs' : 's need'} a look`
-    : 'Every certificate is healthy'
+  const title = certsHeadline(ov, ovErr)
 
   // Expiry as glow bars: a bar fills as a certificate uses up its lifetime, so a full bar is the one nearest
   // to expiry. The text always says the days left, and a week or less counts as full whatever the lifetime.
@@ -236,12 +235,13 @@ export default function CertificatesPage() {
 
       <Panel title="Endpoints" sub="what each one serves right now">
         {!ov ? <p className={styles.empty}>{ovErr ? 'Unavailable.' : 'Reading...'}</p>
-          : probeDots.length === 0 ? <p className={styles.empty}>No endpoints are being probed yet.</p>
+          : probeDots.length === 0 ? <p className={styles.empty}>{endpointsEmpty(ov)}</p>
           : <StatusDots items={probeDots} label="Endpoint certificate checks" />}
       </Panel>
 
       <Panel title="Housekeeping">
         {hkErr ? <Notice tone="warn">{hkErr}</Notice>
+          : hkNote ? <p className={styles.empty}>{hkNote}</p>
           : !hk ? <p className={styles.empty}>Reading...</p>
           : <HousekeepingList items={hk} busy={busy} onApply={setApplying} />}
       </Panel>

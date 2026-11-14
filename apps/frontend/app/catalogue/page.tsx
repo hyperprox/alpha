@@ -30,6 +30,8 @@ interface Recipe extends WizardRecipe {
 interface Running {
   guest: { vmid: number; name: string; node: string; type: 'lxc' | 'qemu' } | null
   target: string; publicUrl: string | null; domains: string[]; version: string | null
+  /** A port-scan finding (the scan Plug-ins' Scan shares): which service answered, and its own address. */
+  service?: string; url?: string
 }
 interface NodeLogin { node: string; address: string | null; hasLogin: boolean }
 interface Step { id: string; label: string; status: string; detail?: string }
@@ -479,10 +481,10 @@ export default function CataloguePage() {
                 {here.map(x => (
                   <li key={`${x.target}|${x.publicUrl}`} className={styles.row} style={{ gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 13, color: 'var(--text-soft)', overflowWrap: 'anywhere', flex: 1, minWidth: 0 }}>
-                      Running on {where(x)}{x.version ? ` · ${x.version}` : ''}
+                      Running on {where(x)}{x.service && x.service !== r.name ? ` · ${x.service}` : ''}{x.version ? ` · ${x.version}` : ''}
                     </span>
-                    {(x.publicUrl ?? (x.target ? `http://${x.target}` : null)) && (
-                      <a className={styles.btn} href={x.publicUrl ?? `http://${x.target}`} target="_blank" rel="noreferrer" style={{ minHeight: 32, padding: '4px 10px', textDecoration: 'none' }}>Open</a>
+                    {(x.publicUrl ?? x.url ?? (x.target ? `http://${x.target}` : null)) && (
+                      <a className={styles.btn} href={x.publicUrl ?? x.url ?? `http://${x.target}`} target="_blank" rel="noreferrer" style={{ minHeight: 32, padding: '4px 10px', textDecoration: 'none' }}>Open</a>
                     )}
                   </li>
                 ))}

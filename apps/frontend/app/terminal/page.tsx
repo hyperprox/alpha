@@ -18,6 +18,7 @@ import { useSession } from '@/lib/session'
 import { atLeast } from '@/lib/api'
 import { alpha } from '@/lib/theme'
 import { styles } from '@/components/visual/kit'
+import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
 
 interface TerminalHost {
   id: string; name: string; vmid: number; node: string
@@ -662,6 +663,14 @@ export default function TerminalPage() {
             style={{ borderColor: BORDER, background: 'var(--surface-notice)', color: 'var(--text-soft)' }}>
             First connection to this host — its key is now pinned as{' '}
             <span style={{ color: 'var(--text-soft)' }}>{active.attach.fingerprint}</span>. A change will be refused.
+          </div>
+        )}
+
+        {sessions.length === 0 && (
+          <div className="flex flex-shrink-0 flex-wrap items-center gap-3 border-b px-4 py-2 text-[13px]"
+            style={{ borderColor: BORDER, background: 'var(--surface-notice)', color: 'var(--text-soft)' }}>
+            <span className="flex-1" style={{ minWidth: 220 }}>Updates, VPN and Devices sign in to your nodes with a saved node login. A guest login saved here is not used for them.</span>
+            <NodeLoginAction small />
           </div>
         )}
 

@@ -4,18 +4,20 @@
 
 import { useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
+import { defaultNode, hostArch, pickRootStorage, storagesFor, templatesForArch, type FormNode } from '@/lib/lxc-form'
 import { ConfirmOverride, confirmNeeded, type NamingSettingsView, type Proposal } from '@/components/catalogue/NamingProposal'
 
-interface PVENode { node: string; status: string }
+type PVENode = FormNode & { status: string }
 
-export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu'; nodes: PVENode[]; onClose: () => void }) {
+/** `viewedNode`: the node the page is filtered to, when it is, so the form starts there; else the least loaded online node. */
+export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: 'lxc' | 'qemu'; nodes: PVENode[]; viewedNode?: string | null; onClose: () => void }) {
   const [showCreate, setShow] = useState(true)
   const setShowCreate = (v: boolean) => { setShow(v); if (!v) onClose() }
   const [createType, setCreateType] = useState<'lxc'|'qemu'>('lxc')
   const [templates, setTemplates] = useState<any[]>([])
   const [nextId, setNextId] = useState<number>(100)
   const [createForm, setCreateForm] = useState({
-    node: '', hostname: '', vmid: '', ostemplate: '', storage: 'local-lvm',
+    node: '', hostname: '', vmid: '', ostemplate: '', storage: '',
     cores: '1', memory: '512', swap: '512', rootfs_size: '8',
     net0: 'name=eth0,bridge=vmbr0,ip=dhcp', password: '', start: true, unprivileged: true,
     // VM specific
@@ -25,6 +27,8 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
   const [isos, setISOs] = useState<any[]>([])
   const [nodeLoading, setNodeLoading] = useState(false)
   const [nodeSpec, setNodeSpec] = useState<{cpus:number,maxmem:number}|null>(null)
+  const [nodeArch, setNodeArch] = useState<string | null>(null)
+  const [proposing, setProposing] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
   const [createSuccess, setCreateSuccess] = useState('')
@@ -40,9 +44,11 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
   useEffect(() => {
     if (createType !== 'lxc' || !createForm.node) return
     let gone = false
-    setProposal(null)
+    setProposal(null); setProposing(true)
     void apiJson<{ data: Proposal }>('/api/catalogue/wizard/propose', 'POST', { node: createForm.node }).then(r => {
-      if (gone || !r.ok || !r.body?.data) return
+      if (gone) return
+      setProposing(false)
+      if (!r.ok || !r.body?.data) return
       setProposal(r.body.data)
     })
     return () => { gone = true }
@@ -65,15 +71,14 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
         fetch(`/api/proxmox/nodes/${node}`).then(r=>r.json()),
       ])
       if (storRes.success) {
-        const suitable = storRes.data.filter((s:any) =>
-          s.node === node && s.active === 1 &&
-          (s.content?.includes('rootdir') || s.content?.includes('images'))
-        )
+        // A container's disk needs a rootdir storage, a VM's an images one; shared storage is the default.
+        const suitable = storagesFor(createType, storRes.data, node)
         setNodeStorages(suitable)
-        if (suitable.length > 0) setCreateForm(f=>({...f, storage: suitable[0].storage}))
+        setCreateForm(f=>({...f, storage: pickRootStorage(suitable) ?? ''}))
       }
       if (nodeRes.success) {
         setNodeSpec({ cpus: nodeRes.data.cpuinfo?.cpus ?? 1, maxmem: nodeRes.data.memory?.total ?? 0 })
+        setNodeArch(hostArch(nodeRes.data['current-kernel']?.machine))
       }
     } catch {}
     finally { setNodeLoading(false) }
@@ -92,7 +97,7 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
       ])
       if (tplRes.success) setTemplates(tplRes.data)
       if (idRes.success) {
-        const firstNode = nodes[0]?.node ?? ''
+        const firstNode = defaultNode(nodes, viewedNode)
         setNextId(Number(idRes.data))
         setCreateForm(f=>({...f, vmid: String(idRes.data), node: firstNode}))
         if (firstNode) loadNodeData(firstNode)
@@ -202,7 +207,7 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
                   <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Template</label>
                   <select style={SELECT} value={createForm.ostemplate} onChange={e=>setCreateForm(f=>({...f,ostemplate:e.target.value}))}>
                     <option value="">— select template —</option>
-                    {templates.map(t=><option key={t.volid} value={t.volid}>{t.name}</option>)}
+                    {templatesForArch(templates, nodeArch).map(t=><option key={t.volid} value={t.volid}>{t.name}</option>)}
                   </select>
                 </div>
               ) : (
@@ -263,6 +268,7 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
                   <div>
                     <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Network (net0)</label>
                     <input style={FIELD} value={createForm.net0} onChange={e=>{ setTouchedNet(true); setCreateForm(f=>({...f,net0:e.target.value})) }}/>
+                    {proposing && <p className="text-xs mt-1" style={{color:'var(--text-muted)'}}>Looking for an ID and address that fit your numbering, and that nothing answers on…</p>}
                     {proposal && (
                       <p className="text-xs mt-1" style={{color: proposal.ip === 'dhcp' ? 'var(--warn)' : 'var(--text-muted)'}}>
                         {proposal.ip === 'dhcp' ? `Proposed: CT ${proposal.vmid}, DHCP. ${proposal.warnings[0] ?? ''}` : `Proposed: CT ${proposal.vmid} · ${proposal.ip.split('/')[0]} (${proposal.label})`}
@@ -305,7 +311,7 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={()=>setShowCreate(false)} className="px-4 rounded-md text-sm font-medium" style={{height:40,background:'transparent',border:'1px solid var(--border-strong)',color:'var(--text)'}}>Cancel</button>
-              <button onClick={submitCreate} disabled={creating} className="px-5 rounded-md text-sm font-semibold transition-all"
+              <button onClick={submitCreate} disabled={creating || (createType === 'lxc' && proposing)} className="px-5 rounded-md text-sm font-semibold transition-all"
                 style={{height:40,background: createType==='lxc'?'var(--accent)':'var(--violet)', border:'none', color:'var(--accent-ink)', opacity: creating?0.5:1}}>
                 {creating ? 'Creating...' : `Create ${createType.toUpperCase()}`}
               </button>

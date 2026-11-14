@@ -48,7 +48,7 @@ export function summarizeStorage(storage: unknown): StorageSummary {
 // ── High availability ────────────────────────────────────────────────────────
 
 export type HaSummary =
-  | { state: 'ok'; services: number; started: number }
+  | { state: 'ok'; services: number; started: number; stopped: number; wanted: number }
   | { state: 'unavailable' }
 
 /**
@@ -64,10 +64,33 @@ export type HaSummary =
 export function summarizeHA(ha: unknown): HaSummary {
   if (!Array.isArray(ha) || ha.length === 0) return { state: 'unavailable' }
   const services = ha.filter(h => h && h.type === 'service')
+  const stopped = services.filter(isDeliberatelyStopped).length
   return {
     state: 'ok',
     services: services.length,
     started: services.filter(h => h.crm_state === 'started').length,
+    stopped,
+    // What HA is asked to keep running: a guest someone stopped on purpose is not one of them.
+    wanted: services.length - stopped,
+  }
+}
+
+/** An HA resource whose desired state is stopped (or disabled): it is down because someone asked, not because it failed. */
+export function isDeliberatelyStopped(h: { type?: string; crm_state?: string; request_state?: string } | null | undefined): boolean {
+  if (!h || h.type !== 'service') return false
+  const want = String(h.request_state ?? '').toLowerCase()
+  if (want) return want === 'stopped' || want === 'disabled'
+  const now = String(h.crm_state ?? '').toLowerCase()
+  return now === 'stopped' || now === 'disabled'
+}
+
+/** Ceph's own health words in plain ones. The raw code stays available as a tooltip. */
+export function cephHealthWord(status: string | null | undefined): string {
+  switch (status) {
+    case 'HEALTH_OK': return 'healthy'
+    case 'HEALTH_WARN': return 'warning'
+    case 'HEALTH_ERR': return 'error'
+    default: return status ? status.replace(/^HEALTH_/, '').toLowerCase() : 'not read'
   }
 }
 

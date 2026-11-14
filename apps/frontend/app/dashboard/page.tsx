@@ -16,16 +16,17 @@ import {
   HudHeader, Panel as KitPanel, Cols, GlowBars, Feed, styles as vs, type StatChip, type FeedTone,
 } from '@/components/visual/kit'
 import {
-  formatBinary as formatBytes, formatBinaryPair, summarizeStorage, summarizeHA, powerStatus, serviceState,
+  formatBinary as formatBytes, formatBinaryPair, summarizeStorage, summarizeHA, powerStatus, serviceState, cephHealthWord,
   type ServiceState,
 } from '@/components/dashboard/summaries'
+import { buildAttention, attentionTitle, attentionItems, type AttnItem } from '@/components/dashboard/attention'
 
 // Types
 interface PVENode { node: string; status: string; cpu: number; maxcpu: number; mem: number; maxmem: number; disk: number; maxdisk: number; uptime: number }
 interface PVEVM   { vmid: number; name: string; status: string; type: 'qemu'|'lxc'; node: string; cpus: number; cpu: number; mem: number; maxmem: number; uptime: number; hastate?: string }
 interface CephStatus { health: { status: string; checks: Record<string,any> }; osdmap: { num_osds: number; num_up_osds: number }; pgmap?: { bytes_total: number; bytes_used: number; bytes_avail: number; data_bytes: number; num_pgs: number } }
 interface CephOSD { id: string; name: string; host: string; status: string; percent_used: number; device_class: string; apply_latency_ms: number }
-interface HAEntry  { id: string; type: string; status: string; node: string; quorate?: number; crm_state?: string; sid?: string }
+interface HAEntry  { id: string; type: string; status: string; node: string; quorate?: number; crm_state?: string; request_state?: string; sid?: string }
 interface GPUInfo  { name: string; vram_total: number; vram_used: number; gpu_util: number; temp: number; power_draw: number; power_limit: number; vram_pct: number; power_pct: number }
 interface ClusterTotals { cpu_used: number; cpu_total: number; cpu_pct: number; mem_used: number; mem_total: number; mem_pct: number; disk_used: number; disk_total: number; disk_pct: number }
 interface ServiceInfo { connected: boolean; state?: ServiceState; url?: string; version?: string; message?: string; total?: number; enabled?: number; disabled?: number; ssl?: number; expiring?: number }
@@ -109,7 +110,7 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, ha, power, stamp }: 
     // Counted from the HA status feed. Guests from the per-node lists carry no HA field,
     // so counting those always gave 0.
     haSum.state === 'ok'
-      ? {label:'HA', value:String(haSum.services), color:'var(--violet)', title:`${haSum.started} of ${haSum.services} HA resources started`}
+      ? {label:'HA', value:String(haSum.services), color:'var(--violet)', title:`${haSum.started} of ${haSum.services} HA resources started${haSum.stopped ? `, ${haSum.stopped} stopped on purpose` : ''}`}
       : {label:'HA', value:'n/a', color:'var(--text-dimmer)', title:'No HA data came back. The API token needs Sys.Audit on / to read HA status.'},
   ]
   if (powerUi.show && power) {
@@ -590,7 +591,7 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
     <section className={vs.panel}>
       <div className="flex items-center justify-between mb-4">
         <CardTitle title="Ceph" accent={hc}
-          badge={<span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{background:`${alpha(hc, 8)}`,color:hc,border:`1px solid ${alpha(hc, 19)}`}}>{ceph.health.status}</span>}/>
+          badge={<span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{background:`${alpha(hc, 8)}`,color:hc,border:`1px solid ${alpha(hc, 19)}`}} title={ceph.health.status}>{cephHealthWord(ceph.health.status)}</span>}/>
         <span className="text-xs font-mono" style={{color:'var(--good)'}}>{ceph.osdmap.num_up_osds}/{ceph.osdmap.num_osds} OSDs</span>
       </div>
       {ceph.pgmap&&(
@@ -705,6 +706,7 @@ export default function DashboardView() {
   const [bandwidth, setBandwidth] = useState<BandwidthData | null>(null)
   const [slow, setSlow]       = useState<SlowData | null>(null)
   const [lastSync, setLastSync] = useState<Date | null>(null)
+  const alerts = useFiringAlerts()
   const wsRef = useRef<WebSocket | null>(null)
 
   // Initial HTTP fetch for instant load
@@ -829,14 +831,14 @@ export default function DashboardView() {
 
   return (
     <div className={vs.page}>
-      <ClusterHud fast={fast} slow={slow} clusterLabel={clusterLabel} lastSync={lastSync} power={clusterPower}/>
+      <ClusterHud fast={fast} slow={slow} clusterLabel={clusterLabel} lastSync={lastSync} power={clusterPower} alerts={alerts}/>
 
       {/* Every cluster side by side, once a remote server has been added (nothing shows with none). */}
       <CommandCenterIfRemotes/>
 
       <Cols>
         <StoragePanel storage={fast.storage}/>
-        <HappeningPanel fast={fast} slow={slow}/>
+        <HappeningPanel fast={fast} slow={slow} alerts={alerts}/>
       </Cols>
 
       <PluginCards variant="chips"/>
@@ -875,7 +877,7 @@ export default function DashboardView() {
 //  in words, and the five numbers people look for first.
 // ---------------------------------------------------------------------------
 
-function ClusterHud({ fast, slow, clusterLabel, lastSync, power }: { fast: FastData; slow: SlowData | null; clusterLabel: string; lastSync: Date | null; power: ClusterPower | null }) {
+function ClusterHud({ fast, slow, clusterLabel, lastSync, power, alerts }: { fast: FastData; slow: SlowData | null; clusterLabel: string; lastSync: Date | null; power: ClusterPower | null; alerts: FiringAlert[] | null }) {
   const running = fast.vms.filter(v => v.status === 'running').length
   const online  = fast.nodes.filter(n => n.status === 'online').length
   const stor    = summarizeStorage(fast.storage)
@@ -885,16 +887,10 @@ function ClusterHud({ fast, slow, clusterLabel, lastSync, power }: { fast: FastD
   const cephSt  = slow?.ceph?.health.status
   const powerUi = powerStatus(power)
 
-  const problems = [
-    online < fast.nodes.length && `${fast.nodes.length - online} node${fast.nodes.length - online === 1 ? '' : 's'} offline`,
-    quorum && !quorum.quorate && 'no quorum',
-    cephSt === 'HEALTH_ERR' && 'Ceph error',
-    stor.total > 0 && stor.pct >= 85 && `storage ${stor.pct}%`,
-    haSum.state === 'ok' && haSum.started < haSum.services && `${haSum.services - haSum.started} HA guest${haSum.services - haSum.started === 1 ? '' : 's'} not started`,
-  ].filter(Boolean) as string[]
-  const warned = cephSt === 'HEALTH_WARN'
-  const title = problems.length ? `${problems.length} thing${problems.length === 1 ? '' : 's'} need${problems.length === 1 ? 's' : ''} attention`
-    : warned ? 'Running · Ceph has warnings' : 'All systems normal'
+  // The same list the "What's happening" panel shows, so the headline counts exactly what is listed there.
+  const attn = buildAttention(attentionInputOf(fast, slow, alerts))
+  const problems = attentionItems(attn).map(a => a.title)
+  const title = attentionTitle(attn, cephSt)
 
   const verdict = quorum
     ? { text: quorum.quorate ? 'Quorum OK' : 'No quorum', tone: quorum.quorate ? 'good' as const : 'bad' as const }
@@ -907,10 +903,10 @@ function ClusterHud({ fast, slow, clusterLabel, lastSync, power }: { fast: FastD
     { label: stor.total > 0 ? 'storage used' : 'disk used', value: `${stor.total > 0 ? stor.pct : Math.round(fast.cluster.disk_pct)}%`, tone: (stor.total > 0 ? stor.pct : fast.cluster.disk_pct) >= 85 ? 'warn' : undefined },
     powerUi.show && power
       ? { label: power.silent.length ? `power ${power.reporting}/${power.of}` : 'power draw', value: `${power.total}W`, tone: power.silent.length ? 'warn' : undefined }
-      : { label: 'HA guests', value: haSum.state === 'ok' ? `${haSum.started}/${haSum.services}` : 'n/a', tone: haSum.state === 'ok' && haSum.started === haSum.services ? 'good' : undefined },
+      : { label: 'HA guests', value: haSum.state === 'ok' ? `${haSum.started}/${haSum.wanted}` : 'n/a', tone: haSum.state === 'ok' && haSum.started === haSum.wanted ? 'good' : undefined },
   ]
 
-  const eyebrow = [clusterLabel, cephSt && `Ceph ${cephSt}`, lastSync && `synced ${lastSync.toLocaleTimeString()}`].filter(Boolean).join(' · ')
+  const eyebrow = [clusterLabel, cephSt && `Ceph ${cephHealthWord(cephSt)}`, lastSync && `synced ${lastSync.toLocaleTimeString()}`].filter(Boolean).join(' · ')
 
   return (
     <HudHeader level={2} label="Cluster status" eyebrow={eyebrow || 'Your cluster'} title={title} chips={chips}
@@ -956,7 +952,25 @@ function StoragePanel({ storage }: { storage?: any[] }) {
 
 interface FiringAlert { name: string; severity: string; state: string; node: string; summary: string; description: string; firedAt?: string }
 
-function HappeningPanel({ fast, slow }: { fast: FastData; slow: SlowData | null }) {
+function attentionInputOf(fast: FastData, slow: SlowData | null, alerts: FiringAlert[] | null) {
+  const ha = Array.isArray(slow?.ha) ? slow!.ha : []
+  const quorum = ha.find(h => h.type === 'quorum')
+  const stor = summarizeStorage(fast.storage)
+  const unreachable: Array<{ key: string; name: string; message?: string }> = []
+  if (slow) {
+    for (const [k, name] of [['npm', 'Nginx Proxy Manager'], ['grafana', 'Grafana'], ['prometheus', 'Prometheus']] as const) {
+      const info = slow.services[k]
+      if (info && serviceState(info) === 'unreachable') unreachable.push({ key: k, name, message: info.message })
+    }
+  }
+  return {
+    nodes: fast.nodes, quorate: quorum ? !!quorum.quorate : null, ceph: slow?.ceph?.health ?? null,
+    storagePct: stor.total > 0 ? stor.pct : null, ha: slow?.ha ?? null, unreachable, alerts,
+  }
+}
+
+/** Firing alerts from Prometheus, read every minute, for the headline and the list alike. */
+function useFiringAlerts(): FiringAlert[] | null {
   const [alerts, setAlerts] = useState<FiringAlert[] | null>(null)
   useEffect(() => {
     let alive = true
@@ -968,30 +982,11 @@ function HappeningPanel({ fast, slow }: { fast: FastData; slow: SlowData | null 
     const id = setInterval(load, 60_000)
     return () => { alive = false; clearInterval(id) }
   }, [])
+  return alerts
+}
 
-  const items: Array<{ key: string; title: React.ReactNode; detail?: React.ReactNode; meta?: React.ReactNode; tone: FeedTone }> = []
-  for (const n of fast.nodes) if (n.status !== 'online') items.push({ key: `node-${n.node}`, title: `${n.node} is offline`, tone: 'bad', meta: 'node' })
-  for (const a of alerts ?? []) {
-    if (a.state !== 'firing') continue
-    items.push({
-      key: `alert-${a.name}-${a.node}-${a.firedAt ?? ''}`, title: a.summary || a.name, detail: a.description || undefined,
-      tone: a.severity === 'critical' ? 'bad' : 'warn',
-      meta: [a.node, a.severity, a.firedAt && `since ${new Date(a.firedAt).toLocaleString()}`].filter(Boolean).join(' · '),
-    })
-  }
-  for (const [key] of Object.entries(slow?.ceph?.health.checks ?? {})) {
-    items.push({ key: `ceph-${key}`, title: `Ceph: ${key}`, detail: key === 'POOL_NO_REDUNDANCY' ? '(intentional)' : undefined,
-      tone: key === 'POOL_NO_REDUNDANCY' ? 'off' : slow?.ceph?.health.status === 'HEALTH_ERR' ? 'bad' : 'warn', meta: 'storage' })
-  }
-  for (const h of Array.isArray(slow?.ha) ? slow!.ha : []) {
-    if (h.type === 'service' && h.crm_state && h.crm_state !== 'started') items.push({ key: `ha-${h.id}`, title: `${h.sid ?? h.id} is ${h.crm_state}`, tone: 'warn', meta: 'high availability' })
-  }
-  if (slow) {
-    for (const [k, name] of [['npm', 'Nginx Proxy Manager'], ['grafana', 'Grafana'], ['prometheus', 'Prometheus']] as const) {
-      const info = slow.services[k]
-      if (info && serviceState(info) === 'unreachable') items.push({ key: `svc-${k}`, title: `${name} is unreachable`, detail: info.message, tone: 'bad', meta: 'service' })
-    }
-  }
+function HappeningPanel({ fast, slow, alerts }: { fast: FastData; slow: SlowData | null; alerts: FiringAlert[] | null }) {
+  const items: Array<{ key: string; title: React.ReactNode; detail?: React.ReactNode; meta?: React.ReactNode; tone: FeedTone }> = buildAttention(attentionInputOf(fast, slow, alerts)) as AttnItem[]
   if (!items.length) items.push({ key: 'calm', title: alerts === null ? 'Checking…' : 'Nothing needs attention', detail: alerts === null ? undefined : 'No alert is firing and every node is online.', tone: alerts === null ? 'off' : 'ok' })
 
   return (

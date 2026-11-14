@@ -142,7 +142,7 @@ export function SelfUpdatePanel() {
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
               <span><span style={{ color: 'var(--text-muted)' }}>Installed </span><b className="font-mono">v{inst!.version}</b></span>
-              <span className="font-mono" style={{ color: 'var(--text-muted)' }} title={inst!.sha}>{inst!.describe}</span>
+              <span className="font-mono" style={{ color: 'var(--text-muted)' }} title={inst!.describe}>({inst!.sha.slice(0, 7)})</span>
               <Badge tone={st.settings.channel === 'stable' ? 'good' : 'violet'}>{st.settings.channel} channel</Badge>
               {st.settings.autoInstall && <Badge tone="accent" title={`${st.settings.window.days.map(d => DAYS[d]).join(' ')} ${st.settings.window.start}–${st.settings.window.end}`}>auto-install</Badge>}
               {st.settings.requireSigned && <Badge tone="accent">signed releases only</Badge>}

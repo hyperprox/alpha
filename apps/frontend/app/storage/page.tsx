@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { formatBytes } from '@/lib/utils'
 import { alpha } from '@/lib/theme'
+import { cephHealthWord } from '@/components/dashboard/summaries'
 import { Page, Panel, HudHeader, Details, Tiles, Pill, GlowBars, styles, type StatChip } from '@/components/visual/kit'
 
 // ---------------------------------------------------------------------------
@@ -133,7 +134,7 @@ function CephPools({ pools, ceph }: { pools: CephPool[]; ceph: CephStatus | null
     <>
       {ceph && (
         <Tiles label="Ceph" items={[
-          { label: 'Health', value: ceph.health.status, tone: ceph.health.status === 'HEALTH_OK' ? 'good' : 'warn' },
+          { label: 'Health', value: cephHealthWord(ceph.health.status), tone: ceph.health.status === 'HEALTH_OK' ? 'good' : 'warn' },
           { label: 'OSDs up', value: `${ceph.osdmap.num_up_osds}/${ceph.osdmap.num_osds}`, tone: ceph.osdmap.num_up_osds === ceph.osdmap.num_osds ? 'good' : 'crit' },
           { label: 'PGs', value: String(ceph.pgmap?.num_pgs ?? '—') },
         ]} />
@@ -273,7 +274,7 @@ export default function StoragePage() {
     { label: 'capacity', value: formatBytes(totalRaw) },
     { label: 'used', value: formatBytes(usedRaw), tone: 'accent' },
     { label: 'available', value: formatBytes(totalRaw - usedRaw), tone: 'good' },
-    ...(overview.ceph ? [{ label: 'Ceph', value: overview.ceph.health.status.replace('HEALTH_', ''), tone: cephOk ? 'good' as const : 'warn' as const }] : []),
+    ...(overview.ceph ? [{ label: 'Ceph', value: cephHealthWord(overview.ceph.health.status), tone: cephOk ? 'good' as const : 'warn' as const }] : []),
   ]
   const title = overallPct > 90 ? 'Storage is nearly full' : overallPct > 80 ? 'Storage is filling up' : 'Storage has room'
   const poolCount = (overview.pools ?? []).filter(p => !p.pool_name.startsWith('.')).length

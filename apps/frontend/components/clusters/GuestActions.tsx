@@ -14,7 +14,7 @@ import { GuestDrawer } from '@/components/guest-config/GuestDrawer'
 import type { GuestRow } from '@/components/guest-config/types'
 
 type Kind = 'home' | 'remote'
-type Action = { kind: 'power'; action: 'start' | 'stop' | 'shutdown' | 'reboot' } | { kind: 'snapshot' } | { kind: 'backup' } | { kind: 'delete' }
+export type GuestAction = { kind: 'power'; action: 'start' | 'stop' | 'shutdown' | 'reboot' } | { kind: 'snapshot' } | { kind: 'backup' } | { kind: 'delete' }
 
 const powerWords: Record<string, { verb: string; impact: string }> = {
   start: { verb: 'Start', impact: 'It boots up and its services come back.' },
@@ -23,7 +23,7 @@ const powerWords: Record<string, { verb: string; impact: string }> = {
   reboot: { verb: 'Restart', impact: 'It is down for a short while. Anyone using it is interrupted.' },
 }
 
-function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, onDone }: { g: GuestRow; act: Action; clusterId: string; clusterName: string; kind: Kind; onClose: () => void; onDone: () => void }) {
+export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, onDone }: { g: GuestRow; act: GuestAction; clusterId: string; clusterName: string; kind: Kind; onClose: () => void; onDone: () => void }) {
   const [snapName, setSnapName] = useState(`hpx-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`)
   const [storages, setStorages] = useState<Array<{ storage: string; type: string; availBytes: number }> | null>(null)
   const [storage, setStorage] = useState('')
@@ -111,7 +111,7 @@ export function GuestsTab({ clusterId, clusterName, kind }: { clusterId: string;
   const [rows, setRows] = useState<GuestRow[] | null>(null)
   const [nodes, setNodes] = useState<Array<{ node: string; status: string }>>([])
   const [err, setErr] = useState<string | null>(null)
-  const [act, setAct] = useState<{ g: GuestRow; a: Action } | null>(null)
+  const [act, setAct] = useState<{ g: GuestRow; a: GuestAction } | null>(null)
   const [open, setOpen] = useState<GuestRow | null>(null)
   const [q, setQ] = useState('')
   const load = useCallback(async () => {

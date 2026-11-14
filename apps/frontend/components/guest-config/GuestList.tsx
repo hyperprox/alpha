@@ -69,13 +69,14 @@ function HaCell({ row, ha }: { row: GuestRow; ha?: (sid: string) => HaBadgeInfo 
 
 function pct(a: number, b: number) { return b ? Math.round(a / b * 100) : 0 }
 
-function RowMenu({ row, canOperate, canAdmin, onPower, onOpen, onRefresh }: { row: GuestRow; canOperate: boolean; canAdmin: boolean; onPower: (row: GuestRow, a: string) => void; onOpen: () => void; onRefresh: () => void }) {
+function RowMenu({ row, canOperate, canAdmin, onPower, onOpen, onRefresh, onBackup }: { row: GuestRow; canOperate: boolean; canAdmin: boolean; onPower: (row: GuestRow, a: string) => void; onOpen: () => void; onRefresh: () => void; onBackup?: (row: GuestRow) => void }) {
   const [open, setOpen] = useState(false)
   const [change, setChange] = useState<null | { change: any; title: string }>(null)
   const running = row.status === 'running'
   const items: Array<[string, () => void]> = [['Details', onOpen]]
   if (canOperate && !row.ha.managed) items.push(...(running ? [['Shut down', () => onPower(row, 'shutdown')], ['Reboot', () => onPower(row, 'reboot')]] as Array<[string, () => void]> : [['Start', () => onPower(row, 'start')]] as Array<[string, () => void]>))
   if (canAdmin && row.ha.managed) items.push(running ? ['Stop (HA)', () => onPower(row, 'ha:stopped')] : ['Start (HA)', () => onPower(row, 'ha:started')])
+  if (canAdmin && onBackup) items.push(['Back up now…', () => onBackup(row)])
   if (canAdmin && row.type === 'lxc' && row.gpu.toggle === 'on') items.push(['GPU access: turn off', () => setChange({ change: { kind: 'gpu-off' }, title: `Turn GPU access off for ${row.name}` })])
   if (canAdmin && row.type === 'lxc' && row.gpu.toggle === 'off') items.push(['GPU access: turn back on', () => setChange({ change: { kind: 'gpu-on' }, title: `Turn GPU access back on for ${row.name}` })])
   return (
@@ -91,11 +92,13 @@ function RowMenu({ row, canOperate, canAdmin, onPower, onOpen, onRefresh }: { ro
   )
 }
 
-export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefresh, ha }: {
+export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefresh, onBackup, ha }: {
   rows: GuestRow[]; canOperate: boolean; canAdmin: boolean
   /** HA badges, read once per list (useHaBadges). */
   ha?: (sid: string) => HaBadgeInfo | undefined
   onOpen: (r: GuestRow) => void; onPower: (r: GuestRow, a: string) => void; onRefresh: () => void
+  /** Back up now (opens the backup dialog). Absent: no such menu item. */
+  onBackup?: (r: GuestRow) => void
 }) {
   return (
     <>
@@ -126,7 +129,7 @@ export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefr
                   <td className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{r.ip ?? '—'}</td>
                   <td><Tags row={r} /></td>
                   <td><HaCell row={r} ha={ha} /></td>
-                  <td><RowMenu row={r} canOperate={canOperate} canAdmin={canAdmin} onPower={onPower} onOpen={() => onOpen(r)} onRefresh={onRefresh} /></td>
+                  <td><RowMenu row={r} canOperate={canOperate} canAdmin={canAdmin} onPower={onPower} onOpen={() => onOpen(r)} onRefresh={onRefresh} onBackup={onBackup} /></td>
                 </tr>
               )
             })}
@@ -143,7 +146,7 @@ export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefr
               <div className="flex items-center gap-2 min-w-0">
                 <StatusDot status={r.status} /><span className="font-mono text-[10px] uppercase" style={{ color: STATUS_COLOR[r.status] ?? 'var(--text-muted)' }}>{r.status}</span><TypeBadge type={r.type} />
                 <span className="font-medium truncate flex-1" style={{ color: 'var(--text-bright)' }}>{r.name}</span>
-                <RowMenu row={r} canOperate={canOperate} canAdmin={canAdmin} onPower={onPower} onOpen={() => onOpen(r)} onRefresh={onRefresh} />
+                <RowMenu row={r} canOperate={canOperate} canAdmin={canAdmin} onPower={onPower} onOpen={() => onOpen(r)} onRefresh={onRefresh} onBackup={onBackup} />
               </div>
               <div className="font-mono text-[11px] flex flex-wrap gap-x-3" style={{ color: 'var(--text-dimmer)' }}>
                 <span>#{r.vmid}</span><span>{r.node}</span>{r.ip && <span>{r.ip}</span>}{r.uptime > 0 && <span>{formatUptime(r.uptime)}</span>}<HaCell row={r} ha={ha} />

@@ -9,6 +9,7 @@ import { BusyNote, CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, Primary
 import { Details, HudHeader, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
 import ss from '../settings.module.css'
 import { exact, inWords } from '../when'
+import { deleteArmed, deleteOutcome } from '@/lib/vault-delete'
 
 interface SecretRow { name: string; updatedAt?: string; managed?: boolean; fields?: string[] }
 
@@ -179,6 +180,48 @@ function GenerateModal({ onDone, onClose }: { onDone: () => void; onClose: () =>
   )
 }
 
+/** Delete one item: type its name to arm the button; the master password is asked again; it goes to the vault's trash. */
+function DeleteModal({ name, onDone, onClose }: { name: string; onDone: (message: string) => void; onClose: () => void }) {
+  const [typed, setTyped] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+
+  async function submit(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!deleteArmed(typed, name)) return
+    setBusy(true); setError('')
+    const r = await apiJson('/api/secrets/delete', 'POST', { name })
+    setBusy(false)
+    const out = deleteOutcome(r, name)
+    if (out.kind === 'reconfirm') { setConfirming(true); return }
+    if (out.kind === 'error') { setError(out.message); return }
+    onDone(out.message)
+  }
+
+  if (confirming) {
+    return <ReconfirmModal onClose={() => setConfirming(false)} onDone={() => { setConfirming(false); void submit() }} />
+  }
+
+  return (
+    <Modal title={`Delete ${name}`} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
+          This moves <strong>{name}</strong> to the vault&apos;s trash. Anything that still uses it stops working. It can be restored from a Bitwarden client for 30 days.
+        </p>
+        <div><label htmlFor="d-name" style={LABEL}>Type the name to confirm</label>
+          <input id="d-name" autoFocus value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" style={{ ...INPUT, fontFamily: 'var(--font-mono)' }} /></div>
+        {error && <Notice kind="error">{error}</Notice>}
+        <div className="flex gap-2 justify-end">
+          <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
+          <PrimaryButton type="submit" disabled={busy || !deleteArmed(typed, name)}>{busy ? 'Deleting...' : 'Delete'}</PrimaryButton>
+        </div>
+        {busy && <BusyNote>Removing it from the vault — this takes a few seconds.</BusyNote>}
+      </form>
+    </Modal>
+  )
+}
+
 // ---------------------------------------------------------------------------
 
 export default function SecretsPage() {
@@ -191,6 +234,7 @@ export default function SecretsPage() {
   const [revealed, setRevealed] = useState<null | { name: string; values: Array<[string, string]> }>(null)
   const [sendFor, setSendFor] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
+  const [deleteFor, setDeleteFor] = useState<string | null>(null)
   const [toast, setToast] = useState('')
   const toastTimer = useRef<ReturnType<typeof setTimeout>>()
 
@@ -269,6 +313,7 @@ export default function SecretsPage() {
                     <div className={ss.acts}>
                       <button type="button" onClick={() => reveal(r.name)} className={ss.mini} aria-label={`Reveal ${r.name}`}>Reveal</button>
                       <button type="button" onClick={() => setSendFor(r.name)} className={ss.mini} data-tone="accent" aria-label={`Send ${r.name}`}>Send</button>
+                      <button type="button" onClick={() => setDeleteFor(r.name)} className={ss.mini} data-tone="bad" aria-label={`Delete ${r.name}`}>Delete</button>
                     </div>
                   )
                 )}
@@ -276,7 +321,7 @@ export default function SecretsPage() {
             ))}
           </ul>
         ) : null}
-        {role && !canUse && <div style={{ marginTop: 12 }}><Notice kind="info">Only owners and admins can reveal, send or generate secrets.</Notice></div>}
+        {role && !canUse && <div style={{ marginTop: 12 }}><Notice kind="info">Only owners and admins can reveal, send, generate or delete secrets.</Notice></div>}
       </Panel>
 
       {rows && rows.length > 0 && (
@@ -313,6 +358,7 @@ export default function SecretsPage() {
       )}
       {revealed && <RevealModal name={revealed.name} values={revealed.values} onClose={() => setRevealed(null)} />}
       {sendFor && <SendModal name={sendFor} fieldNames={rows?.find(x => x.name === sendFor)?.fields} onClose={() => setSendFor(null)} />}
+      {deleteFor && <DeleteModal name={deleteFor} onClose={() => setDeleteFor(null)} onDone={m => { setDeleteFor(null); flash(m); load() }} />}
       {generating && <GenerateModal onClose={() => setGenerating(false)} onDone={() => { setGenerating(false); flash('Password generated and saved to the vault.'); load() }} />}
     </Page>
   )

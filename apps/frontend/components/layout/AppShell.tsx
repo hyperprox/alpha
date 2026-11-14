@@ -12,7 +12,7 @@ const FULL = ['/terminal']
 /** The sign-in page stands alone: no navigation to a vault that is locked. */
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
-  const bare = pathname === '/login'
+  const bare = pathname === '/login' || pathname === '/join'
   const full = FULL.some(p => pathname === p || pathname.startsWith(p + '/'))
   if (bare) {
     return (

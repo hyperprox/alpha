@@ -6,6 +6,9 @@ import type { RemoteFirewallPreview, RemoteHostKey, RemoteJob, RemoteMachineRow,
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
+import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
+import { vpnHeadline, vpnTotals } from '@/lib/vpn-headline'
+import { isNoLoginText } from '@/lib/node-login'
 import { MachinePanel, OneClickDialog, PendingDevices } from '@/components/remote-access/vpn-panel'
 import { WireguardSection } from '@/components/remote-access/WireguardSection'
 import { Badge, Btn, Notice, fmtTime } from '@/components/updates/ui'
@@ -155,27 +158,22 @@ export default function VpnPage() {
     : []
 
   // Per provider, how the machines stand: the picture the HUD and the tunnels panel are drawn from.
-  const tally = (p: RemoteProviderId) => {
-    const states = rows.map(r => r.cells[p].state)
-    return {
-      connected: states.filter(s => s === 'connected').length,
-      offline: states.filter(s => s === 'offline' || s === 'signed-out' || s === 'missing').length,
-      installed: rows.filter(r => r.cells[p].managed && r.cells[p].state !== 'not-installed').length,
-    }
-  }
-  const tallies = ov ? ov.providers.map(p => ({ p, ...tally(p.id) })) : []
-  const connectedTotal = tallies.reduce((n, x) => n + x.connected, 0)
-  const troubled = tallies.reduce((n, x) => n + x.offline, 0) + (ov?.providers.filter(p => p.error).length ?? 0)
+  // Only a tunnel that was checked and found down counts as down; machines nobody has looked at are "not checked yet".
+  const totals = vpnTotals(rows, ov?.providers ?? [])
+  const tallies = ov ? totals.per.map(x => ({ p: x.p, connected: x.connected, offline: x.down, notChecked: x.notChecked,
+    installed: rows.filter(r => r.cells[x.p.id].managed && r.cells[x.p.id].state !== 'not-installed').length })) : []
+  const connectedTotal = totals.connected
+  const troubled = totals.down
+  const noLoginCount = rows.filter(r => Object.values(r.cells).some(c => c.state === 'unchecked' && isNoLoginText(c.lastError))).length
   const chips: StatChip[] = ov ? [
     { label: 'machines', value: rows.length },
     { label: 'tunnels connected', value: connectedTotal, tone: connectedTotal ? 'good' : undefined },
-    { label: 'offline or signed out', value: troubled, tone: troubled ? 'warn' : undefined },
+    { label: 'down or signed out', value: troubled, tone: troubled ? 'warn' : undefined },
+    { label: 'not checked yet', value: totals.notChecked, tone: totals.notChecked ? 'warn' : undefined },
     { label: 'waiting for approval', value: ov.pendingDevices.length, tone: ov.pendingDevices.length ? 'warn' : undefined },
   ] : []
   const title = !ov ? (err ? 'VPN unavailable' : 'Reading VPN status')
-    : troubled ? `${troubled} tunnel${troubled === 1 ? ' is' : 's are'} down or signed out`
-    : connectedTotal ? `${connectedTotal} tunnel${connectedTotal === 1 ? ' is' : 's are'} connected`
-    : 'No tunnels connected yet'
+    : vpnHeadline(totals)
 
   return (
     <Page>
@@ -194,7 +192,7 @@ export default function VpnPage() {
         <KitPanel title="Providers" sub={ov.detection.running ? 'checking every machine…' : ov.detection.checkedAt ? `checked ${fmtTime(ov.detection.checkedAt)}` : 'machines not checked yet'}
           actions={admin ? <Btn small disabled={refreshing || ov.detection.running} onClick={refresh} title="Look at every running node and guest now (read-only)">Refresh</Btn> : undefined}>
           <ul className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 18rem), 1fr))', listStyle: 'none', padding: 0, margin: 0 }} aria-label="VPN providers">
-            {tallies.map(({ p, connected, offline, installed }) => {
+            {tallies.map(({ p, connected, offline, notChecked, installed }) => {
               const state: { text: string; tone: PillTone | undefined } = !p.configured ? { text: 'not set up', tone: undefined }
                 : p.error ? { text: 'error', tone: 'bad' } : { text: 'ready', tone: 'good' }
               return (
@@ -206,7 +204,7 @@ export default function VpnPage() {
                   </div>
                   {p.configured && !p.error ? (
                     <div className="mt-2 text-xs font-mono" style={{ color: 'var(--text-soft)' }}>
-                      {connected} connected · {offline} offline or signed out · {installed} installed by HyperProx
+                      {connected} connected · {offline} down or signed out · {notChecked} not checked yet · {installed} installed by HyperProx
                     </div>
                   ) : <div className="mt-2 text-xs" style={{ color: 'var(--text-soft)' }}>{p.summary}</div>}
                   {p.error && <div className="mt-1 text-xs" style={{ color: 'var(--crit)' }}>{p.error}</div>}
@@ -232,6 +230,14 @@ export default function VpnPage() {
       )}
       {admin && ov && ov.pendingRevokes > 0 && (
         <Notice tone="warn">{ov.pendingRevokes} key{ov.pendingRevokes === 1 ? ' has' : 's have'} not been confirmed revoked yet. HyperProx retries every minute.</Notice>
+      )}
+      {noLoginCount > 0 && (
+        <Notice tone="warn">
+          <div className="flex flex-wrap items-center gap-3">
+            <span>{noLoginCount} machine{noLoginCount === 1 ? '' : 's'} could not be checked: there is no saved node login.</span>
+            <NodeLoginAction small />
+          </div>
+        </Notice>
       )}
       {job && <JobPanel job={job} onClose={() => setJob(null)} />}
       {admin && ov && <Exclusions rows={rows} send={send} onSaved={() => load()} />}

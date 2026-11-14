@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { RemoteCell, RemoteFirewallPreview, RemoteHostKey, RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteProviderId } from '@hyperprox/types'
 import { Badge, Btn, ConfirmDialog, Notice, StepIcon, TH, THEAD_STYLE, fmtTime } from '@/components/updates/ui'
 import { Panel } from './panel'
+import { isNoLoginText, withoutLoginAdvice } from '@/lib/node-login'
 
 // Pieces of the Remote access page. Built from the Updates primitives so the page looks like the rest of
 // HyperProx.
@@ -70,7 +71,11 @@ function Cell({ row, provider, cell, admin, busy, configured, onAction }: {
       {cell.detectedText && cell.detectedText !== 'not installed' && (
         <div className="text-xs" style={{ color: 'var(--text-soft)' }} title={cell.checkedAt ? `Checked on the machine ${fmtTime(cell.checkedAt)}` : ''}>{cell.detectedText}</div>
       )}
-      {cell.state === 'unchecked' && cell.lastError && <div className="text-xs" style={{ color: 'var(--text-dim)' }} title={cell.lastError}>could not check: {cell.lastError.slice(0, 80)}</div>}
+      {cell.state === 'unchecked' && cell.lastError && (
+        <div className="text-xs" style={{ color: 'var(--text-dim)', overflowWrap: 'anywhere', whiteSpace: 'normal' }} title={cell.lastError}>
+          {isNoLoginText(cell.lastError) ? 'not checked: no saved node login' : `could not check: ${withoutLoginAdvice(cell.lastError)}`}
+        </div>
+      )}
       {(cell.ip || cell.version) && (
         <div className="font-mono text-xs" style={{ color: 'var(--text-soft)' }}>
           {cell.ip ?? ''}{cell.ip && cell.version ? ' · ' : ''}{cell.version ? `v${cell.version}` : ''}

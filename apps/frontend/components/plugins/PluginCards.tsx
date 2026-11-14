@@ -16,6 +16,7 @@ import Link from 'next/link'
 import { alpha } from '@/lib/theme'
 import { Icon, Panel, Pill, PluginStrip, PluginTile, styles as vs } from '@/components/visual/kit'
 import { PLUGIN_ICON } from './visual/plugin-kit'
+import { pluginBadge, pluginKind, pluginWord } from '@/lib/plugin-status'
 
 interface Card {
   id: string; name: string; icon: string; hasDetail: boolean
@@ -81,12 +82,13 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'car
       <Panel title={heading || 'Plug-ins'} href="/plugins" linkLabel="All">
         <ul aria-label="Plug-in status" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: 0, padding: 0, listStyle: 'none' }}>
           {cards.map(p => {
-            const bad = !p.off && (p.error || p.tone === 'bad' || p.tone === 'warn')
-            const word = p.off ? 'Off' : bad ? `Needs attention: ${p.error ? 'unreachable' : p.headline ?? 'check it'}` : 'Active'
+            const kind = pluginKind(p)
+            const bad = kind === 'unreachable' || kind === 'attention'
+            const word = pluginWord(p)
             return (
               <li key={p.id} style={{ minWidth: 0 }}>
                 <Link href={p.hasDetail ? `/plugins/${p.id}` : '/plugins'}>
-                  <Pill tone={p.off ? undefined : bad ? (p.error || p.tone === 'bad' ? 'bad' : 'warn') : 'good'}>{p.name} · {word}</Pill>
+                  <Pill tone={kind === 'off' || kind === 'not-set-up' ? undefined : bad ? (kind === 'unreachable' || p.tone === 'bad' ? 'bad' : 'warn') : 'good'}>{p.name} · {word}</Pill>
                 </Link>
               </li>
             )
@@ -102,7 +104,7 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'car
         <PluginStrip label="Plug-in health">
           {cards.map(p => (
             <PluginTile key={p.id} name={p.name} icon={PLUGIN_ICON[p.id] ?? 'plugin'} href={p.hasDetail ? `/plugins/${p.id}` : undefined}
-              health={p.error ? 'bad' : p.tone ?? 'good'} sub={p.error ? 'unreachable' : p.headline} />
+              health={pluginKind(p) === 'not-set-up' ? 'unknown' : p.error ? 'bad' : p.tone ?? 'good'} sub={pluginKind(p) === 'not-set-up' ? 'not set up' : p.error ? 'unreachable' : p.headline} />
           ))}
         </PluginStrip>
       </Panel>
@@ -117,7 +119,8 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'car
 
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 300px), 1fr))' }}>
         {cards.map(p => {
-          const tone = p.error ? TONE.bad : TONE[p.tone ?? 'good']
+          const notSetUp = pluginKind(p) === 'not-set-up'
+          const tone = notSetUp ? 'var(--text-muted)' : p.error ? TONE.bad : TONE[p.tone ?? 'good']
           const body = (
             <>
               <div className="mb-3 flex items-center justify-between">
@@ -131,8 +134,8 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'car
                 </div>
                 <span className="flex items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-[10px] tracking-wider"
                   style={{ color: tone, border: `1px solid ${alpha(tone, 19)}` }}>
-                  <i className={vs.hdot} data-tone={p.error ? 'bad' : p.tone ?? 'good'} aria-hidden />
-                  {p.error ? 'UNREACHABLE' : p.tone === 'bad' ? 'NEEDS YOU' : p.tone === 'warn' ? 'CHECK' : 'LIVE'}
+                  <i className={vs.hdot} data-tone={notSetUp ? 'unknown' : p.error ? 'bad' : p.tone ?? 'good'} aria-hidden />
+                  {pluginBadge(p)}
                 </span>
               </div>
 

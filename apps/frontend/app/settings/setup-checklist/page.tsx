@@ -15,7 +15,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { HudHeader, Page, Panel, Pill, styles as ks, type PillTone, type StatChip } from '@/components/visual/kit'
 import ss from '../settings.module.css'
 
-type State = 'done' | 'partly' | 'not-done' | 'not-applicable'
+type State = 'done' | 'partly' | 'not-done' | 'not-applicable' | 'failed'
 interface Row { node: string; state: State; reason: string; host?: string; port?: number; fingerprint?: string }
 interface Item { id: string; ask: string; what: string; notes: string[]; state: State; rows: Row[]; needsNodeLogin: boolean; action: string | null; automatic?: boolean; command?: string }
 interface Job { id: string; item: string; status: 'running' | 'done' | 'failed'; results: Array<{ node?: string; label: string; status: string; reason: string }>; checks: Array<{ node?: string; status: string; reason: string }> }
@@ -25,7 +25,7 @@ interface Data { summary: string; logins: Record<string, boolean>; items: Item[]
 const TONE: Record<string, PillTone> = {
   done: 'good', ok: 'good', already: 'good', partly: 'warn', failed: 'bad', waiting: 'warn',
 }
-const WORDS: Record<string, string> = { done: 'Done', partly: 'Partly done', 'not-done': 'Not done', 'not-applicable': 'Does not apply' }
+const WORDS: Record<string, string> = { done: 'Done', partly: 'Partly done', 'not-done': 'Not done', 'not-applicable': 'Does not apply', failed: 'Failed' }
 
 function Tag({ s }: { s: string }) {
   return <Pill tone={TONE[s]}>{WORDS[s] ?? s}</Pill>
@@ -165,6 +165,7 @@ export default function SetupChecklistPage() {
       {!data && !error && <p className={`${ks.empty} animate-pulse`}>Looking at your nodes&hellip;</p>}
 
       {data && missingLogin.length > 0 && (
+        <div id="node-login" style={{ scrollMarginTop: 80 }}>
         <Panel title="Sign in to your nodes, once">
           <p className="text-sm" style={{ margin: '0 0 12px', color: 'var(--text-muted)' }}>
             To set things up on your nodes, HyperProx signs in to them. Use the login you use for SSH, usually root.
@@ -180,6 +181,7 @@ export default function SetupChecklistPage() {
           <div className="mt-3"><PrimaryButton disabled={busy === 'login'} onClick={saveLogin}>{busy === 'login' ? 'Testing on each node…' : 'Test and save'}</PrimaryButton></div>
           {loginRows && <ul className={ss.lines} style={{ marginTop: 12 }}>{loginRows.map(r => <li key={r.node}><Tag s={r.ok ? 'done' : 'failed'} /> <span className="font-mono">{r.node}</span>: {r.reason}</li>)}</ul>}
         </Panel>
+        </div>
       )}
 
       {confirm && <ReconfirmModal onClose={() => setConfirm(null)} onDone={() => { const f = confirm; setConfirm(null); f() }} />}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { alpha } from '@/lib/theme'
+import { dnsLoadState, CONNECT_DNS_HREF } from '@/lib/dns-state'
 import { Details, GlowBars, HudHeader, Page, Panel, Pill, styles, type StatChip } from '@/components/visual/kit'
 import { GlobeIcon, SplitIcon, MailIcon, CheckCircleIcon, WrenchIcon, LockIcon } from '@/components/dns/icons'
 
@@ -654,20 +655,22 @@ export default function DNSPage() {
   const [ddnsResult,  setDdnsResult]  = useState<string | null>(null)
   const [lastSync,    setLastSync]    = useState<Date | null>(null)
   const [providers,   setProviders]   = useState<ProviderStatus[]>([])
+  const [notConfigured, setNotConfigured] = useState<string | null>(null)
 
   // Load domains (from every provider) + the providers themselves + WAN IP
   useEffect(() => {
     Promise.all([
-      fetch('/api/dns/domains').then(r => r.json()),
+      fetch('/api/dns/domains').then(async r => dnsLoadState(r.status, await r.json().catch(() => null))),
       fetch('/api/dns/wan').then(r => r.json()),
       fetch('/api/dns/providers').then(r => r.json()).catch(() => ({})),
     ]).then(([domsJson, wanJson, provJson]) => {
       if (provJson?.success) setProviders(provJson.data)
-      if (domsJson.success) {
-        setDomains(domsJson.data)
-        if (domsJson.data.length > 0) setActiveDomain(domsJson.data[0].domain)
-      } else setError(domsJson.error || 'The DNS providers could not be read')
-      if (wanJson.success) setWanIP(wanJson.data.ip)
+      if (domsJson.kind === 'domains') {
+        setDomains(domsJson.domains)
+        if (domsJson.domains.length > 0) setActiveDomain(domsJson.domains[0].domain)
+      } else if (domsJson.kind === 'not-configured') setNotConfigured(domsJson.message)
+      else setError(domsJson.message)
+      if (wanJson?.success) setWanIP(wanJson.data.ip)
     }).catch(e => setError(e.message))
     .finally(() => setLoading(false))
   }, [])
@@ -727,6 +730,23 @@ export default function DNSPage() {
   if (loading) return (
     <Page>
       <Panel title="DNS"><p className={`${styles.empty} animate-pulse`} role="status">loading DNS...</p></Panel>
+    </Page>
+  )
+
+  // Nothing connected yet: an empty state with the way to connect one, not a failure.
+  if (notConfigured) return (
+    <Page>
+      <Panel title="DNS" sub="no provider connected">
+        <div role="status" className="flex flex-col gap-3" style={{ maxWidth: '40rem' }}>
+          <div className="font-display" style={{ color: 'var(--text-bright)', fontSize: 22, fontWeight: 600 }}>Connect a DNS provider</div>
+          <p className="text-sm" style={{ margin: 0, color: 'var(--text-soft)' }}>
+            HyperProx manages your domains&apos; records through your DNS provider. Connect GoDaddy or Cloudflare with an API key
+            (kept in the vault), and every domain on that account appears here.
+          </p>
+          <div><a href={CONNECT_DNS_HREF} className={`${styles.btn} ${styles.btnPri}`} style={{ textDecoration: 'none' }}>Connect a DNS provider</a></div>
+          {wanIP && <p className="text-xs font-mono" style={{ margin: 0, color: 'var(--text-muted)' }}>This network&apos;s WAN address: {wanIP}</p>}
+        </div>
+      </Panel>
     </Page>
   )
 

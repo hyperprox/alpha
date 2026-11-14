@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
 import { GhostButton, Notice, BusyNote } from '@/components/vault/ui'
+import { NodeLoginNotice } from '@/components/vault/NodeLoginAction'
 import { API, SHARE_LABEL, type Device, type NodeInventory } from './types'
 
 const KIND_ORDER: Device['kind'][] = ['gpu', 'render', 'serial', 'usb', 'video', 'tpu', 'tun', 'pci']
@@ -76,8 +77,8 @@ export function DevicesPanel({ nodes }: { nodes: string[] }) {
         <GhostButton className="ml-auto" style={{ height: 36 }} disabled={busy} onClick={() => void reload(true)}>{busy ? 'Reading…' : 'Refresh'}</GhostButton>
       </div>
       {busy && !inv && <BusyNote>Asking the node (read-only)…</BusyNote>}
-      {err && <Notice kind="error">{err}</Notice>}
-      {inv?.problem && <Notice kind="warn">{inv.problem}</Notice>}
+      {err && <NodeLoginNotice text={err} />}
+      {inv?.problem && <NodeLoginNotice text={inv.problem} kind="warn" />}
       {redacted && <Notice kind="info">Device paths, IDs and serial numbers are shown to admins only.</Notice>}
       {inv && KIND_ORDER.map(k => {
         const list = inv.devices.filter(d => d.kind === k)
@@ -105,8 +106,8 @@ export function DevicePicker({ guestNode, otherNodes, filter, onPick }: { guestN
   return (
     <div className="space-y-2">
       {here.busy && !here.inv && <BusyNote>Listing {guestNode}’s devices…</BusyNote>}
-      {here.err && <Notice kind="error">{here.err}</Notice>}
-      {here.inv?.problem && <Notice kind="warn">{here.inv.problem}</Notice>}
+      {here.err && <NodeLoginNotice text={here.err} />}
+      {here.inv?.problem && <NodeLoginNotice text={here.inv.problem} kind="warn" />}
       {here.inv?.devices.filter(filter).map(d => <DeviceRow key={d.id} d={d} picking onPick={onPick} />)}
       {here.inv && here.inv.devices.filter(filter).length === 0 && <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>Nothing suitable on {guestNode}.</p>}
       {otherNodes.length > 0 && <GhostButton style={{ height: 32 }} onClick={() => setShowOthers(x => !x)}>{showOthers ? 'Hide' : 'Show'} devices on other nodes</GhostButton>}

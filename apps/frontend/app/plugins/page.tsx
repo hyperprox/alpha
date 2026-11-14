@@ -10,6 +10,7 @@
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
+import { isNotConfigured } from '@/lib/plugin-status'
 import Link from 'next/link'
 import { Page, HudHeader, Panel, styles } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
@@ -82,11 +83,12 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
   }
 
   if (!data.ok) {
+    const unset = isNotConfigured(data.error)
     return (
       <div className="flex h-[132px] flex-col justify-center gap-1.5 rounded border px-3.5"
-        style={{ borderColor: 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--ground-deep)' }}>
-        <span className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: TONE.bad }}>
-          not reporting
+        style={{ borderColor: unset ? 'var(--border-strong)' : 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--ground-deep)' }}>
+        <span className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: unset ? 'var(--text-muted)' : TONE.bad }}>
+          {unset ? 'not set up' : 'not reporting'}
         </span>
         <span className="text-sm leading-relaxed" style={{ color: 'var(--text-soft)' }}>
           {data.error}
@@ -445,7 +447,7 @@ export default function PluginsPage() {
         <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 340px), 1fr))' }}>
           {plugins.map(p => {
             const d    = data[p.id]
-            const tone = !p.configured ? 'idle' : d && !d.ok ? 'bad' : d ? (d.tone ?? 'good') : 'idle'
+            const tone = !p.configured ? 'idle' : d && !d.ok ? (isNotConfigured(d.error) ? 'idle' : 'bad') : d ? (d.tone ?? 'good') : 'idle'
             return (
               <article key={p.id} className={styles.card} style={{ padding: 0 }}>
                 {/* Severity stripe — state readable before any text is parsed. */}
@@ -478,7 +480,7 @@ export default function PluginsPage() {
                   <span className="font-mono text-[11px]" style={{ color: TONE[tone] }}>
                     <span aria-hidden>● </span>{!p.configured
                       ? `needs ${p.missing.join(' and ')}`
-                      : d && !d.ok ? 'unreachable'
+                      : d && !d.ok ? (isNotConfigured(d.error) ? 'not set up' : 'unreachable')
                       : d ? 'connected' : 'idle'}
                   </span>
 
@@ -532,7 +534,7 @@ export default function PluginsPage() {
                   <p className="mb-4 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>{i.would}</p>
                   <div className="mt-auto flex items-center gap-2">
                     <a href={requestUrl(repo, i)} target="_blank" rel="noreferrer" className={styles.btn}
-                      style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none' }}>
+                      style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none', whiteSpace: 'nowrap', flexShrink: 0 }}>
                       Request this
                     </a>
                     {i.api && (

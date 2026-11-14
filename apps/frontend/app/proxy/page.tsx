@@ -341,7 +341,7 @@ function InstanceForm({ kinds, onClose, onSaved }: { kinds: KindInfo[]; onClose:
             <select value={kind} onChange={e => setKind(e.target.value as Kind)} style={INPUT}>
               {kinds.map(k => <option key={k.kind} value={k.kind}>{k.label}</option>)}
             </select></div>
-          <div><label style={LABEL}>Name</label><input value={name} onChange={e => setName(e.target.value)} placeholder="edge" style={INPUT} /></div>
+          <div><label style={LABEL}>Name <span aria-hidden style={{ color: 'var(--crit)' }}>*</span><span className="sr-only"> (required)</span></label><input value={name} onChange={e => setName(e.target.value)} placeholder="edge" style={INPUT} required aria-required="true" /></div>
         </div>
         <div><label style={LABEL}>{info?.urlLabel ?? 'URL'}</label><input value={url} onChange={e => setUrl(e.target.value)} placeholder={info?.urlHint} style={INPUT} /></div>
         <div>

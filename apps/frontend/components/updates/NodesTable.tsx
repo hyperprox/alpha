@@ -1,5 +1,6 @@
 'use client'
 
+import { isNoLoginText } from '@/lib/node-login'
 import { styles } from '@/components/visual/kit'
 import { Fragment, useState } from 'react'
 import type { UpdatesNode, UpdatesPkgChange } from '@hyperprox/types'
@@ -39,7 +40,7 @@ export function NodesTable({ nodes, canReboot, rebootWhy, onReboot }: {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   return (
     <div className={styles.tableWrap}>
-      <table className={styles.table}>
+      <table className={styles.table} style={{ minWidth: '46rem' }}>
         <thead>
           <tr style={THEAD_STYLE}>
             <th scope="col" className={TH}>NODE</th>
@@ -59,7 +60,7 @@ export function NodesTable({ nodes, canReboot, rebootWhy, onReboot }: {
                   <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{n.node}</span>
                   {!n.online && <span className="ml-2"><Badge tone="crit">offline</Badge></span>}
                   {n.isSelf && <span className="ml-2"><Badge tone="accent" title="HyperProx itself runs on this node">runs HyperProx</Badge></span>}
-                  {n.error && <div className="mt-0.5 text-xs" style={{ color: 'var(--crit-soft)' }}>{n.error}</div>}
+                  {n.error && <div className="mt-0.5 text-xs" style={{ color: 'var(--crit-soft)', overflowWrap: 'anywhere', minWidth: '12rem', maxWidth: '34ch' }}>{isNoLoginText(n.error) ? 'No saved node login' : n.error}</div>}
                   {n.upgradeNote && <div className="mt-0.5 text-xs" style={{ color: 'var(--warn-2)' }}>{n.upgradeNote}</div>}
                 </td>
                 <td className="px-4 py-2.5">

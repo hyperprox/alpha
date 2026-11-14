@@ -82,8 +82,9 @@ export function Sidebar() {
           )}
         </div>
 
-        <nav className={s.nav} aria-label="Main">
-          {NAV.map((group, gi) => (
+        {(() => {
+          // The last group (Settings) is pinned above the vault; the rest scroll.
+          const render = (group: typeof NAV[number], gi: number) => (
             <div key={gi} className={s.nav} role="group" aria-label={group.section ?? 'Overview'}>
               {group.section && (collapsed ? <div className={s.navRule} aria-hidden /> : <div className={s.navHead} aria-hidden>{group.section}</div>)}
               {group.items.map(item => {
@@ -95,8 +96,14 @@ export function Sidebar() {
                 )
               })}
             </div>
-          ))}
-        </nav>
+          )
+          return (
+            <>
+              <nav className={`${s.nav} ${s.navScroll}`} aria-label="Main">{NAV.slice(0, -1).map(render)}</nav>
+              <nav className={`${s.nav} ${s.navPinned}`} aria-label="Settings">{render(NAV[NAV.length - 1], NAV.length - 1)}</nav>
+            </>
+          )
+        })()}
 
         <div className={s.vault} aria-live="polite">
           <div className={s.vaultHead}>

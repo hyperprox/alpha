@@ -40,10 +40,16 @@ export function PolicyStrip({ policy, error, checkedAt, refreshing, onCheck }: {
         </div>
       </div>
       {error && <Notice tone="crit">{error}</Notice>}
+      {policy?.loaded && policy.created && (
+        <Notice tone="info">
+          HyperProx created <span className="font-mono">{policy.path}</span> with safe defaults: discovered endpoints are checked, and
+          nothing is issued or deployed until you add a certificate to it. The example inside shows every option.
+        </Notice>
+      )}
       {policy && !policy.loaded && (
         <Notice tone="warn">
           Monitoring works without a policy file, but nothing can be issued until <span className="font-mono">config/certs.yaml</span> exists
-          and validates. Copy <span className="font-mono">config/certs.example.yaml</span> and edit it for this network.
+          and validates. HyperProx creates one with safe defaults when there is none; why this one did not load is below.
           {policy.error && <div className="mt-1 font-mono text-xs">{policy.error}</div>}
           <div className="mt-1 font-mono text-xs" style={{ opacity: 0.8 }}>{policy.path}</div>
         </Notice>

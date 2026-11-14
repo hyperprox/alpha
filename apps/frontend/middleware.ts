@@ -8,6 +8,8 @@ export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
 
   if (pathname === '/login') return NextResponse.next()
+  // Joining from an invitation link: the link is the credential (routes/users.ts), there is no session yet.
+  if (pathname === '/join') return NextResponse.next()
   if (req.cookies.get('hyperprox_token')) return NextResponse.next()
 
   // Next's middleware needs an absolute Location ("Invalid URL" otherwise), and req.nextUrl names the Next

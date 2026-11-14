@@ -46,6 +46,7 @@ const CATEGORY_META: Record<string, { label: string; accent: string; providers: 
 // The other settings pages, as tiles on this one.
 const AREAS: Array<{ href: string; label: string; icon: string; sub: string }> = [
   { href: '/settings/setup-checklist', label: 'Setup checklist', icon: 'check',  sub: "The installer's questions, for anything you skipped." },
+  { href: '/settings/users',           label: 'Users',           icon: 'lock',   sub: 'Who can sign in, with which role. Invite someone with a one-time link.' },
   { href: '/settings/secrets',         label: 'Secrets',         icon: 'lock',   sub: 'What the vault holds. Revealing one may ask for your master password again.' },
   { href: '/settings/api-tokens',      label: 'API tokens',      icon: 'plug',   sub: 'Bearer tokens for scripts and agents.' },
   { href: '/settings/notifications',   label: 'Notifications',   icon: 'alarm',  sub: 'Where HyperProx tells you something needs attention.' },

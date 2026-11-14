@@ -358,18 +358,24 @@ export default function NotificationsPage() {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<Channel | null | 'new'>(null)
   const [deleting, setDeleting] = useState<Channel | null>(null)
+  const [reconfirmRemove, setReconfirmRemove] = useState<null | (() => void)>(null)
   const [testing, setTesting] = useState<string | null>(null)
   const [justMade, setJustMade] = useState<Channel | null>(null)
   const [toast, setToast] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout>>()
 
+  // Only the newest read may fill the list: an older read that finishes late (after a delete, say) would put the
+  // removed channel back.
+  const loadSeq = useRef(0)
   const load = useCallback(async () => {
-    const r = await apiJson<{ channels: Channel[]; meta: Meta }>('/api/settings/notifications/channels')
+    const seq = ++loadSeq.current
+    const r = await apiJson<{ channels: Channel[]; meta: Meta }>('/api/settings/notifications/channels', 'GET', undefined, { 'Cache-Control': 'no-cache' })
+    if (seq !== loadSeq.current) return
     if (r.status === 403) { setError('Only owners and admins can manage notifications.'); setChannels([]); return }
     if (!r.ok) { setError(r.error ?? 'Could not load the channels'); setChannels([]); return }
     setError(''); setChannels(r.body?.channels ?? []); if (r.body?.meta) setMeta(r.body.meta)
-    const d = await apiJson<{ deliveries: Delivery[] }>('/api/settings/notifications/deliveries?limit=20')
-    if (d.ok) setDeliveries(d.body?.deliveries ?? [])
+    const d = await apiJson<{ deliveries: Delivery[] }>('/api/settings/notifications/deliveries?limit=20', 'GET', undefined, { 'Cache-Control': 'no-cache' })
+    if (seq === loadSeq.current && d.ok) setDeliveries(d.body?.deliveries ?? [])
   }, [])
   useEffect(() => { if (role === undefined || canUse) load() }, [load, role, canUse])
   useEffect(() => () => clearTimeout(toastTimer.current), [])
@@ -391,7 +397,13 @@ export default function NotificationsPage() {
   async function remove(c: Channel) {
     const r = await apiJson(`/api/settings/notifications/channels/${encodeURIComponent(c.id)}`, 'DELETE')
     setDeleting(null)
-    if (r.ok) { flash('info', `Deleted "${c.name}".`); load() } else flash('error', r.error ?? 'Could not delete')
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirmRemove(() => () => void remove(c)); return }
+    if (r.ok) {
+      // Gone at once on screen, then read back so the list is what the server holds.
+      loadSeq.current++
+      setChannels(cs => (cs ?? []).filter(x => x.id !== c.id))
+      flash('info', `Deleted "${c.name}".`); load()
+    } else flash('error', r.error ?? 'Could not delete')
   }
 
   const nameOf = (id: string) => channels?.find(c => c.id === id)?.name ?? 'Former channel'
@@ -529,6 +541,7 @@ export default function NotificationsPage() {
           onSaved={(c, created) => { setEditing(null); if (created) setJustMade(c); else flash('info', `Saved "${c.name}".`); load() }}
         />
       )}
+      {reconfirmRemove && <ReconfirmModal onClose={() => setReconfirmRemove(null)} onDone={() => { const f = reconfirmRemove; setReconfirmRemove(null); f() }} />}
       {deleting && <DeleteModal c={deleting} onClose={() => setDeleting(null)} onConfirm={() => remove(deleting)} />}
     </Page>
   )
