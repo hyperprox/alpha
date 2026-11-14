@@ -2,9 +2,9 @@
 
 // Creating a container or VM. Moved as it was from the old Infrastructure page; the page opens it with a type.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiJson } from '@/lib/api'
-import { applyProposal, defaultNode, hostArch, nestingByDefault, pickRootStorage, storagesFor, templateOptions, templatesForArch, type FormNode } from '@/lib/lxc-form'
+import { applyProposal, withoutProposal, defaultNode, hostArch, nestingByDefault, pickRootStorage, storagesFor, templateOptions, templatesForArch, type FormNode } from '@/lib/lxc-form'
 import { ConfirmOverride, confirmNeeded, type NamingSettingsView, type Proposal } from '@/components/catalogue/NamingProposal'
 
 type PVENode = FormNode & { status: string }
@@ -40,6 +40,7 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
   // What the person typed themselves is never overwritten by a proposal; the ID and the network are tracked apart.
   const [touched, setTouched] = useState({ id: false, net: false })
   const [proposalError, setProposalError] = useState('')
+  const lastProposal = useRef<Proposal | null>(null)
   const [namingConfirm, setNamingConfirm] = useState('')
   useEffect(() => {
     void apiJson<{ data: { settings: NamingSettingsView | null } }>('/api/catalogue/wizard/naming').then(r => { if (r.ok) setSavedNaming(r.body?.data?.settings ?? null) })
@@ -47,6 +48,8 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
   useEffect(() => {
     if (createType !== 'lxc' || !createForm.node) return
     let gone = false
+    // The last node's proposal leaves the form now, not when (or if) this node's arrives.
+    setCreateForm(f => withoutProposal(f, lastProposal.current, touched))
     setProposal(null); setProposing(true); setProposalError('')
     void apiJson<{ data: Proposal }>('/api/catalogue/wizard/propose', 'POST', { node: createForm.node }).then(r => {
       if (gone) return
@@ -59,6 +62,7 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
   }, [createType, createForm.node])
   useEffect(() => {
     if (!proposal) return
+    lastProposal.current = proposal
     setCreateForm(f => applyProposal(f, proposal, touched))
   }, [proposal, touched])
   const net0Ip = /(?:^|,)ip=([^,]+)/.exec(createForm.net0)?.[1] ?? 'dhcp'

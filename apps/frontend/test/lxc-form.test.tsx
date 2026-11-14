@@ -1,7 +1,7 @@
 // The +LXC form's use of the server's numbering proposal (lib/lxc-form.ts): what lands in the form, and what does not.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyProposal, proposedNet0, defaultNode, pickRootStorage, templateOptions, nestingByDefault } from '../lib/lxc-form'
+import { applyProposal, withoutProposal, proposedNet0, defaultNode, pickRootStorage, templateOptions, nestingByDefault } from '../lib/lxc-form'
 
 // What POST /api/catalogue/wizard/propose answers on a cluster numbered <node#><two digits> <-> .2<digits>.
 const convention = { vmid: 701, ip: '192.0.2.201/24', gateway: '192.0.2.1', bridge: 'vmbr0' }
@@ -72,4 +72,14 @@ test('nesting is on by default for unprivileged Debian 12+ and other systemd tem
   assert.equal(nestingByDefault('local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst', true), true)
   assert.equal(nestingByDefault('local:vztmpl/alpine-3.22-default_20250617_amd64.tar.xz', true), false)
   assert.equal(nestingByDefault('local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst', false), false, 'privileged: off')
+})
+
+test('a new node clears the last node\'s proposal from the form, keeping what the person typed', () => {
+  const filled = applyProposal(blank, convention, { id: false, net: false })
+  const cleared = withoutProposal(filled, convention, { id: false, net: false })
+  assert.equal(cleared.vmid, '')
+  assert.equal(cleared.net0, 'name=eth0,bridge=vmbr0,ip=dhcp')
+  const typed = { ...filled, vmid: '555' }
+  assert.equal(withoutProposal(typed, convention, { id: true, net: false }).vmid, '555')
+  assert.equal(withoutProposal(filled, null, { id: false, net: false }), filled)
 })

@@ -12,9 +12,11 @@ location = /nginx-health {
 }
 
 # The first-run wizard: its page at /setup, its API under /api/setup/. The longer prefix wins over /api,
-# so these never reach HyperProx's own API. Once setup completes the wizard exits and these answer 502.
+# so these never reach HyperProx's own API. Once setup completes the wizard exits: an old setup link then lands
+# on the sign-in page with a short note, instead of a bare 502.
 location /setup {
     proxy_pass         http://setup;
+    error_page 502 503 504 = @setup_done;
     proxy_http_version 1.1;
     proxy_set_header   Connection        "";
     proxy_set_header   Host              $host;
@@ -22,6 +24,10 @@ location /setup {
     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $hpx_proto;
     proxy_set_header   X-Forwarded-Host  $http_host;
+}
+
+location @setup_done {
+    return 302 /login?from=setup;
 }
 
 location /api/setup/ {

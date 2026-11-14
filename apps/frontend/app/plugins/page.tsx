@@ -28,6 +28,8 @@ interface PluginCard {
   id: string; name: string; description: string
   kind: 'tile' | 'device'; icon: string
   settings: PluginSetting[]; configured: boolean; missing: string[]
+  /** What it still needs, in words (the API's pluginNeeds; never empty when not set up). */
+  needs?: string
   hasDetail: boolean
 }
 
@@ -487,7 +489,7 @@ export default function PluginsPage() {
                 <div className="mt-4 flex flex-wrap items-center gap-2 border-t px-5 py-3.5" style={{ borderColor: BORDER }}>
                   <span className="font-mono text-[11px]" style={{ color: TONE[tone] }}>
                     <span aria-hidden>● </span>{!p.configured
-                      ? `needs ${p.missing.join(' and ')}`
+                      ? `needs ${p.needs || p.missing.join(' and ') || 'setting up'}`
                       : d && !d.ok ? (isNotConfigured(d.error) ? 'not set up' : 'unreachable')
                       : d ? 'connected' : 'idle'}
                   </span>

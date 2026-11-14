@@ -35,7 +35,8 @@ const run = promisify(execFile)
 
 export type ItemId = 'node-health' | 'power' | 'gpu' | 'igpu-access' | 'charts' | 'proxmox-metrics' | 'dns' | 'ai' | 'targets' | 'old-backups' | 'host-keys'
 /** failed: it was set up, but checking the outcome found it not working (the row or note says why). */
-export type ItemState = 'done' | 'partly' | 'not-done' | 'not-applicable' | 'failed'
+/** unknown: could not be read (no node login yet); neither done nor not done, and never counted as either. */
+export type ItemState = 'done' | 'partly' | 'not-done' | 'not-applicable' | 'failed' | 'unknown'
 
 export interface NodeRow { node: string; state: ItemState; reason: string; host?: string; port?: number; fingerprint?: string }
 export interface ChecklistItem {
@@ -175,11 +176,14 @@ function addProfile(file: string, profile: string): void {
 
 // ── State ────────────────────────────────────────────────────────────────────
 
-function roll(rows: NodeRow[]): ItemState {
+export function roll(rows: NodeRow[]): ItemState {
   const live = rows.filter(r => r.state !== 'not-applicable')
   if (!live.length) return 'not-applicable'
-  if (live.every(r => r.state === 'done')) return 'done'
-  return live.some(r => r.state === 'done') ? 'partly' : 'not-done'
+  // Unknown rows count neither way: the item is what the known rows say, or unknown if none is known.
+  const known = live.filter(r => r.state !== 'unknown')
+  if (!known.length) return 'unknown'
+  if (known.every(r => r.state === 'done')) return known.length === live.length ? 'done' : 'partly'
+  return known.some(r => r.state === 'done') ? 'partly' : 'not-done'
 }
 
 export async function checklistState(deps: ChecklistDeps = productionChecklistDeps()) {
@@ -200,9 +204,10 @@ export async function checklistState(deps: ChecklistDeps = productionChecklistDe
 
   const power: NodeRow[] = nodes.map(n => n.rapl === 'none' ? { node: n.node!, state: 'not-applicable', reason: 'no power counters on this CPU' }
     : n.rapl === 'readable' ? { node: n.node!, state: 'done', reason: 'energy counters readable' }
-    : { node: n.node!, state: 'not-done', reason: n.rapl === 'root-only' ? 'counters are root-only' : unknown(n) ? 'unknown until a node login is saved' : 'no power reading yet' })
+    : n.rapl !== 'root-only' && unknown(n) ? { node: n.node!, state: 'unknown', reason: 'unknown until a node login is saved' }
+    : { node: n.node!, state: 'not-done', reason: n.rapl === 'root-only' ? 'counters are root-only' : 'no power reading yet' })
   items.push({ ...base('power'), rows: power, state: roll(power), needsNodeLogin: true,
-    action: roll(power) === 'done' || roll(power) === 'not-applicable' ? null : 'Add the power rule where the counters are root-only' })
+    action: ['done', 'not-applicable', 'unknown'].includes(roll(power)) ? null : 'Add the power rule where the counters are root-only' })
 
   const gpu: NodeRow[] = []
   for (const n of nodes) {
@@ -223,9 +228,10 @@ export async function checklistState(deps: ChecklistDeps = productionChecklistDe
     const ig: NodeRow[] = nodes.map(n => n.igpuAccess === 'none' || (n.igpuAccess === null && !n.gpus.some(g => g.kind === 'integrated' && g.vendor !== 'nvidia'))
       ? { node: n.node!, state: 'not-applicable', reason: 'no built-in graphics' }
       : n.igpuAccess === 'open' ? { node: n.node!, state: 'done', reason: 'containers can use the built-in graphics' }
-      : { node: n.node!, state: 'not-done', reason: n.igpuAccess === 'closed' ? 'only the render group can use them' : 'unknown until a node login is saved' })
+      : n.igpuAccess === 'closed' ? { node: n.node!, state: 'not-done', reason: 'only the render group can use them' }
+      : { node: n.node!, state: 'unknown', reason: 'unknown until a node login is saved' })
     items.push({ ...base('igpu-access'), rows: ig, state: roll(ig), needsNodeLogin: true,
-      action: ['done', 'not-applicable'].includes(roll(ig)) ? null : 'Open the built-in graphics to containers' })
+      action: ['done', 'not-applicable', 'unknown'].includes(roll(ig)) ? null : 'Open the built-in graphics to containers' })
   }
 
   // Done only when Prometheus answers a query; switched on but silent is a failure with its reason.

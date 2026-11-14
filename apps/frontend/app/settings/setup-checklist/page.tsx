@@ -15,7 +15,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { HudHeader, Page, Panel, Pill, styles as ks, type PillTone, type StatChip } from '@/components/visual/kit'
 import ss from '../settings.module.css'
 
-type State = 'done' | 'partly' | 'not-done' | 'not-applicable' | 'failed'
+type State = 'done' | 'partly' | 'not-done' | 'not-applicable' | 'failed' | 'unknown'
 interface Row { node: string; state: State; reason: string; host?: string; port?: number; fingerprint?: string }
 interface Item { id: string; ask: string; what: string; notes: string[]; state: State; rows: Row[]; needsNodeLogin: boolean; action: string | null; automatic?: boolean; command?: string }
 interface Job { id: string; item: string; status: 'running' | 'done' | 'failed'; results: Array<{ node?: string; label: string; status: string; reason: string }>; checks: Array<{ node?: string; status: string; reason: string }> }
@@ -25,7 +25,7 @@ interface Data { summary: string; logins: Record<string, boolean>; items: Item[]
 const TONE: Record<string, PillTone> = {
   done: 'good', ok: 'good', already: 'good', partly: 'warn', failed: 'bad', waiting: 'warn',
 }
-const WORDS: Record<string, string> = { done: 'Done', partly: 'Partly done', 'not-done': 'Not done', 'not-applicable': 'Does not apply', failed: 'Failed' }
+const WORDS: Record<string, string> = { done: 'Done', partly: 'Partly done', 'not-done': 'Not done', 'not-applicable': 'Does not apply', failed: 'Failed', unknown: 'Unknown' }
 
 function Tag({ s }: { s: string }) {
   return <Pill tone={TONE[s]}>{WORDS[s] ?? s}</Pill>

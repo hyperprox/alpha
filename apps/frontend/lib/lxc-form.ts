@@ -124,3 +124,17 @@ export function proposedNet0(p: FormProposal): string {
 export function applyProposal<F extends { vmid: string; net0: string }>(f: F, p: FormProposal, touched: { id: boolean; net: boolean }): F {
   return { ...f, ...(touched.id ? {} : { vmid: String(p.vmid) }), ...(touched.net ? {} : { net0: proposedNet0(p) }) }
 }
+
+/**
+ * The form when the node changes: what the last node's proposal filled in (and the person did not type) is
+ * cleared at once, so it is never left showing that node's ID and address while the new node's proposal is
+ * read, or after it fails.
+ */
+export function withoutProposal<F extends { vmid: string; net0: string }>(f: F, prev: FormProposal | null, touched: { id: boolean; net: boolean }): F {
+  if (!prev) return f
+  return {
+    ...f,
+    ...(!touched.id && f.vmid === String(prev.vmid) ? { vmid: '' } : {}),
+    ...(!touched.net && f.net0 === proposedNet0(prev) ? { net0: 'name=eth0,bridge=vmbr0,ip=dhcp' } : {}),
+  }
+}

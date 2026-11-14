@@ -296,6 +296,9 @@ function LoginForm() {
   return (
     <div className={s.stack}>
       {status?.demo && <div className="flex justify-center"><DemoBadge /></div>}
+      {params.get('from') === 'setup' && (
+        <Notice kind="info">Setup is finished, so the setup link no longer opens anything. Sign in here.</Notice>
+      )}
       {params.get('locked') && (
         <Notice kind="warn">{lockedNotice(params.get('reason'))}</Notice>
       )}

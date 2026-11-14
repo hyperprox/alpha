@@ -9,7 +9,7 @@ import { PLUGIN_IDEAS, repoSlug } from '../lib/plugin-wishlist'
 import { sharedServiceScan, pluginFindings } from '../lib/service-scan'
 import { homeAssistantDetail }  from './ha-control'
 import {
-  describeSettings, getSettings, missingSettings, pluginConfigured, runPlugin, runPluginDetail,
+  describeSettings, getSettings, missingSettings, pluginConfigured, pluginNeeds, runPlugin, runPluginDetail,
   runPluginMetrics, renderExposition, saveSettings,
   type PluginMetric,
   runPluginRescueScan, runPluginRescueRun, PluginSettingsError,
@@ -71,6 +71,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
           settings:   await describeSettings(p.manifest),
           configured: await pluginConfigured(p, stored),
           missing,
+          needs:      pluginNeeds(p, missing),
         }
       }))
       return { success: true, data: rows }

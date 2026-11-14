@@ -72,6 +72,8 @@ function sessionCheck(req, res) {
 for (const [port, label] of Object.entries(labels)) {
   const s = http.createServer((req, res) => {
     if (label === 'api' && req.url === '/api/auth/check') return sessionCheck(req, res)
+    // The wizard after setup is gone: the connection drops, as with nothing listening on its port.
+    if (label === 'setup' && req.url.startsWith('/setup-gone')) return req.socket.destroy()
     let body = ''
     req.on('data', c => { body += c })
     req.on('end', () => res.end(`${label} ${req.method} ${req.url} proto=${req.headers['x-forwarded-proto'] || '-'}` +
@@ -118,6 +120,8 @@ expect "https: the TLS handshake completes"                             "SSL con
 expect "https: /api goes to the API"                       "api GET /api/health proto=https"             "${S}/api/health"
 expect "https: the wizard page goes to the setup server"   "setup GET /setup?k=abc proto=https"          "${S}/setup?k=abc"
 expect "https: the wizard API goes to the setup server, not the API" "setup GET /api/setup/state"        "${S}/api/setup/state"
+expect "after setup, an old setup link is a redirect, not a 502" "302" -o /dev/null -w '%{http_code}' "${S}/setup-gone"
+expect "  to the sign-in page with a note"                        "/login?from=setup" -o /dev/null -w '%{redirect_url}' "${S}/setup-gone"
 G='hyperprox_token=good'
 WS=(--http1.1 -D - -o /dev/null -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==')
 expect "grafana: no session is sent to sign in"            "/login?next=%2Fmonitoring"              --http1.1 -D - -o /dev/null "${S}/grafana/d/x"

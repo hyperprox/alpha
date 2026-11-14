@@ -3,7 +3,7 @@
 // on a fresh install: ASUS, QNAP and PBS (their devices live in their own list) and MeshCentral.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pluginConfigured, instanceCount } from '../src/lib/plugin-host'
+import { pluginConfigured, instanceCount, pluginNeeds } from '../src/lib/plugin-host'
 import { findPlugin } from '../src/plugins'
 
 const one = JSON.stringify([{ id: 'a1', name: 'Router' }])
@@ -33,4 +33,10 @@ test('a plug-in with required settings: set up when they are stored, as before',
   assert.equal(await pluginConfigured(p, { sonarr_url: 'http://192.0.2.30:8989', sonarr_key: 'k' }), true)
   const ha = findPlugin('home-assistant')!
   assert.equal(await pluginConfigured(ha, { url: 'http://192.0.2.40:8123', token: 't' }), true, 'a core transport with settings is judged by them')
+})
+
+test('a plug-in that is not set up always says what it needs', () => {
+  assert.equal(pluginNeeds(findPlugin('asus')!, []), 'a device added on its page')
+  assert.equal(pluginNeeds(findPlugin('meshcentral')!, []), 'a public URL')
+  assert.equal(pluginNeeds(findPlugin('arrstack')!, ['Sonarr address', 'Sonarr API key']), 'Sonarr address and Sonarr API key')
 })

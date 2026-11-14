@@ -500,6 +500,7 @@ export const meshcentralPlugin: Plugin = {
   // It holds no MeshCentral login, so it is set up only once it knows where MeshCentral is: a public URL. With
   // none (a fresh install) it is not set up, rather than "Active" with nothing behind it.
   isConfigured: stored => !!(stored.public_url ?? '').trim(),
+  needsWhat: 'a public URL',
 
   manifest: {
     id:   'meshcentral',

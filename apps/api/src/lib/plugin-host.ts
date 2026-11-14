@@ -183,6 +183,8 @@ export interface Plugin {
    * Optional; see pluginConfigured for the default.
    */
   isConfigured?(stored: Record<string, string>): boolean | Promise<boolean>
+  /** What it still needs, in words, when isConfigured says no ("a public URL"). */
+  needsWhat?: string
   /** Act on one of them, by the id rescueScan reported. */
   rescueRun?(ctx: PluginContext, id: string): Promise<string>
   /**
@@ -540,6 +542,14 @@ export async function pluginConfigured(plugin: Plugin, stored: Record<string, st
   if (plugin.isConfigured) { try { return !!(await plugin.isConfigured(stored)) } catch { return false } }
   if (plugin.manifest.coreTransport && !plugin.manifest.settings.length) return instanceCount(stored) > 0
   return true
+}
+
+/** What a plug-in that is not set up still needs, in words, for its card ("needs …"). Never empty. */
+export function pluginNeeds(plugin: Plugin, missing: string[]): string {
+  if (missing.length) return missing.join(' and ')
+  if (plugin.needsWhat) return plugin.needsWhat
+  if (plugin.manifest.coreTransport && !plugin.manifest.settings.length) return 'a device added on its page'
+  return 'its settings'
 }
 
 export function missingSettings(manifest: PluginManifest, stored: Record<string, string>): string[] {
