@@ -121,6 +121,18 @@ ui_wrap() {
   [ -z "$line" ] || printf '%s\n' "$line"
 }
 
+# ui_wrap_keep WIDTH TEXT: as ui_wrap, keeping TEXT's leading spaces on every line, and hanging lines that start
+# with a marker ("1  ", "✓  ", "!  ", "·  ") under the text after it, so a wrapped item stays one item.
+ui_wrap_keep() {
+  local w="$1" t="$2" ind="" mark="" hang="" first=1 l
+  ind="${t%%[! ]*}"; t="${t#"$ind"}"
+  if [[ "$t" =~ ^([0-9]+|[✓✗!•·-])\ + ]]; then mark="${BASH_REMATCH[0]}"; t="${t#"$mark"}"; hang="$(ui_rep ' ' "${#mark}")"; fi
+  while IFS= read -r l; do
+    if [ "$first" -eq 1 ]; then printf '%s%s%s\n' "$ind" "$mark" "$l"; first=0
+    else printf '%s%s%s\n' "$ind" "$hang" "$l"; fi
+  done < <(ui_wrap $(( w - ${#ind} - ${#mark} )) "$t")
+}
+
 # ui_banner WHAT REF: the HYPERPROX banner and its tagline (fancy), or one plain line.
 ui_banner() {
   if [ "$UI_FANCY" -ne 1 ]; then printf 'HyperProx %s · %s\n' "$1" "$2"; return; fi
@@ -163,9 +175,13 @@ ui_kv() {    # KEY VALUE: a found fact. Fancy: key column and dim value; plain: 
   if [ "$UI_FANCY" -ne 1 ]; then printf '[ ok ] %s: %s\n' "$1" "$2"; return; fi
   printf '  %s✓%s %s %s%s%s\n' "$C_OK" "$C_OFF" "$(ui_pad "$1" 25)" "$C_DIM" "$2" "$C_OFF"
 }
-ui_warn() {
+ui_warn() {   # wrapped to the layout's width, the wrapped lines under the text
+  local l first=1
   if [ "$UI_FANCY" -ne 1 ]; then printf '[warn] %s\n' "$1"; return; fi
-  printf '  %s!%s %s\n' "$C_WARN" "$C_OFF" "$1"
+  while IFS= read -r l; do
+    if [ "$first" -eq 1 ]; then printf '  %s!%s %s\n' "$C_WARN" "$C_OFF" "$l"; first=0
+    else printf '    %s\n' "$l"; fi
+  done < <(ui_wrap $(( UI_W - 4 )) "$1")
 }
 ui_bad() {   # a refused answer or a failed line: red ✗
   if [ "$UI_FANCY" -ne 1 ]; then printf '[ no ] %s\n' "$1"; return; fi
@@ -333,7 +349,14 @@ ui_card_line() { # TEXT [STYLE] [RIGHT]: a card line with a 2-space margin, wrap
   while IFS= read -r l; do
     if [ -n "$r" ]; then ui_box_put " ${2:-}$(ui_pad "$l" "$w")$C_OFF  $C_DIM$r$C_OFF " $(( 1 + w + 2 + ${#r} + 1 )) "$UI_CW"; r=""
     else ui_box_put " ${2:-}$l$C_OFF" $(( 1 + ${#l} )) "$UI_CW"; fi
-  done < <(if [ "${#1}" -le "$w" ]; then printf '%s\n' "$1"; else ui_wrap "$w" "$1"; fi)
+  done < <(if [ "${#1}" -le "$w" ]; then printf '%s\n' "$1"; else ui_wrap_keep "$w" "$1"; fi)
+}
+# ui_link LABEL URL: a link printed outside any box, on a line of its own and never wrapped, so it can be
+# copied whole however narrow the terminal is (plain output: the same two lines).
+ui_link() {
+  if [ "$UI_FANCY" -ne 1 ]; then printf '%s\n%s\n' "$1" "$2"; return; fi
+  printf '  %s%s%s\n' "$C_BOLD" "$1" "$C_OFF"
+  printf '  %s%s%s\n' "$C_KEY" "$2" "$C_OFF"
 }
 ui_table_top() { # TITLE
   printf '  %s╔%s╗%s\n' "$C_ACC" "$(ui_rep '═' $(( UI_CW - 2 )))" "$C_OFF"
@@ -2185,8 +2208,8 @@ success_card() {
   ui_box_top "" "$UI_CW" "$C_OK"
   ui_card_line "✓  HyperProx is running" "$C_OK$C_BOLD" "total $(ui_secs "$SECONDS")"
   ui_card_line ""
-  ui_card_line "   Open   ${SETUP_URL}" "$C_KEY"
-  ui_card_line "   Keep this link private: it carries the setup key." "$C_DIM"
+  ui_card_line "   Open the setup link printed below this box." "$C_KEY"
+  ui_card_line "   Keep it private: it carries the setup key." "$C_DIM"
   [ -z "$TS_URL" ] || ui_card_line "   Away   ${TS_URL}  (Tailscale)" "$C_KEY"
   [ -z "$WG_LINE" ] || ui_card_line "   VPN    ${WG_LINE}"
   ui_card_line ""
@@ -2203,6 +2226,8 @@ success_card() {
   if [ -n "$PW_FILE" ]; then ui_card_line "Container $CTID · root password saved in $PW_FILE" "$C_DIM"
   else ui_card_line "Container $CTID · root password: $PASSWORD" "$C_DIM"; fi
   ui_box_bottom "$UI_CW"
+  echo
+  ui_link "Setup link (private):" "$SETUP_URL"
   echo
 }
 

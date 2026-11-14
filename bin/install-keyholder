@@ -149,7 +149,7 @@ give_up() {
 if ! systemctl is-active --quiet "$UNIT"; then
   systemctl start "$UNIT" || give_up
   systemctl is-active --quiet "$UNIT" || give_up
-  echo "  keyholder started (${UNIT})"
+  echo "    keyholder started (${UNIT})"
   # Only an install that is already in use has anything to lock: on a fresh one nobody has signed in yet.
   if [[ "$first_install" == "1" ]] && grep -q '^SETUP_COMPLETE=true' "${HYPERPROX_DIR:-/opt/hyperprox}/.env" 2>/dev/null; then
     echo "  ⚠ First install of the keyholder: the API restart that follows locks HyperProx ONE last time."

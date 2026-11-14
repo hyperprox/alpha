@@ -37,7 +37,7 @@ ENV_FILE="${ENV_FILE:-${HYPERPROX_DIR}/.env}"
 PROMETHEUS_UID="${PROMETHEUS_UID:-65534}"
 EXPORTER_UID="${EXPORTER_UID:-101}"
 
-log()  { printf '  %s\n' "$*"; }
+log()  { printf '    %s\n' "$*"; }
 warn() { printf '  warning: %s\n' "$*" >&2; }
 
 # ── .env helpers ─────────────────────────────────────────────────────────────

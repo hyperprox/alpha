@@ -24,7 +24,7 @@ dropin() {
     printf '%s\n' "$want" > "${dir}/bind.conf.tmp"
     chmod 644 "${dir}/bind.conf.tmp"
     mv -f "${dir}/bind.conf.tmp" "${dir}/bind.conf"
-    printf '  %s: %s=%s (drop-in %s/bind.conf)\n' "$1" "$2" "$3" "$dir"
+    printf '    %s: %s=%s (drop-in %s/bind.conf)\n' "$1" "$2" "$3" "$dir"
     changed=1
   fi
 }
