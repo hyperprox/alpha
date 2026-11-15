@@ -7,11 +7,28 @@ import type { NextRequest } from 'next/server'
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
 
+  // The demo build (scripts/demo.sh) has no sign-in: there is no account, and the demo API answers every read
+  // as its invented owner. The sign-in and invitation pages lead nowhere there, so they open the dashboard.
+  if (process.env.NEXT_PUBLIC_HYPERPROX_DEMO === '1') {
+    if (pathname === '/login' || pathname === '/join') {
+      // Behind a proxy, the browser's own host; run directly (pnpm demo), the Next server's.
+      const to = req.headers.get('x-forwarded-host') ? absolute(req, '/dashboard') : new URL('/dashboard', req.nextUrl.origin)
+      return NextResponse.redirect(to, 307)
+    }
+    return NextResponse.next()
+  }
+
   if (pathname === '/login') return NextResponse.next()
   // Joining from an invitation link: the link is the credential (routes/users.ts), there is no session yet.
   if (pathname === '/join') return NextResponse.next()
   if (req.cookies.get('hyperprox_token')) return NextResponse.next()
 
+  const target = absolute(req, '/login')
+  target.searchParams.set('next', pathname)
+  return NextResponse.redirect(target, 307)
+}
+
+function absolute(req: NextRequest, path: string): URL {
   // Next's middleware needs an absolute Location ("Invalid URL" otherwise), and req.nextUrl names the Next
   // server's own loopback address. The browser's host comes from X-Forwarded-Host, which nginx always sets to
   // the Host the browser itself sent ($http_host); the Next server listens on loopback only. A malformed value
@@ -19,9 +36,7 @@ export function middleware(req: NextRequest) {
   const fwd = (req.headers.get('x-forwarded-host') ?? '').split(',')[0].trim()
   const host = /^[a-z0-9.-]+(:\d{1,5})?$|^\[[0-9a-f:.]+\](:\d{1,5})?$/i.test(fwd) ? fwd : req.nextUrl.host
   const proto = req.headers.get('x-forwarded-proto') === 'http' ? 'http' : 'https'
-  const target = new URL(`${proto}://${host}/login`)
-  target.searchParams.set('next', pathname)
-  return NextResponse.redirect(target, 307)
+  return new URL(`${proto}://${host}${path}`)
 }
 
 export const config = {

@@ -3,6 +3,9 @@ import './globals.css'
 import { AppShell } from '@/components/layout/AppShell'
 import { ServiceWorker } from '@/components/layout/ServiceWorker'
 
+/** Baked in by the demo build (scripts/demo.sh) and nowhere else. */
+const DEMO = process.env.NEXT_PUBLIC_HYPERPROX_DEMO === '1'
+
 export const metadata: Metadata = {
   title: 'HyperProx',
   description: 'Your Proxmox infrastructure, hypercharged.',
@@ -54,14 +57,21 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               "if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t);}catch(e){}})()",
           }}
         />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
-          rel="stylesheet"
-        />
+        {/* The demo build serves its own copies of the fonts (scripts/demo-fonts.sh): a public demo asks no
+            other site for anything, and its Content-Security-Policy would refuse the font service anyway. */}
+        {DEMO
+          ? <link href="/demo-fonts/fonts.css" rel="stylesheet" />
+          : <>
+              <link rel="preconnect" href="https://fonts.googleapis.com" />
+              <link
+                href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+                rel="stylesheet"
+              />
+            </>}
       </head>
       <body style={{ background: 'var(--ground)', color: 'var(--text)' }} className="font-sans antialiased flex h-screen overflow-hidden">
-        <ServiceWorker />
+        {/* No install prompt or offline cache for the demo: it is a page to try, reset every night. */}
+        {!DEMO && <ServiceWorker />}
         <AppShell>{children}</AppShell>
       </body>
     </html>

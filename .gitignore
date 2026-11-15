@@ -6,6 +6,10 @@ node_modules/
 .next/
 .next-demo/
 dist/
+dist-demo/
+# Demo fonts, fetched by scripts/demo-fonts.sh (OFL; not committed)
+apps/frontend/public/demo-fonts/*.woff2
+apps/frontend/public/demo-fonts/LICENSE-*
 build/
 
 # Environment

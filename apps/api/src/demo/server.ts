@@ -3,23 +3,50 @@
 //
 //  A Fastify server that shares no code with the real API's routes, gate, vault,
 //  credential store or database. Every GET the frontend makes is answered from the
-//  invented fixtures in ./fixtures; every other method, every websocket and every
-//  terminal is refused with a "This is a demo" message, here in the API, so the
-//  refusal does not depend on the UI hiding a button.
+//  invented fixtures in ./fixtures; a few previews (plans, checks) are answered the
+//  same way so their dialogs can be seen; every other change, every websocket and every
+//  terminal is refused here, in the API, so the refusal does not depend on the UI
+//  hiding a button.
 //
-//  The one write-shaped request it accepts is sign-in, which checks nothing and only
-//  sets a cookie the demo frontend's middleware looks for: there is no account to
-//  sign in to.
+//  The demo has no sign-in: there is no account, and the status call always answers
+//  with the invented owner. Where the real product asks for the master password first
+//  (the same rules, from lib/roles.ts), the demo asks too: the prompt accepts anything
+//  and the answer is kept in a short-lived cookie, never on the server. Then the change
+//  is refused with a friendly "nothing changes in the demo".
+//
+//  In public mode (./public.ts) the same server also serves the pages, adds a per-address
+//  rate limit and security headers, and limits request sizes. It keeps no per-visitor
+//  state apart from the rate limiter's counters, which are capped in number.
 // =============================================================================
 
-import Fastify, { type FastifyInstance } from 'fastify'
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
+import rateLimit from '@fastify/rate-limit'
 import { FIXTURES, type FixtureRoute } from './fixtures'
 import { DEMO_OWNER } from './fixtures/data'
+import { needsReconfirm } from '../lib/roles'
+import { forwardToWeb, SECURITY_HEADERS } from './public'
+import type { PublicConfig } from './safety'
 
-export const DEMO_MESSAGE = 'This is a demo: nothing here can be changed, revealed, sent or run.'
-export const DEMO_REFUSAL = { ok: false, success: false, demo: true, code: 'demo', error: DEMO_MESSAGE, message: DEMO_MESSAGE } as const
+export const INSTALL_URL = 'https://hyperprox.dev/#install'
+export const DEMO_MESSAGE = 'In the demo nothing changes. Install HyperProx to do this for real.'
+export const DEMO_REFUSAL = { ok: false, success: false, demo: true, code: 'demo', error: DEMO_MESSAGE, message: DEMO_MESSAGE, install: INSTALL_URL } as const
+/** Set on every refusal, so the frontend can show its "install it for real" note whatever page asked. */
+export const REFUSED_HEADER = 'X-HyperProx-Demo-Refused'
 const SESSION_COOKIE = 'hyperprox_token'
 const SESSION_VALUE = 'demo-session'
+const RECONFIRM_COOKIE = 'hyperprox_demo_reconfirmed'
+const RECONFIRM_SECONDS = 300
+
+/** Request limits. Nothing the demo accepts is larger than a settings form. */
+export const LIMITS = {
+  bodyBytes: 64 * 1024,
+  urlChars: 2048,
+  /** Per visitor address, per minute: every request, and the subset that are changes. */
+  perMinute: 600,
+  writesPerMinute: 60,
+  /** How many visitor addresses the rate limiter remembers at once (least recently seen are dropped). */
+  trackedAddresses: 10_000,
+}
 
 interface Compiled { route: FixtureRoute; re: RegExp; keys: string[] }
 
@@ -33,72 +60,163 @@ function compile(route: FixtureRoute): Compiled {
   return { route, re: new RegExp(`^${src}/?$`), keys }
 }
 
-export function matchFixture(table: Compiled[], pathname: string): { route: FixtureRoute; params: Record<string, string> } | null {
+export function matchFixture(table: Compiled[], pathname: string, method = 'GET'): { route: FixtureRoute; params: Record<string, string> } | null {
   for (const c of table) {
+    if (method === 'POST' ? !c.route.post : !(c.route.get || c.route.refuse)) continue
     const m = c.re.exec(pathname)
     if (!m) continue
     const params: Record<string, string> = {}
-    c.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]) })
+    c.keys.forEach((k, i) => { params[k] = safeDecode(m[i + 1]) })
     return { route: c.route, params }
   }
   return null
 }
 
-function signedIn(cookie: string | undefined): boolean {
-  return !!cookie && cookie.split(';').some(p => p.trim() === `${SESSION_COOKIE}=${SESSION_VALUE}`)
+const safeDecode = (s: string) => { try { return decodeURIComponent(s) } catch { return s } }
+
+function hasCookie(cookie: string | undefined, name: string, value: string): boolean {
+  return !!cookie && cookie.split(';').some(p => p.trim() === `${name}=${value}`)
 }
 
-export async function buildDemoServer(opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: opts.logger ?? false })
+const isWrite = (method: string) => method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS'
+
+export interface DemoServerOptions {
+  logger?: boolean
+  /** Public mode: serve the pages from the demo frontend too, rate-limit, and trust these proxies. */
+  public?: PublicConfig | null
+  /** Overrides for tests. */
+  limits?: Partial<typeof LIMITS>
+}
+
+export async function buildDemoServer(opts: DemoServerOptions = {}): Promise<FastifyInstance> {
+  const limits = { ...LIMITS, ...(opts.limits ?? {}) }
+  const pub = opts.public ?? null
+  const app = Fastify({
+    logger: opts.logger ?? false,
+    bodyLimit: limits.bodyBytes,
+    maxParamLength: 200,
+    // Slow or idle visitors do not get to hold a connection open.
+    connectionTimeout: 30_000,
+    keepAliveTimeout: 5_000,
+    requestTimeout: 15_000,
+    // Only the named reverse proxies may say who the visitor is; anyone else is their own socket address.
+    trustProxy: pub && pub.trustedProxies.length ? pub.trustedProxies : false,
+  })
   const table = FIXTURES.map(compile)
 
-  // Whatever a write sends is never read: accept any body type so the refusal, not a 415, is the answer.
+  // Whatever a change sends is read and thrown away (never parsed), up to the size limit.
   app.removeAllContentTypeParsers()
-  app.addContentTypeParser('*', (_req, payload, done) => { payload.resume(); payload.on('end', () => done(null, undefined)); payload.on('error', done) })
+  app.addContentTypeParser('*', (_req, payload, done) => {
+    let size = 0, over = false
+    payload.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > limits.bodyBytes && !over) {
+        over = true
+        const err = Object.assign(new Error('Request body is too large for the demo.'), { statusCode: 413 })
+        done(err, undefined)
+        payload.destroy()
+      }
+    })
+    payload.on('end', () => { if (!over) done(null, undefined) })
+    payload.on('error', e => { if (!over) done(e, undefined) })
+  })
 
   // Websockets (the live feed, update logs, terminal shells): refused at the HTTP upgrade, before any socket opens.
   app.server.on('upgrade', (_req, socket) => {
-    socket.end('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n' + DEMO_MESSAGE + '\n')
+    socket.end('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nThis is a demo: ' + DEMO_MESSAGE + '\n')
   })
 
-  app.addHook('onSend', async (_req, reply, payload) => {
+  // Very long addresses are refused before anything else looks at them.
+  app.addHook('onRequest', async (req, reply) => {
+    if (req.url.length > limits.urlChars) return reply.status(414).send({ ok: false, demo: true, error: 'That address is too long.' })
+    const len = Number(req.headers['content-length'] ?? 0)
+    if (len > limits.bodyBytes) return reply.status(413).send({ ok: false, demo: true, error: 'Request body is too large for the demo.' })
+  })
+
+  if (pub) {
+    await app.register(rateLimit, {
+      global: true,
+      cache: limits.trackedAddresses,
+      timeWindow: 60_000,
+      // Changes get a bucket of their own, smaller than the one for everything else.
+      keyGenerator: (req: FastifyRequest) => `${req.ip}${isWrite(req.method) ? ':w' : ''}`,
+      max: async (_req: FastifyRequest, key: string) => key.endsWith(':w') ? limits.writesPerMinute : limits.perMinute,
+      errorResponseBuilder: (_req, ctx) => ({ statusCode: 429, ok: false, demo: true, code: 'rate_limited', error: `Too many requests from your address. Try again in ${Math.ceil(ctx.ttl / 1000)} s.` }),
+    })
+  }
+
+  app.addHook('onSend', async (req, reply, payload) => {
     reply.header('X-HyperProx-Demo', '1')
-    reply.header('Cache-Control', 'no-store')
+    for (const [k, v] of Object.entries(SECURITY_HEADERS)) reply.header(k, v)
+    // API answers are never cached; the pages' own static files keep the frontend's caching.
+    if (req.url.startsWith('/api/') || req.url === '/health') reply.header('Cache-Control', 'no-store')
     return payload
   })
 
-  // Sign-in: no account, no check. It only sets the cookie the demo frontend's middleware wants to see.
+  const refuse = (reply: any) => reply.status(403).header(REFUSED_HEADER, '1').send(DEMO_REFUSAL)
+
+  // There is no account. Sign-in checks nothing and sets the cookie the frontend's middleware expects.
   app.post('/api/auth/sign-in', async (_req, reply) => {
     reply.header('Set-Cookie', `${SESSION_COOKIE}=${SESSION_VALUE}; Path=/; HttpOnly; SameSite=Lax`)
     return { ok: true, demo: true, user: { email: DEMO_OWNER.email, role: DEMO_OWNER.role } }
   })
 
-  app.get('/api/auth/status', async (req) => ({
-    ok: true, locked: false, bootstrapped: true, reachable: true, demo: true,
-    ...(signedIn(req.headers.cookie) ? { user: { email: DEMO_OWNER.email, role: DEMO_OWNER.role } } : {}),
-  }))
+  // Always signed in as the invented owner: the demo opens straight onto the dashboard.
+  app.get('/api/auth/status', async (req, reply) => {
+    if (!hasCookie(req.headers.cookie, SESSION_COOKIE, SESSION_VALUE)) reply.header('Set-Cookie', `${SESSION_COOKIE}=${SESSION_VALUE}; Path=/; HttpOnly; SameSite=Lax`)
+    return { ok: true, locked: false, bootstrapped: true, reachable: true, demo: true, install: INSTALL_URL, user: { email: DEMO_OWNER.email, role: DEMO_OWNER.role } }
+  })
+
+  // The master-password prompt: any password "confirms", for five minutes, held only in the visitor's cookie.
+  app.post('/api/auth/reconfirm', async (_req, reply) => {
+    const until = Date.now() + RECONFIRM_SECONDS * 1000
+    reply.header('Set-Cookie', `${RECONFIRM_COOKIE}=1; Path=/; Max-Age=${RECONFIRM_SECONDS}; HttpOnly; SameSite=Strict`)
+    return { ok: true, demo: true, until }
+  })
 
   app.get('/health', async () => ({ status: 'ok', demo: true, version: 'demo', uptime: process.uptime(), ts: new Date().toISOString() }))
 
-  // Every other request: GET from the fixtures, anything else refused.
+  // Every other request: a read from the fixtures, a preview from the fixtures, a page, or a refusal.
   app.route({
-    method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     url: '/*',
     handler: async (req, reply) => {
       const method = req.method.toUpperCase()
-      if (method === 'OPTIONS') return reply.status(204).send()
-      if (method !== 'GET' && method !== 'HEAD') return reply.status(403).send(DEMO_REFUSAL)
       const url = new URL(req.url, 'http://demo.invalid')
-      if (url.pathname.startsWith('/ws')) return reply.status(403).send(DEMO_REFUSAL)
+      const api = url.pathname === '/api' || url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws')
+
+      if (!api) {
+        if (!pub) return reply.status(404).send({ ok: false, success: false, demo: true, error: 'Not part of the demo.' })
+        if (method !== 'GET' && method !== 'HEAD') return reply.status(405).header('Allow', 'GET, HEAD').send({ ok: false, demo: true, error: 'Pages are read-only.' })
+        return forwardToWeb(req, reply, pub)
+      }
+
+      if (method === 'OPTIONS') return reply.status(204).send()
+      if (url.pathname.startsWith('/ws')) return refuse(reply)
+
+      if (isWrite(method)) {
+        // Ask for the master password exactly where the real product would, then refuse kindly.
+        if (needsReconfirm(method, url.pathname) && !hasCookie(req.headers.cookie, RECONFIRM_COOKIE, '1')) {
+          return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue', demo: true })
+        }
+        const preview = method === 'POST' ? matchFixture(table, url.pathname, 'POST') : null
+        if (preview) return reply.send(preview.route.post!(preview.params, Object.fromEntries(url.searchParams), { cluster: clusterOf(req) }))
+        return refuse(reply)
+      }
+
       const hit = matchFixture(table, url.pathname)
       if (!hit) return reply.status(404).send({ ok: false, success: false, demo: true, error: 'Not part of the demo.' })
-      if (hit.route.refuse) return reply.status(403).send(DEMO_REFUSAL)
-      const cluster = typeof req.headers['x-hyperprox-cluster'] === 'string' ? req.headers['x-hyperprox-cluster'] : null
-      const body = hit.route.get!(hit.params, Object.fromEntries(url.searchParams), { cluster })
+      if (hit.route.refuse) return refuse(reply)
+      const body = hit.route.get!(hit.params, Object.fromEntries(url.searchParams), { cluster: clusterOf(req) })
       return reply.send(body)
     },
   })
 
   await app.ready()
   return app
+}
+
+function clusterOf(req: FastifyRequest): string | null {
+  const h = req.headers['x-hyperprox-cluster']
+  return typeof h === 'string' && /^c[0-9a-f]{10}$/.test(h) ? h : null
 }

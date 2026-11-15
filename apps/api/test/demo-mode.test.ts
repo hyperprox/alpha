@@ -31,7 +31,8 @@ function importGraph(entry: string): { files: Set<string>; packages: Set<string>
     if (files.has(file)) return
     files.add(file)
     if (!/\.tsx?$/.test(file)) return
-    const src = fs.readFileSync(file, 'utf8')
+    // Type-only imports are erased when compiled: they load nothing at run time.
+    const src = fs.readFileSync(file, 'utf8').replace(/^\s*(import|export)\s+type\s[^;]*?from\s+['"][^'"]+['"];?/gm, '')
     const re = /(?:import|export)\s[^'"`]*?from\s+['"]([^'"]+)['"]|import\s+['"]([^'"]+)['"]|require\(\s*['"]([^'"]+)['"]\s*\)|import\(\s*['"]([^'"]+)['"]\s*\)/g
     for (const m of src.matchAll(re)) {
       const spec = m[1] ?? m[2] ?? m[3] ?? m[4]
@@ -58,8 +59,10 @@ test('real mode: nothing src/index.ts loads reads HYPERPROX_DEMO or reaches src/
 
 test('demo mode: its import graph holds no database, vault, credential store, gate or remote client', () => {
   const g = importGraph(path.join(SRC, 'demo', 'main.ts'))
+  // One exception: the pure rules for which actions ask for the master password, so the demo asks where the
+  // real product does. It imports nothing at run time.
   const outside = [...g.files].map(rel).filter(f => !f.startsWith('demo/'))
-  assert.deepEqual(outside, [], 'the demo imports nothing from the real app')
+  assert.deepEqual(outside, ['lib/roles.ts'], 'the demo imports nothing from the real app but the reconfirm rules')
   for (const f of g.files) assert.ok(!FORBIDDEN_FILES.some(r => r.test(rel(f))), rel(f))
   const bad = [...g.packages].filter(p => FORBIDDEN_PACKAGES.includes(p))
   assert.deepEqual(bad, [])
@@ -149,10 +152,16 @@ test('demo mode: every write, reveal, Send and action is refused in the API with
   try {
     for (const [method, url] of WRITES) {
       for (const body of [undefined, '{"value":"x"}']) {
-        const res = await app.inject({ method: method as any, url, payload: body, headers: body ? { 'content-type': 'application/json' } : {} })
+        // Without the demo's "password confirmed" cookie a change either asks for it (where the real product would) or is refused.
+        const first = await app.inject({ method: method as any, url, payload: body, headers: body ? { 'content-type': 'application/json' } : {} })
+        assert.equal(first.statusCode, 403, `${method} ${url}`)
+        assert.ok(['demo', 'reconfirm_required'].includes(first.json().code), `${method} ${url}: ${first.json().code}`)
+        // With it, every change is refused with the demo message, marked for the frontend's note.
+        const res = await app.inject({ method: method as any, url, payload: body, headers: { cookie: 'hyperprox_demo_reconfirmed=1', ...(body ? { 'content-type': 'application/json' } : {}) } })
         assert.equal(res.statusCode, 403, `${method} ${url}`)
         const j = res.json()
         assert.equal(j.code, 'demo'); assert.equal(j.ok, false); assert.equal(j.error, DEMO_MESSAGE)
+        assert.equal(res.headers['x-hyperprox-demo-refused'], '1')
       }
     }
     // An odd content type is refused the same way, not with a 415.
@@ -162,6 +171,23 @@ test('demo mode: every write, reveal, Send and action is refused in the API with
     for (const url of ['/ws', '/ws/terminal/term', '/ws/updates']) assert.equal((await app.inject({ method: 'GET', url })).statusCode, 403, url)
     // A read the demo does not know is a 404, never a pass-through.
     assert.equal((await app.inject({ method: 'GET', url: '/api/not-a-route' })).statusCode, 404)
+  } finally { await app.close() }
+})
+
+test('demo mode: the master-password prompt appears where the real product asks, accepts anything, and the change is still refused', async () => {
+  const app = await buildDemoServer()
+  try {
+    const ask = await app.inject({ method: 'POST', url: '/api/secrets/reveal', payload: { id: 'x' } })
+    assert.equal(ask.statusCode, 403); assert.equal(ask.json().code, 'reconfirm_required')
+    const ok = await app.inject({ method: 'POST', url: '/api/auth/reconfirm', payload: { password: 'anything' } })
+    assert.equal(ok.statusCode, 200); assert.ok(ok.json().until > Date.now())
+    const cookie = String(ok.headers['set-cookie'])
+    assert.match(cookie, /^hyperprox_demo_reconfirmed=1;.*Max-Age=300/)
+    const after = await app.inject({ method: 'POST', url: '/api/secrets/reveal', payload: { id: 'x' }, headers: { cookie: cookie.split(';')[0] } })
+    assert.equal(after.statusCode, 403); assert.equal(after.json().code, 'demo'); assert.equal(after.json().install, 'https://hyperprox.dev/#install')
+    // A change the real product does not re-confirm goes straight to the friendly refusal.
+    const plain = await app.inject({ method: 'POST', url: '/api/updates/jobs', payload: {} })
+    assert.equal(plain.json().code, 'demo')
   } finally { await app.close() }
 })
 
@@ -181,11 +207,12 @@ test('demo mode: a websocket upgrade (live feed, update log, terminal shell) is 
   } finally { await app.close() }
 })
 
-test('demo mode: sign-in sets only the demo cookie; the vault reads as unlocked with the demo owner', async () => {
+test('demo mode: no sign-in wall; the vault reads as unlocked with the demo owner; sign-in only sets the demo cookie', async () => {
   const app = await buildDemoServer()
   try {
-    const before = (await app.inject({ method: 'GET', url: '/api/auth/status' })).json()
-    assert.equal(before.user, undefined); assert.equal(before.locked, false)
+    const before = await app.inject({ method: 'GET', url: '/api/auth/status' })
+    assert.equal(before.json().user.role, 'owner'); assert.equal(before.json().locked, false); assert.equal(before.json().demo, true)
+    assert.match(String(before.headers['set-cookie']), /^hyperprox_token=demo-session;/)
     const res = await app.inject({ method: 'POST', url: '/api/auth/sign-in', payload: { email: 'a@b.c', password: 'x', code: '123456' } })
     assert.equal(res.statusCode, 200)
     assert.match(String(res.headers['set-cookie']), /^hyperprox_token=demo-session;/)

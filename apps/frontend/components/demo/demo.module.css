@@ -1,0 +1,46 @@
+/* The demo layer (DemoLayer.tsx): banner, tour spotlight and card. Theme tokens only, so both themes work. */
+
+.banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+  padding: 8px 16px; font-size: 13px; line-height: 1.4;
+  background: var(--accent-wash); color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.tag {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .14em;
+  padding: 2px 7px; border-radius: 6px; background: var(--accent); color: var(--accent-ink);
+}
+.text { color: var(--text-soft); flex: 1 1 260px; min-width: 0; }
+.links { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.link {
+  background: none; border: 0; padding: 0; font: inherit; font-weight: 600; cursor: pointer;
+  color: var(--accent); text-decoration: none;
+}
+.link:hover, .link:focus-visible { text-decoration: underline; }
+
+.installBtn {
+  display: inline-flex; align-items: center; height: 42px; padding: 0 16px; border-radius: 10px;
+  background: var(--accent); color: var(--accent-ink); font-weight: 600; text-decoration: none;
+}
+
+.tourLayer { position: fixed; inset: 0; z-index: 60; pointer-events: none; }
+.spot {
+  position: fixed; border-radius: 12px; pointer-events: none;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 9999px var(--scrim);
+  transition: left .2s ease, top .2s ease, width .2s ease, height .2s ease;
+}
+.card {
+  position: fixed; width: min(340px, calc(100vw - 24px)); pointer-events: auto;
+  background: var(--surface-raised); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: 14px; padding: 14px 16px;
+  box-shadow: var(--shadow);
+}
+.cardDocked { left: 12px; right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); width: auto; max-width: 480px; margin: 0 auto; }
+.cardHead { display: flex; align-items: baseline; gap: 10px; font-family: var(--font-display); font-size: 18px; }
+.count { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.cardBody { margin: 8px 0 12px; font-size: 14px; color: var(--text-soft); }
+.cardFoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.skip { background: none; border: 0; padding: 0; color: var(--text-muted); font-size: 13px; cursor: pointer; }
+.skip:hover { color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) { .spot { transition: none; } }

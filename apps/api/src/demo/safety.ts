@@ -16,6 +16,13 @@
 //    - Its data directory is its own: outside the repo, and either empty or already marked
 //      as a demo directory.
 //
+//  Public mode (HYPERPROX_DEMO_PUBLIC=1, the live demo on a website) adds:
+//
+//    - It listens on one address given on purpose (HYPERPROX_DEMO_LISTEN=<ip>:<port>) and serves the
+//      whole demo there: the API itself, and every page from the demo frontend, which stays on loopback.
+//    - It refuses to start in a checkout that holds a real install's .env, so a public demo can never
+//      be started on, or next to, a real HyperProx.
+//
 //  Every refusal names the problem, never a value.
 // =============================================================================
 
@@ -41,10 +48,36 @@ const FORBIDDEN_ENV: RegExp[] = [
   /SECRET/, /PASSWORD/, /PASSWD/, /_TOKEN$/, /^TOKEN$/, /API_KEY/, /PRIVATE_KEY/,
 ]
 
+export const PUBLIC_FLAG = 'HYPERPROX_DEMO_PUBLIC'
+export const DEFAULT_DEMO_WEB_PORT = 3100
+
+/** Public mode: where the open-internet demo listens, and where its frontend waits on loopback. */
+export interface PublicConfig {
+  /** The one address the public demo listens on (an IP literal). */
+  listenHost: string
+  listenPort: number
+  /** The demo frontend (next start), on 127.0.0.1 only. */
+  webPort: number
+  /** Reverse proxies whose X-Forwarded-For names the visitor (for the per-address rate limit). */
+  trustedProxies: string[]
+}
+
 export interface DemoConfig {
   port: number
   host: string
   dataDir: string
+  /** Set only in public mode. */
+  public: PublicConfig | null
+}
+
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
+const isIp = (s: string) => IPV4.test(s) || (/^[0-9a-f:]+$/i.test(s) && s.includes(':'))
+
+function portOf(raw: string | undefined, fallback: number, name: string): number {
+  const port = Number(raw ?? fallback)
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new DemoRefused(`${name} must be a port number from 1024 to 65535.`)
+  if (REAL_PORTS.includes(port)) throw new DemoRefused(`Refusing to start the demo on port ${port}: that is the real HyperProx's port.`)
+  return port
 }
 
 export class DemoRefused extends Error {}
@@ -80,9 +113,7 @@ export function checkDemoEnvironment(env: NodeJS.ProcessEnv = process.env, root:
       'Run it from a clean shell; the demo needs none of them and reads no .env file.')
   }
 
-  const port = Number(env.HYPERPROX_DEMO_API_PORT ?? DEFAULT_DEMO_API_PORT)
-  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new DemoRefused('HYPERPROX_DEMO_API_PORT must be a port number from 1024 to 65535.')
-  if (REAL_PORTS.includes(port)) throw new DemoRefused(`Refusing to start the demo on port ${port}: that is the real HyperProx's port.`)
+  const port = portOf(env.HYPERPROX_DEMO_API_PORT, DEFAULT_DEMO_API_PORT, 'HYPERPROX_DEMO_API_PORT')
 
   // The demo API only ever talks to the demo frontend on the same machine.
   const host = '127.0.0.1'
@@ -97,7 +128,27 @@ export function checkDemoEnvironment(env: NodeJS.ProcessEnv = process.env, root:
       throw new DemoRefused('Refusing to start the demo: its data directory already holds files that are not the demo\'s. Point HYPERPROX_DEMO_DATA at an empty directory.')
     }
   }
-  return { port, host, dataDir }
+  return { port, host, dataDir, public: env[PUBLIC_FLAG] === undefined ? null : checkPublic(env, root) }
+}
+
+function checkPublic(env: NodeJS.ProcessEnv, root: string | null): PublicConfig {
+  if (env[PUBLIC_FLAG] !== '1') throw new DemoRefused(`${PUBLIC_FLAG} must be 1 or unset.`)
+  // A public demo runs on a machine of its own. A real install keeps its settings in the repo's .env.
+  if (root) {
+    const dotenv = path.join(root, '.env')
+    if (fs.existsSync(dotenv) && fs.statSync(dotenv).size > 0) {
+      throw new DemoRefused('Refusing to start the public demo: this checkout holds a real install\'s .env. Run the public demo from a checkout of its own, on a machine of its own.')
+    }
+  }
+  const listen = env.HYPERPROX_DEMO_LISTEN ?? ''
+  const m = /^\[?([0-9a-fA-F.:]+)\]?:(\d+)$/.exec(listen)
+  if (!m || !isIp(m[1])) throw new DemoRefused('Public mode needs HYPERPROX_DEMO_LISTEN=<ip>:<port>, the one address the demo serves on.')
+  const listenPort = portOf(m[2], 0, 'HYPERPROX_DEMO_LISTEN')
+  const webPort = portOf(env.HYPERPROX_DEMO_WEB_PORT, DEFAULT_DEMO_WEB_PORT, 'HYPERPROX_DEMO_WEB_PORT')
+  if (webPort === listenPort) throw new DemoRefused('HYPERPROX_DEMO_WEB_PORT and the listen port must differ.')
+  const trustedProxies = (env.HYPERPROX_DEMO_TRUSTED_PROXIES ?? '').split(',').map(x => x.trim()).filter(Boolean)
+  for (const t of trustedProxies) if (!isIp(t)) throw new DemoRefused('HYPERPROX_DEMO_TRUSTED_PROXIES must be a comma-separated list of IP addresses.')
+  return { listenHost: m[1], listenPort, webPort, trustedProxies }
 }
 
 /** Creates the demo's own data directory and marks it. Nothing else is ever written there. */

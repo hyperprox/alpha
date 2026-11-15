@@ -20,6 +20,8 @@ export interface AuthStatus {
   user?:        { email: string; role: Role }
   /** Only the demo API (apps/api/src/demo) sends this: invented data, every change refused. */
   demo?:        boolean
+  /** The demo only: where to install HyperProx for real. */
+  install?:     string
 }
 
 const ROLE_RANK: Record<Role, number> = { viewer: 0, operator: 1, admin: 2, owner: 3 }
@@ -71,6 +73,10 @@ export function pageClusterId(pathname: string): string | null {
 
 export const CLUSTER_HEADER = 'X-HyperProx-Cluster'
 
+/** Only the demo API sends this header, on a change it refused; the event tells the demo layer to explain. */
+export const DEMO_REFUSED_HEADER = 'X-HyperProx-Demo-Refused'
+export const DEMO_REFUSED_EVENT = 'hyperprox:demo-refused'
+
 /** Idempotent. Call once from a client component on mount. */
 export function installAuthInterceptor(): void {
   if (installed || typeof window === 'undefined') return
@@ -86,6 +92,8 @@ export function installAuthInterceptor(): void {
       init = { ...(init ?? {}), headers }
     }
     const res = await original(input, init)
+    // The demo API marks every refused change; one listener (components/demo) shows the "install it" note.
+    if (res.headers.get(DEMO_REFUSED_HEADER) === '1') window.dispatchEvent(new CustomEvent(DEMO_REFUSED_EVENT))
     if (path && path.startsWith('/api/') && !path.startsWith('/api/auth/')) {
       if (res.status === 423) goToLogin(true)
       else if (res.status === 401) goToLogin(false)

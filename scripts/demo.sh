@@ -9,9 +9,12 @@
 #
 #    pnpm demo                                build (first run) and start on http://127.0.0.1:3100
 #    HYPERPROX_DEMO_HOST=0.0.0.0 pnpm demo    listen on every address (for a screenshot machine)
-#    HYPERPROX_DEMO_REBUILD=1 pnpm demo       rebuild the demo frontend first
+#    HYPERPROX_DEMO_REBUILD=1 pnpm demo       rebuild the demo frontend and API first
 #
-#  The demo frontend builds into apps/frontend/.next-demo, never the real .next.
+#  Both halves are production builds: the frontend into apps/frontend/.next-demo (never the
+#  real .next), the API into apps/api/dist-demo. Both processes refuse every outbound
+#  connection (apps/api/src/demo/no-outbound.ts). The public, open-internet setup is in
+#  docs/demo.md.
 # =============================================================================
 set -euo pipefail
 
@@ -31,19 +34,24 @@ CLEAN=(env -i "PATH=$PATH" "HOME=${HOME:-/tmp}" "LANG=C.UTF-8" "NEXT_TELEMETRY_D
 
 if [ ! -f "$ROOT/apps/frontend/$DIST/BUILD_ID" ] || [ -n "${HYPERPROX_DEMO_REBUILD:-}" ]; then
   echo "[demo] building the demo frontend into apps/frontend/$DIST (once)"
-  (cd "$ROOT/apps/frontend" && "${CLEAN[@]}" NODE_ENV=production HYPERPROX_NEXT_DIST="$DIST" HYPERPROX_API_PORT="$API_PORT" ./node_modules/.bin/next build)
+  (cd "$ROOT/apps/frontend" && "${CLEAN[@]}" NODE_ENV=production NEXT_PUBLIC_HYPERPROX_DEMO=1 HYPERPROX_NEXT_DIST="$DIST" HYPERPROX_API_PORT="$API_PORT" ./node_modules/.bin/next build)
 fi
+if [ ! -f "$ROOT/apps/api/dist-demo/demo/main.js" ] || [ -n "${HYPERPROX_DEMO_REBUILD:-}" ]; then
+  echo "[demo] building the demo API into apps/api/dist-demo"
+  (cd "$ROOT/apps/api" && "${CLEAN[@]}" ./node_modules/.bin/tsc -p tsconfig.demo.json)
+fi
+GUARD="$ROOT/apps/api/dist-demo/demo/no-outbound-register.js"
 
 cleanup() { kill "${API_PID:-}" "${WEB_PID:-}" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
 (cd "$ROOT/apps/api" && exec "${CLEAN[@]}" NODE_ENV=production HYPERPROX_DEMO=1 HYPERPROX_DEMO_API_PORT="$API_PORT" HYPERPROX_DEMO_DATA="$DATA" \
-  ./node_modules/.bin/tsx src/demo/main.ts) &
+  node dist-demo/demo/main.js) &
 API_PID=$!
 
-(cd "$ROOT/apps/frontend" && exec "${CLEAN[@]}" NODE_ENV=production HYPERPROX_NEXT_DIST="$DIST" HYPERPROX_API_PORT="$API_PORT" \
+(cd "$ROOT/apps/frontend" && exec "${CLEAN[@]}" NODE_ENV=production NODE_OPTIONS="--require $GUARD" HYPERPROX_NEXT_DIST="$DIST" HYPERPROX_API_PORT="$API_PORT" \
   ./node_modules/.bin/next start -p "$WEB_PORT" -H "$HOST") &
 WEB_PID=$!
 
-echo "[demo] HyperProx demo on http://$HOST:$WEB_PORT  (sign in with anything; Ctrl-C stops it)"
+echo "[demo] HyperProx demo on http://$HOST:$WEB_PORT  (it opens on the dashboard; Ctrl-C stops it)"
 wait -n "$API_PID" "$WEB_PID"

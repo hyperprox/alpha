@@ -127,7 +127,7 @@ export function Sidebar() {
           )
         })()}
 
-        <div className={s.vault} aria-live="polite">
+        <div className={s.vault} aria-live="polite" data-tour="vault">
           <div className={s.vaultHead}>
             <i className={s.vaultDot} data-state={vaultState} aria-hidden />
             {collapsed

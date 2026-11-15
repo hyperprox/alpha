@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { SessionProvider } from '@/lib/session'
+import { DemoBanner, DemoLayer } from '@/components/demo/DemoLayer'
 import s from './shell.module.css'
 
 /** Pages that fill the whole window (the Deck's terminals) get the frame without the page padding or scroll. */
@@ -27,11 +28,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <Sidebar />
         <div className={s.col}>
           <main id="main" className={`${s.main} ${full ? s.mainFull : ''}`}>
+            <DemoBanner />
             <TopBar full={full} />
             <div className={`${s.content} ${full ? s.contentFull : ''}`}>{children}</div>
           </main>
         </div>
       </div>
+      <DemoLayer />
     </SessionProvider>
   )
 }
