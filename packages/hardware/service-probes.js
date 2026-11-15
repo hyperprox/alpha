@@ -77,6 +77,11 @@ const PROBES = [
     match: (s, b) => s === 200 && /"name"\s*:\s*"vaultwarden"/i.test(b) },
   { key: 'vaultwarden', label: 'Vaultwarden', port: 80, path: '/api/config', scheme: 'http', recipeId: 'vaultwarden', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => s === 200 && /"name"\s*:\s*"vaultwarden"/i.test(b) },
+  // Homepage (gethomepage.dev): its page's <title> (current images write <title data-next-head="">) and its Next.js
+  // scripts. A Host it does not allow gets a 400 that names its own check, which is still Homepage answering.
+  // The Homepage plug-in keeps its own list of dashboards: a finding points at its page.
+  { key: 'homepage', label: 'Homepage', port: 3000, path: '/', scheme: 'http', recipeId: 'homepage', pluginId: 'homepage', setting: null, page: '/plugins/homepage', needs: [], multiple: true,
+    match: (s, b) => (s === 200 && b.includes('/_next/') && /<title[^>]*>[^<]*homepage[^<]*<\/title>/i.test(b)) || (s === 400 && /"error"\s*:\s*"Host validation failed/.test(b)) },
   { key: 'tdarr', label: 'Tdarr', port: 8265, path: '/', scheme: 'http', recipeId: 'tdarr', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => s === 200 && title('Tdarr').test(b) },
 ]

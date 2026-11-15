@@ -646,7 +646,15 @@ async function runJob(
       console.error(`[catalogue] job ${job.jobId}: ${job.storeError}`)
     }
     await Promise.resolve(onSettled()).catch(() => {})
+    if (job.status === 'completed') for (const fn of INSTALL_LISTENERS) { try { fn(job) } catch { /* a listener never fails an install */ } }
   }
+}
+
+/** Told about every install that finished (the Homepage plug-in's auto-sync listens). Read-only use only. */
+const INSTALL_LISTENERS = new Set<(job: Readonly<InstallJob>) => void>()
+export function onInstallCompleted(fn: (job: Readonly<InstallJob>) => void): () => void {
+  INSTALL_LISTENERS.add(fn)
+  return () => { INSTALL_LISTENERS.delete(fn) }
 }
 
 /** Node name to address. Names are not reliably resolvable from a container. */

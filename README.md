@@ -2481,6 +2481,66 @@ update, the signalling update, the database work, mail, two-factor enforcement a
 master password. Viewers see the health and the checks, but not the log, user names, paths, container or
 image names, or the confirm texts, and cannot ask for a fresh read. The page reads Nextcloud again every two minutes while it is open (a reading is kept 30 seconds).
 
+#### Homepage dashboard
+
+[Homepage](https://gethomepage.dev) is a start page with a tile for every app you run. Install it from the
+Catalogue (Apps, Homepage), then open **Plug-ins, Homepage** (admins only: the preview shows every service's
+address on your network). HyperProx lists the Homepage installs it finds: its own Catalogue installs, the
+service scan (Homepage answers on port 3000), and the install note the Catalogue leaves on a container.
+**Connect** looks inside that guest once, read-only, for the Homepage container and the folder Docker mounts
+as its config. It never guesses a path.
+
+The page then shows the dashboard HyperProx would write, drawn the way Homepage draws it, and the line diff of
+each file:
+
+- **What goes on it**: every service HyperProx knows is running: what the service scan and the Catalogue
+  found, Catalogue installs, the addresses saved in plug-ins (and their device lists), proxy hosts, your
+  Websites, the cluster itself and HyperProx. Each gets a name, an icon from Homepage's icon set, a short
+  description and an up/down dot. They are grouped as Media, Downloads, Infrastructure, Home, Dev and
+  Websites. Running guests with no web service can be listed too, in a Guests group with a ping dot.
+- **Links**: the public address when a proxy host serves the service, otherwise its LAN address with its
+  port. The up/down check asks the LAN address (on a path that needs no sign-in, such as Plex's `/identity`).
+  For a proxy host with nothing else known behind it, the check asks the public address.
+- **Left out**: guests tagged `hyperprox-ignore`, guests on Remote access's "never look inside" list, and any
+  subnet you list on the page. A device that belongs to another cluster is left out too. **Leave off the
+  dashboard** on a tile hides that one entry.
+- **Your edits are kept.** HyperProx owns only the groups it wrote. The file's header names them and each one
+  is marked `# managed by HyperProx`. Your own groups stay where you put them, unchanged. An entry you add
+  inside one of HyperProx's groups stays. An entry of HyperProx's that you edit is left as you edited it. A
+  group of HyperProx's that you delete is not put back (the page offers **Bring them back**). If you already
+  have a group called, say, Media, HyperProx's is called Media (HyperProx). Comments in the file are not kept
+  when it is rewritten; the backup has them.
+
+**Apply** writes exactly what the preview showed. The preview is good for ten minutes and only the person who
+made it can apply it. Each file is first copied to a dated backup beside it
+(`services.yaml.bak-hyperprox-<date>`; the newest 20 are kept). The write is refused if the file changed since
+the preview. The YAML is made with a YAML library and read back before it is offered. Homepage reloads its
+config by itself, so nothing is restarted. Afterwards HyperProx asks Homepage for its service list and checks
+that every entry is there. Every write is in the audit log, written before anything changes. One write runs at
+a time per dashboard.
+
+**Auto-sync** is off until you turn it on. When on, HyperProx looks every five minutes, and a minute after a
+Catalogue install finishes. It rewrites the dashboard when something changed (a new guest, proxy host, install
+or removal), at most once every ten minutes, and only when the file would change. **Sync now** builds a fresh
+preview at any time.
+
+**Health** lists what is wrong, each with a fix button: Homepage not answering or stopped (**Start
+Homepage**), the config folder moved (**Use the folder Docker mounts now**), a `services.yaml` that is not
+valid YAML (**Back it up and start it fresh**, which asks first), a folder that cannot be written, and widgets
+that wait for keys.
+
+**Service widgets** (Sonarr's queue, Plex's streams, the cluster's load and so on) are opt-in per service and
+off by default. Homepage reads their keys from its own config, so **they are stored in plaintext on the
+Homepage guest**: in the `.env` beside its compose file (mode 0600, readable by root there) and in the
+container's environment. The page says so before you choose any. Turning widgets on and **Write the keys to
+the guest** both ask for your master password again, and API tokens can never do either. The keys come from
+HyperProx's vault (each plug-in's own settings). `services.yaml` only ever holds a `{{HOMEPAGE_VAR_...}}`
+placeholder. Writing the keys recreates the Homepage container so it reads them; Catalogue installs of
+Homepage pass the `.env` to the container, and for an older one the page offers **Let Homepage read its key
+file**. For the cluster widget, **Make a read-only Proxmox token** creates a privilege-separated token with only
+`PVEAuditor` on `/` (master password again). HyperProx keeps the token's secret in the vault and records the
+token so it can be revoked. A dashboard with a token cannot be disconnected until the token is revoked.
+
 ### Settings
 
 - **Setup checklist**: the installer's questions, whether each is done on every node, and a button to

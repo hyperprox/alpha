@@ -90,6 +90,8 @@ export function catalogueFingerprints(): FingerprintList {
 }
 
 let detection: DetectionCache | null = null
+/** The same "already here" answer, for the Homepage plug-in's inventory. */
+export const catalogueDetected = (refresh: boolean) => realDetected(refresh)
 /**
  * "Already here": the proxy-host fingerprints, merged with the shared service scan the Plug-ins page's Scan and
  * the setup wizard use (lib/service-scan.ts), so the three cannot disagree about what runs.

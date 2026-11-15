@@ -195,6 +195,11 @@ const PBS_MANAGE_RECONFIRM = /^\/api\/plugins\/pbs\/instances\/[^/]+\/manage(\/(
 // "stop watching" a job (it lets a deploy restart HyperProx under work that may still be running).
 const NEXTCLOUD_ADMIN_READ = /^\/api\/plugins\/nextcloud\/(candidates|instances\/[^/]+\/(two-factor|jobs\/[^/]+))$/
 const NEXTCLOUD_RECONFIRM = /^\/api\/plugins\/nextcloud\/instances(\/[^/]+(\/secure-actions\/[^/]+|\/jobs\/[^/]+\/stop-watching)?)?$/
+// Homepage (routes/homepage.ts): admin for every method, reads included (the preview maps every LAN address); its
+// gallery card (/api/plugins/homepage/data, the generic plug-in route) stays a viewer read. Turning
+// widgets on, writing their keys to the guest, and making or revoking the Proxmox token are also re-confirmed.
+const HOMEPAGE = /^\/api\/plugins\/homepage\/(installs|instances)(\/|$)/
+const HOMEPAGE_RECONFIRM = /^\/api\/plugins\/homepage\/instances\/[^/]+\/(widgets|secrets|proxmox-token)$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -329,6 +334,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
   if (LOCAL.test(p)) return 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
+  if (HOMEPAGE.test(p)) return 'admin'
   if (CATALOGUE_DETECTED.test(p)) return 'admin'
   if (PLEX_SIGNIN.test(p)) return 'admin'
   if (SITES.test(p)) return 'admin'
@@ -408,6 +414,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m !== 'GET' && m !== 'HEAD' && PBS_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && PBS_MANAGE_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && NEXTCLOUD_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && HOMEPAGE_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   if (m === 'POST' && PLEX_SIGNIN_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true

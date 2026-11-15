@@ -780,6 +780,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     restart: unless-stopped
     ports: ["3000:3000"]
     volumes: ["./config:/app/config"]
+    # The Homepage plug-in puts widget keys in .env as HOMEPAGE_VAR_ values (mode 0600); this hands them to the container.
+    env_file: [".env"]
     environment:
       - HOMEPAGE_ALLOWED_HOSTS=\${HOMEPAGE_ALLOWED_HOSTS:?the installer sets this}` },
   },

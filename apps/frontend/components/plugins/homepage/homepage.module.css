@@ -1,0 +1,78 @@
+/* =============================================================================
+   HyperProx — Homepage plug-in page
+
+   Theme tokens only (light and dark both come from globals.css). --hx-accent
+   is the teal accent. Health is --good / --warn / --crit and is never colour
+   alone: every tile and line also says its state in words. Motion stops under
+   prefers-reduced-motion.
+   ============================================================================= */
+
+.band { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; border-radius: 10px; padding: 8px 12px; font-weight: 600;
+  background: var(--hx-accent); color: var(--accent-ink); }
+.band a { color: inherit; text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.band small { font-weight: 500; opacity: .85; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.toolbar small { color: var(--text-muted); font: 500 .72rem var(--font-mono); letter-spacing: .06em; }
+
+/* ── the dashboard as Homepage will draw it ── */
+.board { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); gap: 14px; }
+.group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.groupHead { display: flex; align-items: baseline; gap: 8px; font: 700 1.05rem/1.1 var(--font-display); letter-spacing: .06em; text-transform: uppercase; color: var(--text-bright); }
+.groupHead small { font: 500 .68rem var(--font-mono); color: var(--hx-accent); letter-spacing: .1em; }
+.tile { --glow-c: var(--hx-accent); display: grid; grid-template-columns: 2.4rem 1fr; gap: 4px 10px; align-items: center; padding: 10px; min-width: 0;
+  border-radius: 11px; border: 1px solid color-mix(in srgb, var(--glow-c) 35%, var(--border));
+  background: linear-gradient(160deg, var(--hx-panel), var(--hx-deep));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--glow-c) 10%, transparent) inset, 0 0 20px -12px color-mix(in srgb, var(--glow-c) var(--glow), transparent);
+  color: var(--text); }
+.tile[data-hidden="true"] { opacity: .45; border-style: dashed; }
+.mono { grid-row: span 2; display: grid; place-items: center; width: 2.4rem; height: 2.4rem; border-radius: 9px; font: 700 .95rem var(--font-display);
+  letter-spacing: .05em; color: var(--hx-accent); background: color-mix(in srgb, var(--hx-accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--hx-accent) 40%, transparent); }
+.tileName { display: flex; align-items: center; gap: 6px; min-width: 0; font: 600 .92rem var(--font-body); color: var(--text-bright); }
+.tileName span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 8px color-mix(in srgb, var(--good) var(--glow), transparent); }
+.dot[data-kind="ping"] { background: var(--hx-accent); }
+.dot[data-kind="none"] { background: var(--text-dimmer); box-shadow: none; }
+.tileMeta { display: flex; flex-wrap: wrap; gap: 4px 8px; min-width: 0; font: 500 .68rem var(--font-mono); color: var(--text-muted); letter-spacing: .04em; }
+.tileMeta a { color: var(--text-soft); overflow-wrap: anywhere; }
+.kind { padding: 0 5px; border-radius: 4px; border: 1px solid var(--border); text-transform: uppercase; letter-spacing: .1em; }
+.kind[data-kind="public"] { border-color: color-mix(in srgb, var(--hx-accent) 50%, var(--border)); color: var(--hx-accent); }
+.tileActs { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.tileActs button { min-height: 32px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: var(--text-soft); font: 500 .75rem var(--font-body); cursor: pointer; }
+.tileActs button:focus-visible { outline: 2px solid var(--hx-accent); outline-offset: 2px; }
+.tileActs button[aria-pressed="true"] { border-color: var(--hx-accent); color: var(--hx-accent); }
+
+/* ── diff ── */
+.diff { margin: 0; max-height: 28rem; overflow: auto; border-radius: 10px; border: 1px solid var(--border); background: var(--ground-inset);
+  font: 500 .74rem/1.5 var(--font-mono); padding: 6px 0; }
+.diff div { padding: 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff [data-op="+"] { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--text-bright); }
+.diff [data-op="-"] { background: color-mix(in srgb, var(--crit) 14%, transparent); color: var(--text-soft); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--crit) 60%, transparent); }
+.diff [data-op=" "] { color: var(--text-muted); }
+.diff [data-fold] { color: var(--text-dimmer); font-style: italic; }
+.diffHead { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font: 600 .85rem var(--font-body); color: var(--text-bright); }
+.diffHead small { font: 500 .72rem var(--font-mono); }
+.plus { color: var(--good); }
+.minus { color: var(--crit); }
+
+/* ── problems ── */
+.problems { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.problem { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: start; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--crit) 45%, var(--border)); background: color-mix(in srgb, var(--crit) 6%, var(--surface)); }
+.problem[data-sev="warn"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); }
+.problem b { color: var(--text-bright); }
+.problem p { margin: 0; color: var(--text-soft); font-size: .85rem; }
+.problem .fixRow { grid-column: 2; }
+
+/* ── settings and widgets ── */
+.rows { display: flex; flex-direction: column; gap: 10px; }
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: .9rem; color: var(--text-soft); min-height: 40px; }
+.check input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--hx-accent); flex: none; }
+.check b { color: var(--text-bright); font-weight: 600; }
+.warnBox { border-left: 3px solid var(--warn); padding: 8px 12px; background: color-mix(in srgb, var(--warn) 8%, var(--surface)); color: var(--text-soft); font-size: .85rem; border-radius: 0 8px 8px 0; }
+.found { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.found li { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); }
+.found small { font: 500 .7rem var(--font-mono); color: var(--text-muted); }
+.notes { margin: 0; padding-left: 1.1rem; color: var(--text-soft); font-size: .85rem; display: flex; flex-direction: column; gap: 4px; }
+
+@media (prefers-reduced-motion: reduce) { .tile, .dot { transition: none; animation: none; } }

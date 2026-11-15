@@ -44,6 +44,7 @@ import { arrQueueRoutes }       from './routes/arr-queue'
 import { plexSigninRoutes }     from './routes/plex-signin'
 import { pbsRoutes }            from './routes/pbs'
 import { nextcloudRoutes }      from './routes/nextcloud'
+import { homepageRoutes }       from './routes/homepage'
 import { catalogueRoutes } from './routes/catalogue'
 import { siteRoutes } from './routes/sites'
 // Site metrics (lib/site-metrics): routes under /api/site-metrics and the five-minute collector.
@@ -175,6 +176,7 @@ async function main() {
   await server.register(plexSigninRoutes,      { prefix: '/api/plugins/plex/signin' })
   await server.register(pbsRoutes,             { prefix: '/api/plugins/pbs' })
   await server.register(nextcloudRoutes,       { prefix: '/api/plugins/nextcloud' })
+  await server.register(homepageRoutes,        { prefix: '/api/plugins/homepage' })
   // Local plug-ins in the git-ignored apps/api/src/local-plugins (none: nothing is registered but an empty list).
   await registerLocalPlugins(server, loadLocalPlugins(undefined, PLUGINS.map(p => p.manifest.id)))
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })

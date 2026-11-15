@@ -69,7 +69,8 @@ export const DETECT: Record<string, Fingerprint[]> = {
   }],
   homepage: [{
     path: '/',
-    match: a => (a.status === 200 && a.body.includes('/_next/') && /<title>[^<]*homepage[^<]*<\/title>/i.test(a.body) ? { version: null } : null),
+    // Current images write <title data-next-head="">Homepage</title>, so the tag may carry attributes.
+    match: a => (a.status === 200 && a.body.includes('/_next/') && /<title[^>]*>[^<]*homepage[^<]*<\/title>/i.test(a.body) ? { version: null } : null),
   }],
   ollama: [{
     path: '/api/tags',
