@@ -35,6 +35,11 @@ CLEAN=(env -i "PATH=$PATH" "HOME=${HOME:-/tmp}" "LANG=C.UTF-8" "NEXT_TELEMETRY_D
 if [ ! -f "$ROOT/apps/frontend/$DIST/BUILD_ID" ] || [ -n "${HYPERPROX_DEMO_REBUILD:-}" ]; then
   echo "[demo] building the demo frontend into apps/frontend/$DIST (once)"
   (cd "$ROOT/apps/frontend" && "${CLEAN[@]}" NODE_ENV=production NEXT_PUBLIC_HYPERPROX_DEMO=1 HYPERPROX_NEXT_DIST="$DIST" HYPERPROX_API_PORT="$API_PORT" ./node_modules/.bin/next build)
+  # next build rewrites the tracked next-env.d.ts to point at the demo folder; put it back so the checkout stays
+  # clean (an update refuses a tree with local changes). Not a git checkout: nothing to restore.
+  if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$ROOT" checkout -- apps/frontend/next-env.d.ts 2>/dev/null || true
+  fi
 fi
 if [ ! -f "$ROOT/apps/api/dist-demo/demo/main.js" ] || [ -n "${HYPERPROX_DEMO_REBUILD:-}" ]; then
   echo "[demo] building the demo API into apps/api/dist-demo"

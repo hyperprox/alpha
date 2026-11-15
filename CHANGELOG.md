@@ -37,7 +37,7 @@ know or do before they install. Newest entry at the top.
 
 ### Fixed
 - **The web interface runs on a newer, supported version of the framework it is built on.** The old version had known security weaknesses that will not be fixed, so HyperProx moved to a supported one. Pages look and work as before.
-  - Technical: Next.js 14.2.35 to 15.5.28 and React 18 to 19.2.9 (exact pins, with eslint-config-next and the React types). Dynamic page params are now read with React `use()`, a few React 19 type changes are fixed, and the image optimizer is switched off (`images.unoptimized`), so `/_next/image` answers 404. Nothing else in `next.config.js` changed: the version baking, local plug-in list, redirects and `/api` rewrite work as before.
+  - Technical: Next.js 14.2.35 to 15.5.29 and React 18 to 19.2.9 (exact pins, with eslint-config-next and the React types). Dynamic page params are now read with React `use()`, a few React 19 type changes are fixed, and the image optimizer is switched off (`images.unoptimized`), so `/_next/image` answers 404. Nothing else in `next.config.js` changed: the version baking, local plug-in list, redirects and `/api` rewrite work as before.
 
 ## 2026-11-15 — Load balancing, choose exactly what to update, Nextcloud and Homepage plug-ins
 

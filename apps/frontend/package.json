@@ -7,7 +7,7 @@
     "build": "next build && rm -rf .next/standalone/apps/frontend/.next/static && cp -r .next/static .next/standalone/apps/frontend/.next/static && rm -rf .next/standalone/apps/frontend/public && cp -r public .next/standalone/apps/frontend/public",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
     "@hyperprox/types": "workspace:*",
@@ -24,11 +24,10 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.453.0",
-    "next": "15.5.28",
+    "next": "15.5.29",
     "qrcode": "1.5.4",
     "react": "19.2.9",
     "react-dom": "19.2.9",
-    "recharts": "^2.13.0",
     "swr": "^2.2.5",
     "tailwind-merge": "^2.5.3",
     "tailwindcss-animate": "^1.0.7",
@@ -41,7 +40,7 @@
     "@types/react-dom": "19.2.3",
     "autoprefixer": "^10.4.20",
     "eslint": "^8.57.0",
-    "eslint-config-next": "15.5.28",
+    "eslint-config-next": "15.5.29",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.2"
