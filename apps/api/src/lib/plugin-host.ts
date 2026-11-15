@@ -596,7 +596,7 @@ class Requester {
   /** The address and credential for one call. */
   private prepare(path: string, json: boolean, form = false): { url: URL; headers: Record<string, string> } {
     const base = (this.settings[this.endpoint.baseUrlSetting] ?? '').replace(/\/+$/, '')
-    if (!base) throw new Error(`${this.manifest.name}: no address configured for ${this.endpoint.label}`)
+    if (!base) throw new PluginNotConfigured(`Not configured yet: ${this.manifest.name} has no address for ${this.endpoint.label}.`)
 
     const url = new URL(base + (path.startsWith('/') ? path : `/${path}`))
     const headers: Record<string, string> = { Accept: 'application/json' }
@@ -874,7 +874,7 @@ async function contextFor(plugin: Plugin): Promise<BrokerContext> {
   const settings = await getSettings(plugin.manifest.id)
   const missing  = missingSettings(plugin.manifest, settings)
   if (missing.length) {
-    throw new Error(`Not configured yet — ${missing.join(' and ')} still needed.`)
+    throw new PluginNotConfigured(`Not configured yet — ${missing.join(' and ')} still needed.`)
   }
   return new BrokerContext(plugin.manifest, settings)
 }

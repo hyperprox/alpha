@@ -9,7 +9,7 @@
 //  the controls use, GET only, and only the paths in PLUGIN_READS.
 // =============================================================================
 
-import { setPluginTransport } from '../plugin-host'
+import { setPluginTransport, PluginNotConfigured } from '../plugin-host'
 import { getCredential, setCredential, deleteProviderCredentials } from '../credentials'
 import { HttpHAClient, HAUnreachableError, type HAConnection } from './client'
 import { DEFAULT_ID, InstanceStore, PLUGIN_ID } from './instances'
@@ -25,7 +25,7 @@ export function installHAPluginTransport(deps: PluginTransportDeps = {}): void {
   setPluginTransport(PLUGIN_ID, async (method, path, timeoutMs) => {
     if (method !== 'GET') throw new HAUnreachableError('The Home Assistant plug-in only reads.')
     const c = await store.connection(DEFAULT_ID)
-    if (!c) throw new Error('Not configured yet: add a house on the Home Assistant page.')
+    if (!c) throw new PluginNotConfigured('Not configured yet: add a house on the Home Assistant page.')
     return clientFor(c).pluginRead(path, timeoutMs)
   })
 }

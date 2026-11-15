@@ -15,6 +15,7 @@
 import type { Plugin, PluginContext, PluginDetail, PluginTileData } from '../lib/plugin-host'
 import { detailOf } from '../lib/qnap'
 import type { QnapReading } from '../lib/qnap/parse'
+import { PluginNotConfigured } from '../lib/plugin-host'
 
 type Row = { id: string; name: string; remote: boolean; reading: QnapReading | null; error: string | null }
 
@@ -46,7 +47,7 @@ export const qnapPlugin: Plugin = {
 
   async load(ctx: PluginContext): Promise<PluginTileData> {
     const rows: Row[] = await ctx.get('/readings')
-    if (!Array.isArray(rows) || !rows.length) throw new Error('Not configured yet: add a NAS on the QNAP page.')
+    if (!Array.isArray(rows) || !rows.length) throw new PluginNotConfigured('Not configured yet: add a NAS on the QNAP page.')
     const lines = rows.map(x => {
       if (!x.reading) return { label: x.name, value: 'not reachable', tone: 'bad' as const }
       const t = trouble(x.reading)
@@ -65,7 +66,10 @@ export const qnapPlugin: Plugin = {
   async detail(ctx: PluginContext): Promise<PluginDetail> {
     const rows: Row[] = await ctx.get('/readings')
     const first = (Array.isArray(rows) ? rows : []).find(r => r.reading)
-    if (!first) throw new Error(rows?.length ? rows[0].error ?? 'No NAS could be read.' : 'Not configured yet: add a NAS on the QNAP page.')
+    if (!first) {
+      if (!Array.isArray(rows) || !rows.length) throw new PluginNotConfigured('Not configured yet: add a NAS on the QNAP page.')
+      throw new Error(rows[0].error ?? 'No NAS could be read.')
+    }
     return detailOf(first.name, first.reading!)
   },
 }
