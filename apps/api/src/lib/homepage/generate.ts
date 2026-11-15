@@ -318,7 +318,7 @@ export function valueHash(v: unknown): string {
 }
 
 export class YamlProblem extends Error {
-  constructor(message: string, readonly code: 'yaml_invalid' | 'not_a_list' | 'roundtrip') { super(message); this.name = 'YamlProblem' }
+  constructor(message: string, readonly code: 'yaml_invalid' | 'not_a_list' | 'roundtrip' | 'duplicate_group') { super(message); this.name = 'YamlProblem' }
 }
 
 type Item = Record<string, unknown>
@@ -369,7 +369,7 @@ export function header(managed: string[]): string {
 }
 
 /** A group's base name: HyperProx's twin of a group the person already had is "X (HyperProx)". */
-export const baseGroup = (g: string) => g.replace(/ \(HyperProx\)$/, '')
+export const baseGroup = (g: string) => g.replace(/ \(HyperProx(?: \d+)?\)$/, '')
 
 /**
  * Entries of one group in the file that are exactly what HyperProx would write there now (same name, same value):
@@ -409,6 +409,12 @@ export function adoptFromHeader(text: string, items: Item[], entries: Entry[]): 
   return { managedGroups, written, released: [] }
 }
 
+/** A HyperProx group whose name appears more than once in the file about to be written, or null. */
+export function duplicateGroup(groups: Array<{ name: string; managed: boolean }>): string | null {
+  for (const g of groups) if (g.managed && groups.filter(x => x.name === g.name).length > 1) return g.name
+  return null
+}
+
 /** One top-level item as YAML, marked when HyperProx owns it. */
 function dumpItem(it: Item, managed: boolean): string {
   const body = yaml.dump([it], { lineWidth: -1, noRefs: true, quotingType: '"' })
@@ -424,12 +430,16 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
   let items = parseServices(currentText)
   const notes: MergeNotes = { keptUserGroups: [], keptUserEntries: [], keptEdits: [], userRemovedGroups: [], renamed: [], droppedSamples: false, adopted: [] }
   if (isSampleConfig(items)) { items = []; notes.droppedSamples = true }
-  if (!prev.managedGroups.length && !(prev.released ?? []).length && !(prev.parked ?? []).length) {
+  // The header is read only when HyperProx holds no record of this file at all: not while a group is released,
+  // parked, or being handed back (a reclaim must take back exactly that group, nothing the header names).
+  if (!prev.managedGroups.length && !(prev.released ?? []).length && !(prev.parked ?? []).length && !(prev.reclaim ?? []).length) {
     prev = adoptFromHeader(currentText, items, entries)
     notes.adopted = prev.managedGroups
   }
-  // Groups the person made theirs ("Make a group yours"). Only that action releases a group; nothing here does.
+  // Groups the person made theirs ("Make a group yours"), by their exact name in the file. Only that action
+  // releases a group; nothing here does. While one is released, HyperProx writes nothing for its base group.
   const released = new Set(prev.released ?? [])
+  const releasedBase = new Set([...released].map(baseGroup))
   // A group the person handed back ("Let HyperProx manage it again"): taken back with only the entries that are
   // exactly what HyperProx writes; everything else in it stays theirs.
   const reclaimed = new Set(prev.reclaim ?? [])
@@ -437,7 +447,9 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
   const managedBefore = new Set(prev.managedGroups)
   for (const it of items) {
     const g = nameOf(it)
-    if (reclaimed.has(baseGroup(g)) && !managedBefore.has(g) && !released.has(baseGroup(g))) { managedBefore.add(g); prevWritten[g] = claimable(it, g, entries) }
+    // Exactly the group that was released and handed back, by its full name: never another group of the same base
+    // name (the person's own "Media" beside HyperProx's "Media (HyperProx)").
+    if (reclaimed.has(g) && !managedBefore.has(g) && !released.has(g)) { managedBefore.add(g); prevWritten[g] = claimable(it, g, entries) }
   }
   // Groups HyperProx owns but had nothing to put in for a while (its only entries' guests were stopped, a source
   // was not read): not in the file, still HyperProx's, and not "deleted by the person".
@@ -447,22 +459,29 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
   for (const g of managedBefore) if (!present.has(g) && !parked.has(g) && !opts.hiddenGroups.includes(baseGroup(g))) notes.userRemovedGroups.push(g)
   const removed = new Set(notes.userRemovedGroups)
 
-  // Our group's name in the file: the plain name, unless the person already has a group called that.
+  // Our group's name in the file: the one HyperProx already uses for it; else the plain name, unless any group in
+  // the file (or a released one) has it; else "X (HyperProx)", "X (HyperProx 2)"... whichever no group uses.
+  const ours = [...managedBefore, ...parked]
   const userNames = new Set(items.map(nameOf).filter(n => !managedBefore.has(n)))
+  const taken = new Set([...items.map(nameOf), ...released, ...parked])
   const fileName = (g: string): string => {
-    if (managedBefore.has(g) || parked.has(g) || !userNames.has(g)) return g
-    const alt = `${g} (HyperProx)`
+    const mine = ours.find(n => n === g) ?? ours.find(n => baseGroup(n) === g)
+    if (mine) return mine
+    if (!taken.has(g)) return g
+    let alt = `${g} (HyperProx)`
+    for (let k = 2; taken.has(alt); k++) alt = `${g} (HyperProx ${k})`
+    taken.add(alt)
     notes.renamed.push({ from: g, to: alt })
     return alt
   }
 
   const want = new Map<string, Entry[]>()
   for (const { group, entries: list } of groupsOf(entries, opts.hiddenGroups)) {
-    if (released.has(group)) continue
+    if (releasedBase.has(group)) continue
     const name = fileName(group)
     if (removed.has(name) || removed.has(group)) continue
-    // A twin beside the person's own group never repeats an entry they already have there.
-    const theirs = name !== group ? new Set(entryNames(items.find(it => nameOf(it) === group)?.[group])) : new Set<string>()
+    // A twin never repeats an entry the person already has in a group of the same base name.
+    const theirs = new Set(items.filter(it => userNames.has(nameOf(it)) && nameOf(it) !== name && baseGroup(nameOf(it)) === group).flatMap(it => entryNames(it[nameOf(it)])))
     want.set(name, list.filter(e => !theirs.has(e.name)))
   }
 
@@ -509,8 +528,12 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
     if (rebuilt) out.push({ item: rebuilt, managed: true }); else parkedNow.push(n)
   }
   // A parked group still with nothing to show stays parked (and HyperProx's).
-  for (const g of parked) if (!managed.includes(g) && !removed.has(g) && !released.has(baseGroup(g))) { managed.push(g); parkedNow.push(g); written[g] = prevWritten[g] ?? {} }
+  for (const g of parked) if (!managed.includes(g) && !removed.has(g) && !released.has(g) && !releasedBase.has(baseGroup(g))) { managed.push(g); parkedNow.push(g); written[g] = prevWritten[g] ?? {} }
 
+  // Every group name once: Homepage would merge or drop one of two groups with the same name, and the YAML read-back
+  // below cannot see that (two list items may carry the same key).
+  const dup = duplicateGroup(out.map(o => ({ name: nameOf(o.item), managed: o.managed })))
+  if (dup !== null) throw new YamlProblem(`The generated services.yaml would have two groups called ${dup}; nothing is written.`, 'duplicate_group')
   const inFile = managed.filter(g => !parkedNow.includes(g))
   const body = out.map(o => dumpItem(o.item, o.managed)).join('\n')
   const text = `${header(inFile)}${body.length ? `\n${body}` : '[]\n'}`

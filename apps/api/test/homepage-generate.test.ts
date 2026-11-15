@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildEntries, mergeServices, mergeWidgets, mergeEnv, envNames, lineDiff, parseServices, isSampleConfig, valueHash, varName, hostPort, inSubnets,
-  adoptFromHeader, yaml, YamlProblem, MANAGED_MARK, noBraces, safeSecret, pruneEnv,
+  adoptFromHeader, yaml, YamlProblem, MANAGED_MARK, noBraces, safeSecret, pruneEnv, baseGroup, duplicateGroup,
 } from '../src/lib/homepage/generate'
 import { appFromName, knownApp } from '../src/lib/homepage/catalog'
 import { buildInventory, inventoryFingerprint, type InventorySources } from '../src/lib/homepage/inventory'
@@ -492,4 +492,73 @@ test('B1: the inventory says which sources failed, a guest whose addresses canno
   const inv = await buildInventory(sources({ exclusions: async () => { throw new Error('db down') }, addresses: async gr => { if (gr.vmid === 102) throw new Error('nope'); return ['10.0.0.11'] } }))
   assert.deepEqual([...inv.failed].sort(), ['exclusions', 'guests'])
   assert.deepEqual(inv.pluginUrls, { 'arrstack:sonarr_url': 'http://10.0.0.12:8989', 'arrstack:radarr_url': 'http://10.0.0.12:7878' })
+})
+
+// ── reclaim and group names ──────────────────────────────────────────────────
+
+/** The person's own "Media" plus HyperProx's twin beside it. */
+function withTwin() {
+  const es = buildEntries(fixture(), opts())
+  const own = yaml.dump([{ Media: [{ 'My Films': { href: 'http://10.0.0.60' } }] }])
+  const a = mergeServices(own, es, EMPTY_STATE)
+  assert.ok(a.state.managedGroups.includes('Media (HyperProx)'))
+  return { es, a }
+}
+const groupNames = (text: string) => (parseServices(text) as any[]).map(x => Object.keys(x)[0])
+
+test('R1: handing back a twin reclaims exactly that twin, never the person\'s own group of the same base name', () => {
+  const { es, a } = withTwin()
+  // Take the twin over (exact name), write once, then hand it back.
+  const took = { ...a.state, managedGroups: a.state.managedGroups.filter(g => g !== 'Media (HyperProx)'), released: ['Media (HyperProx)'] }
+  const b = mergeServices(a.text, es, took)
+  const theirs = (parseServices(b.text) as any[]).find(x => x.Media)
+  assert.deepEqual(theirs, { Media: [{ 'My Films': { href: 'http://10.0.0.60' } }] })
+  const c = mergeServices(b.text, es, { ...b.state, released: [], reclaim: ['Media (HyperProx)'] })
+  assert.ok(c.state.managedGroups.includes('Media (HyperProx)'))
+  assert.ok(!c.state.managedGroups.includes('Media'), 'the person\'s own Media is not claimed')
+  assert.equal(c.state.written.Media, undefined)
+  assert.deepEqual((parseServices(c.text) as any[]).find(x => x.Media), theirs, 'and stays exactly as it was')
+  assert.deepEqual(c.notes.keptUserGroups, ['Media'])
+  const names = groupNames(c.text)
+  assert.equal(new Set(names).size, names.length, 'no group name twice')
+})
+
+test('R2: reclaiming when the twin was the only managed group: no header adoption, one group of each name', () => {
+  const es = buildEntries({ ...fixture(), services: fixture().services.filter(s => s.key === 'plex'), proxyHosts: fixture().proxyHosts.filter(p => p.domains[0].startsWith('plex')), sites: [] }, opts())
+  const own = yaml.dump([{ Media: [{ 'My Films': { href: 'http://10.0.0.60' } }] }])
+  const a = mergeServices(own, es, EMPTY_STATE)
+  assert.deepEqual(a.state.managedGroups, ['Media (HyperProx)'])
+  const took = { ...a.state, managedGroups: [], written: {}, released: ['Media (HyperProx)'] }
+  const b = mergeServices(a.text, es, took)
+  // Handed back with nothing else managed: the header must not be read in place of the reclaim.
+  const c = mergeServices(b.text, es, { ...b.state, managedGroups: [], released: [], parked: [], reclaim: ['Media (HyperProx)'] })
+  assert.deepEqual(c.notes.adopted, [])
+  assert.deepEqual(c.state.managedGroups, ['Media (HyperProx)'])
+  const names = groupNames(c.text)
+  assert.deepEqual(names, ['Media', 'Media (HyperProx)'])
+})
+
+test('R2: a new twin takes a name no group uses; two groups of one name are never written', () => {
+  const es = buildEntries(fixture(), opts())
+  // The person has "Media" and a group of their own called "Media (HyperProx)" (a twin they took and HyperProx lost track of).
+  const own = yaml.dump([{ Media: [{ 'My Films': { href: 'http://10.0.0.60' } }] }, { 'Media (HyperProx)': [{ Plex: { href: 'http://my-plex' } }] }])
+  const r = mergeServices(own, es, EMPTY_STATE)
+  const names = groupNames(r.text)
+  assert.equal(new Set(names).size, names.length)
+  assert.ok(!names.includes('Media (HyperProx 2)'), 'Plex is already in a group of theirs with that base name, so no twin is needed')
+  assert.deepEqual((parseServices(r.text) as any[]).find(x => x['Media (HyperProx)'])['Media (HyperProx)'], [{ Plex: { href: 'http://my-plex' } }])
+  // With an entry theirs do not have, the twin gets the next free name.
+  const inv = fixture()
+  inv.services.push({ key: 'jellyfin', url: 'http://10.0.0.21:8096', guest: null, source: 'scan' })
+  const r2 = mergeServices(own, buildEntries(inv, opts()), EMPTY_STATE)
+  assert.ok(groupNames(r2.text).includes('Media (HyperProx 2)'))
+  assert.equal(baseGroup('Media (HyperProx 2)'), 'Media')
+})
+
+test('R2: the write is refused when a HyperProx group name would appear twice (YAML read-back cannot see it)', () => {
+  assert.equal(duplicateGroup([{ name: 'Media', managed: false }, { name: 'Media (HyperProx)', managed: true }]), null)
+  assert.equal(duplicateGroup([{ name: 'Media (HyperProx)', managed: false }, { name: 'Media (HyperProx)', managed: true }]), 'Media (HyperProx)')
+  assert.equal(duplicateGroup([{ name: 'Mine', managed: false }, { name: 'Mine', managed: false }]), null, 'the person\'s own duplicates are theirs')
+  // Two list items with the same key read back fine, which is why the check is separate.
+  assert.doesNotThrow(() => parseServices(yaml.dump([{ A: [] }, { A: [] }])))
 })

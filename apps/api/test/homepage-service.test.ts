@@ -744,3 +744,40 @@ test('the Catalogue recipe: plain env_file (any Compose version), the key file c
   assert.equal(fs.statSync(path.join(d, 'homepage.env')).mode & 0o777, 0o600)
   assert.equal(fs.statSync(path.join(d, 'homepage.env')).size, 0)
 })
+
+test('R2: take the twin over, disconnect, reconnect: HyperProx never writes a second group of the same name', async () => {
+  const own = yaml.dump([{ Media: [{ 'My Films': { href: 'http://10.0.0.60' } }] }])
+  const t = setup({ inv: () => inventory({ services: [...inventory().services, { key: 'jellyfin', url: 'http://10.0.0.21:8096', guest: null, source: 'scan' }] }) })
+  fs.writeFileSync(path.join(t.guest.config, 'services.yaml'), own)
+  let i = await t.svc.connect('lxc-130', me)
+  await t.svc.apply(i.id, (await t.svc.preview(i.id, me)).id, me)
+  await t.svc.saveSettings(i.id, { takeOver: 'Media (HyperProx)' }, me)
+  assert.deepEqual((await t.store.get(i.id))!.state.released, ['Media (HyperProx)'], 'released by its exact name')
+  await t.svc.apply(i.id, (await t.svc.preview(i.id, me)).id, me)
+  await t.svc.disconnect(i.id, me)
+  i = await t.svc.connect('lxc-130', me)
+  await t.svc.apply(i.id, (await t.svc.preview(i.id, me)).id, me)
+  const names = (yaml.load(t.read('services.yaml')) as any[]).map(x => Object.keys(x)[0])
+  assert.equal(new Set(names).size, names.length, names.join(', '))
+  assert.deepEqual((yaml.load(t.read('services.yaml')) as any[]).find(x => x.Media).Media, [{ 'My Films': { href: 'http://10.0.0.60' } }])
+  // And handing back the released twin of a connected dashboard takes back exactly that group.
+  await t.svc.saveSettings(i.id, { takeOver: (await t.store.get(i.id))!.state.managedGroups.find(g => g.startsWith('Media'))! }, me)
+  const rel = (await t.store.get(i.id))!.state.released![0]
+  await assert.rejects(() => t.svc.saveSettings(i.id, { manageAgain: 'Media' }, me), (e: any) => e.code === 'bad_input', 'the person\'s own group cannot be "handed back"')
+  await t.svc.saveSettings(i.id, { manageAgain: rel }, me)
+  await t.svc.apply(i.id, (await t.svc.preview(i.id, me)).id, me)
+  assert.deepEqual((yaml.load(t.read('services.yaml')) as any[]).find(x => x.Media).Media, [{ 'My Films': { href: 'http://10.0.0.60' } }], 'still untouched')
+  assert.ok(!(await t.store.get(i.id))!.state.managedGroups.includes('Media'))
+})
+
+test('compose files: an unsafe path in Docker\'s record is refused, never replaced by a guessed docker-compose.yml', async () => {
+  const t = setup({ secrets: { 'arrstack:sonarr_key': 'k1' } })
+  const i = await t.svc.connect('lxc-130', me)
+  await t.svc.setWidgets(i.id, [SONARR], me)
+  const rec = (await t.store.get(i.id))!
+  await t.store.put({ ...rec, composeFiles: [], composeFile: null })
+  await assert.rejects(() => t.svc.exportKeys(i.id, me), (e: any) => e.code === 'compose_unknown')
+  await assert.rejects(() => t.svc.wireEnv(i.id, me), (e: any) => e.code === 'compose_unknown')
+  assert.equal(t.keyFile(), null, 'nothing written')
+  assert.ok(!/^compose /m.test(t.calls()), 'compose never run')
+})

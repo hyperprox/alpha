@@ -337,12 +337,13 @@ export class HomepageService {
         if (!i.state.managedGroups.includes(g)) throw new HomepageRefusal('bad_input', 'That is not one of HyperProx\'s groups.')
         const written = { ...i.state.written }
         delete written[g]
-        state = { ...i.state, managedGroups: i.state.managedGroups.filter(x => x !== g), written, released: [...new Set([...(i.state.released ?? []), baseGroup(g)])],
-          parked: (i.state.parked ?? []).filter(x => x !== g), reclaim: (i.state.reclaim ?? []).filter(x => x !== baseGroup(g)) }
+        // Remembered by its exact name in the file ("Media (HyperProx)"), so handing it back takes back only it.
+        state = { ...i.state, managedGroups: i.state.managedGroups.filter(x => x !== g), written, released: [...new Set([...(i.state.released ?? []), g])],
+          parked: (i.state.parked ?? []).filter(x => x !== g), reclaim: (i.state.reclaim ?? []).filter(x => x !== g) }
       }
       // ...and hands it back: HyperProx takes it back on the next write, with only the entries that are exactly its own.
       if (body.manageAgain !== undefined) {
-        const g = baseGroup(String(body.manageAgain))
+        const g = String(body.manageAgain)
         if (!(state.released ?? []).includes(g)) throw new HomepageRefusal('bad_input', 'That group is not one you took over.')
         state = { ...state, released: (state.released ?? []).filter(x => x !== g), reclaim: [...new Set([...(state.reclaim ?? []), g])] }
       }
@@ -459,7 +460,8 @@ export class HomepageService {
       { name: 'widgets.yaml', before: widgets.text, after: w.text, expectSha: widgets.sha, diff: w.changed ? lineDiff(widgets.text, w.text) : [], changed: w.changed },
     ]
     const counts: Record<string, number> = {}
-    for (const g of groupsOf(entries, opts.hiddenGroups)) if (!(merged.state.released ?? []).includes(g.group)) counts[g.group] = g.entries.length
+    const releasedBase = new Set((merged.state.released ?? []).map(baseGroup))
+    for (const g of groupsOf(entries, opts.hiddenGroups)) if (!releasedBase.has(g.group)) counts[g.group] = g.entries.length
     const now = this.d.now()
     return {
       id: randomUUID(), instanceId: i.id, owner, createdAt: now, expiresAt: now + PLAN_TTL_MS, files: out, entries, state: merged.state, notes: merged.notes,
@@ -604,9 +606,14 @@ export class HomepageService {
   // ── the key file ─────────────────────────────────────────────────────────
 
   /** The compose file, its Homepage service's name, and whether that service reads homepage.env. */
+  /**
+   * The project's compose files, exactly as Docker recorded them. None known (a path HyperProx cannot name safely,
+   * or no record) is a refusal: a guessed docker-compose.yml could be a different project's file.
+   */
   private composeFilesOf(i: HomepageInstance): string[] {
     if (i.composeFiles?.length) return i.composeFiles
-    return [i.composeFile ?? `${i.composeDir}/docker-compose.yml`]
+    if (i.composeFile && !('composeFiles' in i)) return [i.composeFile]
+    throw new HomepageRefusal('compose_unknown', `HyperProx does not know ${i.container}'s compose files (Docker recorded none, or one whose path it will not name in a script), so it changes nothing there. Use "Find Homepage again" after fixing the path.`, 409)
   }
 
   /**

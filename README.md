@@ -2508,8 +2508,8 @@ each file:
   is marked `# managed by HyperProx`. Your own groups stay where you put them, unchanged. An entry you add
   inside one of HyperProx's groups stays. An entry of HyperProx's that you edit is left as you edited it. A
   group of HyperProx's that you delete is not put back (the page offers **Bring them back**). If you already
-  have a group called, say, Media, HyperProx's is called Media (HyperProx), and it never repeats an entry your
-  Media already has. A group becomes yours only when you choose **Make a group yours** on the page: from then on
+  have a group called, say, Media, HyperProx's is called Media (HyperProx) (or Media (HyperProx 2), whichever no
+  group uses yet), and it never repeats an entry your Media already has. No group name is ever written twice. A group becomes yours only when you choose **Make a group yours** on the page: from then on
   HyperProx never writes it, and **Let HyperProx manage it again** hands it back (HyperProx then takes back only
   the entries in it that are exactly its own). An entry that is missing for a while, say while its guest is
   stopped, comes back into its group when it reappears. Comments in the file are not kept when it is rewritten;
