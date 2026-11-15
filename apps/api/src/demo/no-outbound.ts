@@ -70,11 +70,13 @@ export function installNoOutbound(): void {
     return (connect as (...a: unknown[]) => net.Socket).apply(this, args)
   } as typeof net.Socket.prototype.connect
 
-  // Name lookups: only for loopback names, so not even a DNS query leaves the machine.
+  // Name lookups: only for loopback names, so not even a DNS query leaves the machine. An address written out
+  // (listen('10.0.0.5') looks it up too) asks no server: it answers itself, and connecting is still guarded above.
+  const asks = (h: string) => !isLoopback(h) && net.isIP(String(h).replace(/^\[|\]$/g, '')) === 0
   const lookup = dns.lookup
   ;(dns as any).lookup = function (hostname: string, ...rest: any[]) {
     const cb = rest[rest.length - 1]
-    if (!isLoopback(hostname)) {
+    if (asks(hostname)) {
       const err = note(`dns:${hostname}`)
       if (typeof cb === 'function') { process.nextTick(() => cb(err)); return {} as any }
       throw err
@@ -83,7 +85,7 @@ export function installNoOutbound(): void {
   }
   const plookup = dns.promises.lookup
   ;(dns.promises as any).lookup = async function (hostname: string, ...rest: any[]) {
-    if (!isLoopback(hostname)) throw note(`dns:${hostname}`)
+    if (asks(hostname)) throw note(`dns:${hostname}`)
     return (plookup as any).call(dns.promises, hostname, ...rest)
   }
   // Every other resolver call asks a DNS server, which is always somewhere else.

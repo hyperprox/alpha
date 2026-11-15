@@ -62,6 +62,10 @@ test('dns: no lookups or queries for any name but localhost', async () => {
   assert.equal(r.code, 'EDEMO_OUTBOUND')
   const local = await dns.promises.lookup('localhost')
   assert.ok(isLoopback(local.address))
+  // An address written out asks no server (listening on a LAN address looks it up); connecting to it is still refused.
+  assert.equal((await dns.promises.lookup('192.0.2.77')).address, '192.0.2.77')
+  const viaLiteral = await failure(done => net.connect(80, '192.0.2.77').on('error', done))
+  assert.equal(viaLiteral.code, 'EDEMO_OUTBOUND')
 })
 
 test('udp: no sends to another machine', async () => {
