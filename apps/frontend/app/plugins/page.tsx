@@ -43,6 +43,8 @@ interface Finding {
 
 interface TileData {
   ok: boolean; error?: string; headline?: string
+  /** not_configured: nothing to talk to yet (shown as not set up). */
+  code?: string
   tone?: 'good' | 'warn' | 'bad'
   rows?: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>
 }
