@@ -15,7 +15,7 @@ import { isRemoteContext } from '../lib/clusters/context'
 import { guardRawCreate } from '../lib/naming'
 import { auditCredentialUse } from '../lib/audit'
 import { sendFailure } from '../lib/failure'
-import { ProxmoxUnreachableError } from '../lib/proxmox-client'
+import { ProxmoxUnreachableError, proxmoxUnanswered } from '../lib/proxmox-client'
 
 // Not cached here: the token arrives from the vault after start-up and can change (lib/pve-env.ts).
 const getClient = pveFromEnv
@@ -176,7 +176,8 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
       // such, never shown as an empty cluster.
       if (nodesR.status === 'rejected') {
         const e = nodesR.reason
-        return sendFailure(req, r, e?.name === 'ProxmoxAuthError' || e?.name === 'ProxmoxUnreachableError' ? e : new ProxmoxUnreachableError(e))
+        // Already typed by getNodes (refused token, no answer, changed certificate); anything else as it is.
+        return sendFailure(req, r, proxmoxUnanswered(e) && e?.name !== 'ProxmoxUnreachableError' ? new ProxmoxUnreachableError(e) : e, "HyperProx couldn't read your Proxmox's node list.", { status: 502 })
       }
 
       const [cephR, osdR, haR, storageR, gpuR, npmR, pingR] = await Promise.allSettled([

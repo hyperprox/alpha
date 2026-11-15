@@ -11,7 +11,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Fastify from 'fastify'
 import { ProxmoxClient, ProxmoxAuthError, ProxmoxUnreachableError, PROXMOX_AUTH_MESSAGE } from '../src/lib/proxmox-client'
-import { HomePinAgent, HomeConnectTimeoutError } from '../src/lib/home-tls'
+import { HomePinAgent, HomeConnectTimeoutError, recordHomeTlsPin, forgetHomeTlsPin, HomeCertificateChangedError } from '../src/lib/home-tls'
+import { withCephMon, invalidateCephMonNode, CephUnavailableError } from '../src/lib/ceph'
+import { CERT_CHANGED_MESSAGE } from '../src/lib/failure'
 import { makeFastTick, overlapGuard, feedProblem } from '../src/lib/ws-broadcast'
 import { NPMClient } from '../src/lib/npm-client'
 import { proxmoxRoutes } from '../src/routes/proxmox'
@@ -22,8 +24,9 @@ execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days
   '-keyout', join(dir, 'k.pem'), '-out', join(dir, 'c.pem')], { stdio: 'ignore' })
 
 let port = 0
-let mode: 'refuse' | 'ok' = 'refuse'
+let mode: 'refuse' | 'ok' | 'garbage' = 'refuse'
 const pve = https.createServer({ key: readFileSync(join(dir, 'k.pem')), cert: readFileSync(join(dir, 'c.pem')) }, (req, res) => {
+  if (mode === 'garbage') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<html>not json</html>') }
   if (mode === 'refuse') { res.writeHead(401, 'authentication failure', { 'content-type': 'application/json' }); return res.end('{"data":null}') }
   const p = (req.url ?? '').replace('/api2/json', '')
   res.writeHead(200, { 'content-type': 'application/json' })
@@ -157,4 +160,56 @@ test('the live feed reads NPM with one try', async () => {
   const normal = new NPMClient('http://192.0.2.5:81', 'b@example.com', 'pw', async () => { m++; throw new TypeError('fetch failed') })
   await assert.rejects(normal.getStats())
   assert.equal(m, 5)
+})
+
+test('a certificate that is not the pinned one is never reported as an outage', async () => {
+  mode = 'ok'
+  recordHomeTlsPin('127.0.0.1', port, 'AB'.repeat(32), 'ca-verified')
+  try {
+    await assert.rejects(client().getNodes(), (e: any) => e instanceof HomeCertificateChangedError)
+    const p = await client().ping()
+    assert.equal((p as any).code, 'proxmox_cert_changed')
+    assert.equal((p as any).error, CERT_CHANGED_MESSAGE)
+
+    const sent: Array<[string, any]> = []
+    const problem = Object.assign(() => undefined, { ok: () => undefined })
+    const tick = makeFastTick({ pve: client(), problem, send: (t, x) => sent.push([t, x]), unlocked: () => true, gpu: async () => [] as any, network: async () => ({}) })
+    await overlapGuard(tick)()
+    assert.deepEqual(sent, [['feed-problem', { code: 'proxmox_cert_changed', error: CERT_CHANGED_MESSAGE }]])
+
+    const saved = { ...process.env }
+    Object.assign(process.env, { PROXMOX_HOST: '127.0.0.1', PROXMOX_PORT: String(port), PROXMOX_USER: 'root@pam', PROXMOX_TOKEN_ID: 'hpx', PROXMOX_TOKEN_SECRET: 'any-secret' })
+    const app = Fastify()
+    await app.register(proxmoxRoutes, { prefix: '/api/proxmox' })
+    try {
+      const r = await app.inject({ method: 'GET', url: '/api/proxmox/summary' })
+      assert.equal(r.statusCode, 502)
+      assert.equal(r.json().code, 'proxmox_cert_changed')
+      assert.equal(r.json().error, CERT_CHANGED_MESSAGE)
+      assert.ok(!r.body.includes('AB:AB'), 'no fingerprint in the answer')
+    } finally {
+      await app.close()
+      for (const k of ['PROXMOX_HOST', 'PROXMOX_PORT', 'PROXMOX_USER', 'PROXMOX_TOKEN_ID', 'PROXMOX_TOKEN_SECRET']) {
+        if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]
+      }
+    }
+  } finally {
+    forgetHomeTlsPin('127.0.0.1', port)
+  }
+})
+
+test('an answer that cannot be read is not "unreachable" either', async () => {
+  mode = 'garbage'
+  await assert.rejects(client().getNodes(), (e: any) => !(e instanceof ProxmoxUnreachableError) && /Parse error/.test(e.message))
+  assert.equal((await client().ping() as any).code, 'proxmox_error')
+})
+
+test('CEPH with a refused token: the token problem, not "CEPH unavailable", and not remembered', async () => {
+  mode = 'refuse'
+  invalidateCephMonNode(true)
+  const c = client()
+  await assert.rejects(withCephMon(c, n => c.getCephOSDs(n)), (e: any) => e instanceof ProxmoxAuthError && !(e instanceof CephUnavailableError))
+  // A second read asks Proxmox again (the refusal was not cached as "no CEPH").
+  await assert.rejects(withCephMon(c, n => c.getCephOSDs(n)), ProxmoxAuthError)
+  invalidateCephMonNode(true)
 })

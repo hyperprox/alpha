@@ -17,6 +17,12 @@
 import { ProxmoxClient, CephMon } from './proxmox-client'
 import { currentClusterId, isRemoteContext } from './clusters/context'
 
+/** A refused API token or a certificate that is not the pinned one: Proxmox's access is the problem, not CEPH. */
+export function isProxmoxAccessProblem(e: unknown): boolean {
+  const n = String((e as any)?.name ?? '')
+  return n === 'ProxmoxAuthError' || n === 'HomeCertificateChangedError' || n === 'CertificateChangedError'
+}
+
 export class CephUnavailableError extends Error {
   constructor(message: string) {
     super(message)
@@ -60,7 +66,9 @@ async function detect(pve: ProxmoxClient, avoid?: string): Promise<string> {
   try {
     nodes = await pve.getNodes()
   } catch (e: any) {
-    throw new CephUnavailableError(`Cannot reach Proxmox to look for a CEPH monitor: ${e.message}`)
+    // A refused token or a changed certificate is not "no CEPH": it goes up as it is, so the page says what is wrong.
+    if (isProxmoxAccessProblem(e)) throw e
+    throw new CephUnavailableError('Cannot reach Proxmox to look for a CEPH monitor.')
   }
   if (!Array.isArray(nodes) || nodes.length === 0) {
     throw new CephUnavailableError('Proxmox returned no nodes — cannot locate a CEPH monitor.')
@@ -135,8 +143,10 @@ export async function resolveCephMonNode(pve: ProxmoxClient): Promise<string> {
   s.inflight = detect(pve)
     .then(node => { s.cached = { node, ts: Date.now() }; s.failed = null; s.inflight = null; return node })
     .catch((e: any) => {
-      s.failed = { message: e.message, ts: Date.now() }
       s.cached = null; s.inflight = null
+      // Not remembered as "no CEPH": once the token or certificate is fixed, the next read works at once.
+      if (isProxmoxAccessProblem(e)) throw e
+      s.failed = { message: e.message, ts: Date.now() }
       throw e instanceof CephUnavailableError ? e : new CephUnavailableError(e.message)
     })
 

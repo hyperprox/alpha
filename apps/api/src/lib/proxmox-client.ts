@@ -4,6 +4,7 @@
 
 import https from 'https'
 import { homeTlsAgent } from './home-tls'
+import { connectionFailure, failureName, CERT_CHANGED_NAMES, CERT_CHANGED_MESSAGE } from './failure'
 
 export interface PVENode {
   node: string; status: string; cpu: number; maxcpu: number
@@ -63,6 +64,18 @@ export class ProxmoxAuthError extends Error {
     super(PROXMOX_AUTH_MESSAGE)
     this.name = 'ProxmoxAuthError'
   }
+}
+
+/**
+ * True when a failed Proxmox request never got an answer: the connection was refused, timed out, had no route, or
+ * closed before the answer. A certificate that is not the pinned one, or an answer that could not be read, is not this.
+ */
+export function proxmoxUnanswered(e: unknown): boolean {
+  if (CERT_CHANGED_NAMES.has(failureName(e))) return false
+  if (failureName(e) === 'HomeConnectTimeoutError') return true
+  if (connectionFailure(e)) return true
+  const m = String((e as any)?.message ?? '')
+  return /no answer within \d+s|did not answer within|closed (without an answer|before the answer finished|mid-answer)/.test(m)
 }
 
 /** Proxmox did not answer (refused, timed out, no route). The cause is kept for the log. */
@@ -188,7 +201,9 @@ export class ProxmoxClient {
       }
       return { ok: true, cluster: r.data.find(x => x?.type === 'cluster')?.name }
     } catch (e: any) {
-      return { ok: false, code: 'proxmox_unreachable', error: PROXMOX_UNREACHABLE_MESSAGE, detail: String(e?.message ?? e) }
+      if (CERT_CHANGED_NAMES.has(failureName(e))) return { ok: false, code: 'proxmox_cert_changed', error: CERT_CHANGED_MESSAGE, detail: String(e?.message ?? e) }
+      if (proxmoxUnanswered(e)) return { ok: false, code: 'proxmox_unreachable', error: PROXMOX_UNREACHABLE_MESSAGE, detail: String(e?.message ?? e) }
+      return { ok: false, code: 'proxmox_error', error: "Proxmox's answer could not be read. Check the address and port in Settings → Proxmox.", detail: String(e?.message ?? e) }
     }
   }
 
@@ -199,7 +214,12 @@ export class ProxmoxClient {
   async getNodes(): Promise<PVENode[]> {
     let r: { status: number; data: PVENode[]; message?: string }
     try { r = await this.request<PVENode[]>('/nodes', 'GET', undefined, DEFAULT_TIMEOUT_MS) }
-    catch (e) { throw new ProxmoxUnreachableError(e) }
+    catch (e) {
+      // Only "no answer" becomes ProxmoxUnreachableError. A changed certificate (possibly someone in the middle) and
+      // an unreadable answer are rethrown as they are, so they are never shown as a mere outage.
+      if (proxmoxUnanswered(e)) throw new ProxmoxUnreachableError(e)
+      throw e
+    }
     if (r.status === 401 || r.status === 403) throw new ProxmoxAuthError(r.status, r.message ?? '')
     if (r.status < 200 || r.status >= 300) throw new Error(`Proxmox GET /nodes: HTTP ${r.status}${r.message ? ` — ${r.message}` : ''}`)
     if (!Array.isArray(r.data)) throw new Error('Proxmox GET /nodes: the answer had no node list')

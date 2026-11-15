@@ -61,11 +61,11 @@ function getNPM(): NPMClient | null {
 
 /**
  * Why the live feed has no fresh numbers, in words for the dashboard: `proxmox_auth` (the token was refused),
- * `proxmox_unreachable` (no answer), or `internal`. Never the error's own text.
+ * `proxmox_unreachable` (no answer), `proxmox_cert_changed` (not the pinned certificate), or `proxmox_error`. Never the error's own text.
  */
 export function feedProblem(e: unknown): { code: string; error: string } {
   const c = classifyFailure(e)
-  if (c.body.code === 'proxmox_auth' || c.body.code === 'proxmox_unreachable') return { code: c.body.code, error: c.body.error }
+  if (c.body.code === 'proxmox_auth' || c.body.code === 'proxmox_unreachable' || c.body.code === 'proxmox_cert_changed') return { code: c.body.code, error: c.body.error }
   return { code: 'proxmox_error', error: "HyperProx couldn't read your Proxmox's status. It will keep trying." }
 }
 

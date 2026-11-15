@@ -851,8 +851,8 @@ export default function DashboardView() {
     <div className="min-h-[50vh] flex items-center justify-center">
       {problem ? (
         <div style={{ maxWidth: 560, width: '100%' }}>
-          <ErrorNotice message={problem.message} reference={problem.requestId} tone={problem.kind === 'proxmox_auth' ? 'error' : 'warn'}>
-            {problem.kind === 'proxmox_auth'
+          <ErrorNotice message={problem.message} reference={problem.requestId} tone={problem.kind === 'proxmox_auth' || problem.kind === 'proxmox_cert_changed' ? 'error' : 'warn'}>
+            {problem.kind === 'proxmox_auth' || problem.kind === 'proxmox_cert_changed'
               ? <a href="/settings?tab=proxmox" style={{ color: 'var(--accent)' }}>Open Settings → Proxmox</a>
               : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>This page keeps trying by itself.</span>}
           </ErrorNotice>
@@ -870,7 +870,7 @@ export default function DashboardView() {
     <div className={vs.page}>
       {paused && (
         <div role="status" style={{ border: '1px solid var(--warn)', color: 'var(--warn)', borderRadius: 6, padding: '8px 12px', fontSize: 13 }}>
-          {problem?.kind === 'proxmox_auth'
+          {problem?.kind === 'proxmox_auth' || problem?.kind === 'proxmox_cert_changed'
             ? <>Live numbers paused. {problem.message} <a href="/settings?tab=proxmox" style={{ color: 'var(--accent)' }}>Settings → Proxmox</a></>
             : <>Live numbers paused. HyperProx can&apos;t reach Proxmox right now. Retrying.</>}
         </div>
