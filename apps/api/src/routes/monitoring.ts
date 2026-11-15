@@ -58,7 +58,12 @@ export const monitoringRoutes: FastifyPluginAsync<MonitoringRouteOptions> = asyn
       if (e?.code === 'not_read_only') {
         return reply.status(409).send({ success: false, code: 'not_read_only', error: e.message, reasons: e.reasons ?? [] })
       }
-      return sendFailure(reply.request, reply, e)
+      // Proxmox refused a step: said in words (what to change), its own answer only in the log.
+      if (/HTTP 403\b/.test(String(e?.message ?? ''))) {
+        return reply.status(502).send({ success: false, ok: false, code: 'proxmox_forbidden', requestId: String(req.id),
+          error: "This token can't create the monitoring account it needs. Give it the PVEAdmin role, or paste a token that has it." })
+      }
+      return sendFailure(req, reply, e, 'The monitoring account could not be set up.', { status: 502 })
     }
   })
 }

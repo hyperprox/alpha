@@ -24,12 +24,12 @@ test("the install step offers Prometheus and Grafana, not Nginx Proxy Manager", 
   assert.match(html, /Install it from the <strong>Catalogue<\/strong>/, "points to the Catalogue instead")
 })
 
-test("the page's script still compiles, and puts Proxmox's error text in the page escaped", () => {
+test("the page's script still compiles, and puts the exporter's (plain) error text in the page escaped", () => {
   const html: string = setup.WIZARD_HTML
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1])
   assert.ok(scripts.length > 0)
   for (const src of scripts) assert.doesNotThrow(() => new vm.Script(src))
-  assert.match(html, /could not be made \(\$\{escHtml\(S\.exporter\.error\)\}\)/)
+  assert.match(html, /Proxmox metrics: \$\{escHtml\(S\.exporter\.error\)\}/)
 })
 
 test("the page no longer names the monitoring ports, which are loopback-only now", () => {

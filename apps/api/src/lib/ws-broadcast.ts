@@ -8,6 +8,7 @@ import { getClusterNetworkStats } from './network'
 import { FastifyInstance } from 'fastify'
 import { setWizardBroadcast }  from './wizard-executor'
 import { livePve }         from './pve-env'
+import type { ProxmoxClient } from './proxmox-client'
 import { isUnlocked }      from './vault/state'
 import { getGPUInfo }      from './gpu'
 import { withCephMon } from './ceph'
@@ -80,32 +81,37 @@ export function broadcast(_server: FastifyInstance | null, type: string, payload
   }
 }
 
-export function startBroadcast(server: FastifyInstance) {
-  // Both resolve at each tick: the Proxmox token and NPM login arrive from the vault after start-up.
-  const pve = livePve()
-  const problem = createLogOnce(server.log)
+export interface FastTickDeps {
+  pve: Pick<ProxmoxClient, 'getNodes' | 'getAllVMs'>
+  problem: ((what: string, e: unknown) => void) & { ok: (what: string) => void }
+  send: (type: string, payload: unknown) => void
+  unlocked: () => boolean
+  gpu?: typeof getGPUInfo
+  network?: (nodes: string[]) => Promise<unknown>
+}
+
+/**
+ * The fast channel's tick (every 2 s): nodes, guests, GPU, network, cluster totals. The node list is read first, so a
+ * refused token (ProxmoxAuthError) or no answer ends the tick before anything else starts, and nothing is left
+ * running unawaited. A failure re-sends the last good numbers marked stale with why (`problem`), or, before the
+ * first good read, a `feed-problem` message, so the dashboard never waits on "connecting" for ever.
+ */
+export function makeFastTick(d: FastTickDeps): (stillCurrent: () => boolean) => Promise<void> {
   // The last good numbers, re-sent marked stale when a read fails, so the dashboard can say they are out of date.
   let lastFast: Record<string, unknown> | null = null
-
-  // ---------------------------------------------------------------------------
-  //  FAST — every 2s: nodes + VMs + GPU + cluster totals
-  // ---------------------------------------------------------------------------
-  fastInterval = setInterval(overlapGuard(async (stillCurrent) => {
-    if (!isUnlocked()) return   // nothing to read (and nothing to show) while locked
+  const gpu = d.gpu ?? getGPUInfo
+  const network = d.network ?? ((names: string[]) => getClusterNetworkStats(
+    process.env.PROXMOX_HOST!,
+    Number(process.env.PROXMOX_PORT ?? 8006),
+    `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
+    process.env.PROXMOX_TOKEN_SECRET!,
+    names,
+  ))
+  return async (stillCurrent) => {
+    if (!d.unlocked()) return   // nothing to read (and nothing to show) while locked
     try {
-      // The node list first: a refused token (ProxmoxAuthError) stops the tick here, before anything else starts.
-      const nodes = await pve.getNodes()
-      const [vms, gpu, network] = await Promise.all([
-        pve.getAllVMs(),
-        getGPUInfo(undefined),
-        getClusterNetworkStats(
-          process.env.PROXMOX_HOST!,
-          Number(process.env.PROXMOX_PORT ?? 8006),
-          `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
-          process.env.PROXMOX_TOKEN_SECRET!,
-          nodes.map(n => n.node),
-        ),
-      ])
+      const nodes = await d.pve.getNodes()
+      const [vms, gpuInfo, net] = await Promise.all([d.pve.getAllVMs(), gpu(undefined), network(nodes.map(n => n.node))])
 
       const cluster = nodes.reduce((acc, n) => ({
         cpu_used:   acc.cpu_used   + (n.cpu * n.maxcpu),
@@ -119,7 +125,7 @@ export function startBroadcast(server: FastifyInstance) {
       // Released by the watchdog and overtaken by a newer tick: these numbers are old, so they are not sent.
       if (!stillCurrent()) return
       lastFast = {
-        nodes, vms, gpu, network,
+        nodes, vms, gpu: gpuInfo, network: net,
         cluster: {
           ...cluster,
           cpu_pct:  cluster.cpu_total  ? Math.round((cluster.cpu_used  / cluster.cpu_total)  * 100) : 0,
@@ -127,16 +133,29 @@ export function startBroadcast(server: FastifyInstance) {
           disk_pct: cluster.disk_total ? Math.round((cluster.disk_used / cluster.disk_total) * 100) : 0,
         },
       }
-      broadcast(server, 'fast', { ...lastFast, stale: false })
-      problem.ok('live status (fast)')
+      d.send('fast', { ...lastFast, stale: false })
+      d.problem.ok('live status (fast)')
     } catch (e) {
       if (!stillCurrent()) return
-      problem('live status (fast)', e)
+      d.problem('live status (fast)', e)
       const why = feedProblem(e)
-      if (lastFast) broadcast(server, 'fast', { ...lastFast, stale: true, problem: why })
-      else broadcast(server, 'feed-problem', why)
+      if (lastFast) d.send('fast', { ...lastFast, stale: true, problem: why })
+      else d.send('feed-problem', why)
     }
-  }, undefined, { onStuck: () => problem('live status (fast)', new Error('a tick was stuck for over 60 seconds and was released')) }), 2000)
+  }
+}
+
+export function startBroadcast(server: FastifyInstance) {
+  // Both resolve at each tick: the Proxmox token and NPM login arrive from the vault after start-up.
+  const pve = livePve()
+  const problem = createLogOnce(server.log)
+  // ---------------------------------------------------------------------------
+  //  FAST — every 2s: nodes + VMs + GPU + cluster totals
+  // ---------------------------------------------------------------------------
+  const fastTick = makeFastTick({
+    pve, problem, send: (type, payload) => broadcast(server, type, payload), unlocked: isUnlocked,
+  })
+  fastInterval = setInterval(overlapGuard(fastTick, undefined, { onStuck: () => problem('live status (fast)', new Error('a tick was stuck for over 60 seconds and was released')) }), 2000)
 
   // ---------------------------------------------------------------------------
   //  SLOW — every 15s: ceph + ha + storage + services

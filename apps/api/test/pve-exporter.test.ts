@@ -379,7 +379,7 @@ test('routes: a viewer can read the status but not provision', async () => {
   assert.equal(provisions, before)
 })
 
-test('routes: an owner provisions without re-confirming; a Proxmox refusal comes back as 502 with its reason', async () => {
+test('routes: an owner provisions without re-confirming; a Proxmox refusal comes back as 502 in words', async () => {
   const app = await appP
   const { cookie } = await signIn(app, 'owner@example.com', 'correct horse battery staple')
   const p = await app.inject({ method: 'POST', url: '/api/monitoring/pve-exporter', headers: { cookie } })
@@ -389,7 +389,10 @@ test('routes: an owner provisions without re-confirming; a Proxmox refusal comes
   failNext = 'proxmox'
   const f = await app.inject({ method: 'POST', url: '/api/monitoring/pve-exporter', headers: { cookie } })
   assert.equal(f.statusCode, 502)
-  assert.match(f.json().error, /Permission check failed/)
+  // Said in words; Proxmox's own answer ("Permission check failed") stays in the log.
+  assert.equal(f.json().code, 'proxmox_forbidden')
+  assert.match(f.json().error, /PVEAdmin role/)
+  assert.doesNotMatch(f.body, /Permission check failed/)
 })
 
 test('routes: a token that is not read-only is a 409 not_read_only; { fresh: true } asks for a new one', async () => {

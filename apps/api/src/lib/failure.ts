@@ -49,6 +49,14 @@ const DB_DOWN_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P2024'])
 const CONNECTION_RE = /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|ECONNRESET|socket hang up|fetch failed/i
 /** HyperProx's own refusal classes: their messages are written for people. */
 const FRIENDLY_NAME = /(Refusal|Refused|InputError)$/
+/**
+ * HyperProx's own trust checks (a host key or certificate that is not pinned, not confirmed or changed): written for
+ * people, naming what to do, and kept at the status their routes have always answered with.
+ */
+const TRUST_NAMES = new Set([
+  'HostKeyNotPinnedError', 'HostKeyNotConfirmedError', 'HostKeyChangedError', 'HostKeyMismatch',
+  'HomeCertificateChangedError', 'CertificateNotConfirmedError', 'CertificateChangedError', 'HostKeyRefusedError',
+])
 
 function errName(e: any): string {
   return String(e?.constructor?.name && e.constructor.name !== 'Error' ? e.constructor.name : e?.name ?? '')
@@ -102,6 +110,12 @@ export function classifyFailure(err: unknown, friendly?: string): Classified {
   }
   if (name === 'VaultOwnerOnlyError') return fail(403, 'vault_owner_only', String(e.message), true)
   if (name === 'TokenVaultWriteError') return fail(403, 'token_forbidden', String(e.message), true)
+  if (TRUST_NAMES.has(name)) {
+    const st = Number(e.status ?? e.statusCode)
+    return fail(Number.isInteger(st) && st >= 400 && st < 600 ? st : 500, typeof e.code === 'string' && /^[a-z_]+$/.test(e.code) ? e.code : 'trust_check', String(e.message), true)
+  }
+  // Cloudflare's own refusals are made into one plain sentence by the client (lib/cloudflare-client.ts cfErrorMessage).
+  if (name === 'CloudflareError' && Number(e.statusCode) >= 400 && Number(e.statusCode) < 500) return fail(Number(e.statusCode), 'refused', String(e.message), true)
   if (FRIENDLY_NAME.test(name) || name === 'DNSInputError') {
     const s = Number(e.status ?? e.statusCode)
     const status = Number.isInteger(s) && s >= 400 && s < 500 ? s : 400

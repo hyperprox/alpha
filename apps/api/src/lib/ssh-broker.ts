@@ -84,6 +84,11 @@ export async function listCredentials(): Promise<Array<{ id: string; updatedAt: 
 }
 
 /** Thrown for an id the Terminal must never use: a node login (node-<name>) or the shared login itself. */
+/** A one-off command refused because the host's key is not pinned, or changed. Its message says what to do. */
+export class HostKeyRefusedError extends Error {
+  constructor(message: string) { super(message); this.name = 'HostKeyRefusedError' }
+}
+
 export class CredentialIdRefused extends Error {
   constructor(message: string) { super(message); this.name = 'CredentialIdRefused' }
 }
@@ -330,8 +335,8 @@ export function runCommand(
         const fp = fingerprintOf(key)
         getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
           .then(pinned => {
-            if (!pinned) refusal = new Error(`${host}:${port} has no pinned host key yet (it presents ${fp}). Open it in a Terminal pane first, check the key it shows, then try again.`)
-            else if (pinned !== fp) refusal = new Error(`Host key for ${host}:${port} has changed (pinned ${pinned}, offered ${fp}). Refusing to connect.`)
+            if (!pinned) refusal = new HostKeyRefusedError(`${host}:${port} has no pinned host key yet (it presents ${fp}). Open it in a Terminal pane first, check the key it shows, then try again.`)
+            else if (pinned !== fp) refusal = new HostKeyRefusedError(`Host key for ${host}:${port} has changed (pinned ${pinned}, offered ${fp}). Refusing to connect.`)
             verified(!!pinned && pinned === fp)
           })
           .catch(() => verified(false))
