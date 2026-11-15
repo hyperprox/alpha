@@ -6,7 +6,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
-import { getBroker, setVaultLogger, VaultAuthError, VaultSessionError, BootstrapNotPendingError, type VaultSession } from '../lib/vault/broker'
+import { getBroker, setVaultLogger, isVaultConnectionError, VaultAuthError, VaultSessionError, BootstrapNotPendingError, type VaultSession } from '../lib/vault/broker'
 import { isUnlocked, unlock, lock, touch } from '../lib/vault/state'
 import {
   addSession, removeSession, markReconfirmed, buildAuthCookie, isLocalCliRequest,
@@ -21,6 +21,7 @@ import { requestContext } from '../lib/auth'
 import { verifyHomeHostKeys } from '../lib/setup-checklist'
 import { validateHandoff, holdValidated, flushHeldSecrets, acceptHandoff, HandoffRefused, markSetupDone } from '../lib/setup-handoff'
 import { signInLimiter, reconfirmLimiter } from '../lib/auth-limits'
+import { securityEvent } from '../lib/security-events'
 import { readFileSync } from 'fs'
 import { createHash, timingSafeEqual } from 'crypto'
 
@@ -43,8 +44,9 @@ function setupKeyMatches(given: unknown): boolean {
  * the setup link, still in .env until the owner's first sign-in removes it (markSetupDone). Null when the key
  * matches; otherwise the reply to send. Anyone who can read .env is root on this machine already.
  */
-function setupKeyRefusal(reply: FastifyReply, given: unknown) {
+function setupKeyRefusal(req: FastifyRequest, reply: FastifyReply, given: unknown) {
   if (!currentSetupKey()) {
+    securityEvent(req, 'setup_key_refused', 'setup_key_missing')
     return reply.status(403).send({
       ok: false, code: 'setup_key_missing',
       error: 'This install has no setup key, so the owner account cannot be created from the browser. On the HyperProx host run: ' +
@@ -52,6 +54,7 @@ function setupKeyRefusal(reply: FastifyReply, given: unknown) {
     })
   }
   if (!setupKeyMatches(given)) {
+    securityEvent(req, 'setup_key_refused', given ? 'setup_key_wrong' : 'setup_key_absent')
     return reply.status(401).send({
       ok: false, code: 'setup_key_required',
       error: 'Enter the setup key. It is in the setup link the installer printed (after k=), or on the host: grep SETUP_SECRET /opt/hyperprox/.env',
@@ -77,15 +80,33 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
 }
 
+/** Size limits on what a sign-in form may send: longer than any real value, short enough to refuse junk early. */
+export const AUTH_LIMITS = { email: 254, password: 1024 } as const
+const TOTP_RE = /^\d{6,8}$/
+
+/** Null when the fields are within limits; otherwise the plain reason. A code is checked only when one was given. */
+export function authInputProblem(f: { email?: string; password?: string; code?: string }): string | null {
+  if (f.email !== undefined && f.email.length > AUTH_LIMITS.email) return `The email address is too long (at most ${AUTH_LIMITS.email} characters).`
+  if (f.password !== undefined && f.password.length > AUTH_LIMITS.password) return `The master password is too long (at most ${AUTH_LIMITS.password} characters).`
+  if (f.code && !TOTP_RE.test(f.code)) return 'The 2FA code is the 6-digit number from your authenticator app.'
+  return null
+}
+
+/** What a person is told when the vault cannot be reached at all: not a verdict on their password or code. */
+export const VAULT_UNREACHABLE = "The vault is not running, so HyperProx can't check your sign-in. It usually comes back by itself in a minute."
+
 function authErrorReply(reply: FastifyReply, e: unknown) {
+  // A connection failure that reached here unmapped is the vault being down, never a wrong password or code.
+  if (!(e instanceof VaultAuthError) && isVaultConnectionError(e)) e = new VaultAuthError('vault_unreachable', (e as Error).message)
   if (e instanceof VaultAuthError) {
-    const status = e.code === 'locked_out' ? 429 : e.code === 'not_member' ? 403 : 401
+    const status = e.code === 'locked_out' ? 429 : e.code === 'not_member' ? 403 : e.code === 'vault_unreachable' ? 503 : 401
     const message: Record<VaultAuthError['code'], string> = {
       bad_credentials: 'Email or master password is incorrect',
       totp_required:   'Enter the 6-digit code from your authenticator app',
       totp_invalid:    'That 2FA code is not valid — wait for the next one and try again',
       not_member:      'This vault account is not a member of the HyperProx organization',
       locked_out:      'Too many attempts — the vault has locked this account for a while',
+      vault_unreachable: VAULT_UNREACHABLE,
     }
     return reply.status(status).send({ ok: false, code: e.code, error: message[e.code] })
   }
@@ -109,6 +130,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       await unlock(vs.sid)
     } catch (e) {
       // e.g. the keyholder is not running: stay locked, and leave no vault session behind.
+      securityEvent(req, 'unlock_failed', String((e as Error)?.name ?? 'error'), vs.email)
       await getBroker().signOut(vs.sid).catch(() => undefined)
       throw e
     }
@@ -188,7 +210,10 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     if (!isLocalCliRequest(req.socket?.remoteAddress, req.headers as Record<string, any>)) {
       return reply.status(403).send({ ok: false, error: 'Only the setup wizard on this machine can hand over secrets' })
     }
-    if (!setupKeyMatches(req.headers['x-setup-key'])) return reply.status(401).send({ ok: false, error: 'setup key required' })
+    if (!setupKeyMatches(req.headers['x-setup-key'])) {
+      securityEvent(req, 'setup_key_refused', 'setup_handoff_key_wrong')
+      return reply.status(401).send({ ok: false, error: 'setup key required' })
+    }
     // Validated first: a body with nothing usable in it does not use up the one hand-over.
     const v = validateHandoff(req.body)
     if (!v) return reply.status(400).send({ ok: false, error: 'Nothing usable to hand over: a node login or a GoDaddy key is required.' })
@@ -202,14 +227,16 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const email = str(req.body?.email).trim().toLowerCase()
     const password = str(req.body?.password)
     if (!email || !email.includes('@')) return reply.status(400).send({ ok: false, error: 'A valid email is required' })
+    const tooBig = authInputProblem({ email, password })
+    if (tooBig) return reply.status(400).send({ ok: false, code: 'invalid_input', error: tooBig })
     if (password.length < MIN_MASTER_PASSWORD) {
       return reply.status(400).send({ ok: false, error: `The master password must be at least ${MIN_MASTER_PASSWORD} characters` })
     }
 
     const s = await vaultStatus()
-    if (!s.reachable) return reply.status(503).send({ ok: false, error: 'The built-in vault is not reachable' })
+    if (!s.reachable) return reply.status(503).send({ ok: false, code: 'vault_unreachable', error: VAULT_UNREACHABLE })
     if (s.bootstrapped) return reply.status(409).send({ ok: false, error: 'The owner account already exists — sign in instead' })
-    const refused = setupKeyRefusal(reply, req.headers['x-setup-key'])
+    const refused = setupKeyRefusal(req, reply, req.headers['x-setup-key'])
     if (refused) return refused
 
     try {
@@ -228,11 +255,13 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     if (!email || !password || !/^\d{6}$/.test(code)) {
       return reply.status(400).send({ ok: false, error: 'email, password and a 6-digit code are required' })
     }
+    const tooBig = authInputProblem({ email, password })
+    if (tooBig) return reply.status(400).send({ ok: false, code: 'invalid_input', error: tooBig })
     // The same setup key as the first step. While the key is still in .env the owner has never signed in, so it is
     // always asked for; with no key, only an install whose vault has no owner yet is refused (an owner that exists
     // goes on to the usual "sign in instead" answer below).
     if (currentSetupKey() || !(await vaultStatus()).bootstrapped) {
-      const refused = setupKeyRefusal(reply, req.headers['x-setup-key'])
+      const refused = setupKeyRefusal(req, reply, req.headers['x-setup-key'])
       if (refused) return refused
     }
 
@@ -249,6 +278,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           ? { ok: false, code: 'sign_in', error: 'The owner account already exists. Sign in with your email, master password and 2FA code.' }
           : { ok: false, code: 'restart_setup', error: 'Setup was interrupted. Start again.' })
       }
+      if (e instanceof VaultAuthError && e.code !== 'vault_unreachable') securityEvent(req, 'sign_in_failed', e.code, email, { step: 'bootstrap_confirm' })
       return authErrorReply(reply, e)
     }
     return startSession(req, reply, vs)
@@ -260,14 +290,32 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const password = str(req.body?.password)
     const code = str(req.body?.code).replace(/\s+/g, '')
     if (!email || !password) return reply.status(400).send({ ok: false, error: 'email and password are required' })
+    const bad = authInputProblem({ email, password, code })
+    if (bad) {
+      securityEvent(req, 'sign_in_failed', 'invalid_input', email.slice(0, AUTH_LIMITS.email))
+      return reply.status(400).send({ ok: false, code: 'invalid_input', error: bad })
+    }
     const wait = signInLimiter.retryAfter(email)
-    if (wait) return tooMany(reply, wait)
+    if (wait) {
+      securityEvent(req, 'sign_in_failed', 'too_many_attempts', email)
+      return tooMany(reply, wait)
+    }
+    // The vault is down: say so now, rather than send the code to a sign-in that cannot judge it.
+    if (!(await vaultStatus()).reachable) {
+      req.log.warn('[auth] sign-in refused: the vault is not reachable')
+      return reply.status(503).send({ ok: false, code: 'vault_unreachable', error: VAULT_UNREACHABLE })
+    }
 
     let vs: VaultSession
     try {
       vs = await getBroker().signIn(email, password, code)
     } catch (e) {
+      // Only a wrong password or code counts towards the limit; the vault being down never does.
       if (isGuessFailure(e)) signInLimiter.fail(email)
+      if (e instanceof VaultAuthError) {
+        if (e.code === 'vault_unreachable') req.log.warn({ err: e }, '[auth] sign-in failed: the vault is not reachable')
+        else securityEvent(req, 'sign_in_failed', e.code, email)
+      }
       return authErrorReply(reply, e)
     }
     signInLimiter.clear(email)
@@ -308,17 +356,31 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     if (!s) return reply.status(401).send({ ok: false, error: 'Authentication required' })
     const password = str(req.body?.password)
     if (!password) return reply.status(400).send({ ok: false, error: 'password is required' })
+    const tooBig = authInputProblem({ password })
+    if (tooBig) return reply.status(400).send({ ok: false, code: 'invalid_input', error: tooBig })
     const wait = reconfirmLimiter.retryAfter(s.email)
-    if (wait) return tooMany(reply, wait)
+    if (wait) {
+      securityEvent(req, 'reconfirm_failed', 'too_many_attempts', s.email)
+      return tooMany(reply, wait)
+    }
 
     let ok = false
     try {
       ok = await getBroker().verifyPassword(s.sid, password)
     } catch (e) {
       if (e instanceof VaultSessionError) throw e   // → 401 session_expired (gate error handler)
+      // The vault being down is not a wrong password: not counted, and said as it is.
+      if (isVaultConnectionError(e)) {
+        req.log.warn({ err: e }, '[auth] re-confirmation failed: the vault is not reachable')
+        return reply.status(503).send({ ok: false, code: 'vault_unreachable', error: VAULT_UNREACHABLE })
+      }
       ok = false
     }
-    if (!ok) { reconfirmLimiter.fail(s.email); return reply.status(401).send({ ok: false, error: 'Master password is incorrect' }) }
+    if (!ok) {
+      reconfirmLimiter.fail(s.email)
+      securityEvent(req, 'reconfirm_failed', 'bad_password', s.email)
+      return reply.status(401).send({ ok: false, code: 'bad_credentials', error: 'Master password is incorrect' })
+    }
     reconfirmLimiter.clear(s.email)
 
     const until = markReconfirmed(s.sid)

@@ -51,7 +51,7 @@ export interface SecretItem {
   uris?: string[]
 }
 
-export type VaultAuthCode = 'bad_credentials' | 'totp_required' | 'totp_invalid' | 'not_member' | 'locked_out'
+export type VaultAuthCode = 'bad_credentials' | 'totp_required' | 'totp_invalid' | 'not_member' | 'locked_out' | 'vault_unreachable'
 
 export class VaultAuthError extends Error {
   constructor(public code: VaultAuthCode, message?: string) {
@@ -181,8 +181,25 @@ function recordRole(email: string, role: GrantableRole): void {
   else memberRoles().remove(email)
 }
 
+const CONNECTION_RE = /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|ECONNRESET|fetch failed|socket hang up|vault request timed out/i
+
+/**
+ * True when an error (or a CLI message) says the vault could not be reached at all: refused, timed out, no such
+ * host, a dropped socket. That is not a verdict on the password or the 2FA code, so it must never be reported as one
+ * or counted as a guess. Looks at the error, its code, and its cause (fetch wraps the socket error).
+ */
+export function isVaultConnectionError(e: unknown): boolean {
+  if (typeof e === 'string') return CONNECTION_RE.test(e)
+  if (!e || typeof e !== 'object') return false
+  const x = e as { message?: unknown; code?: unknown; cause?: unknown }
+  if (typeof x.code === 'string' && CONNECTION_RE.test(x.code)) return true
+  if (typeof x.message === 'string' && CONNECTION_RE.test(x.message)) return true
+  return x.cause !== undefined && x.cause !== e && isVaultConnectionError(x.cause)
+}
+
 /** Maps a CLI / server message to a contract error code; null if it is not an auth failure. */
 export function authCodeFromMessage(msg: string): VaultAuthCode | null {
+  if (CONNECTION_RE.test(msg)) return 'vault_unreachable'
   const m = msg.toLowerCase()
   if (/too many|rate.?limit|429/.test(m)) return 'locked_out'
   if (/has been disabled|account is disabled|user is disabled/.test(m)) return 'locked_out'
@@ -366,6 +383,7 @@ export class CliVaultBroker implements VaultBroker {
   }
 
   private httpAuthError(err: unknown): Error {
+    if (!(err instanceof VaultHttpError) && isVaultConnectionError(err)) return new VaultAuthError('vault_unreachable', (err as Error).message)
     if (err instanceof VaultHttpError) {
       if (err.status === 429) return new VaultAuthError('locked_out')
       const body = err.body
@@ -394,6 +412,12 @@ export class CliVaultBroker implements VaultBroker {
         return s
       } catch (err) {
         if (err instanceof VaultAuthError) throw err
+        // The vault is down: the CLI would fail the same way, only slower, and its message would read like a bad code.
+        if (isVaultConnectionError(err)) {
+          if (err instanceof FastPathFailed && totp) this.cliOnly.add(email)
+          log.warn(`[vault] the vault did not answer the sign-in (${(err as Error).message})`)
+          throw new VaultAuthError('vault_unreachable', (err as Error).message)
+        }
         if (err instanceof FastPathFailed && totp) {
           // The vault has accepted this TOTP step and will refuse it again, so the CLI cannot retry it now.
           this.cliOnly.add(email)
