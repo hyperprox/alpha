@@ -97,7 +97,7 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
         if (refused) await audit(`${refused.action}.refused`, refused.resource, { ...refused.details, refused: 'vault: owner only' }).catch(() => undefined)
         return reply.status(403).send({ ok: false, code: 'vault_owner_only', error: OWNER_ONLY, required: 'owner' })
       }
-      return sendFailure(reply.request, reply, e, 'The vault refused it.', { status: 502 })
+      return sendFailure(reply.request, reply, e, 'The vault refused it.', { status: 502, adminDetail: true })
     }
 
     fastify.get('/', { preHandler: needs('admin') }, async (req, reply) => {
@@ -255,7 +255,7 @@ export function buildJoinRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       } catch (e: any) {
         if (e instanceof VaultAuthError && e.code === 'bad_credentials') return reply.status(400).send({ ok: false, code: e.code, error: 'The master password did not match the one chosen for this account.' })
         if (e instanceof VaultAuthError && e.code === 'locked_out') return reply.status(429).send({ ok: false, code: e.code, error: 'Too many tries. Wait a few minutes, then try again.' })
-        return sendFailure(reply.request, reply, e, 'The vault refused the new account.', { status: 502 })
+        return sendFailure(reply.request, reply, e, 'The vault refused the new account.', { status: 502, adminDetail: true })
       }
     })
 
@@ -272,7 +272,7 @@ export function buildJoinRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       } catch (e: any) {
         if (e instanceof VaultAuthError) return reply.status(400).send({ ok: false, code: e.code, error: e.code === 'totp_invalid' ? 'That code did not match. Use the newest code from the app.' : 'The master password did not match.' })
         if (e instanceof BootstrapNotPendingError) return reply.status(409).send({ ok: false, code: 'restart_join', error: 'HyperProx restarted in between. Enter your master password again to get a new code.' })
-        return sendFailure(reply.request, reply, e, 'The vault refused it.', { status: 502 })
+        return sendFailure(reply.request, reply, e, 'The vault refused it.', { status: 502, adminDetail: true })
       }
       store.remove(inv.hash)
       return { ok: true, data: { email: inv.email, done: true } }

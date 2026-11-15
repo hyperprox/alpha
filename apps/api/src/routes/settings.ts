@@ -70,7 +70,7 @@ export function settingsSaveProblem(category: string, provider: string, stored: 
 
 const wrap = async (reply: any, fn: () => Promise<any>) => {
   try   { return { success: true, data: await fn() } }
-  catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+  catch (e: any) { return sendFailure(reply.request, reply, e, 'The settings could not be read.') }
 }
 
 export const settingsRoutes: FastifyPluginAsync = async (fastify) => {

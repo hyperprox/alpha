@@ -13,6 +13,7 @@
 //  action is one of four names.
 // =============================================================================
 
+import { plainReason } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
 import { probeCertificate } from '../lib/clusters/tls-pin'
@@ -147,7 +148,7 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
       return { success: true, data: { ok: true, ...detailOf(m.name, isViewer(req) ? viewerReading(r) : r) } }
     } catch (e: any) {
       if (e instanceof QnapRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
-      return { success: true, data: { ok: false, error: e?.message ?? 'The NAS could not be read.' } }
+      return { success: true, data: { ok: false, error: plainReason(e, 'The NAS') } }
     }
   })
 

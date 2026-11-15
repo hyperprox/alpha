@@ -5,7 +5,9 @@ import assert from 'node:assert/strict'
 import { Writable } from 'node:stream'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { classifyFailure, describeFailure, sendFailure, MESSAGES } from '../src/lib/failure'
+import { classifyFailure, describeFailure, sendFailure, plainReason, MESSAGES, CERT_CHANGED_MESSAGE } from '../src/lib/failure'
+import { securityEvent, resetSecurityEventThrottle } from '../src/lib/security-events'
+import { setAuditSink } from '../src/lib/audit'
 import { registerGate } from '../src/lib/gate'
 import { serverOptions, safeErr } from '../src/lib/server-options'
 import { genReqId } from '../src/lib/request-id'
@@ -212,4 +214,50 @@ test('setup wizard: a 403 from Proxmox while making the monitoring account is ex
   assert.equal(t, "This token can't create the monitoring account it needs. Give it the PVEAdmin role, or paste a token that has it.")
   assert.equal(setup.exporterErrorText(new Error('PVE 403: {"data":null}')), t)
   assert.ok(!setup.exporterErrorText(new Error('PVE 500: {"data":null,"message":"boom"}')).includes('{'))
+})
+
+test('a refusal with a 5xx status keeps it, keeps its words, and is a warning in the log', () => {
+  class NasRefusal extends Error { constructor(m: string, public status = 502) { super(m) } }
+  const c = classifyFailure(new NasRefusal('The NAS did not answer its login page.'))
+  assert.deepEqual([c.status, c.body.error, c.expected, c.ownWords], [502, 'The NAS did not answer its login page.', false, true])
+  const levels: string[] = []
+  const log = { info: () => levels.push('info'), warn: () => levels.push('warn'), error: () => levels.push('error') }
+  describeFailure({ id: 'r', method: 'GET', url: '/x', log } as any, new NasRefusal('x'))
+  assert.deepEqual(levels, ['warn'])
+})
+
+test('a changed certificate: its own code and words, never the fingerprints', () => {
+  class HomeCertificateChangedError extends Error { constructor() { super('Pinned: AA:BB. Presented now: CC:DD. remove the entry from /var/lib/pins.json') } }
+  const c = classifyFailure(new HomeCertificateChangedError())
+  assert.deepEqual([c.status, c.body.code, c.body.error], [502, 'proxmox_cert_changed', CERT_CHANGED_MESSAGE])
+})
+
+test('plainReason: own words pass, anything else is "did not answer" or "could not be read"', () => {
+  class QnapRefusal extends Error { status = 409 }
+  assert.equal(plainReason(new QnapRefusal('Sign in to the NAS again.'), 'The NAS'), 'Sign in to the NAS again.')
+  assert.equal(plainReason(Object.assign(new Error('connect ECONNREFUSED 192.0.2.4:443'), { code: 'ECONNREFUSED' }), 'Sonarr'), 'Sonarr did not answer.')
+  const r = plainReason(new Error('HTTP 500 {"stack":"at x"} api key abc123'), 'Sonarr')
+  assert.equal(r, "Sonarr could not be read. The details are in HyperProx's log.")
+})
+
+test('security events: at most one row a minute per who, address and reason, then a count', () => {
+  resetSecurityEventThrottle()
+  const rows: any[] = []
+  setAuditSink({ write: async r => { rows.push(r) } })
+  const lines: any[] = []
+  const req = { url: '/api/auth/tokens', ip: '192.0.2.9', method: 'GET', id: 'q', log: { warn: (o: any) => lines.push(o) } } as any
+  let t = 1_000_000
+  const now = () => t
+  for (let i = 0; i < 50; i++) securityEvent(req, 'api_token_invalid', 'invalid_token', 'api token (unknown)', {}, now)
+  securityEvent({ ...req, ip: '192.0.2.10' }, 'api_token_invalid', 'invalid_token', 'api token (unknown)', {}, now)
+  t += 61_000
+  securityEvent(req, 'api_token_invalid', 'invalid_token', 'api token (unknown)', {}, now)
+  setAuditSink(null)
+  return new Promise<void>(res => setImmediate(() => {
+    assert.equal(lines.length, 3)
+    assert.equal(rows.length, 3)
+    assert.equal(rows[2].details.repeated, 49)
+    assert.equal(lines[2].repeated, 49)
+    res()
+  }))
 })

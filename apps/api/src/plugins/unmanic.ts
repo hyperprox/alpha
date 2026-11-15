@@ -7,6 +7,7 @@
 //  and simply do not appear.
 // =============================================================================
 
+import { plainReason } from '../lib/failure'
 import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric } from '../lib/plugin-host'
 import type { UnmanicVisual } from '../lib/plugin-visual-types'
 
@@ -45,7 +46,7 @@ async function readNode(ctx: PluginContext, key: string, label: string): Promise
       }
     }
   } catch (e: any) {
-    return { ...state, error: e.message }
+    return { ...state, error: plainReason(e, 'Unmanic') }
   }
 
   // The queue is a POST with paging; only the total matters here, so ask for

@@ -13,6 +13,7 @@
 //  name from the allow-list (lib/ha-control/catalog.ts).
 // =============================================================================
 
+import { plainReason } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { getCredential, setCredential, deleteProviderCredentials } from '../lib/credentials'
 import { auditCredentialUse } from '../lib/audit'
@@ -225,7 +226,7 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
     try { return { success: true, data: { ok: true, ...(await svc().health(req.params.iid, 20, scope(), { viewer: isViewer(req), actor: actor(req) })) } } }
     catch (e: any) {
       if (e instanceof ActionRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
-      return { success: true, data: { ok: false, error: e?.message ?? 'Home Assistant could not be read.' } }
+      return { success: true, data: { ok: false, error: plainReason(e, 'Home Assistant') } }
     }
   })
 

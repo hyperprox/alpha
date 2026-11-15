@@ -15,6 +15,7 @@
 //  download client, and only when a person clicks it.
 // =============================================================================
 
+import { plainReason } from '../lib/failure'
 import type {
   Plugin, PluginContext, PluginTileData, PluginDetail,
   PluginMetric, PluginStuckImport } from '../lib/plugin-host'
@@ -97,7 +98,7 @@ async function readArr(ctx: PluginContext, key: string, label: string): Promise<
     return { key, label, queue: q.rows, total: Math.max(q.total, q.rows.length),
              health: Array.isArray(health) ? health : [] }
   } catch (e: any) {
-    return { key, label, queue: [], total: 0, health: [], error: e.message }
+    return { key, label, queue: [], total: 0, health: [], error: plainReason(e, label) }
   }
 }
 

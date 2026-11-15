@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { errorText, failureText, looksTechnical, requestIdOf, API_DOWN_TEXT, NO_CONNECTION_TEXT, SERVER_ERROR_TEXT } from '../lib/api'
-import { summaryProblem, feedProblem, SERVER_DOWN_TEXT, PROXMOX_UNREACHABLE_TEXT } from '../lib/dashboard-problem'
+import { summaryProblem, feedProblem, SERVER_DOWN_TEXT, PROXMOX_UNREACHABLE_TEXT, CERT_CHANGED_TEXT } from '../lib/dashboard-problem'
 import { dnsLoadState } from '../lib/dns-state'
 import { ErrorNotice } from '../components/layout/ErrorNotice'
 import { PageError, PAGE_ERROR_TEXT } from '../components/layout/PageError'
@@ -86,4 +86,15 @@ test('ErrorNotice shows the sentence and the reference; PageError never the erro
   const page = renderToStaticMarkup(<PageError digest="12345" />)
   assert.ok(page.includes(PAGE_ERROR_TEXT))
   assert.match(page, /Reference: 12345/)
+})
+
+test('dashboard: a changed certificate is its own problem, not an outage', () => {
+  assert.deepEqual(summaryProblem(502, { ok: false, code: 'proxmox_cert_changed', error: 'x' }), { kind: 'proxmox_cert_changed', message: CERT_CHANGED_TEXT, requestId: undefined })
+  assert.equal(feedProblem({ code: 'proxmox_cert_changed', error: 'x' })!.kind, 'proxmox_cert_changed')
+  assert.match(CERT_CHANGED_TEXT, /Settings → Proxmox/)
+})
+
+test("errorText: an admin's upstream detail follows the sentence; nginx's slow answer reads plainly", () => {
+  assert.equal(errorText({ ok: false, error: 'The vault refused it.', detail: 'User already exists' }, 'x', 502), 'The vault refused it. Details: User already exists')
+  assert.equal(errorText({ ok: false, code: 'api_timeout', error: 'HyperProx took too long to answer. Try again.' }, 'x', 504), 'HyperProx took too long to answer. Try again.')
 })

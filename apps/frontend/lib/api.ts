@@ -121,7 +121,9 @@ export function errorText(body: any, fallback: string, status?: number): string 
     : typeof body.message === 'string' ? body.message
     : typeof body.error?.message === 'string' ? body.error.message
     : null
-  if (raw && !looksTechnical(raw)) return raw
+  // An admin may be sent the upstream's own answer as `detail` (lib/failure.ts adminDetail): shown after the sentence.
+  const detail = body && typeof body === 'object' && typeof body.detail === 'string' && body.detail.trim() ? ` Details: ${body.detail.trim().slice(0, 300)}` : ''
+  if (raw && !looksTechnical(raw)) return raw + detail
   if (status === 0) return NO_CONNECTION_TEXT
   if (status === 502 || status === 503 || status === 504) return body && typeof body === 'object' ? SERVER_ERROR_TEXT : API_DOWN_TEXT
   if (status !== undefined && status >= 500) return SERVER_ERROR_TEXT

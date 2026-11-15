@@ -22,7 +22,7 @@ const KEY = /^[A-Za-z0-9_.:@*#/[\]-]{1,200}$/
 function fail(reply: FastifyReply, e: any) {
   if (e instanceof AutoConnectError) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
   if (e?.name === 'VaultLockedError') throw e
-  return sendFailure(reply.request, reply, e, 'That did not work. The details are in the log.')
+  return sendFailure(reply.request, reply, e, 'That did not work. The details are in the log.', { adminDetail: true })
 }
 
 export const autoConnectRoutes: FastifyPluginAsync = async (fastify) => {

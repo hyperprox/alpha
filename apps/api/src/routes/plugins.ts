@@ -3,6 +3,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 //  HyperProx — Plug-in routes
 // =============================================================================
 
+import { plainReason } from '../lib/failure'
 import { FastifyPluginAsync } from 'fastify'
 import { PLUGINS, findPlugin } from '../plugins'
 import { PLUGIN_IDEAS, repoSlug } from '../lib/plugin-wishlist'
@@ -200,12 +201,12 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
     // Home Assistant's detail is house #1's Health view, with its viewer rules (no security devices, no log).
     if (plugin.manifest.id === 'home-assistant') {
       try { return { success: true, data: { ok: true, ...(await homeAssistantDetail(req)) } } }
-      catch (e: any) { return { success: true, data: { ok: false, error: e.message } } }
+      catch (e: any) { return { success: true, data: { ok: false, error: plainReason(e, 'Home Assistant') } } }
     }
     try {
       return { success: true, data: { ok: true, ...(await runPluginDetail(plugin)) } }
     } catch (e: any) {
-      return { success: true, data: { ok: false, error: e.message } }
+      return { success: true, data: { ok: false, error: plainReason(e, plugin.manifest.name) } }
     }
   })
 
@@ -215,7 +216,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       return { success: true, data: { ok: true, ...(await runPlugin(plugin)) } }
     } catch (e: any) {
-      return { success: true, data: { ok: false, error: e.message } }
+      return { success: true, data: { ok: false, error: plainReason(e, plugin.manifest.name) } }
     }
   })
 }

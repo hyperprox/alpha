@@ -8,6 +8,7 @@
 //  the server's copy, derived and validated again against fresh facts first.
 // =============================================================================
 
+import { plainReason } from '../lib/failure'
 import { sendFailure } from '../lib/failure'
 import { detail as metricsDetail } from '../lib/site-metrics/view'
 import { metricsStore } from '../lib/site-metrics/store'
@@ -168,7 +169,7 @@ async function nasEntries(): Promise<NasEntry[]> {
   const list = await svc.instances.list()
   return Promise.all(list.map(async m => {
     try { return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: await svc.reading(m.id), error: null } }
-    catch (e: any) { return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: null, error: String(e?.message ?? 'no answer').slice(0, 160) } }
+    catch (e: any) { return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: null, error: plainReason(e, m.name) } }
   }))
 }
 
@@ -176,7 +177,7 @@ async function houses(viewer: boolean): Promise<HouseRead[]> {
   const svc = ha()
   return Promise.all((await svc.instances.list()).map(async m => {
     try { const d = await svc.devices(m.id, null, { viewer }); return { name: m.name, beside: beside(m.clusterId), areas: d.areas, error: null } }
-    catch (e: any) { return { name: m.name, beside: beside(m.clusterId), areas: null, error: String(e?.message ?? 'no answer').slice(0, 160) } }
+    catch (e: any) { return { name: m.name, beside: beside(m.clusterId), areas: null, error: plainReason(e, m.name) } }
   }))
 }
 
@@ -369,7 +370,7 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
       const svc = pbsService()
       return Promise.all((await svc.instances.list()).map(async m => {
         try { return { name: m.name, reading: await svc.reading(m.id), error: null } }
-        catch (e: any) { return { name: m.name, reading: null, error: String(e?.message ?? 'no answer').slice(0, 160) } }
+        catch (e: any) { return { name: m.name, reading: null, error: plainReason(e, m.name) } }
       }))
     } }),
     alertsSource({ fetch: () => fetchPrometheusAlerts(), state: () => new FileForwarderState().load(), notForwarded: () => notForwardedFromEnv(), clusterName: id => getCluster(id)?.name ?? null }),

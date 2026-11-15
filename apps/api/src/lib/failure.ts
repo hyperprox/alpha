@@ -12,6 +12,7 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole, type Role } from './roles'
+import { appLog, createLogOnce } from './log-once'
 
 export interface FailureBody {
   ok: false
@@ -32,7 +33,14 @@ export interface Classified {
   body: Omit<FailureBody, 'requestId'>
   /** True when the failure is HyperProx's own, expected answer (a refusal, bad input): logged without alarm. */
   expected: boolean
+  /** The message is HyperProx's own words for people (a refusal), whatever the status. */
+  ownWords?: boolean
 }
+
+/** A pinned Proxmox certificate that changed: possibly someone in the middle, so HyperProx stopped talking to it. */
+export const CERT_CHANGED_MESSAGE = "Proxmox's security certificate has changed since HyperProx last connected. HyperProx stopped talking to it until you check — see Settings → Proxmox."
+/** The error classes for a certificate that is not the pinned one (home: lib/home-tls.ts; remote: lib/clusters/tls-pin.ts). */
+export const CERT_CHANGED_NAMES = new Set(['HomeCertificateChangedError', 'CertificateChangedError'])
 
 export const MESSAGES = {
   internal: 'Something went wrong inside HyperProx. The details are in its log.',
@@ -78,12 +86,16 @@ function zodFields(e: any): Array<{ field: string; problem: string }> | null {
   }))
 }
 
-function connectionFailure(e: any, depth = 0): boolean {
+/** True when an error (or its cause) is a connection that failed: refused, timed out, no route, dropped. */
+export function connectionFailure(e: any, depth = 0): boolean {
   if (!e || typeof e !== 'object' || depth > 4) return false
   if (typeof e.code === 'string' && CONNECTION_RE.test(e.code)) return true
   if (typeof e.message === 'string' && CONNECTION_RE.test(e.message)) return true
   return connectionFailure(e.cause, depth + 1)
 }
+
+/** The class name of an error, as the classifier sees it. */
+export function failureName(e: unknown): string { return errName(e) }
 
 const fail = (status: number, code: string, error: string, expected: boolean, extra: Partial<FailureBody> = {}): Classified =>
   ({ status, expected, body: { ok: false, success: false, error, code, ...extra } })
@@ -110,6 +122,8 @@ export function classifyFailure(err: unknown, friendly?: string): Classified {
   }
   if (name === 'VaultOwnerOnlyError') return fail(403, 'vault_owner_only', String(e.message), true)
   if (name === 'TokenVaultWriteError') return fail(403, 'token_forbidden', String(e.message), true)
+  // Never the fingerprints or the pin file in the answer: admins see those under Settings → Proxmox.
+  if (CERT_CHANGED_NAMES.has(name)) return fail(502, 'proxmox_cert_changed', CERT_CHANGED_MESSAGE, false)
   if (TRUST_NAMES.has(name)) {
     const st = Number(e.status ?? e.statusCode)
     return fail(Number.isInteger(st) && st >= 400 && st < 600 ? st : 500, typeof e.code === 'string' && /^[a-z_]+$/.test(e.code) ? e.code : 'trust_check', String(e.message), true)
@@ -117,9 +131,11 @@ export function classifyFailure(err: unknown, friendly?: string): Classified {
   // Cloudflare's own refusals are made into one plain sentence by the client (lib/cloudflare-client.ts cfErrorMessage).
   if (name === 'CloudflareError' && Number(e.statusCode) >= 400 && Number(e.statusCode) < 500) return fail(Number(e.statusCode), 'refused', String(e.message), true)
   if (FRIENDLY_NAME.test(name) || name === 'DNSInputError') {
+    // Its own status, 4xx or 5xx (a refusal can be "the NAS did not answer", 502); 400 when it has none. A 5xx one is
+    // still worth a warning in the log.
     const s = Number(e.status ?? e.statusCode)
-    const status = Number.isInteger(s) && s >= 400 && s < 500 ? s : 400
-    return fail(status, typeof e.code === 'string' && /^[a-z_]+$/.test(e.code) ? e.code : 'refused', String(e.message || MESSAGES.invalid), true)
+    const status = Number.isInteger(s) && s >= 400 && s < 600 ? s : 400
+    return { ...fail(status, typeof e.code === 'string' && /^[a-z_]+$/.test(e.code) ? e.code : 'refused', String(e.message || MESSAGES.invalid), status < 500), ownWords: true }
   }
 
   // -- Database ---------------------------------------------------------------------------------------------
@@ -173,10 +189,12 @@ export function describeFailure(req: FastifyRequest, err: unknown, friendly?: st
   const c = classifyFailure(err, friendly)
   let status = c.status
   if (opts.status && status >= 500 && opts.status >= 500) status = opts.status
+  const ownWords = c.ownWords === true
   const body: FailureBody = { ...c.body, requestId: String(req.id) }
   // reqId is on every line of req.log already (Fastify's child logger).
   const ctx = { route: routeOf(req), user: who(req), code: body.code, status }
   if (c.expected && status < 500) req.log.info({ ...ctx, reason: (err as any)?.message }, `request refused: ${body.code}`)
+  else if (ownWords) req.log.warn({ ...ctx, err }, `request refused: ${body.code}`)
   else req.log.error({ ...ctx, err }, `request failed: ${body.code}`)
   if (opts.adminDetail && status >= 500 && req.session && hasRole(req.session.role as Role, 'admin')) {
     const m = (err as any)?.message
@@ -192,4 +210,20 @@ export function describeFailure(req: FastifyRequest, err: unknown, friendly?: st
 export function sendFailure(req: FastifyRequest, reply: FastifyReply, err: unknown, friendly?: string, opts: FailureOptions = {}) {
   const { status, body } = describeFailure(req, err, friendly, opts)
   return reply.status(status).send(body)
+}
+
+// Logged once per subject while the same problem repeats (plug-in panels are read every few seconds).
+const reasonLog = createLogOnce(appLog)
+
+/**
+ * A short reason for a reading that failed, for a page that shows "ok: false" in place of a panel (a plug-in, a NAS,
+ * a house): HyperProx's own refusals keep their words; anything else is "did not answer" or "could not be read",
+ * never the upstream's text. The error itself goes to the log under `what`.
+ */
+export function plainReason(e: unknown, what: string): string {
+  reasonLog(`reading ${what}`, e)
+  const c = classifyFailure(e)
+  if (c.expected || c.ownWords || c.body.code === 'proxmox_cert_changed' || c.body.code === 'db_unavailable') return c.body.error
+  if (connectionFailure(e)) return `${what} did not answer.`
+  return `${what} could not be read. The details are in HyperProx's log.`
 }
