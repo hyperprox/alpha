@@ -19,8 +19,9 @@ export function securityEvent(
 ): void {
   const subject = (who ?? (req.apiToken ? `token:${req.apiToken.name}` : req.session?.email) ?? 'anonymous').slice(0, 254)
   const path = req.url.split('?')[0].slice(0, 200)
-  const details = { who: subject, ip: req.ip, reason, path, method: req.method, reqId: String(req.id), ...extra }
-  req.log.warn({ security: action, ...details }, `[security] ${action}: ${reason}`)
+  const details = { who: subject, ip: req.ip, reason, path, method: req.method, requestId: String(req.id), ...extra }
+  const { requestId: _r, ...logged } = details   // the log line has reqId already
+  req.log.warn({ security: action, ...logged }, `[security] ${action}: ${reason}`)
   // Fire and forget: auditCredentialUse never throws, and a slow database must not hold up the reply.
   void auditCredentialUse(`security.${action}`, subject, details)
 }

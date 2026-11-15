@@ -174,7 +174,8 @@ export function describeFailure(req: FastifyRequest, err: unknown, friendly?: st
   let status = c.status
   if (opts.status && status >= 500 && opts.status >= 500) status = opts.status
   const body: FailureBody = { ...c.body, requestId: String(req.id) }
-  const ctx = { route: routeOf(req), user: who(req), reqId: req.id, code: body.code, status }
+  // reqId is on every line of req.log already (Fastify's child logger).
+  const ctx = { route: routeOf(req), user: who(req), code: body.code, status }
   if (c.expected && status < 500) req.log.info({ ...ctx, reason: (err as any)?.message }, `request refused: ${body.code}`)
   else req.log.error({ ...ctx, err }, `request failed: ${body.code}`)
   if (opts.adminDetail && status >= 500 && req.session && hasRole(req.session.role as Role, 'admin')) {
