@@ -7,6 +7,7 @@
 // =============================================================================
 
 import { PrismaClient } from '@prisma/client'
+import { appLog } from './log-once'
 
 export interface AuditSink {
   write(row: { action: string; resource: string; details?: Record<string, unknown> }): Promise<void>
@@ -41,7 +42,7 @@ export async function auditCredentialUse(action: string, resource: string, detai
     if (!sink) sink = prismaAuditSink(new PrismaClient())
     await sink.write({ action, resource, details: scrubDetails(details) })
   } catch (e: any) {
-    console.warn(`[audit] could not record ${action} on ${resource}: ${e?.message ?? e}`)
+    appLog.warn({ err: e, action, resource }, `audit: could not record ${action} on ${resource}`)
   }
 }
 

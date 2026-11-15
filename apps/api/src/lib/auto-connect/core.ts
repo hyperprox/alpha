@@ -94,6 +94,8 @@ export interface ReconcilerDeps {
   audit(action: string, resource: string, details: Record<string, unknown>): Promise<void>
   now?(): number
   log?(m: string): void
+  /** The same, with the error itself so its stack is logged. Optional; `log` is used alone without it. */
+  logError?(m: string, err: unknown): void
 }
 
 const sid = (plugin: string, key: string) => `${plugin}/${key}`
@@ -147,6 +149,15 @@ export class Reconciler {
     }
   }
 
+  /** One line in the log for a problem; the same problem again and again (the timer) is logged once until it changes. */
+  private lastReported = ''
+  private report(m: string, e: unknown): void {
+    const key = `${m}|${(e as any)?.message ?? e}`
+    if (key === this.lastReported) return
+    this.lastReported = key
+    if (this.d.logError) this.d.logError(m, e); else this.d.log?.(`${m}: ${(e as any)?.message ?? e}`)
+  }
+
   /** One pass over every plug-in. One at a time; a second call while one runs gets the same answer. */
   run(reason: string): Promise<RunResult> {
     if (this.running) return this.running
@@ -170,13 +181,12 @@ export class Reconciler {
     let subnets: string[]
     try { subnets = this.d.excludedSubnets() } catch (e: any) {
       // Loud: a list that cannot be read could let an excluded subnet through, so nothing runs until it is fixed.
-      console.error(`[auto-connect] REFUSING TO RUN: ${e?.message ?? e}`)
-      this.d.log?.(`[auto-connect] excluded subnets unreadable: ${e?.message ?? e}`)
+      this.report(`[auto-connect] REFUSING TO RUN: excluded subnets unreadable`, e)
       return { waited: 'subnets', outcomes: {} }
     }
     let excluded: string[]
-    try { excluded = await this.d.excluded() } catch {
-      this.d.log?.('[auto-connect] Remote access\'s exclusion list could not be read; nothing is connected until it can')
+    try { excluded = await this.d.excluded() } catch (e) {
+      this.report('[auto-connect] Remote access\'s exclusion list could not be read; nothing is connected until it can', e)
       return { waited: 'exclusions', outcomes: {} }
     }
     this.waitingForUnlock = false
@@ -188,7 +198,7 @@ export class Reconciler {
       let list: Outcome[]
       try { list = await a.reconcile(this.context(excluded, subnets, a.plugin)) } catch (e: any) {
         if (e?.name === 'VaultLockedError' || !this.d.unlocked()) { lockedMidway = true; list = [] }
-        else { this.d.log?.(`[auto-connect] ${a.plugin}: ${e?.message ?? e}`); list = [{ key: '*', label: a.plugin, did: 'failed', message: String(e?.message ?? e).slice(0, 300) }] }
+        else { this.report(`[auto-connect] ${a.plugin} failed`, e); list = [{ key: '*', label: a.plugin, did: 'failed', message: String(e?.message ?? e).slice(0, 300) }] }
       }
       outcomes[a.plugin] = list
       await this.mutate(s => this.apply(s, a.plugin, list, startedAt))
@@ -282,11 +292,11 @@ export class Reconciler {
   /** The timer (discovery cadence) and the unlock hook. Returns a stop function. */
   start(onUnlock: (cb: () => void) => void): () => void {
     if (this.timer) return () => {}
-    this.timer = setInterval(() => { void this.run('timer').catch(() => {}) }, AUTO_TICK_MS)
+    this.timer = setInterval(() => { void this.run('timer').catch(e => this.report('[auto-connect] timed pass failed', e)) }, AUTO_TICK_MS)
     this.timer.unref?.()
     // Right after an unlock, and at start-up in case the vault is already open.
-    onUnlock(() => { void this.runFresh('unlock').catch(() => {}) })
-    const first = setTimeout(() => { void this.run('start').catch(() => {}) }, 30_000)
+    onUnlock(() => { void this.runFresh('unlock').catch(e => this.report('[auto-connect] pass after unlock failed', e)) })
+    const first = setTimeout(() => { void this.run('start').catch(e => this.report('[auto-connect] first pass failed', e)) }, 30_000)
     first.unref?.()
     return () => { if (this.timer) clearInterval(this.timer); this.timer = null; clearTimeout(first) }
   }

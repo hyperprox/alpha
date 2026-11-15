@@ -23,6 +23,7 @@
 import { getCredential, setCredential, deleteCredential, listCredentialKeys } from './credentials'
 import { currentRemote } from './clusters/context'
 import { homeAddresses } from './clusters/registry'
+import { appLog } from './log-once'
 
 const CATEGORY = 'deck'
 const PIN = 'hostkey'
@@ -124,7 +125,7 @@ async function migrateLegacy(host: string, port: number): Promise<boolean> {
   if (src) await setCredential(CATEGORY, SOURCE, id, src, false)
   if (ev) await setCredential(CATEGORY, EVIDENCE, id, ev, false)
   await setCredential(CATEGORY, MIGRATED, id, new Date().toISOString(), false)
-  console.warn(`[hostkeys] copied the pin for ${host}:${port} to ${r.name}'s own pins; the home copy was left in place, in case a home machine uses that address too`)
+  appLog.warn(`[hostkeys] copied the pin for ${host}:${port} to ${r.name}'s own pins; the home copy was left in place, in case a home machine uses that address too`)
   return true
 }
 

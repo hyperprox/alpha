@@ -51,7 +51,8 @@ import { siteRoutes } from './routes/sites'
 // Site metrics (lib/site-metrics): routes under /api/site-metrics and the five-minute collector.
 import { registerSiteMetrics } from './lib/site-metrics'
 import { setWizardStore, PrismaWizardStore } from './lib/catalogue-store'
-import { restoreWizardState } from './lib/catalogue-installer'
+import { restoreWizardState, setInstallerLogger } from './lib/catalogue-installer'
+import { leveled, setAppLog } from './lib/log-once'
 import { terminalWsRoutes }           from './routes/terminal-ws'
 import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { selfUpdateRoutes }     from './routes/self-update'
@@ -90,6 +91,9 @@ const server = Fastify(serverOptions({
 }))
 
 async function main() {
+  // Code with no logger of its own (the installer, the audit sink, host-key pins) reports through the server's.
+  setAppLog(server.log)
+  setInstallerLogger(server.log)
   await server.register(helmet, { contentSecurityPolicy: false })
   // No cross-origin access at all: the app is served from the same origin as the API (nginx), so no
   // Access-Control-* header is ever sent and another site's page cannot read an answer.
@@ -212,12 +216,12 @@ async function main() {
 
   // Prometheus alerts become notifications (lib/alerts/forwarder.ts): once when one fires, once when it clears,
   // and a warning if Prometheus stops answering. Needs no vault secret, so it runs while locked too.
-  const alertForwarder = productionAlertForwarder(m => server.log.info(m))
+  const alertForwarder = productionAlertForwarder(leveled(server.log))
   alertForwarder.start()
   server.addHook('onClose', async () => alertForwarder.stop())
 
   // Prometheus's node, GPU and Ceph lists keep themselves current: on unlock, then whenever a node joins.
-  const stopTargets = watchTargets({ log: m => server.log.info(m) })
+  const stopTargets = watchTargets({ log: leveled(server.log) })
   server.addHook('onClose', async () => stopTargets())
 
   // Credentials move into the vault on the first Owner sign-in (lib/credentials.ts seedFromEnv),

@@ -30,6 +30,7 @@ import { isUnlocked } from '../lib/vault/state'
 import { execOnNode, nodeCredential } from '../lib/node-exec'
 import { prometheusBase } from '../lib/service-health'
 import { PlacementRefusal, PlacementService } from '../lib/placement/service'
+import type { LogLike } from '../lib/log-once'
 import { livePromRange } from '../lib/placement/read'
 import { prismaPlacementStore } from '../lib/placement/store'
 import type { HaPve } from '../lib/ha/read'
@@ -60,7 +61,7 @@ function guestSid(p: { type: string; vmid: string }): string {
 let production: PlacementService | null = null
 
 /** The production service: the live Proxmox token, Prometheus, Postgres, the audit log and the node logins. */
-export function placementService(prisma: any): PlacementService {
+export function placementService(prisma: any, log?: LogLike): PlacementService {
   if (production) return production
   const pve = livePve()
   production = new PlacementService({
@@ -86,7 +87,7 @@ export function placementService(prisma: any): PlacementService {
       const r = await execOnNode({ host: await nodeAddress(pve as any, node), cred, command, timeoutMs: 30_000, maxOutputBytes: 2_000_000 })
       return { code: r.timedOut ? 124 : r.code, output: r.output }
     },
-  })
+  }, log)
   return production
 }
 
@@ -122,7 +123,7 @@ export async function approverChanged(prisma: any, email: string, sinceMs: numbe
 
 export function buildPlacementRoutes(deps: { service?: () => PlacementService; startScheduler?: boolean } = {}): FastifyPluginAsync {
   return async (fastify) => {
-    const svc = deps.service ?? (() => placementService((fastify as any).prisma))
+    const svc = deps.service ?? (() => placementService((fastify as any).prisma, fastify.log))
     if (deps.startScheduler) {
       let stop: (() => void) | null = null
       fastify.addHook('onReady', async () => { stop = await svc().start().catch(() => null) })

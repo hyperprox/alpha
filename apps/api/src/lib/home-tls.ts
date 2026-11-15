@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import type { Duplex } from 'node:stream'
 import { normaliseFingerprint } from './clusters/tls-pin'
+import { appLog } from './log-once'
 
 export type HomePinSource = 'first-use' | 'ca-verified' | 'confirmed'
 export interface HomePin { fingerprint: string; source: HomePinSource; at: string }
@@ -125,8 +126,8 @@ export class HomePinAgent extends https.Agent {
           // the same rule either way, and the next one tries to record it again.
           try {
             recordHomeTlsPin(host, port, presented, d.record)
-            if (d.record === 'first-use') console.warn(`[home-tls] pinned the certificate of ${host}:${port} on first use: ${presented}`)
-          } catch (e: any) { console.warn(`[home-tls] could not record the certificate pin for ${host}:${port}: ${e?.message}`) }
+            if (d.record === 'first-use') appLog.warn({ host, port }, `home-tls: pinned the certificate of ${host}:${port} on first use`)
+          } catch (e: any) { appLog.warn({ err: e, host, port }, `home-tls: could not record the certificate pin for ${host}:${port}`) }
         }
         finish(null)
       } catch (e) { finish(e as Error) }

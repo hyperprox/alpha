@@ -28,6 +28,7 @@ import {
   type ChannelKind, type ChannelRecord, type ChannelSecret, type DeliveryResult, type EventFilter, type NotifyEventInput,
   type QuietHours, type SendOutcome, type Severity, type Transport,
 } from './types'
+import { appLog, createLogOnce } from '../log-once'
 
 type Env = Record<string, string | undefined>
 export interface Actor { email: string; role: 'owner' | 'admin' | 'operator' | 'viewer' }
@@ -125,6 +126,8 @@ export class NotifyService {
   private publicUrl(): string | undefined { return this.d.publicUrl ? this.d.publicUrl() : publicUrlFrom(this.env()) }
   private now(): Date { return this.d.now?.() ?? new Date() }
   private log(m: string): void { this.d.log?.(`[notify] ${m}`) }
+  /** A problem on a timer is logged once until it changes, so a down database is one line, not one every five seconds. */
+  private problem = createLogOnce(appLog)
   private isPrivate(url: string): Promise<boolean> { return (this.d.isPrivate ?? resolvesPrivate)(url) }
 
   // --- Bus -------------------------------------------------------------------
@@ -146,7 +149,7 @@ export class NotifyService {
    */
   async start(): Promise<void> {
     await this.seedLockChannel().catch(e => this.log(`lock alert channel was not moved: ${(e as Error)?.name ?? 'error'}`))
-    await this.reconcile().catch(() => undefined)
+    await this.reconcile().then(() => this.problem.ok('notify channel sync'), e => this.problem('notify channel sync', e))
     try { this.yamlSeeded = !!(await this.d.store.getState(YAML_STATE)) } catch { this.yamlSeeded = null }
     if (this.yamlSeeded) {
       for (const s of legacySourceList(this.d.legacy)) this.log(`${s.yamlKey} is no longer read: it is a channel under Settings, Notifications`)
@@ -155,7 +158,7 @@ export class NotifyService {
       this.log('LOCK_ALERT_URL in .env is no longer read: the lock alert is a channel under Settings, Notifications')
     }
     if (!this.timer && this.d.tickMs !== 0) {
-      this.timer = setInterval(() => { void this.reconcile().catch(() => undefined).then(() => this.core.tick()) }, this.d.tickMs ?? 5_000)
+      this.timer = setInterval(() => { void this.reconcile().then(() => this.problem.ok('notify channel sync'), e => this.problem('notify channel sync', e)).then(() => this.core.tick()) }, this.d.tickMs ?? 5_000)
       this.timer.unref?.()
     }
     void this.core.tick()
@@ -206,8 +209,8 @@ export class NotifyService {
     if (this.seeding) return this.seeding
     this.seeding = (async () => {
       try {
-        await this.d.beforeOwnerSeed?.().catch(() => undefined)
-        await this.reconcile().catch(() => undefined)
+        await this.d.beforeOwnerSeed?.().catch(e => this.problem('notify pre-seed migration', e))
+        await this.reconcile().catch(e => this.problem('notify channel sync', e))
         await this.seedYaml()
       } catch (e) {
         this.log(`moving the Updates/Certificates webhooks failed (${(e as any)?.code ?? (e as Error)?.name ?? 'error'}); the old settings keep working and the next Owner sign-in tries again`)
@@ -278,9 +281,9 @@ export class NotifyService {
         })))
         for (const { en, out } of results) {
           const lastResult: DeliveryResult = { ok: out.ok, ...(out.status ? { status: out.status } : {}), ...(out.code ? { code: out.code } : {}), at: now.toISOString() }
-          await this.d.store.updateChannel(en.id, { lastResult, ...(out.ok ? { lastSentAt: now, failingSince: null } : {}) }).catch(() => undefined)
+          await this.d.store.updateChannel(en.id, { lastResult, ...(out.ok ? { lastSentAt: now, failingSince: null } : {}) }).catch(e => this.problem('notify delivery result save', e))
         }
-      } catch { /* Postgres down: the message went anyway */ }
+      } catch (e) { this.problem('notify outbox write', e) /* the message went anyway */ }
     })()
     const ok = results.filter(r => r.out.ok)
     return {

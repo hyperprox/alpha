@@ -12,6 +12,7 @@ import { callStructured, type StructuredRequest } from './providers'
 import { coerce, extractJsonSchema } from './templates/fields'
 import type { FieldSpec, TaskTemplate, TemplateFacts } from './templates/types'
 import type { ExtractFn, Extraction } from './loop'
+import { appLog } from '../log-once'
 
 export type { Extraction }
 
@@ -20,7 +21,7 @@ export type ModelCall = <T>(r: StructuredRequest<T>) => Promise<T>
 const defaultCall: ModelCall = r => callStructured(r)
 
 export type ExtractLog = (msg: string, data: object) => void
-const defaultLog: ExtractLog = (msg, data) => console.warn(msg, JSON.stringify(data))
+const defaultLog: ExtractLog = (msg, data) => appLog.warn(data, msg)
 
 export const EXTRACT_RULE = "Fill fields only from the user's words. Use null when a field is not stated. Never guess."
 

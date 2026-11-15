@@ -46,6 +46,7 @@ import {
   CRITICAL_SOURCES, DEFAULT_OPTIONS, EMPTY_STATE, type Entry, type GenerateOptions, type Inventory, type InventorySourceId, type ManagedState,
   type MergeNotes,
 } from './types'
+import { changedMessage } from '../log-once'
 
 // ── records ──────────────────────────────────────────────────────────────────
 
@@ -660,6 +661,7 @@ export class HomepageService {
   }
 
   /** Something changed (a Catalogue install finished, a proxy host was made): look again in a minute. */
+  private invChanged = changedMessage()
   inventoryChanged(): void {
     if (this.soon) return
     this.soon = setTimeout(() => { this.soon = null; void this.tick(true) }, 60_000)
@@ -673,7 +675,11 @@ export class HomepageService {
     const list = await this.d.store.list().catch(() => [] as HomepageInstance[])
     if (!list.some(i => i.autoSync)) return list.map(i => ({ id: i.id, did: 'off' as const }))
     let inv: Inventory
-    try { inv = await this.d.inventory(refresh) } catch (e: any) { return list.map(i => ({ id: i.id, did: 'failed' as const, message: String(e?.message ?? e) })) }
+    try { inv = await this.d.inventory(refresh) } catch (e: any) {
+      const message = String(e?.message ?? e)
+      if (this.invChanged(message)) this.d.log?.(`[homepage] auto-sync could not read the inventory: ${message}`)
+      return list.map(i => ({ id: i.id, did: 'failed' as const, message }))
+    }
     // Never from a partial inventory: a missing source would take its entries off the dashboard, and missing
     // exclusions could put an excluded guest on it. The next pass tries again.
     const missing = (inv.failed ?? []).filter(s => CRITICAL_SOURCES.includes(s))

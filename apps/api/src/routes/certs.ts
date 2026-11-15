@@ -17,6 +17,7 @@ import {
 } from '../lib/certs/service'
 import { CertsScheduler } from '../lib/certs/scheduler'
 import { ProxyNotConfigured } from '../lib/certs/modules'
+import { leveled } from '../lib/log-once'
 
 export interface CertsRouteDeps {
   service?:   CertsService
@@ -58,7 +59,7 @@ export function buildCertsRoutes(deps: CertsRouteDeps = {}): FastifyPluginAsync 
       const scheduler = new CertsScheduler({
         service, isUnlocked,
         cron: () => service.policy().policy.schedule.check,
-        log: m => fastify.log.info(m),
+        log: leveled(fastify.log),
       })
       fastify.addHook('onReady', async () => scheduler.start())
       fastify.addHook('onClose', async () => scheduler.stop())

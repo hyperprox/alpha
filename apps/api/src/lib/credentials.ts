@@ -20,6 +20,7 @@ import { decrypt, mask } from './crypto'
 import { getBroker, type SecretItem } from './vault/broker'
 import { isUnlocked, cachedSecret, putCachedSecret, removeCachedSecret, onLock, onUnlock } from './vault/state'
 import { actingSid, currentContext, grantedPluginSettingsSid, isTokenContext } from './auth'
+import { appLog } from './log-once'
 
 export interface CredentialDef {
   category: string
@@ -705,7 +706,7 @@ export async function seedFromEnv(sidArg?: string, opts: { onCacheReady?: (hasWo
   hydrateEnvFromVault()
 
   if (result.migrated || result.rowsDeleted || result.envBlanked.length) {
-    console.log(
+    appLog.info(
       `[credentials] Vault migration: ${result.migrated} value(s) moved, ${result.rowsDeleted} row(s) deleted, ` +
       `${result.envBlanked.length} .env key(s) blanked` + '',
     )

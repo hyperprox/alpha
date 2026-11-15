@@ -36,6 +36,7 @@ import {
   type RouterApi, type RouterWgInterface, type RouterWgPeer,
 } from './routeros'
 import type { WgPeer, WgServer, WgStore } from './store'
+import { appLog } from '../../log-once'
 
 /** The node's wireguard module, seen from inside a container (one shared kernel). Prints HPX_WG_MOD=yes|no. */
 export const WG_MODULE_SCRIPT = 'if [ -d /sys/module/wireguard ]; then echo HPX_WG_MOD=yes; else echo HPX_WG_MOD=no; fi\n'
@@ -389,7 +390,11 @@ export class WireguardService {
         }
         await this.d.store.updatePeer(p.id, { previousPublicKey: null, previousUntil: null })
         n++
-      } catch { return n }
+      } catch (e) {
+        // Stops at the first failure and tries the rest next run. The peer id only: never a key or a config.
+        appLog.warn({ err: e, peerId: p.id }, 'wireguard: deleting a rotated key failed; the sweep stops here and retries next run')
+        return n
+      }
     }
     return n
   }

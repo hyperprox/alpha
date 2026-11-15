@@ -71,6 +71,7 @@ import { copySeconds } from './network'
 import { readCluster, readHistory, taskRunning, type ClusterRead, type PromRange } from './read'
 import { DEFAULT_SETTINGS, IN_FLIGHT, MoveSlotTaken, PlanSlotTaken, mergeAuto, mergeSettings, stricterAuto, stricterSettings, type PlacementStore } from './store'
 import { backupMask, quietStatus, type QuietStatus } from './windows'
+import { createLogOnce, type LogLike, type LogOnce } from '../log-once'
 import type {
   Advice, AutoSettings, AutoState, BalanceGoal, BalanceResult, GuestPlacement, MoveRecord, NetworkCost, PlacementMap, PlacementSettings,
   AutoConfig, PlanRecord, PlanSnapshot, PlanStatus, PlanStepRecord,
@@ -195,7 +196,9 @@ export class PlacementService {
   private planSlot: string | null = null
   private planBeats = new Map<string, number>()
   readonly owner: string
-  constructor(private d: PlacementDeps) {
+  private readonly problem: LogOnce
+  constructor(private d: PlacementDeps, log?: LogLike) {
+    this.problem = createLogOnce(log)
     this.owner = d.ownerId ?? `${process.pid}@${Date.now()}`
   }
 
@@ -1291,8 +1294,8 @@ export class PlacementService {
     if (this.ticking) return
     this.ticking = true
     try {
-      await this.takeOverStale().catch(() => undefined)
-      if (this.now() - this.lastSync >= SYNC_EVERY_MS) { this.lastSync = this.now(); await this.syncSeen().catch(() => undefined) }
+      await this.takeOverStale().then(() => this.problem.ok('placement take-over of stale moves'), e => this.problem('placement take-over of stale moves', e))
+      if (this.now() - this.lastSync >= SYNC_EVERY_MS) { this.lastSync = this.now(); await this.syncSeen().then(() => this.problem.ok('placement task-log sync'), e => this.problem('placement task-log sync', e)) }
       const due = (await this.d.store.list({ status: ['scheduled'] })).filter(m => (m.scheduledFor ?? Infinity) <= this.now())
       for (const stale of due) {
         // Re-read: a cancel may have landed since the list.
@@ -1326,8 +1329,8 @@ export class PlacementService {
         void this.run(m.id, plan)
         break
       }
-      await this.planTick().catch(() => undefined)
-      await this.autoTick().catch(() => undefined)
+      await this.planTick().then(() => this.problem.ok('placement plan scheduler'), e => this.problem('placement plan scheduler', e))
+      await this.autoTick().then(() => this.problem.ok('placement automatic balancing'), e => this.problem('placement automatic balancing', e))
     } finally {
       this.ticking = false
     }
@@ -1335,8 +1338,8 @@ export class PlacementService {
 
   /** Every minute; the first pass right away takes over moves a dead process left behind. */
   async start(): Promise<() => void> {
-    await this.tick().catch(() => undefined)
-    if (!this.timer) this.timer = setInterval(() => { void this.tick().catch(() => undefined) }, 60_000)
+    await this.tick().catch(e => this.problem('placement scheduler pass', e))
+    if (!this.timer) this.timer = setInterval(() => { void this.tick().catch(e => this.problem('placement scheduler pass', e)) }, 60_000)
     ;(this.timer as any).unref?.()
     return () => { if (this.timer) clearInterval(this.timer); this.timer = null }
   }

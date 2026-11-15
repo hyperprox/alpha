@@ -23,6 +23,7 @@ import { installStillOwns } from '../auto-connect/core'
 import { buildInventory, type InventorySources, type RawPlugin } from './inventory'
 import { HomepageService, type HomepageDeps, type HomepageInstance, type RecordStore } from './service'
 import type { Inventory } from './types'
+import { appLog } from '../log-once'
 
 export { HomepageService, HomepageRefusal } from './service'
 export type { HomepageInstance, Actor, Plan, Problem } from './service'
@@ -200,7 +201,7 @@ export function productionHomepage(): HomepageService {
     },
     audit: (a, r, d) => auditOrThrow(a, r, d),
     now: () => Date.now(),
-    log: m => console.warn(m),
+    log: m => appLog.warn(m),
     dismissed: async (machineId, label, by) => (await import('../auto-connect')).rememberDismissed('homepage', machineId, label, by),
   }
   return new HomepageService(deps)

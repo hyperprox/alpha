@@ -7,6 +7,7 @@
 //  copying a URL into a settings form has done the easy half.
 // =============================================================================
 
+import { silentLog, type LogLike } from './log-once'
 import { ProxmoxClient } from './proxmox-client'
 import { ownHeaders } from './own-user-agent'
 import { execInGuest, nodeCredential } from './node-exec'
@@ -69,6 +70,8 @@ export interface InstallJob {
   status:   'running' | 'completed' | 'failed' | 'interrupted' | 'unknown'
   /** Set when the job's final state could not be saved to the store. */
   storeError?: string
+  /** Set when a progress save failed: the saved copy may be behind what happened. */
+  progressNotSaved?: boolean
   steps:    InstallStep[]
   /** Live output from the recipe, so a five-minute apt run is not a blank screen. */
   log:      string
@@ -201,10 +204,22 @@ function pve(): ProxmoxClient {
   )
 }
 
+let installerLog: LogLike = silentLog
+/** Where the installer reports problems it cannot show to the person installing. Never given a secret. */
+export function setInstallerLogger(l: LogLike): void { installerLog = l }
+
+/** A progress save failed. Logged once per job; the job itself says so, so its page shows it too. */
+function persistFailed(job: InstallJob, e: unknown): void {
+  if (job.progressNotSaved) return
+  job.progressNotSaved = true
+  job.log += '\nProgress could not be saved. If HyperProx restarts now, this install may not show its latest state.\n'
+  try { installerLog.error({ err: e, jobId: job.jobId, recipe: job.recipeId }, 'install progress could not be saved') } catch { /* logging must not break an install */ }
+}
+
 function step(job: InstallJob, id: string): InstallStep {
   const s = job.steps.find(x => x.id === id)!
   s.status = 'running'
-  void persistJob(job).catch(() => {})
+  void persistJob(job).catch(e => persistFailed(job, e))
   return s
 }
 
@@ -397,7 +412,7 @@ export async function startInstall(opts: {
   if (recipe.setup === 'ghost') opt.values.GHOST_SMTP_REF = ''
   const target = await preflight(deps, opts.intoVmid)
   const job = newJob(recipe, opts.owner ?? '', `Use CT ${opts.intoVmid}`)
-  void persistJob(job).catch(() => {})
+  void persistJob(job).catch(e => persistFailed(job, e))
   void runJob(job, recipe, deps, async () => {
     job.vmid = target.vmid; job.node = target.node
     const cfg = await deps.client.fetchNode<any>(`/nodes/${target.node}/lxc/${target.vmid}/config`).catch(() => null)
@@ -488,7 +503,7 @@ async function runJob(
         ...(ghost?.vault ?? {}),
       })
       job.vaultItem = { category: 'apps', provider, createdByJob }
-      await persistJob(job).catch(() => {})
+      await persistJob(job).catch(e => persistFailed(job, e))
       if (ghost?.pendingRef) await dropPendingSmtp(ghost.pendingRef, deps)
     }
     // The Arr Stack's compose file, folders and VPN login (moved from the preview's vault item to the stack's own).
@@ -536,7 +551,7 @@ async function runJob(
       const out = await tcRunSetup({
         kind: tc, ip: job.ip, hostname: job.hostname ?? recipe.id, options,
         // Recorded the moment the main Unmanic has the link, so a failure after it can still be undone.
-        onLink: r => { job.tcLink = r; void persistJob(job).catch(() => {}) },
+        onLink: r => { job.tcLink = r; void persistJob(job).catch(e => persistFailed(job, e)) },
       }, id => step(job, id), { arr: deps.arr, wait: deps.wait })
       job.url = out.url
       job.arrApps = out.apps
@@ -553,7 +568,7 @@ async function runJob(
       if (s0 && job.arrPrepared) s0.detail = `${s0.detail}: ${job.arrPrepared}`
       const out = await arrRunSetup({
         ip: job.ip, owner: job.owner, options, admin, vault: { category: job.vaultItem.category, provider: job.vaultItem.provider },
-        publish: ctx.arrPublish, recipe, ledgers: (job.arrLedgers ??= {}), save: () => { void persistJob(job).catch(() => {}) },
+        publish: ctx.arrPublish, recipe, ledgers: (job.arrLedgers ??= {}), save: () => { void persistJob(job).catch(e => persistFailed(job, e)) },
       }, id => step(job, id), {
         arr: deps.arr, wait: deps.wait, publish: deps.publish, saveSecrets: deps.saveSecrets, readSecrets: deps.readSecrets,
         sh: arrSh, stopContainer: arrStopContainer,
@@ -614,7 +629,7 @@ async function runJob(
       if (s4.status !== 'done' || !job.ip) throw new Error(`${recipe.name} did not answer on its own address, so it was not published.`)
       job.ledger ??= {}
       job.url = await runPublish(ctx.publish, recipe, job.ip, job.owner, job.ledger,
-        { step: id => step(job, id), save: () => { void persistJob(job).catch(() => {}) } }, deps.publish)
+        { step: id => step(job, id), save: () => { void persistJob(job).catch(e => persistFailed(job, e)) } }, deps.publish)
     }
 
     if (admin) job.adminCredential = { user: admin.user, vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}`, key: 'admin_password' }, issuedAt: Date.now() }
@@ -643,7 +658,7 @@ async function runJob(
     try { await persistJob(job) }
     catch (e: any) {
       job.storeError = `The result of this install could not be saved: ${e.message}. After a restart HyperProx will not know how it ended.`
-      console.error(`[catalogue] job ${job.jobId}: ${job.storeError}`)
+      installerLog.error({ err: e, jobId: job.jobId }, 'install result could not be saved')
     }
     await Promise.resolve(onSettled()).catch(() => {})
     if (job.status === 'completed') for (const fn of INSTALL_LISTENERS) { try { fn(job) } catch { /* a listener never fails an install */ } }
@@ -1436,19 +1451,19 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       throw new WizardRefusal(`HyperProx could not record the install, so nothing was created: ${e.message}`, 'changed')
     }
     void runJob(job, recipe, deps, async () => {
-      await createFromPlan(plan, recipe, job.jobId, deps.client, () => { job.created = true; void persistJob(job).catch(() => {}) })
+      await createFromPlan(plan, recipe, job.jobId, deps.client, () => { job.created = true; void persistJob(job).catch(e => persistFailed(job, e)) })
       if (recipe.setup === 'pbs' && plan.options?.PBS_LOCATION === 'nas') await mountNasDatastore(job, plan, deps)
       await waitRunning(deps, plan.node, plan.vmid)
       if (recipe.stack === 'arr') {
         // keyctl, the VPN's tun device and the library, which an API token cannot set; then it starts again.
-        job.arrPrepared = await arrPrepare(plan, deps, async () => { job.arrHostMount = { node: plan.node, vmid: plan.vmid }; await persistJob(job).catch(() => {}) })
+        job.arrPrepared = await arrPrepare(plan, deps, async () => { job.arrHostMount = { node: plan.node, vmid: plan.vmid }; await persistJob(job).catch(e => persistFailed(job, e)) })
         await waitRunning(deps, plan.node, plan.vmid)
       }
       if (isTranscode(recipe)) {
         // keyctl, the hardware devices and the library, which an API token cannot set; then it starts again.
-        const prep = await tcPrepare(plan, kindOf(recipe.id), deps, async () => { job.arrHostMount = { node: plan.node, vmid: plan.vmid }; await persistJob(job).catch(() => {}) })
+        const prep = await tcPrepare(plan, kindOf(recipe.id), deps, async () => { job.arrHostMount = { node: plan.node, vmid: plan.vmid }; await persistJob(job).catch(e => persistFailed(job, e)) })
         job.tcPrepared = prep.detail; job.tcGroups = prep.groups
-        await persistJob(job).catch(() => {})
+        await persistJob(job).catch(e => persistFailed(job, e))
         await waitRunning(deps, plan.node, plan.vmid)
       }
       const distro = distroOf(plan.template)
@@ -1458,7 +1473,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       // Held until the whole job settles, not just the create: an apply that read the cluster before this
       // container showed up must still be refused.
       CREATING.delete(plan.vmid)
-      await store.delete(markId).catch(() => {})
+      await store.delete(markId).catch(e => installerLog.warn({ err: e }, 'could not remove an install create mark'))
     }, { options: plan.options ?? {}, publish: plan.publish, arrPublish: plan.arrPublish })
     return job
   } finally {
@@ -1502,7 +1517,7 @@ export async function restoreWizardState(now = Date.now()): Promise<{ interrupte
     JOBS.set(job.jobId, job)
   }
   // No job is running after a restart, so no ID is being created.
-  for (const m of marks.values()) await store.delete(m.id).catch(() => {})
+  for (const m of marks.values()) await store.delete(m.id).catch(e => installerLog.warn({ err: e }, 'could not remove a stale install create mark'))
   return { interrupted, unknown, restored: jobs.length }
 }
 
@@ -1534,7 +1549,7 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   if (!here) {
     job.removed = true
     const msg = `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removePublished(job, deps)}${await removeHostMount(job, deps)}${await removeVaultItem(job, deps)}`
-    await persistJob(job).catch(() => {})
+    await persistJob(job).catch(e => persistFailed(job, e))
     return msg
   }
   if (here.node !== job.node || here.type !== 'lxc') {
@@ -1552,7 +1567,7 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   }
   // What publishing made goes first, while the container it points at still exists to be named.
   const published = await removePublished(job, deps)
-  await persistJob(job).catch(() => {})
+  await persistJob(job).catch(e => persistFailed(job, e))
   const st = await deps.client.fetchStrict<any>(`${base}/status/current`)
   if (st?.status === 'running') {
     await deps.client.waitForTask(job.node, await deps.client.fetchStrict<string>(`${base}/status/stop`, 'POST'), { timeoutMs: 2 * 60_000 })
@@ -1565,7 +1580,7 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   if ((left ?? []).some((r: any) => Number(r?.vmid) === job.vmid)) throw new Error(`CT ${job.vmid} is still listed after the removal.`)
   job.removed = true
   const msg = `CT ${job.vmid} was removed from ${job.node}.${published}${await removeHostMount(job, deps)}${await removeVaultItem(job, deps)}`
-  await persistJob(job).catch(() => {})
+  await persistJob(job).catch(e => persistFailed(job, e))
   return msg
 }
 
@@ -1587,7 +1602,7 @@ async function mountNasDatastore(job: InstallJob, plan: InstallPlan, deps: Wizar
   const src = cleanNfsSource(o.PBS_NFS_HOST, o.PBS_NFS_EXPORT)
   if (!deps.nodeRun) throw new Error('HyperProx cannot reach the node to mount the NAS export.')
   job.hostMount = { node: plan.node, vmid: plan.vmid }
-  await persistJob(job).catch(() => {})
+  await persistJob(job).catch(e => persistFailed(job, e))
   const r = await deps.nodeRun(plan.node, mountScript(src, plan.vmid, o.PBS_DATASTORE), 90_000)
   if (r.code !== 0 || !/@@pbs mounted/.test(r.output)) throw new Error(`${src.source} could not be mounted on ${plan.node} for CT ${plan.vmid}.`)
   // Read back: the container's config carries the mountpoint exactly.
@@ -1841,7 +1856,7 @@ export async function finishSeerr(jobId: string, owner: string, over: Partial<Wi
   const st = job.steps.find(x => x.id === 'arr-seerr')
   if (st) { st.status = 'done'; st.detail = detail }
   job.arrSeerrWaiting = false
-  await persistJob(job).catch(() => {})
+  await persistJob(job).catch(e => persistFailed(job, e))
   return detail
 }
 

@@ -16,6 +16,7 @@ import { sharedServiceScan } from '../service-scan'
 import { homePve } from '../pve-env'
 import { EMPTY, Reconciler, envExcludedSubnets, type AutoConnectAdapter, type AutoConnectState, type StateStore } from './core'
 import { settingsAdapter } from './settings-adapter'
+import { appLog } from '../log-once'
 
 export * from './core'
 
@@ -82,7 +83,8 @@ export function autoConnect(): Reconciler {
     excludedSubnets: () => envExcludedSubnets(),
     vaultItems: () => cachedSecrets(),
     audit: (a, r, d) => auditOrThrow(a, r, d),
-    log: m => console.warn(m),
+    log: m => appLog.warn(m),
+    logError: (m, err) => appLog.warn({ err }, m),
   })
   return reconciler
 }

@@ -38,6 +38,7 @@ import { repinHostKey, credentialId, CREDENTIAL_CATEGORY } from './ssh-broker'
 import { evidenceWords, type PinEvidence, type PinSource } from './hostkey-pins'
 import { probeKey, type PresentedKey } from './hostkey-verify'
 import type { Role } from './vault/broker'
+import { appLog } from './log-once'
 
 const NODE_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/
 const FP_RE = /^SHA256:[A-Za-z0-9+/]{43}$/
@@ -219,7 +220,7 @@ async function sightings(host: string, deps: HostKeyCheckDeps): Promise<Sighting
 
 /** A failed read through the node: the detail goes to the API log, never to the person (it can name node internals). */
 function readFailed(g: GuestRef, e: any): { code: number; output: string; err: true } {
-  console.warn(`[hostkeys] reading the SSH host keys of ${g.type} ${g.vmid} on node ${g.node} failed: ${e?.message ?? e}`)
+  appLog.warn({ err: e, type: g.type, vmid: g.vmid }, 'hostkeys: reading the SSH host keys of a guest through its node failed')
   return { code: -1, output: '', err: true }
 }
 
