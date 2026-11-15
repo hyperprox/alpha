@@ -51,7 +51,20 @@ location /api {
     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $hpx_proto;
     proxy_set_header   X-Forwarded-Host  $http_host;
+    # nginx's own id for this request (replacing anything the client sent): the API uses it as the request's
+    # reference number, so a reference a person reads out matches both logs. Trusted only from loopback.
+    proxy_set_header   X-Request-Id      $request_id;
     proxy_read_timeout 180s;  # vault sign-in plus first migration can take ~30 s
+    # The API stopped or restarting: a JSON answer the page can read and explain, never nginx's HTML error page.
+    proxy_intercept_errors off;
+    error_page 502 503 504 = @api_down;
+}
+
+location @api_down {
+    default_type application/json;
+    add_header Cache-Control "no-store" always;
+    add_header Retry-After "5" always;
+    return 503 '{"ok":false,"success":false,"code":"api_down","error":"HyperProx\'s server is restarting or stopped. This page will reconnect by itself."}';
 }
 
 # Live updates (/ws) and the terminal (/ws/terminal/...).

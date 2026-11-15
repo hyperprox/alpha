@@ -273,18 +273,22 @@ export class GitLabUpstream implements Upstream {
 // For any other upstream (a self-hosted mirror, a test one). Fetches into refs/hyperprox-update/check/* in the
 // install's own repository: objects only, nothing checked out, nothing run.
 
+/** How long `git ls-remote` may take during a check (fetches keep their longer limit: they move objects). */
+export const LS_REMOTE_TIMEOUT_MS = 20_000
+
 export class GitUpstream implements Upstream {
   source: Source = 'git'
   where: string
   constructor(private url: string, private dir: string, private sh: Shell, private allowFile = false, public mirror = false) { this.where = url }
-  private async git(args: string[], ok = [0]): Promise<string> {
+  private async git(args: string[], ok = [0], timeoutMs = 120_000): Promise<string> {
     const r = await this.sh.run('git', ['-c', 'protocol.ext.allow=never', '-c', `protocol.file.allow=${this.allowFile ? 'always' : 'never'}`, ...args],
-      { cwd: this.dir, env: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '/bin/false' }, timeoutMs: 120_000 })
+      { cwd: this.dir, env: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '/bin/false' }, timeoutMs })
     if (!ok.includes(r.code)) throw new UpstreamError(`git ${args[0]} failed: ${(r.stderr || r.stdout).trim().split('\n').pop() ?? r.code}`)
     return r.stdout
   }
   private async lsRemote(): Promise<Map<string, string>> {
-    const out = await this.git(['ls-remote', '--heads', '--tags', this.url])
+    // Listing refs is small and someone is waiting on the check: an upstream that has not answered in 20 s will not.
+    const out = await this.git(['ls-remote', '--heads', '--tags', this.url], [0], LS_REMOTE_TIMEOUT_MS)
     const m = new Map<string, string>()
     for (const l of out.split('\n')) { const [sha, ref] = l.trim().split(/\s+/); if (sha && ref) m.set(ref, sha) }
     return m

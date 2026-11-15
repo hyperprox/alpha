@@ -290,11 +290,19 @@ async function setupExporter(pve, userid, adminTokenName, file = exporterConfigP
 }
 
 /** Never fails the connect step: monitoring without Proxmox panels is still a working HyperProx. */
+/** What the setup page says when the exporter's token could not be made. Proxmox's own answer stays in the log. */
+function exporterErrorText(err) {
+  const status = err && (err.status || (/^PVE (\d{3}):/.exec(String(err.message || '')) || [])[1])
+  if (Number(status) === 403) return "This token can't create the monitoring account it needs. Give it the PVEAdmin role, or paste a token that has it."
+  if (Number(status) === 401) return "Proxmox refused this token. Check the token ID and secret."
+  return "HyperProx couldn't create the monitoring account it needs."
+}
+
 async function setupExporterSafely(pve, userid, adminTokenName) {
   try { return await setupExporter(pve, userid, adminTokenName) }
   catch (err) {
     console.warn('[setup] could not set up the exporter token:', err.message)
-    return { ok: false, error: err.message }
+    return { ok: false, error: exporterErrorText(err) }
   }
 }
 
@@ -830,7 +838,7 @@ function stepCluster(){
     \${c.ceph ? \`<div class="detect-row"><span>CEPH storage</span><span style="font-family:'IBM Plex Mono',monospace">\${c.ceph.pools} pools</span><span class="badge \${c.ceph.healthy?'badge-ok':'badge-warn'}">\${c.ceph.healthy?'healthy':(c.ceph.health==='HEALTH_ERR'?'error':'warning')}</span></div>\` : ''}
     <div class="node-grid">\${nodeCards}</div>
     \${S.hw ? '<div class="card-desc" style="margin:1rem 0 0" id="hw-summary">' + hwLines(S.hw) + '</div>' : hwStatus()}
-    \${S.exporter && !S.exporter.ok ? \`<div class="field-hint" style="margin-top:.75rem">Proxmox metrics: the exporter's read-only token could not be made (\${escHtml(S.exporter.error)}). After setup, run <code>hyperprox pve-exporter</code> on this machine.</div>\` : ''}
+    \${S.exporter && !S.exporter.ok ? \`<div class="field-hint" style="margin-top:.75rem">Proxmox metrics: \${escHtml(S.exporter.error)} After setup, run <code>hyperprox pve-exporter</code> on this machine.</div>\` : ''}
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(0)">← Back</button>
       <button class="btn btn-primary" id="btn-cluster-ok">Looks right →</button>
@@ -1695,7 +1703,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-module.exports = { upTargetsWords, sanitizeServiceHosts, verifyPrometheus, annotateQuestions, summaryLines, applyServices, serviceEnv, sanitizeServices, readProgress, writeProgress, progressPath, bootstrapTakenAt, tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, setupExporter, pveAdapter, WIZARD_HTML }
+module.exports = { upTargetsWords, sanitizeServiceHosts, verifyPrometheus, annotateQuestions, summaryLines, applyServices, serviceEnv, sanitizeServices, readProgress, writeProgress, progressPath, bootstrapTakenAt, tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, setupExporter, exporterErrorText, pveAdapter, WIZARD_HTML }
 
 if (require.main === module) {
   setupSecret()
