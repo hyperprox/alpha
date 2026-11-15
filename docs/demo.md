@@ -56,7 +56,8 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 Public mode serves the whole demo on one address: the API answers there itself, and page requests go to
 the demo frontend, which listens on loopback only. Public mode adds:
 
-- **Rate limits.** Each visitor address gets 600 requests a minute, and 60 of them may be changes. The
+- **Rate limits.** Each visitor address gets 1,200 requests a minute, and 60 of them may be changes.
+  The frontend's static files (scripts, styles, fonts) are not counted. The
   address comes from `X-Forwarded-For` only when the request arrives from a proxy named in
   `HYPERPROX_DEMO_TRUSTED_PROXIES`. The rate limiter remembers at most 10,000 addresses.
 - **Security headers on every answer.** A same-origin Content-Security-Policy (the pages load nothing

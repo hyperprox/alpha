@@ -1,6 +1,6 @@
 // Demo fixtures: POST previews that show what a change would do before anything is applied. Applying is refused.
 import type { FixtureRoute } from './types'
-import { iso, MIN } from './data'
+import { iso, MIN, NODES, GUESTS } from './data'
 
 const ok = (data: unknown) => ({ success: true, data })
 
@@ -17,6 +17,17 @@ function haPreview() {
   })
 }
 
+/** Settings > Naming & addresses reads the cluster's numbering when it opens. */
+function namingDetect() {
+  const running = GUESTS.filter(g => g.status === 'running')
+  return ok({
+    verdict: 'mixed', matching: 14, considered: running.length, total: GUESTS.length,
+    examples: running.slice(0, 4).map(g => ({ vmid: g.vmid, node: g.node, ip: g.ip })),
+    nodes: NODES.map(n => ({ node: n.node, address: n.ip })),
+  })
+}
+
 export const PREVIEW_ROUTES: FixtureRoute[] = [
+  { path: '/api/catalogue/wizard/naming/detect', post: () => namingDetect() },
   { path: '/api/ha/preview', post: () => haPreview() },
 ]

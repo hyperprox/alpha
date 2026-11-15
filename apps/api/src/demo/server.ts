@@ -41,8 +41,12 @@ const RECONFIRM_SECONDS = 300
 export const LIMITS = {
   bodyBytes: 64 * 1024,
   urlChars: 2048,
-  /** Per visitor address, per minute: every request, and the subset that are changes. */
-  perMinute: 600,
+  /**
+   * Per visitor address, per minute: every request, and the subset that are changes. The frontend's own static
+   * files (scripts, styles, fonts, icons: cached by the browser after the first visit) are not counted, but page
+   * prefetches and API polls are, and one visitor clicking quickly through the menu makes a few hundred a minute.
+   */
+  perMinute: 1200,
   writesPerMinute: 60,
   /** How many visitor addresses the rate limiter remembers at once (least recently seen are dropped). */
   trackedAddresses: 10_000,
@@ -77,6 +81,11 @@ const safeDecode = (s: string) => { try { return decodeURIComponent(s) } catch {
 function hasCookie(cookie: string | undefined, name: string, value: string): boolean {
   return !!cookie && cookie.split(';').some(p => p.trim() === `${name}=${value}`)
 }
+
+/** The frontend's static files: content-hashed or fixed assets, never an API call or a page. */
+const STATIC = /^\/(_next\/static\/|demo-fonts\/|favicon\.ico$|icon[-.\w]*\.(svg|png)$|apple-touch-icon\.png$|manifest\.webmanifest$)/
+
+const pathOf = (url: string) => { try { return new URL(url, 'http://demo.invalid').pathname } catch { return url } }
 
 const isWrite = (method: string) => method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS'
 
@@ -140,6 +149,8 @@ export async function buildDemoServer(opts: DemoServerOptions = {}): Promise<Fas
       timeWindow: 60_000,
       // Changes get a bucket of their own, smaller than the one for everything else.
       keyGenerator: (req: FastifyRequest) => `${req.ip}${isWrite(req.method) ? ':w' : ''}`,
+      // Judged on the path as the handler will see it, so "/_next/static/../../api/..." is counted like the API it is.
+      allowList: (req: FastifyRequest) => (req.method === 'GET' || req.method === 'HEAD') && STATIC.test(pathOf(req.url)),
       max: async (_req: FastifyRequest, key: string) => key.endsWith(':w') ? limits.writesPerMinute : limits.perMinute,
       errorResponseBuilder: (_req, ctx) => ({ statusCode: 429, ok: false, demo: true, code: 'rate_limited', error: `Too many requests from your address. Try again in ${Math.ceil(ctx.ttl / 1000)} s.` }),
     })

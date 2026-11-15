@@ -61,6 +61,9 @@ test('rate limit: per address, a smaller bucket for changes, and 429 with a plai
     assert.deepEqual(codes, [200, 200, 200, 200, 200, 429, 429])
     const limited = await app.inject({ method: 'GET', url: '/api/proxmox/nodes', remoteAddress: '10.0.0.7' })
     assert.equal(limited.json().code, 'rate_limited'); assert.match(limited.json().error, /Too many requests/)
+    // The frontend's static files do not count, even past the limit; pages and the API do.
+    assert.equal((await app.inject({ method: 'GET', url: '/_next/static/chunks/main.js', remoteAddress: '10.0.0.7' })).statusCode, 502)
+    assert.equal((await app.inject({ method: 'GET', url: '/dashboard', remoteAddress: '10.0.0.7' })).statusCode, 429)
     // Another address has its own budget.
     assert.equal((await app.inject({ method: 'GET', url: '/api/proxmox/nodes', remoteAddress: '10.0.0.8' })).statusCode, 200)
     // Changes: their own, smaller bucket.
@@ -70,6 +73,20 @@ test('rate limit: per address, a smaller bucket for changes, and 429 with a plai
     // X-Forwarded-For is ignored from anyone but a named proxy: it cannot be used to dodge the limit.
     for (let i = 0; i < 5; i++) await app.inject({ method: 'GET', url: '/health', remoteAddress: '10.0.0.10', headers: { 'x-forwarded-for': `198.51.100.${i}` } })
     assert.equal((await app.inject({ method: 'GET', url: '/health', remoteAddress: '10.0.0.10', headers: { 'x-forwarded-for': '198.51.100.99' } })).statusCode, 429)
+  } finally { await app.close() }
+})
+
+test('rate limit: a static-looking path that climbs back into the API is counted like the API', async () => {
+  const app = await buildDemoServer({ public: PUB(), limits: { perMinute: 2 } })
+  await app.listen({ port: 0, host: '127.0.0.1' })
+  try {
+    const port = (app.server.address() as net.AddressInfo).port
+    const codes: number[] = []
+    for (let i = 0; i < 3; i++) {
+      // Sent raw: a browser or light-my-request would tidy the dot segments away first.
+      codes.push(await new Promise<number>((resolve, reject) => http.get({ host: '127.0.0.1', port, path: '/_next/static/../../api/proxmox/nodes' }, res => { res.resume(); resolve(res.statusCode ?? 0) }).on('error', reject)))
+    }
+    assert.deepEqual(codes, [200, 200, 429])
   } finally { await app.close() }
 })
 
