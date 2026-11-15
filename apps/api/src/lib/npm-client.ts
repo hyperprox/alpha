@@ -63,8 +63,16 @@ const signingIn = new Map<string, Promise<{ token: string; expires: Date }>>()
 /** Tests: forget every cached token. */
 export function clearNpmTokens(): void { tokens.clear(); signingIn.clear() }
 
-/** How long one try of one NPM request may take. */
-const NPM_TRY_TIMEOUT_MS = 15_000
+/** How long one try of one NPM request may take: reads 15 s, writes 60 s, a certificate request 180 s (NPM runs certbot before it answers). */
+export const NPM_READ_TIMEOUT_MS = 15_000
+export const NPM_WRITE_TIMEOUT_MS = 60_000
+export const NPM_CERT_TIMEOUT_MS = 180_000
+export function npmTimeoutFor(method: string | undefined, url: string): number {
+  const m = (method ?? 'GET').toUpperCase()
+  if (m === 'GET' || m === 'HEAD') return NPM_READ_TIMEOUT_MS
+  if (m === 'POST' && /\/nginx\/certificates(\/|\?|$)/.test(url)) return NPM_CERT_TIMEOUT_MS
+  return NPM_WRITE_TIMEOUT_MS
+}
 
 export class NPMClient {
   private url:      string
@@ -78,9 +86,9 @@ export class NPMClient {
     this.url      = url.replace(/\/$/, '')
     this.email    = email
     this.password = password
-    // Each try gets its own 15 s limit (the retry loop in idempotent() then starts a fresh one); a caller's own signal wins.
+    // Each try gets its own limit (the retry loop in idempotent() then starts a fresh one); a caller's own signal wins.
     const inner = fetchImpl ?? ((u: string, i?: RequestInit) => fetch(u, i))
-    this.fetchImpl = (u, i) => inner(u, { ...i, signal: i?.signal ?? AbortSignal.timeout(NPM_TRY_TIMEOUT_MS) })
+    this.fetchImpl = (u, i) => inner(u, { ...i, signal: i?.signal ?? AbortSignal.timeout(npmTimeoutFor(i?.method, u)) })
   }
 
   private cacheKey(): string {
