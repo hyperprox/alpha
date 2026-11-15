@@ -55,6 +55,26 @@ export function mergeSettings(cur: PlacementSettings, body: unknown): { settings
   return { settings: next, problems }
 }
 
+/**
+ * The settings a scheduled move runs under: the stricter of what was approved and what is set now, so a change made
+ * after approval can only make the move safer. Busy hours are joined, the larger backup margin and length are kept,
+ * backups are avoided if either says so, and the lower bandwidth and link speed are used (the slower estimate).
+ */
+export function stricterSettings(approved: Partial<PlacementSettings> | undefined, current: PlacementSettings): PlacementSettings {
+  const a: PlacementSettings = { ...DEFAULT_SETTINGS, ...(approved ?? {}) }
+  const key = (b: BusyHours) => JSON.stringify([[...b.days].sort(), b.start, b.end])
+  const busy = [...a.busyHours, ...current.busyHours].filter((b, i, all) => all.findIndex(x => key(x) === key(b)) === i)
+  return {
+    ...current,
+    avoidBackups: a.avoidBackups || current.avoidBackups,
+    backupMarginMin: Math.max(a.backupMarginMin, current.backupMarginMin),
+    backupHours: Math.max(a.backupHours, current.backupHours),
+    busyHours: busy,
+    bwlimitKiB: Math.min(a.bwlimitKiB, current.bwlimitKiB),
+    linkMbps: Math.min(a.linkMbps, current.linkMbps),
+  }
+}
+
 export interface NewMove {
   sid: string; name: string; fromNode: string; toNode: string; source: 'hyperprox' | 'proxmox'; method: 'ha' | 'migrate' | null
   status: MoveStatus; upid?: string | null; by?: string | null; scheduledFor?: number | null; startedAt?: number | null; endedAt?: number | null
@@ -67,7 +87,7 @@ export const IN_FLIGHT: MoveStatus[] = ['running', 'stuck']
 /** Another move already holds the slot (the database refused a second in-flight row). */
 export class MoveSlotTaken extends Error { constructor() { super('Another move is running. One at a time: wait for it to finish.') } }
 
-export interface TransitionWhere { status: MoveStatus[]; heartbeatBefore?: number }
+export interface TransitionWhere { status: MoveStatus[]; heartbeatBefore?: number; owner?: string }
 
 export interface PlacementStore {
   settings(): Promise<PlacementSettings>
@@ -121,6 +141,7 @@ export class MemoryPlacementStore implements PlacementStore {
     const r = this.rows.find(x => x.id === id)
     if (!r || !where.status.includes(r.status)) return null
     if (where.heartbeatBefore !== undefined && r.heartbeatAt !== null && r.heartbeatAt >= where.heartbeatBefore) return null
+    if (where.owner !== undefined && r.owner !== where.owner) return null
     if (this.slotTaken(id, patch.status)) return null
     Object.assign(r, patch)
     return { ...r }
@@ -189,7 +210,8 @@ export function prismaPlacementStore(db: any): PlacementStore {
     async transition(id, where, patch) {
       const hb = where.heartbeatBefore !== undefined ? { OR: [{ heartbeatAt: null }, { heartbeatAt: { lt: new Date(where.heartbeatBefore) } }] } : {}
       let n = 0
-      try { n = (await db.placementMove.updateMany({ where: { id, status: { in: where.status }, ...hb }, data: toData(patch) })).count }
+      const own = where.owner !== undefined ? { owner: where.owner } : {}
+      try { n = (await db.placementMove.updateMany({ where: { id, status: { in: where.status }, ...hb, ...own }, data: toData(patch) })).count }
       catch (e) { if (unique(e)) return null; throw e }
       if (!n) return null
       const r = await db.placementMove.findUnique({ where: { id } })

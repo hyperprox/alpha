@@ -8,8 +8,8 @@
 //  the hours you say the cluster is in use. Also the bandwidth limit for moves
 //  when they share corosync's network, and what counts as a busy node.
 //  Times are the cluster's local time. Admin, with the master password re-entered
-//  to save; the API checks every field. A move already scheduled keeps the
-//  settings it was approved with.
+//  to save; the API checks every field. A move already scheduled runs under the
+//  stricter of these and the settings it was approved with; it expires after 7 days.
 // =============================================================================
 
 import { useEffect, useState } from 'react'
@@ -101,7 +101,7 @@ export default function PlacementSettingsPage() {
                   </div>
                 ))}
                 <GhostButton type="button" onClick={() => set('busyHours', [...s.busyHours, { days: [0, 1, 2, 3, 4, 5, 6], start: '19:00', end: '01:00', label: '' }])}>Add busy hours</GhostButton>
-                <p className="text-xs" style={{ color: 'var(--text-dim)' }}>An end before the start runs past midnight. A move outside a quiet window needs &quot;move anyway&quot;, or it can wait for the next quiet window. A move already scheduled keeps the settings it was approved with. Saving asks for your master password.</p>
+                <p className="text-xs" style={{ color: 'var(--text-dim)' }}>An end before the start runs past midnight. A move outside a quiet window needs &quot;move anyway&quot;, or it can wait for the next quiet window. A move already scheduled runs under the stricter of these and the settings it was approved with, and scheduled moves expire after 7 days. Saving asks for your master password.</p>
               </div>
             </div>
           </Panel>

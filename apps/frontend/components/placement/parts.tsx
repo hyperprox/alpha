@@ -173,6 +173,7 @@ export function MoveRow({ m, action }: { m: MoveRecord; action?: ReactNode }) {
         {t ? new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : ''}{m.by ? ` · ${m.by}` : ''}{m.status === 'done' || m.status === 'failed' ? ` · ${corosyncLine(m)}` : ''}
       </p>
       {m.error && <p className="text-[13px]" style={{ color: 'var(--text-soft)' }}>{m.error}</p>}
+      {m.status === 'scheduled' && <p className="text-[13px]" style={{ color: 'var(--text-dim)' }}>Checked again before it runs. Scheduled moves expire after 7 days.</p>}
     </li>
   )
 }

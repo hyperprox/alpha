@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { registerGate } from '../src/lib/gate'
 import { authRoutes } from '../src/routes/auth'
-import { buildPlacementRoutes } from '../src/routes/placement'
+import { buildPlacementRoutes, approverChanged } from '../src/routes/placement'
 import { setBroker } from '../src/lib/vault/broker'
 import { lock, isUnlocked } from '../src/lib/vault/state'
 import { setCredentialTable } from '../src/lib/credentials'
@@ -16,7 +16,7 @@ import { setAuditSink } from '../src/lib/audit'
 import { MemoryApiTokenStore, setApiTokenStore, createApiToken } from '../src/lib/api-tokens'
 import { requiredRole, needsReconfirm } from '../src/lib/roles'
 import { PlacementService, migrateParams } from '../src/lib/placement/service'
-import { MemoryPlacementStore } from '../src/lib/placement/store'
+import { MemoryPlacementStore, DEFAULT_SETTINGS, stricterSettings } from '../src/lib/placement/store'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { placementFixture, fakePve } from './fakes/placement-cluster'
@@ -31,7 +31,8 @@ let clock = Date.UTC(2026, 5, 15, 12, 0)   // noon UTC: quiet (the fixture's bac
 const audits: Array<{ action: string; resource: string; details?: Record<string, unknown> }> = []
 let failAudit = false
 const alerts: string[] = []
-const roles: Record<string, string | null> = { 'admin@example.com': 'admin' }
+const changed: Record<string, string | null> = {}
+const approved = () => ({ approver: { email: 'admin@example.com', role: 'admin', at: clock } })
 let fixture = placementFixture()
 let pve = makePve()
 let store = new MemoryPlacementStore()
@@ -66,7 +67,7 @@ function newService() {
     pve: () => pve, prom: async () => [], store,
     audit: async (action, resource, details) => { if (failAudit) throw new Error('db down'); audits.push({ action, resource, details }) },
     isUnlocked: () => true, nodeExec: async () => null, now: () => clock, sleep: () => new Promise(r => setImmediate(r)), pollMs: 1, cacheMs: 0, taskTimeoutMs: 50,
-    approverRole: async email => (email in roles ? roles[email] : null),
+    approverChanged: async email => changed[email] ?? null,
     alert: async (title) => { alerts.push(title) },
   })
 }
@@ -89,8 +90,7 @@ after(async () => { setApiTokenStore(null); setAuditSink(null); if (isUnlocked()
 function reset() {
   fixture = placementFixture(); pve = makePve(); store = new MemoryPlacementStore(); svc = newService()
   audits.length = 0; alerts.length = 0; failAudit = false; clock = Date.UTC(2026, 5, 15, 12, 0)
-  for (const k of Object.keys(roles)) delete roles[k]
-  roles['admin@example.com'] = 'admin'
+  for (const k of Object.keys(changed)) delete changed[k]
 }
 const settle = async (id: string) => {
   for (let i = 0; i < 2000; i++) { const m = await store.get(id); if (m && m.status !== 'running' && m.status !== 'stuck') return m; await new Promise(r => setImmediate(r)) }
@@ -308,7 +308,7 @@ test('a scheduled move can be cancelled, atomically: once cancelled the schedule
 
 test('the scheduler never overlaps itself: two ticks at once run a due move once', async () => {
   reset()
-  const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com' })
+  const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com', snapshot: approved() })
   await Promise.all([svc.tick(), svc.tick(), svc.tick()])
   assert.equal((await settle(r.id))!.status, 'done')
   assert.equal(pve.writes.length, 1)
@@ -367,8 +367,13 @@ test('resolve: a stuck move is settled by hand only once Proxmox shows its task 
   const upid = 'UPID:node1:7:7:7:vzmigrate:107:root@pam:'
   const key = `/nodes/node1/tasks/${encodeURIComponent(upid)}/status`
   fixture[key] = { status: 'running' }
-  const s = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'stuck', upid, owner: 'dead@1', heartbeatAt: clock, startedAt: clock, snapshot: { running: true, type: 'lxc' } })
+  const s = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'stuck', upid, owner: 'other@1', heartbeatAt: clock, startedAt: clock, snapshot: { running: true, type: 'lxc' } })
   const cookie = await admin()
+  // Another process still beats on it: it settles it itself.
+  const watched = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
+  assert.equal(watched.statusCode, 409)
+  assert.equal(watched.json().code, 'watching')
+  clock += 10 * 60_000
   const early = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
   assert.equal(early.statusCode, 409)
   assert.match(early.json().error, /still running/)
@@ -488,39 +493,93 @@ test('an unread backup job list: no "now" without anyway, and nothing to schedul
   await settle(any.json().data.id)
 })
 
-test('a scheduled move runs under the settings it was approved with, not ones changed after', async () => {
+test('a scheduled move runs under the stricter of its approved settings and today\'s: later changes only make it safer', async () => {
   reset()
   clock = Date.UTC(2026, 5, 15, 1, 50)
   const cookie = await reconfirmed()
   const s = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2', when: 'next-quiet' } })
   const rec = s.json().data
   assert.equal(rec.snapshot.settings.bwlimitKiB, 51200)
-  // Changed afterwards: a busy-hours block over the whole day, and a far higher bandwidth limit.
-  await store.saveSettings({ ...(await store.settings()), bwlimitKiB: 900_000, busyHours: [{ days: [0, 1, 2, 3, 4, 5, 6], start: '00:00', end: '23:59' }] }, 'x')
+  assert.deepEqual([rec.snapshot.approver.email, rec.snapshot.approver.role], ['admin@example.com', 'admin'], 'the approval is recorded with the role it was made under')
+  // Loosened afterwards (a far higher limit, backups no longer avoided): ignored, the approved values stand.
+  await store.saveSettings({ ...(await store.settings()), bwlimitKiB: 900_000, avoidBackups: false }, 'x')
   clock = rec.scheduledFor + 60_000
   await svc.tick()
   const done = await settle(rec.id)
   assert.equal(done!.status, 'done', done!.error ?? '')
   assert.match(pve.writes[0].body, /bwlimit=51200/)
+  // Tightened afterwards (busy hours over its window): applied, so it does not run.
+  reset()
+  clock = Date.UTC(2026, 5, 15, 1, 50)
+  const c2 = await reconfirmed()
+  const s2 = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie: c2 }, payload: { target: 'node2', when: 'next-quiet' } })
+  const rec2 = s2.json().data
+  await store.saveSettings({ ...(await store.settings()), busyHours: [{ days: [0, 1, 2, 3, 4, 5, 6], start: '04:00', end: '09:00' }] }, 'x')
+  clock = rec2.scheduledFor + 60_000
+  await svc.tick()
+  const m2 = await store.get(rec2.id)
+  assert.equal(m2!.status, 'skipped')
+  assert.match(m2!.error!, /busy hours/)
+  assert.equal(pve.writes.length, 0)
 })
 
-test('a scheduled run is audited or it does not run; and only while its approver is still an admin', async () => {
-  for (const [who, role, want] of [['admin@example.com', 'operator', /is now operator, not admin/], ['admin@example.com', null, /no longer a member/]] as const) {
-    reset()
-    roles[who] = role
-    const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: who })
-    await svc.tick()
-    const m = await store.get(r.id)
-    assert.equal(m!.status, 'skipped')
-    assert.match(m!.error!, want)
-    assert.equal(pve.writes.length, 0)
-  }
+test('a scheduled run needs a recorded admin approval under 7 days old, an audit row, and an approver not removed or demoted since', async () => {
+  // Removed or demoted since approving: skipped with the reason.
   reset()
-  const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com' })
+  changed['admin@example.com'] = 'was removed after approving it'
+  const a = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com', snapshot: approved() })
+  await svc.tick()
+  assert.match((await store.get(a.id))!.error!, /admin@example.com was removed after approving it/)
+  // No approval recorded, or one older than 7 days.
+  reset()
+  const b = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com' })
+  await svc.tick()
+  assert.match((await store.get(b.id))!.error!, /no admin approval is recorded/)
+  reset()
+  const old = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com',
+    snapshot: { approver: { email: 'admin@example.com', role: 'admin', at: clock - 8 * 24 * 3600_000 } } })
+  await svc.tick()
+  assert.match((await store.get(old.id))!.error!, /expire after 7 days/)
+  reset()
+  const op = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'op@example.com',
+    snapshot: { approver: { email: 'op@example.com', role: 'operator', at: clock } } })
+  await svc.tick()
+  assert.equal((await store.get(op.id))!.status, 'skipped')
+  assert.equal(pve.writes.length, 0)
+  // The audit row could not be written.
+  reset()
+  const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com', snapshot: approved() })
   failAudit = true
   await svc.tick()
   assert.match((await store.get(r.id))!.error!, /audit row could not be written/)
   assert.equal(pve.writes.length, 0)
+})
+
+test('approverChanged: from the approver\'s own session, the operator record and the audit log; never another person\'s session', async () => {
+  const since = Date.UTC(2026, 5, 10)
+  const audit = (rows: any[]) => ({ auditLog: { findMany: async (q: any) => rows.filter(r => q.where.action.in.includes(r.action) && r.createdAt >= q.where.createdAt.gte) } })
+  const none = () => [] as any[]
+  assert.equal(await approverChanged(audit([]), 'a@example.com', since, none, () => null), null)
+  assert.match((await approverChanged(audit([{ action: 'users.remove', details: { email: 'A@example.com' }, createdAt: new Date(since + 1) }]), 'a@example.com', since, none, () => null))!, /removed/)
+  assert.equal(await approverChanged(audit([{ action: 'users.remove', details: { email: 'a@example.com' }, createdAt: new Date(since - 1) }]), 'a@example.com', since, none, () => null), null, 'a removal before the approval is not this one')
+  assert.match((await approverChanged(audit([]), 'a@example.com', since, () => [{ email: 'a@example.com', role: 'viewer' }] as any, () => null))!, /now viewer/)
+  assert.match((await approverChanged(audit([]), 'a@example.com', since, none, () => 'operator'))!, /now operator/)
+  const lowered = audit([{ action: 'users.role', details: { role: 'viewer' }, createdAt: new Date(since + 1) }])
+  assert.match((await approverChanged(lowered, 'a@example.com', since, none, () => null))!, /cannot tell whose/)
+  assert.equal(await approverChanged(lowered, 'a@example.com', since, () => [{ email: 'a@example.com', role: 'admin' }] as any, () => null), null, 'their own admin session settles it')
+  assert.equal(await approverChanged(audit([]), 'a@example.com', since, () => [{ email: 'b@example.com', role: 'viewer' }] as any, () => null), null, "another person's session is not read as theirs")
+})
+
+test('stricterSettings: busy hours joined, larger margin and length, backups avoided if either says so, the lower bandwidth and link', () => {
+  const approvedS = { ...DEFAULT_SETTINGS, busyHours: [{ days: [6], start: '20:00', end: '23:00' }], backupMarginMin: 60, bwlimitKiB: 20480, avoidBackups: true }
+  const current = { ...DEFAULT_SETTINGS, busyHours: [{ days: [0], start: '08:00', end: '09:00' }, { days: [6], start: '20:00', end: '23:00' }], backupMarginMin: 15, bwlimitKiB: 90000, avoidBackups: false, linkMbps: 100 }
+  const s = stricterSettings(approvedS, current)
+  assert.equal(s.busyHours.length, 2)
+  assert.equal(s.backupMarginMin, 60)
+  assert.equal(s.avoidBackups, true)
+  assert.equal(s.bwlimitKiB, 20480)
+  assert.equal(s.linkMbps, 100)
+  assert.equal(stricterSettings({ bwlimitKiB: 1 << 20 } as any, DEFAULT_SETTINGS).bwlimitKiB, DEFAULT_SETTINGS.bwlimitKiB, 'a partial snapshot is merged over the defaults')
 })
 
 test('the task id race: a copy the history sync saved first is replaced by the move\'s own row, never left as a duplicate', async () => {
@@ -534,4 +593,107 @@ test('the task id race: a copy the history sync saved first is replaced by the m
   const rows = (await store.list()).filter(x => x.upid === upid)
   assert.equal(rows.length, 1)
   assert.equal(rows[0].source, 'hyperprox')
+})
+
+test('N1. resolve with no task id: refused while a migration of the guest is running or it is locked for one; then settled', async () => {
+  reset()
+  const s = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'stuck', owner: 'dead@1', heartbeatAt: clock - 3600_000, startedAt: clock - 600_000, snapshot: { running: true, type: 'lxc' } })
+  const cookie = await admin()
+  const tasks = fixture['/cluster/tasks'] as any[]
+  tasks.push({ type: 'vzmigrate', id: '107', node: 'node1', starttime: Math.floor((clock - 590_000) / 1000), upid: 'UPID:node1:9:9:9:vzmigrate:107:root@pam:' })
+  const running = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
+  assert.equal(running.statusCode, 409)
+  assert.match(running.json().error, /migration of it is still running/)
+  tasks.length = 0
+  fixture['/nodes/node1/lxc/107/config'] = { ...fixture['/nodes/node1/lxc/107/config'], lock: 'migrate' }
+  const locked = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
+  assert.equal(locked.statusCode, 409)
+  assert.match(locked.json().error, /locked for a migration/)
+  delete fixture['/nodes/node1/lxc/107/config'].lock
+  ;(fixture['/cluster/resources?type=vm'] as any[]).find(v => v.vmid === 107).node = 'node2'
+  fixture['/nodes/node2/lxc/107/config'] = fixture['/nodes/node1/lxc/107/config']
+  const ok = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal((await store.get(s.id))!.status, 'done')
+})
+
+test('N1. a stale move with no task id gets it back from the task log and is watched, not left stuck', async () => {
+  reset()
+  const upid = 'UPID:node1:4:4:4:vzmigrate:107:root@pam:'
+  ;(fixture['/cluster/tasks'] as any[]).push({ type: 'vzmigrate', id: '107', node: 'node1', starttime: Math.floor((clock - 3500_000) / 1000), upid })
+  ;(fixture['/cluster/resources?type=vm'] as any[]).find(v => v.vmid === 107).node = 'node2'
+  const m = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'running', owner: 'dead@1', heartbeatAt: clock - 3600_000, startedAt: clock - 3600_000, snapshot: { running: true, type: 'lxc' } })
+  await svc.tick()
+  const done = await settle(m.id)
+  assert.equal(done!.status, 'done', done!.error ?? '')
+  assert.equal(done!.upid, upid)
+  assert.ok(pve.reads.includes(`/nodes/node1/tasks/${encodeURIComponent(upid)}/status`), 'its task was waited on')
+  assert.equal(pve.writes.length, 0)
+})
+
+test('N2. a migrate request that errors: its task found and waited on; none found means stuck (slot held, alert), never failed', async () => {
+  // The answer is lost but the task started.
+  reset()
+  const upid = 'UPID:node1:6:6:6:vzmigrate:107:root@pam:'
+  pve = fakePve(fixture, () => {
+    ;(fixture['/cluster/tasks'] as any[]).push({ type: 'vzmigrate', id: '107', node: 'node1', starttime: Math.floor(clock / 1000), upid })
+    ;(fixture['/cluster/resources?type=vm'] as any[]).find(v => v.vmid === 107).node = 'node2'
+    throw new Error('Proxmox POST /nodes/node1/lxc/107/migrate: the connection closed without an answer')
+  })
+  const cookie = await reconfirmed()
+  const r = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2' } })
+  const m = await settle(r.json().data.id)
+  assert.equal(m!.status, 'done', m!.error ?? '')
+  assert.equal(m!.upid, upid)
+  // No task appears: stuck, with an alert, and no other move starts.
+  reset()
+  pve = fakePve(fixture, () => { throw new Error('Proxmox POST /nodes/node1/lxc/107/migrate: no answer within 20s') })
+  const c2 = await reconfirmed()
+  const r2 = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie: c2 }, payload: { target: 'node2' } })
+  const m2 = await settle(r2.json().data.id)
+  assert.equal(m2!.status, 'stuck')
+  assert.match(m2!.error!, /whether the move started is unknown/)
+  assert.equal(alerts.length, 1)
+  const next = await app.inject({ method: 'POST', url: `${B}/guests/lxc/108/move`, headers: { cookie: c2 }, payload: { target: 'node3' } })
+  assert.equal(next.statusCode, 409)
+  assert.equal(next.json().code, 'busy')
+})
+
+test('the watcher writes only rows it still owns and that are in flight: a resolved row is never overwritten, nor its heartbeat', async () => {
+  reset()
+  const cookie = await reconfirmed()
+  let release = false
+  const key = '/nodes/node1/tasks/UPID%3Anode1%3A0000AAAA%3A0000BBBB%3A6AF89939%3Avzmigrate%3A107%3Aroot%40pam!hyperprox%3A/status'
+  Object.defineProperty(fixture, key, { get: () => (release ? { status: 'stopped', exitstatus: 'migration aborted' } : { status: 'running' }), configurable: true, enumerable: true })
+  const r = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2' } })
+  const id = r.json().data.id
+  for (let i = 0; i < 2000 && (await store.get(id))!.status !== 'stuck'; i++) await new Promise(res => setImmediate(res))
+  // Settled elsewhere (another process's resolve) while this one still waits.
+  const row = store.rows.find(x => x.id === id)!
+  Object.assign(row, { status: 'done', owner: 'other@2', heartbeatAt: 1, error: null })
+  release = true
+  for (let i = 0; i < 500; i++) await new Promise(res => setImmediate(res))
+  const after = await store.get(id)
+  assert.equal(after!.status, 'done', 'the failed task did not overwrite the resolved row')
+  assert.equal(after!.heartbeatAt, 1)
+  assert.equal(after!.error, null)
+  // And the store refuses an owner-conditional write from anyone else.
+  assert.equal(await store.transition(id, { status: ['done'], owner: svc.owner }, { error: 'x' }), null)
+})
+
+test('resolve an HA move: refused while HA still moves it, even with its task stopped', async () => {
+  reset()
+  const upid = 'UPID:node2:3:3:3:vzmigrate:108:root@pam:'
+  fixture[`/nodes/node2/tasks/${encodeURIComponent(upid)}/status`] = { status: 'stopped', exitstatus: 'OK' }
+  const svcRow = (fixture['/cluster/ha/status/current'] as any[]).find(x => x.sid === 'ct:108')
+  svcRow.state = 'migrate'
+  const s = await store.create({ sid: 'ct:108', name: 'hafree', fromNode: 'node2', toNode: 'node3', source: 'hyperprox', method: 'ha', status: 'stuck', upid, owner: 'dead@1', heartbeatAt: clock - 3600_000, startedAt: clock - 600_000, snapshot: { running: true, type: 'lxc' } })
+  const cookie = await admin()
+  const r = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
+  assert.equal(r.statusCode, 409)
+  assert.match(r.json().error, /HA is still moving it/)
+  svcRow.state = 'started'
+  ;(fixture['/cluster/resources?type=vm'] as any[]).find(v => v.vmid === 108).node = 'node3'
+  const ok = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
+  assert.equal(ok.statusCode, 200, ok.body)
 })

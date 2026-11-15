@@ -11,7 +11,7 @@
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { allSessions, currentContext } from '../lib/auth'
-import { getBroker } from '../lib/vault/broker'
+import { memberRoles } from '../lib/users/roles'
 import { publish } from '../lib/notify'
 import { VaultLockedError } from '../lib/credentials'
 import { currentRemote } from '../lib/clusters/context'
@@ -28,7 +28,7 @@ import { livePromRange } from '../lib/placement/read'
 import { prismaPlacementStore } from '../lib/placement/store'
 import type { HaPve } from '../lib/ha/read'
 
-const actor = () => ({ email: currentContext()?.email ?? 'unknown' })
+const actor = () => ({ email: currentContext()?.email ?? 'unknown', role: String(currentContext()?.role ?? 'viewer') })
 
 async function wrap(reply: FastifyReply, fn: () => Promise<unknown>) {
   try {
@@ -63,15 +63,11 @@ export function placementService(prisma: any): PlacementService {
     store: prismaPlacementStore(prisma),
     audit: (action, resource, details) => auditOrThrow(action, resource, details),
     isUnlocked,
-    // The scheduling admin's role now, from the vault's member list (read through any signed-in session).
-    approverRole: async email => {
-      const b: any = getBroker()
-      const sid = allSessions().map(x => x.sid).find(Boolean)
-      if (!sid || typeof b.members !== 'function') return 'unverifiable'
-      const list: Array<{ email: string; role: string; status: string }> = await b.members(sid)
-      const m = list.find(x => x.email.toLowerCase() === email.toLowerCase())
-      return m && m.status === 'confirmed' ? m.role : m ? `not confirmed (${m.status})` : null
-    },
+    // Has the approver of a scheduled move been removed or demoted since they approved it? From what HyperProx holds,
+    // never by borrowing anyone's session: their own live session (its role is current: a role change signs them
+    // out), the audit log (a removal names the email; a role change names only a member id, so any demotion since
+    // the approval counts), and the operator record a demotion to operator leaves.
+    approverChanged: (email, sinceMs) => approverChanged(prisma, email, sinceMs),
     alert: async (title, lines) => {
       await publish({ type: 'placement.move.stuck', severity: 'warning', title, lines, link: '/placement', where: 'Placement page', fingerprint: `placement:${title}` }).catch(() => undefined)
     },
@@ -83,6 +79,27 @@ export function placementService(prisma: any): PlacementService {
     },
   })
   return production
+}
+
+/** Exported for tests. */
+export async function approverChanged(prisma: any, email: string, sinceMs: number, sessions = allSessions, recorded = (e: string) => memberRoles().get(e)): Promise<string | null> {
+  const e = email.toLowerCase()
+  const own = sessions().find(x => String(x.email).toLowerCase() === e)
+  if (own && own.role !== 'admin' && own.role !== 'owner') return `is now ${own.role}, not admin`
+  let rec: string | null = null
+  try { rec = recorded(e) } catch { rec = null }
+  if (rec && rec !== 'admin') return `is now ${rec}, not admin`
+  if (!prisma?.auditLog) return null
+  const since = new Date(sinceMs)
+  const rows: any[] = await prisma.auditLog.findMany({ where: { action: { in: ['users.remove', 'users.role'] }, createdAt: { gte: since } }, take: 200 })
+  for (const r of rows) {
+    const d = (r.details ?? {}) as Record<string, unknown>
+    if (r.action === 'users.remove' && String(d.email ?? '').toLowerCase() === e) return 'was removed after approving it'
+    if (r.action === 'users.role' && d.role !== 'admin' && !(own && (own.role === 'admin' || own.role === 'owner'))) {
+      return 'may have been demoted: a role was lowered after the approval, and HyperProx cannot tell whose'
+    }
+  }
+  return null
 }
 
 export function buildPlacementRoutes(deps: { service?: () => PlacementService; startScheduler?: boolean } = {}): FastifyPluginAsync {

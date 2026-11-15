@@ -134,3 +134,9 @@ test('a stuck move says it is still running in Proxmox, never "failed"', () => {
   assert.doesNotMatch(html, /failed/)
   assert.match(html, /Resolve/)
 })
+
+test('a scheduled move says it expires after 7 days', () => {
+  const m: MoveRecord = { id: 'mv3', sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', upid: null, by: 'a@example.com',
+    scheduledFor: Date.UTC(2026, 5, 16, 5), startedAt: null, endedAt: null, error: null, bwlimitKiB: 51200, corosync: null }
+  assert.match(renderToStaticMarkup(<MoveRow m={m} />), /Scheduled moves expire after 7 days/)
+})

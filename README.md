@@ -830,8 +830,8 @@ HyperProx does not compete with it. What it adds:
 - **Quiet windows.** Moves keep out of backup jobs (read from your backup schedules) and the busy hours you
   set in Settings. The whole move has to fit in the quiet window, and a backup schedule HyperProx cannot
   read means no window is quiet. Outside a quiet window you can move anyway, or let HyperProx move it in the
-  next one. A scheduled move is checked again before it runs, under the settings it was approved with, and
-  only if the person who approved it is still an admin. Saving these settings asks for your master password.
+  next one. A scheduled move is checked again before it runs, under the stricter of the settings it was
+  approved with and today's, only if the person who approved it is still an admin, and it expires after 7 days. Saving these settings asks for your master password.
 - **Network cost.** When moves share the network corosync (the cluster heartbeat) uses, HyperProx says so
   and limits the move's bandwidth (an HA move only follows the cluster's own migration limit).
 - **History.** Every move, HyperProx's and the ones Proxmox did, with what corosync did around it when a

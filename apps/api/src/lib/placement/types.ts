@@ -216,7 +216,9 @@ export interface MoveRecord {
 }
 
 export interface MoveSnapshot {
-  settings?: PlacementSettings
+  settings?: Partial<PlacementSettings>
+  /** Who approved a scheduled move, with the role they held when they did (re-confirmed with the master password). */
+  approver?: { email: string; role: string; at: number }
   type?:     'lxc' | 'qemu'
   running?:  boolean
   localDisks?: boolean

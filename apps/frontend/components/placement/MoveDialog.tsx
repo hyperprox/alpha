@@ -78,7 +78,7 @@ export function MoveDialog({ sid, name, to, onClose, onDone }: { sid: string; na
       {error && <Note tone="crit">{error}</Note>}
       {move && (
         <Note tone={move.status === 'failed' || move.status === 'skipped' ? 'crit' : move.status === 'done' ? 'good' : 'info'}>
-          {move.status === 'scheduled' && move.scheduledFor ? `Scheduled for ${whenText(move.scheduledFor, plan?.quiet.tz)}. It is checked again before it runs, and skipped (with the reason) if anything changed or HyperProx is locked then.`
+          {move.status === 'scheduled' && move.scheduledFor ? `Scheduled for ${whenText(move.scheduledFor, plan?.quiet.tz)}. It is checked again before it runs, under the stricter of today's settings and the ones in force then, and skipped (with the reason) if anything changed or HyperProx is locked then. Scheduled moves expire after 7 days.`
             : move.status === 'running' ? `Moving ${name || sid} to ${to}… HyperProx waits for Proxmox's task, then checks it really runs there.`
             : move.status === 'stuck' ? `Still running in Proxmox: ${move.error ?? ''} HyperProx keeps watching and starts no other move until it finishes.`
             : move.status === 'done' ? `Moved: ${name || sid} runs on ${to}.` : `${STATUS_WORD[move.status]}: ${move.error ?? 'see the history'}`}
@@ -87,7 +87,7 @@ export function MoveDialog({ sid, name, to, onClose, onDone }: { sid: string; na
       <div className="flex flex-wrap justify-end gap-2 pt-1">
         <Btn onClick={onClose}>{finished || move?.status === 'scheduled' ? 'Close' : 'Cancel'}</Btn>
         {!move && choices.includes('now') && <Btn kind="primary" disabled={busy} onClick={() => go('now', false)}>{busy ? 'Starting…' : 'Move now'}</Btn>}
-        {!move && choices.includes('schedule') && <Btn kind="primary" disabled={busy} onClick={() => go('next-quiet', false)}>Move in the next quiet window</Btn>}
+        {!move && choices.includes('schedule') && <Btn kind="primary" disabled={busy} onClick={() => go('next-quiet', false)} title="Scheduled moves expire after 7 days">Move in the next quiet window</Btn>}
         {!move && choices.includes('anyway') && <Btn kind="danger" disabled={busy} onClick={() => go('now', true)}>Move anyway, now</Btn>}
       </div>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const r = reconfirm; setReconfirm(null); void go(r.when, r.anyway) }} />}

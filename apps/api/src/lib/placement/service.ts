@@ -48,11 +48,11 @@ import { corosyncAround, corosyncWords } from './corosync'
 import { checkablePaths, placementMap, type EngineInput } from './engine'
 import { copySeconds } from './network'
 import { readCluster, readHistory, taskRunning, type ClusterRead, type PromRange } from './read'
-import { IN_FLIGHT, MoveSlotTaken, mergeSettings, type PlacementStore } from './store'
+import { DEFAULT_SETTINGS, IN_FLIGHT, MoveSlotTaken, mergeSettings, stricterSettings, type PlacementStore } from './store'
 import { backupMask, quietStatus, type QuietStatus } from './windows'
 import type { Advice, GuestPlacement, MoveRecord, NetworkCost, PlacementMap, PlacementSettings } from './types'
 
-export interface Actor { email: string }
+export interface Actor { email: string; role?: string }
 
 export class PlacementRefusal extends Error {
   constructor(message: string, public status = 409, public code = 'refused', public extra: Record<string, unknown> = {}) { super(message) }
@@ -68,10 +68,10 @@ export interface PlacementDeps {
   /** A read-only command on a node over its stored login; null when there is none. */
   nodeExec(node: string, command: string): Promise<{ code: number; output: string } | null>
   /**
-   * The current HyperProx role of the person who scheduled a move: their role, null when they are no longer a
-   * member, or 'unverifiable' when it cannot be asked right now. A scheduled move runs only for an admin or owner.
+   * Whether the person who approved a scheduled move has been removed or demoted since `sinceMs`, from what
+   * HyperProx itself holds (never by borrowing someone else's session). Null: nothing says so. A string: why not.
    */
-  approverRole?(email: string): Promise<string | null | 'unverifiable'>
+  approverChanged?(email: string, sinceMs: number): Promise<string | null>
   /** Tells people something needs a look (a stuck move). Never throws. */
   alert?(title: string, lines: string[]): Promise<void>
   /** This process's id for the owner column. */
@@ -119,6 +119,8 @@ export const PATH_CHECK_TTL_MS = 10 * 60_000
 export const HEARTBEAT_STALE_MS = 5 * 60_000
 const HEARTBEAT_EVERY_MS = 30_000
 const SYNC_EVERY_MS = 10 * 60_000
+/** A scheduled move expires this long after it was approved. */
+export const SCHEDULE_TTL_MS = 7 * 24 * 3600_000
 
 export class PlacementService {
   private cache: { at: number; read: Promise<ClusterRead> } | null = null
@@ -313,6 +315,8 @@ export class PlacementService {
           { nextQuiet: plan.quiet.nextQuiet })
       }
       const at = when === 'next-quiet' && !plan.quiet.quietNow ? plan.quiet.nextQuiet?.start ?? null : null
+      if (at && at - this.now() > SCHEDULE_TTL_MS) throw new PlacementRefusal('The next quiet window is more than 7 days away, and scheduled moves expire after 7 days.', 409, 'no-window')
+      if (at && actor.role !== 'admin' && actor.role !== 'owner') throw new PlacementRefusal('Only an admin can schedule a move.', 403, 'forbidden')
       if (when === 'next-quiet' && !plan.quiet.quietNow && !at) {
         throw new PlacementRefusal(`There is no known quiet window to schedule it in${plan.quiet.nowWhy.length ? ` (${plan.quiet.nowWhy[0]})` : ''}. Move anyway, or try later.`, 409, 'no-window')
       }
@@ -327,7 +331,8 @@ export class PlacementService {
           sid, name: plan.name, fromNode: plan.from, toNode: to, source: 'hyperprox', method: plan.method, status: at ? 'scheduled' : 'running',
           by: actor.email, scheduledFor: at, startedAt: at ? null : this.now(), bwlimitKiB: plan.bwlimitKiB,
           owner: at ? null : this.owner, heartbeatAt: at ? null : this.now(),
-          snapshot: { settings: plan.settings, type: plan.type, running: plan.running, localDisks: plan.localDisks },
+          snapshot: { settings: plan.settings, type: plan.type, running: plan.running, localDisks: plan.localDisks,
+            ...(at ? { approver: { email: actor.email, role: String(actor.role), at: this.now() } } : {}) },
         })
       } catch (e) {
         if (e instanceof MoveSlotTaken) throw new PlacementRefusal(e.message, 409, 'busy')
@@ -351,7 +356,21 @@ export class PlacementService {
     const last = this.beats.get(id) ?? 0
     if (!force && this.now() - last < HEARTBEAT_EVERY_MS) return
     this.beats.set(id, this.now())
-    await this.d.store.transition(id, { status: IN_FLIGHT }, { heartbeatAt: this.now(), owner: this.owner }).catch(() => null)
+    await this.d.store.transition(id, { status: IN_FLIGHT, owner: this.owner }, { heartbeatAt: this.now() }).catch(() => null)
+  }
+
+  /** Writes by the watching process: only while it still owns the row and the row is in flight (never over a resolve). */
+  private own(id: string, patch: Partial<Omit<MoveRecord, 'id'>>): Promise<MoveRecord | null> {
+    return this.d.store.transition(id, { status: IN_FLIGHT, owner: this.owner }, patch).catch(() => null)
+  }
+
+  /** A migration task for this guest that started at or after `sinceSec`, from the cluster task log; one look. */
+  private async searchMigrateTask(vmid: number, sinceSec: number): Promise<{ upid: string; running: boolean } | null | 'unread'> {
+    const tasks = await this.d.pve().fetchStrict<any[]>('/cluster/tasks').catch(() => null)
+    if (!tasks) return 'unread'
+    const t = tasks.filter(x => /^(qmigrate|vzmigrate)$/.test(String(x.type)) && String(x.id) === String(vmid) && Number(x.starttime) >= sinceSec - 5)
+      .sort((a, b) => Number(b.starttime) - Number(a.starttime))[0]
+    return t?.upid ? { upid: String(t.upid), running: taskRunning(t) } : null
   }
 
   /** The call, the wait, the read-back, the corosync count. Exposed for tests. */
@@ -363,17 +382,28 @@ export class PlacementService {
     try {
       let upid: string | null = resume ? resume.upid : null
       if (!resume) {
-        if (plan.method === 'ha') {
-          await pve.fetchStrict(`/cluster/ha/resources/${encodeURIComponent(plan.sid)}/migrate`, 'POST', new URLSearchParams({ node: plan.to }).toString())
+        let postError: string | null = null
+        try {
+          if (plan.method === 'ha') {
+            await pve.fetchStrict(`/cluster/ha/resources/${encodeURIComponent(plan.sid)}/migrate`, 'POST', new URLSearchParams({ node: plan.to }).toString())
+            upid = await this.findMigrateTask(id, p.vmid, startedSec)
+          } else {
+            const body = migrateParams({ type: plan.type, status: plan.running ? 'running' : 'stopped', local: plan.localDisks }, plan.to, plan.bwlimitKiB)
+            upid = await pve.fetchStrict<string>(`/nodes/${encodeURIComponent(plan.from)}/${p.type}/${p.vmid}/migrate`, 'POST', body.toString())
+          }
+        } catch (e: any) { postError = String(e?.message ?? e).slice(0, 300) }
+        if (postError !== null) {
+          // An error does not prove nothing started (a timeout, a dropped connection): look for the task first.
           upid = await this.findMigrateTask(id, p.vmid, startedSec)
-        } else {
-          const body = migrateParams({ type: plan.type, status: plan.running ? 'running' : 'stopped', local: plan.localDisks }, plan.to, plan.bwlimitKiB)
-          upid = await pve.fetchStrict<string>(`/nodes/${encodeURIComponent(plan.from)}/${p.type}/${p.vmid}/migrate`, 'POST', body.toString())
+          if (!upid) {
+            await this.markStuck(id, plan, `The request to Proxmox failed (${postError}) and no task for it appeared, so whether the move started is unknown. Check the guest in Proxmox, then use Resolve.`)
+            return this.d.store.get(id)
+          }
         }
         if (upid) {
           // Never silently: a failure here is said in the row, and the wait goes on regardless (the move is under way).
           try { await this.d.store.attachUpid(id, upid) }
-          catch (e: any) { await this.d.store.update(id, { error: `Its task id could not be saved: ${String(e?.message ?? e).slice(0, 160)}` }).catch(() => null) }
+          catch (e: any) { await this.own(id, { error: `Its task id could not be saved: ${String(e?.message ?? e).slice(0, 160)}` }) }
         }
       }
       if (upid) {
@@ -388,7 +418,8 @@ export class PlacementService {
         await this.markStuck(id, plan, 'HA has not finished moving it yet.')
         ok = await this.watchHa(id, plan)
       }
-      const done = await this.d.store.update(id, { status: ok.ok ? 'done' : 'failed', endedAt: this.now(), error: ok.ok ? null : ok.why })
+      const done = await this.own(id, { status: ok.ok ? 'done' : 'failed', endedAt: this.now(), error: ok.ok ? null : ok.why })
+      if (!done) return this.d.store.get(id)   // resolved by a person, or taken over, in the meantime: not ours to write
       await this.d.audit('placement.move.result', plan.sid, { ok: ok.ok, to: plan.to, why: ok.ok ? null : ok.why }).catch(() => undefined)
       await this.recordCorosync(id, [plan.from, plan.to], startedSec, Math.floor(this.now() / 1000)).catch(() => undefined)
       return done
@@ -397,7 +428,7 @@ export class PlacementService {
       if (e instanceof StuckForGood) return this.d.store.get(id)
       const why = String(e?.message ?? e).slice(0, 500)
       await this.d.audit('placement.move.result', plan.sid, { ok: false, to: plan.to, why }).catch(() => undefined)
-      return this.d.store.update(id, { status: 'failed', endedAt: this.now(), error: why }).catch(() => null)
+      return (await this.own(id, { status: 'failed', endedAt: this.now(), error: why })) ?? this.d.store.get(id)
     } finally {
       this.beats.delete(id)
       this.cache = null
@@ -405,7 +436,7 @@ export class PlacementService {
   }
 
   private async markStuck(id: string, plan: MovePlan, why: string): Promise<void> {
-    await this.d.store.update(id, { status: 'stuck', error: why }).catch(() => null)
+    await this.own(id, { status: 'stuck', error: why })
     await this.d.alert?.(`A move of ${plan.name || plan.sid} has not finished`, [
       `${plan.name || plan.sid} (${plan.from} → ${plan.to}): ${why}`,
       'HyperProx keeps watching it and starts no other move until Proxmox shows it finished. Check it in Proxmox if it stays like this.',
@@ -414,15 +445,11 @@ export class PlacementService {
 
   /** The migration task HA starts for a guest after a request, or null when none appears in time. */
   private async findMigrateTask(id: string, vmid: number, sinceSec: number): Promise<string | null> {
-    for (let waited = 0; waited < 120_000; waited += this.poll()) {
+    // About two minutes at the usual 2 s poll: sixty looks.
+    for (let i = 0; i < 60; i++) {
       await this.beat(id)
-      const tasks = await this.d.pve().fetchStrict<any[]>('/cluster/tasks').catch(() => [])
-      const t = (tasks ?? []).filter(x => /^(qmigrate|vzmigrate)$/.test(String(x.type)) && String(x.id) === String(vmid) && Number(x.starttime) >= sinceSec - 5)
-        .sort((a, b) => Number(b.starttime) - Number(a.starttime))[0]
-      if (t?.upid) {
-        try { await this.d.store.attachUpid(id, String(t.upid)) } catch { /* said by execute's caller through the row's error */ }
-        return String(t.upid)
-      }
+      const t = await this.searchMigrateTask(vmid, sinceSec)
+      if (t && t !== 'unread') return t.upid
       await this.sleep(this.poll())
     }
     return null
@@ -442,7 +469,7 @@ export class PlacementService {
       // A busy node can be slow to answer during a migration: that is "still running", not a failure.
       const st = await this.d.pve().fetchStrict<{ status: string; exitstatus?: string }>(`${base}/status`).catch(() => null)
       if (st?.status === 'stopped') {
-        if (stuck) await this.d.store.update(id, { status: 'running', error: null }).catch(() => null)
+        if (stuck) await this.own(id, { status: 'running', error: null })
         if (st.exitstatus === 'OK') return
         const log = await this.d.pve().fetchStrict<Array<{ t: string }>>(`${base}/log?limit=500`).catch(() => null)
         const tail = (Array.isArray(log) ? log : []).slice(-6).map(l => l.t).join(' / ')
@@ -453,7 +480,7 @@ export class PlacementService {
         await this.markStuck(id, plan, `Proxmox's task is still running after ${Math.round(timeout / 60_000)} min.`)
       }
       if (waited >= timeout + watch) {
-        await this.d.store.update(id, { status: 'stuck', error: `Proxmox's task was still running when HyperProx stopped watching (${Math.round((timeout + watch) / 3600_000)} h). Check it in Proxmox; this move stays stuck until you do.` }).catch(() => null)
+        await this.own(id, { status: 'stuck', error: `Proxmox's task was still running when HyperProx stopped watching (${Math.round((timeout + watch) / 3600_000)} h). Check it in Proxmox; this move stays stuck until you do.` })
         throw new StuckForGood()
       }
       const step = stuck ? Math.max(this.poll(), 30_000) : this.poll()
@@ -474,12 +501,12 @@ export class PlacementService {
     for (let waited = 0; waited < watch; waited += Math.max(this.poll(), 30_000)) {
       await this.beat(id)
       if (!(await this.haBusy(plan.sid))) {
-        await this.d.store.update(id, { status: 'running' }).catch(() => null)
+        await this.own(id, { status: 'running' })
         return this.verify(plan, false)
       }
       await this.sleep(Math.max(this.poll(), 30_000))
     }
-    await this.d.store.update(id, { error: 'HA was still moving it when HyperProx stopped watching. Check it in Proxmox.' }).catch(() => null)
+    await this.own(id, { error: 'HA was still moving it when HyperProx stopped watching. Check it in Proxmox.' })
     throw new StuckForGood()
   }
 
@@ -573,8 +600,16 @@ export class PlacementService {
       if (!claimed) { if (this.slot === m.id) this.slot = null; continue }
       const p = parseSid(m.sid)
       const plan = this.resumePlan(claimed)
+      // No task id saved (the process died between the call and saving it): recover it from the task log.
+      if (p && !claimed.upid && claimed.startedAt) {
+        const t = await this.searchMigrateTask(p.vmid, Math.floor(claimed.startedAt / 1000))
+        if (t && t !== 'unread') {
+          try { await this.d.store.attachUpid(m.id, t.upid); claimed.upid = t.upid }
+          catch (e: any) { await this.own(m.id, { error: `Its task id could not be saved: ${String(e?.message ?? e).slice(0, 160)}` }); claimed.upid = t.upid }
+        }
+      }
       if (!p || (!claimed.upid && claimed.method !== 'ha')) {
-        await this.d.store.update(m.id, { status: 'stuck', error: "HyperProx stopped before it knew this move's task. Check where the guest is in Proxmox, then use Resolve: it stays stuck until someone does." }).catch(() => null)
+        await this.own(m.id, { status: 'stuck', error: "HyperProx stopped before it knew this move's task, and none is in the task log. Check where the guest is in Proxmox, then use Resolve: it stays stuck until someone does." })
         await this.d.alert?.(`A move of ${m.name || m.sid} lost its watcher`, [`${m.name || m.sid} (${m.fromNode} → ${m.toNode}): HyperProx restarted before the move's task was known.`]).catch(() => undefined)
         if (this.slot === m.id) this.slot = null
         continue
@@ -594,12 +629,29 @@ export class PlacementService {
     if (!m) throw new PlacementRefusal('No such move.', 404, 'not-found')
     if (m.status !== 'stuck') throw new PlacementRefusal(`It is ${m.status}; only a stuck move is resolved by hand.`, 409, 'not-stuck')
     if (this.slot === id) throw new PlacementRefusal('HyperProx is still watching this move; it settles it itself when Proxmox finishes.', 409, 'watching')
+    if (m.owner !== this.owner && m.heartbeatAt !== null && this.now() - m.heartbeatAt < HEARTBEAT_STALE_MS) {
+      throw new PlacementRefusal('Another HyperProx process is still watching this move; it settles it itself.', 409, 'watching')
+    }
+    const p = parseSid(m.sid)!
     if (m.upid) {
       const node = /^UPID:([^:]+):/.exec(m.upid)?.[1] ?? m.fromNode
       const st = await this.d.pve().fetchStrict<any>(`/nodes/${encodeURIComponent(node)}/tasks/${encodeURIComponent(m.upid)}/status`).catch(() => null)
       if (!st) throw new PlacementRefusal("Its task's state could not be read from Proxmox; try again.", 502, 'unread')
       if (st.status !== 'stopped') throw new PlacementRefusal('Its Proxmox task is still running. Wait for it, or stop it in Proxmox.', 409, 'still-running')
-    } else if (await this.haBusy(m.sid)) throw new PlacementRefusal('HA is still moving it.', 409, 'still-running')
+    } else {
+      // No task id: any migration of this guest since the move started, and the guest's own migrate lock.
+      const t = await this.searchMigrateTask(p.vmid, Math.floor((m.startedAt ?? this.now()) / 1000))
+      if (t === 'unread') throw new PlacementRefusal('The cluster task log could not be read, so whether a migration is still running is unknown; try again.', 502, 'unread')
+      if (t?.running) throw new PlacementRefusal('A migration of it is still running in Proxmox. Wait for it, or stop it in Proxmox.', 409, 'still-running')
+      const vms = await this.d.pve().fetchStrict<any[]>('/cluster/resources?type=vm').catch(() => null)
+      const v = (vms ?? []).find(x => Number(x.vmid) === p.vmid)
+      if (!v) throw new PlacementRefusal('The guest could not be found in Proxmox just now; try again.', 502, 'unread')
+      const cfg = await this.d.pve().fetchStrict<any>(`/nodes/${encodeURIComponent(String(v.node))}/${p.type}/${p.vmid}/config`).catch(() => null)
+      if (!cfg) throw new PlacementRefusal("Its configuration could not be read, so whether it is still locked for a migration is unknown; try again.", 502, 'unread')
+      if (String(cfg.lock ?? '') === 'migrate') throw new PlacementRefusal('Proxmox still has it locked for a migration.', 409, 'still-running')
+    }
+    // An HA move is over only when HA says so too, task or no task.
+    if ((m.method === 'ha' || !m.upid) && await this.haBusy(m.sid)) throw new PlacementRefusal('HA is still moving it.', 409, 'still-running')
     await this.d.audit('placement.move.resolve', m.sid, { by: actor.email, id })
     const ok = await this.verify(this.resumePlan(m), false)
     const done = await this.d.store.transition(id, { status: ['stuck'] }, { status: ok.ok ? 'done' : 'failed', endedAt: this.now(), error: ok.ok ? null : ok.why })
@@ -610,7 +662,7 @@ export class PlacementService {
   private resumePlan(m: MoveRecord): MovePlan {
     const s = m.snapshot ?? {}
     const p = parseSid(m.sid)
-    const settings = s.settings ?? ({} as PlacementSettings)
+    const settings: PlacementSettings = { ...DEFAULT_SETTINGS, ...(s.settings ?? {}) }
     const quiet: QuietStatus = { quietNow: true, nowWhy: [], nextQuiet: null, upcoming: [], unread: [], tz: 'UTC' }
     const plan: MovePlan = {
       sid: m.sid, name: m.name, type: s.type ?? p?.type ?? 'lxc', from: m.fromNode, to: m.toNode, method: m.method ?? 'migrate', allowed: true,
@@ -637,12 +689,17 @@ export class PlacementService {
         if (this.now() - (m.scheduledFor ?? 0) > 30 * 60_000) { await skip('Its quiet window passed without it running (HyperProx was locked or restarting). Schedule it again.'); continue }
         // Locked: the Proxmox token is in the vault. Try again next minute, until the window passes.
         if (!this.d.isUnlocked() || this.slot) continue
-        // The person who approved it must still be an admin.
-        const role = m.by && this.d.approverRole ? await this.d.approverRole(m.by).catch(() => 'unverifiable' as const) : 'unverifiable'
-        if (role === 'unverifiable') { await skip(`Not run: ${m.by ?? 'whoever scheduled it'} could not be confirmed as an admin right now.`); continue }
-        if (role !== 'admin' && role !== 'owner') { await skip(`Not run: ${m.by} ${role === null ? 'is no longer a member' : `is now ${role}, not admin`}.`); continue }
+        // The approval: recorded at scheduling (with the master password just re-entered), an admin's, under 7 days old,
+        // and nothing HyperProx holds says the approver was removed or demoted since.
+        const ap = m.snapshot?.approver
+        if (!ap || (ap.role !== 'admin' && ap.role !== 'owner')) { await skip('Not run: no admin approval is recorded for it. Schedule it again.'); continue }
+        if (this.now() - ap.at > SCHEDULE_TTL_MS) { await skip('Not run: it was approved more than 7 days ago, and scheduled moves expire after 7 days. Schedule it again.'); continue }
+        const changed = this.d.approverChanged ? await this.d.approverChanged(ap.email, ap.at).catch(() => 'their role could not be checked') : null
+        if (changed) { await skip(`Not run: ${ap.email} ${changed}.`); continue }
+        // Under the stricter of what was approved and what is set now: a later change can only make it safer.
+        const settings = stricterSettings(m.snapshot?.settings, await this.d.store.settings())
         let plan: MovePlan
-        try { plan = await this.plan(m.sid, m.toNode, { bwlimitKiB: m.bwlimitKiB ?? undefined, settings: m.snapshot?.settings }) }
+        try { plan = await this.plan(m.sid, m.toNode, { bwlimitKiB: m.bwlimitKiB ? Math.min(m.bwlimitKiB, settings.bwlimitKiB) : undefined, settings }) }
         catch (e: any) { await skip(`Not run: ${String(e?.message ?? e).slice(0, 300)}`); continue }
         const why = !plan.allowed ? plan.refusals.join(' ') : !plan.quiet.quietNow ? `it is not a quiet window for the whole move (${plan.quiet.nowWhy.join('; ')})` : plan.from !== m.fromNode ? `it moved to ${plan.from} in the meantime` : null
         if (why) { await skip(`Not run: ${why}`); continue }
