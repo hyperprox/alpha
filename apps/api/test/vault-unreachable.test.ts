@@ -7,6 +7,7 @@ import { FakeBroker } from './fakes/fake-broker'
 import { buildTestApp, resetLock } from './fakes/app'
 import { VaultAuthError, CliVaultBroker, authCodeFromMessage, isVaultConnectionError } from '../src/lib/vault/broker'
 import { signInLimiter } from '../src/lib/auth-limits'
+import { VaultHttpError } from '../src/lib/vault/bw-crypto'
 import { VAULT_UNREACHABLE, authInputProblem } from '../src/routes/auth'
 
 const EMAIL = 'owner@example.com'
@@ -27,10 +28,7 @@ after(async () => { await resetLock(); await (await appP).close() })
 
 const signIn = async (body: Record<string, unknown>) => (await appP).inject({ method: 'POST', url: '/api/auth/sign-in', payload: body, remoteAddress: `192.0.2.${Math.floor(Math.random() * 200) + 1}` })
 
-test('mapping: connection errors are vault_unreachable, never totp_invalid', () => {
-  assert.equal(authCodeFromMessage('request to https://127.0.0.1:8222/identity/connect/token failed, reason: connect ECONNREFUSED 127.0.0.1:8222'), 'vault_unreachable')
-  assert.equal(authCodeFromMessage('socket hang up'), 'vault_unreachable')
-  assert.equal(authCodeFromMessage('getaddrinfo ENOTFOUND vault'), 'vault_unreachable')
+test('mapping: connection errors (by code) are connection errors; the vault\'s own refusals keep their codes', () => {
   assert.equal(authCodeFromMessage('Invalid TOTP code! Server time: ...'), 'totp_invalid')
   const fetchErr = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }) })
   assert.equal(isVaultConnectionError(fetchErr), true)
@@ -87,4 +85,15 @@ test('sign-in fields are capped: email 254, password 1024, code 6 to 8 digits', 
     assert.equal(r.statusCode, 400, JSON.stringify(body).slice(0, 60))
     assert.equal(r.json().code, 'invalid_input')
   }
+})
+
+test('text that merely contains a connection word is never "vault unreachable"', () => {
+  // The vault's own answer can echo the email; an email with ECONNREFUSED in it must stay a password verdict.
+  assert.equal(authCodeFromMessage('Username or password is incorrect. Try again. (ECONNREFUSED@example.com)'), 'bad_credentials')
+  assert.equal(authCodeFromMessage('connect ECONNREFUSED 127.0.0.1:8222'), null)
+  assert.equal(isVaultConnectionError(new VaultHttpError(400, 'Username or password is incorrect. ECONNREFUSED@example.com')), false)
+  assert.equal(isVaultConnectionError(new VaultHttpError(503, 'socket hang up')), false, 'an HTTP answer means the vault was reached')
+  assert.equal(isVaultConnectionError(new Error('ECONNREFUSED@example.com is not a member')), false)
+  assert.equal(isVaultConnectionError(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8222'), { code: 'ECONNREFUSED' })), true)
+  assert.equal(isVaultConnectionError(new Error('socket hang up')), true)
 })

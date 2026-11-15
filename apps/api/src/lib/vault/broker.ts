@@ -27,7 +27,7 @@ import {
 } from './bw-crypto'
 import { bwErrorMessage, encodeJson, runBw } from './bw-cli'
 import { fastSignInEnabled, sessionRoot, vaultAdminToken, vaultCaCert, vaultPublicUrl, vaultUrl } from './config'
-import { FastPathFailed, NativeSessionExpired, NativeVaultSession, NotMemberError, type DecryptedItem, type NativeSessionSnapshot } from './native'
+import { FastPathFailed, FastPathUnavailable, NativeSessionExpired, NativeVaultSession, NotMemberError, type DecryptedItem, type NativeSessionSnapshot } from './native'
 import { snapshotChanged } from './snapshot'
 import { GROUP_OPERATORS, GROUP_VIEWERS } from './bw-crypto'
 import { VaultOwnerOnlyError, isOwnerOnlyRefusal, keyFingerprint, memberStatus, memberTypeFor, type GrantableRole, type VaultMember } from './members'
@@ -181,25 +181,27 @@ function recordRole(email: string, role: GrantableRole): void {
   else memberRoles().remove(email)
 }
 
-const CONNECTION_RE = /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|ECONNRESET|fetch failed|socket hang up|vault request timed out/i
+const CONNECTION_CODES = new Set(['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN', 'ECONNRESET', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'])
+/** Node's and HyperProx's own whole messages for a dropped request (never matched inside other text). */
+const CONNECTION_MESSAGES = new Set(['socket hang up', 'fetch failed', 'vault request timed out'])
 
 /**
- * True when an error (or a CLI message) says the vault could not be reached at all: refused, timed out, no such
- * host, a dropped socket. That is not a verdict on the password or the 2FA code, so it must never be reported as one
- * or counted as a guess. Looks at the error, its code, and its cause (fetch wraps the socket error).
+ * True when an error says the vault could not be reached at all: refused, timed out, no such host, a dropped socket.
+ * That is not a verdict on the password or the 2FA code, so it must never be reported as one or counted as a guess.
+ * Decided by the error's code (and its cause's: fetch wraps the socket error) and by Node's own whole messages, never
+ * by searching free text, which could echo what a person typed (an email address containing "ECONNREFUSED", say).
+ * An HTTP answer from the vault (VaultHttpError) means the vault was reached, so it is never this.
  */
-export function isVaultConnectionError(e: unknown): boolean {
-  if (typeof e === 'string') return CONNECTION_RE.test(e)
-  if (!e || typeof e !== 'object') return false
+export function isVaultConnectionError(e: unknown, depth = 0): boolean {
+  if (!e || typeof e !== 'object' || depth > 4 || e instanceof VaultHttpError) return false
   const x = e as { message?: unknown; code?: unknown; cause?: unknown }
-  if (typeof x.code === 'string' && CONNECTION_RE.test(x.code)) return true
-  if (typeof x.message === 'string' && CONNECTION_RE.test(x.message)) return true
-  return x.cause !== undefined && x.cause !== e && isVaultConnectionError(x.cause)
+  if (typeof x.code === 'string' && CONNECTION_CODES.has(x.code)) return true
+  if (typeof x.message === 'string' && CONNECTION_MESSAGES.has(x.message.trim())) return true
+  return x.cause !== undefined && x.cause !== e && isVaultConnectionError(x.cause, depth + 1)
 }
 
 /** Maps a CLI / server message to a contract error code; null if it is not an auth failure. */
 export function authCodeFromMessage(msg: string): VaultAuthCode | null {
-  if (CONNECTION_RE.test(msg)) return 'vault_unreachable'
   const m = msg.toLowerCase()
   if (/too many|rate.?limit|429/.test(m)) return 'locked_out'
   if (/has been disabled|account is disabled|user is disabled/.test(m)) return 'locked_out'
@@ -413,7 +415,8 @@ export class CliVaultBroker implements VaultBroker {
       } catch (err) {
         if (err instanceof VaultAuthError) throw err
         // The vault is down: the CLI would fail the same way, only slower, and its message would read like a bad code.
-        if (isVaultConnectionError(err)) {
+        // Decided by the error's class and code, or, for the fast path's own wrapper, by asking the vault if it is up.
+        if (isVaultConnectionError(err) || ((err instanceof FastPathUnavailable || err instanceof FastPathFailed) && !(await this.api().alive()))) {
           if (err instanceof FastPathFailed && totp) this.cliOnly.add(email)
           log.warn(`[vault] the vault did not answer the sign-in (${(err as Error).message})`)
           throw new VaultAuthError('vault_unreachable', (err as Error).message)
@@ -492,6 +495,9 @@ export class CliVaultBroker implements VaultBroker {
     const sessionKey = login.stdout.trim()
     if (login.code !== 0 || !sessionKey) {
       const msg = bwErrorMessage(login)
+      // The CLI says why only in text, which can echo the email. So the vault being down is decided by asking it
+      // (/alive), not by reading that text; only then is the text matched against the vault's own refusals.
+      if (!(await this.api().alive())) return fail(new VaultAuthError('vault_unreachable', 'the vault did not answer its health check after a failed CLI login'))
       return fail(new VaultAuthError(authCodeFromMessage(msg) ?? (totp ? 'totp_invalid' : 'totp_required'), msg))
     }
 
