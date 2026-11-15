@@ -706,6 +706,8 @@ export default function DashboardView() {
   const [bandwidth, setBandwidth] = useState<BandwidthData | null>(null)
   const [slow, setSlow]       = useState<SlowData | null>(null)
   const [lastSync, setLastSync] = useState<Date | null>(null)
+  // The feed marks a message `stale` when HyperProx could not read Proxmox and is re-sending its last numbers.
+  const [paused, setPaused] = useState(false)
   const alerts = useFiringAlerts()
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -793,7 +795,11 @@ export default function DashboardView() {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data)
-        if (msg.type === 'fast') {
+        if (msg.type === 'fast' && msg.payload?.stale === true) {
+          // Old numbers: not a new reading, so they are not stamped as synced and add nothing to the charts.
+          setPaused(true)
+        } else if (msg.type === 'fast') {
+          setPaused(false)
           setFast(prev => ({ ...msg.payload, gpuStatus: prev?.gpuStatus ?? [], storage: msg.payload.storage ?? prev?.storage ?? [], clusterName: prev?.clusterName ?? null }))
           setLastSync(new Date())
         }
@@ -831,6 +837,11 @@ export default function DashboardView() {
 
   return (
     <div className={vs.page}>
+      {paused && (
+        <div role="status" style={{ border: '1px solid var(--warn)', color: 'var(--warn)', borderRadius: 6, padding: '8px 12px', fontSize: 13 }}>
+          Live numbers paused. HyperProx can&apos;t reach Proxmox right now. Retrying.
+        </div>
+      )}
       <ClusterHud fast={fast} slow={slow} clusterLabel={clusterLabel} lastSync={lastSync} power={clusterPower} alerts={alerts}/>
 
       {/* Every cluster side by side, once a remote server has been added (nothing shows with none). */}
