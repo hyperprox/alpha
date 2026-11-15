@@ -38,6 +38,7 @@ INSTALL_REF="${HYPERPROX_REF:-}"
 NODE_VERSION="20"
 # 10: pnpm-workspace.yaml carries overrides and allowBuilds, which pnpm 9 ignores, so a frozen install fails.
 PNPM_VERSION="10"
+PNPM_EXACT="10.33.0"   # matches "packageManager" in package.json
 SETUP_PORT="3001"
 API_PORT="3002"
 FRONTEND_PORT="3000"
@@ -749,7 +750,7 @@ install_node() {
     ok "pnpm already installed: $(pnpm --version)"
   else
     run_with_spinner "Installing pnpm" \
-      npm install -g "pnpm@${PNPM_VERSION}"
+      npm install -g "pnpm@${PNPM_EXACT}"
     ok "pnpm $(pnpm --version) installed"
   fi
 }

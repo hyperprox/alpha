@@ -170,7 +170,7 @@ services:
   # so it cannot starve the API, and bound to loopback because Ollama has no authentication of its own.
   # Pulled models live in ollama_data. Version: Ollama 0.40.5. To update, change the tag.
   ollama:
-    image: ollama/ollama:0.40.5
+    image: ollama/ollama:0.40.5@sha256:5d3a2f25f9825628daba94dc0b1d421c7d57d6c03ae5faa9ba050e058bab8241
     container_name: hyperprox-ollama
     restart: unless-stopped
     profiles: [ai]

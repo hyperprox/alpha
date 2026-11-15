@@ -13,4 +13,12 @@ allowBuilds:
 # needs Fastify 5).
 overrides:
   proxy-addr: ^2.0.8
-  '@fastify/jwt>fast-jwt': ^6.3.6
+  '@fastify/jwt>fast-jwt': 6.3.6
+  node-forge: 1.4.3
+  ws: 8.21.0
+  multer: 2.5.0
+  uuid: 11.1.1
+  follow-redirects: 1.16.2
+  form-data: 4.0.6
+  'fast-uri@2': 2.4.8
+  'fast-uri@3': 3.1.9
