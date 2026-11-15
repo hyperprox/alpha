@@ -8,7 +8,3 @@ allowBuilds:
   msgpackr-extract: false
   prisma: true
   unrs-resolver: false
-# Security fixes for transitive dependencies (pre-beta review): proxy-addr GHSA-jqcg-44mw-7w3h (IPv4-mapped
-# IPv6 trust). @fastify/jwt 10 resolves fast-jwt 6.3.6 by itself, so it no longer needs an override.
-overrides:
-  proxy-addr: ^2.0.8
