@@ -7,6 +7,11 @@ import { NETWORK } from './network'
 import { APPS } from './apps'
 import { QNAP_ROUTES } from './qnap'
 import { SITE_ROUTES } from './sites'
+import { PLACEMENT_ROUTES } from './placement'
+import { PLUGIN_EXTRA_ROUTES } from './plugins-extra'
+import { MEDIA_ROUTES } from './media'
+import { UPDATE_ROUTES } from './updates'
+import { MISC_ROUTES } from './misc'
 import { pveNodes, pveStorage } from './data'
 
 export type { FixtureRoute, FixtureContext }
@@ -21,4 +26,4 @@ const PER_CLUSTER: FixtureRoute[] = [
   { path: '/api/ha/badges', get: (_p, _q, ctx) => ok(isRemote(ctx) ? {} : haBadges()) },
 ]
 
-export const FIXTURES: FixtureRoute[] = [...PER_CLUSTER, ...CORE, ...CLUSTERS, ...QNAP_ROUTES, ...PLUGIN_ROUTES, ...NETWORK, ...APPS, ...SITE_ROUTES]
+export const FIXTURES: FixtureRoute[] = [...PER_CLUSTER, ...CORE, ...CLUSTERS, ...QNAP_ROUTES, ...MEDIA_ROUTES, ...PLUGIN_EXTRA_ROUTES, ...PLUGIN_ROUTES, ...PLACEMENT_ROUTES, ...UPDATE_ROUTES, ...MISC_ROUTES, ...NETWORK, ...APPS, ...SITE_ROUTES]

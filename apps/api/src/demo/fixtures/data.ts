@@ -41,6 +41,7 @@ export const GUESTS: DemoGuest[] = [
   g(103, 'vaultwarden',    'lxc',  'pve-a', 'running', 1, 1,  8,   0.01, 0.18, 0.21, { ha: 'prefer', app: 'Vaultwarden' }),
   g(104, 'hyperprox',      'lxc',  'pve-a', 'running', 4, 8,  32,  0.08, 0.44, 0.38, { ha: 'prefer', app: 'HyperProx' }),
   g(105, 'meshcentral',    'lxc',  'pve-a', 'running', 2, 2,  8,   0.02, 0.27, 0.33, { app: 'MeshCentral' }),
+  g(107, 'homepage',       'lxc',  'pve-a', 'running', 1, 1,  4,   0.01, 0.20, 0.25, { app: 'Homepage' }),
   g(106, 'backup-server',  'qemu', 'pve-a', 'running', 4, 8,  64,  0.05, 0.61, 0.20, { app: 'Proxmox Backup Server', os: 'Debian 13' }),
   g(201, 'home-assistant', 'qemu', 'pve-b', 'running', 2, 4,  32,  0.06, 0.55, 0.36, { ha: 'prefer', app: 'Home Assistant OS', os: 'Home Assistant OS 16' }),
   g(202, 'nextcloud',      'lxc',  'pve-b', 'running', 4, 6,  64,  0.07, 0.48, 0.57, { app: 'Nextcloud' }),

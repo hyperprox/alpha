@@ -16,22 +16,28 @@ const PKGS: UpdatesPkgChange[] = [
   { name: 'ceph-common', from: '19.2.3-pve2', to: '19.2.3-pve3' }, { name: 'curl', from: '8.14.1-2', to: '8.14.1-2+deb13u1', security: true },
   { name: 'tzdata', from: '2025b-4', to: '2025c-0+deb13u1' },
 ]
-function inventory() {
+export function inventory() {
   return {
     refreshedAt: iso(8 * HOUR), cluster: HOME,
     nodes: NODES.map((n, i) => ({
-      node: n.node, online: true, pending: PKGS.slice(0, 7 - i), cephPending: i < 2, kernelPending: i < 2, rebootRequired: false, rebootPending: false,
+      node: n.node, online: true, pending: PKGS.slice(0, 7 - i), cephPending: i < 2, kernelPending: i < 2, rebootRequired: i === 1, rebootPending: false,
       policy: { upgrade: 'dist-upgrade', reboot: 'manual', order: i === 0 ? 'last' : undefined }, holdsOk: null, pinOk: null, isSelf: n.node === 'pve-a',
     })),
     guests: GUESTS.map(x => {
       const win = x.name === 'windows-11', haos = x.name === 'home-assistant'
-      const pending: UpdatesPkgChange[] = x.status !== 'running' || win || haos ? [] : x.vmid % 3 === 0 ? [PKGS[2], PKGS[3], PKGS[5]] : x.vmid % 3 === 1 ? [PKGS[6]] : []
+      const pending: UpdatesPkgChange[] = x.status !== 'running' || win || haos ? [] : x.name === 'hyperprox' ? [PKGS[6]] : x.vmid % 3 === 0 ? [PKGS[2], PKGS[3], PKGS[5]] : x.vmid % 3 === 1 ? [PKGS[6]] : []
       return {
         vmid: x.vmid, type: x.type, name: x.name, node: x.node, running: x.status === 'running',
         managed: x.status === 'running' && !win && !haos, unmanagedReason: win ? 'windows' : haos ? 'no-apt' : x.status !== 'running' ? 'not-running' : undefined,
         pending, rebootRequired: false, haManaged: !!x.ha, snapshotCapable: true,
         docker: ['nextcloud', 'immich', 'arr-stack'].includes(x.name) ? 'auto' : 'none',
         dockerImages: x.name === 'immich' ? [{ image: 'ghcr.io/immich-app/immich-server', current: 'v2.2.1', latest: 'v2.2.3' }] : undefined,
+        compose: x.name === 'immich' ? [{ name: 'immich', dir: '/opt/immich', source: 'policy', images: [{ image: 'ghcr.io/immich-app/immich-server', current: 'v2.2.1', latest: 'v2.2.3' }, { image: 'redis', current: '7.4', latest: '7.4' }] }]
+          : x.name === 'nextcloud' ? [{ name: 'nextcloud', dir: '/opt/nextcloud', source: 'policy', images: [{ image: 'nextcloud', current: '30.0.2', latest: '30.0.4' }, { image: 'postgres', current: '16.4', latest: '16.4' }] }]
+          : x.name === 'arr-stack' ? [{ name: 'arr', dir: '/opt/arr', source: 'policy', images: [{ image: 'sonarr', current: '4.0.9', latest: '4.0.10' }, { image: 'radarr', current: '5.14', latest: '5.14' }, { image: 'qbittorrent', current: '5.0.2', latest: '5.0.3' }] }] : undefined,
+        apps: x.name === 'meshcentral' ? [{ provider: 'meshcentral', name: 'MeshCentral', key: 'mesh', installed: '1.1.50', latest: '1.1.53', location: '/opt/meshcentral', runAs: 'mesh', service: 'meshcentral.service', running: true,
+          how: 'Installed with npm and run by systemd', mode: 'manual', isSecurity: true, securityNote: 'The release fixes a sign-in bypass.', notes: [{ version: '1.1.53', text: 'Fixes a sign-in bypass for accounts with a second factor.' }, { version: '1.1.52', text: 'Faster device list on large installs.' }],
+          issues: [], rollback: 'Restore /opt/meshcentral from the snapshot taken before the update.', approvalId: 'app-mesh-1.1.53' }] : undefined,
         lastBackup: { at: iso(5 * HOUR), ok: true, thisGuest: true },
       }
     }),

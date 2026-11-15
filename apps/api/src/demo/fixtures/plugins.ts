@@ -2,6 +2,8 @@
 import type { FixtureRoute } from './types'
 import { iso, HOUR, MIN, DAY, wobble, GiB, PEOPLE, DOMAIN, REMOTE } from './data'
 import { QNAP_PLUGIN, QNAP_TILE } from './qnap'
+import { EXTRA_PLUGINS, EXTRA_DATA, EXTRA_DETAIL } from './plugins-extra'
+import { plexSessions, PLEX_LIBRARIES } from './media'
 
 const ok = (data: unknown) => ({ success: true, data })
 const mbps = (bps: number) => `${(bps / 1e6).toFixed(1)} Mbps`
@@ -14,9 +16,9 @@ const PLUGINS = [
     description: 'What has stopped responding, what is out of battery, and what is waiting to update.',
     auth: { kind: 'header', header: 'Authorization', fromSetting: 'token', prefix: 'Bearer ' },
     settings: [s('url', 'Home Assistant URL', 'url', true, 'http://10.0.2.11:8123'), s('token', 'Long-lived token', 'secret', true), s('battery_warn', 'Battery warning level (%)', 'text', false, '20')] },
-  { id: 'plex', name: 'Plex activity', icon: '🎬', kind: 'tile', baseUrlSetting: 'url', description: 'Who is watching right now, what they are watching, and what is transcoding.',
+  { id: 'plex', name: 'Plex activity', icon: '🎬', kind: 'tile', baseUrlSetting: 'url', refreshSeconds: 60, description: 'Who is watching right now, what they are watching, and what is transcoding.',
     auth: { kind: 'query', param: 'apikey', fromSetting: 'apikey' }, settings: [s('url', 'Tautulli address', 'url', true, 'http://10.0.3.11:8181'), s('apikey', 'API key', 'secret', true)] },
-  { id: 'arrstack', name: 'Arr Stack', icon: '📺', kind: 'device', baseUrlSetting: 'sonarr_url',
+  { id: 'arrstack', name: 'Arr Stack', icon: '📺', kind: 'device', baseUrlSetting: 'sonarr_url', refreshSeconds: 30,
     description: 'The whole pipeline — Sonarr, Radarr, Prowlarr and qBittorrent — as one view, with search across every indexer.',
     auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'sonarr_key' },
     endpoints: [{ key: 'radarr', label: 'Radarr', baseUrlSetting: 'radarr_url' }, { key: 'prowlarr', label: 'Prowlarr', baseUrlSetting: 'prowlarr_url' }, { key: 'qbit', label: 'qBittorrent', baseUrlSetting: 'qbit_url' }],
@@ -33,6 +35,7 @@ const PLUGINS = [
     description: 'Finds MeshCentral installed with npm in any guest and keeps it updated from the Updates page: release notes, security flag and a real sign-in check through the public URL.',
     auth: { kind: 'none' }, settings: [s('public_url', 'Public URL', 'text', false, `https://mesh.${DOMAIN}`)] },
   QNAP_PLUGIN,
+  ...EXTRA_PLUGINS,
 ].map(p => ({ ...p, hasDetail: true, configured: true, missing: [] as string[] }))
 
 // -- Home Assistant -------------------------------------------------------------------------------
@@ -96,11 +99,7 @@ const haInstances = () => [
 
 // -- Plex ------------------------------------------------------------------------------------------
 function plexDetail() {
-  const sessions = [
-    { title: 'Severance', episode: 'Who Is Alive?', number: 'S02E04', year: 2025, mediaType: 'episode', user: 'sam', player: 'Living Room TV', quality: '4K', mode: 'direct play', state: 'playing', progress: 38 },
-    { title: 'Dune: Part Two', episode: null, number: null, year: 2024, mediaType: 'movie', user: 'jordan', player: 'iPad', quality: '1080p', mode: 'transcode (hw)', state: 'playing', progress: 71 },
-    { title: 'Bluey', episode: 'Sleepytime', number: 'S02E26', year: 2018, mediaType: 'episode', user: 'casey', player: 'Kids Tablet', quality: '1080p', mode: 'direct stream', state: 'paused', progress: 52 },
-  ]
+  const sessions = plexSessions()
   const recent = [
     ['sam', 'Severance - Hello, Ms. Cobel', 'Living Room TV', 51], ['riley', 'The Bear - Forks', 'Chrome', 36], ['jordan', 'Arrival', 'iPad', 116],
     ['alex', 'Andor - One Way Out', 'Office PC', 47], ['casey', 'Bluey - Camping', 'Kids Tablet', 8], ['morgan', 'Blade Runner 2049', 'Apple TV', 163],
@@ -109,7 +108,7 @@ function plexDetail() {
   const topTitles = [['Severance', 41, 2050], ['Bluey', 88, 620], ['The Bear', 30, 990], ['Andor', 24, 1150], ['Shogun', 20, 1180], ['Dune: Part Two', 6, 990]].map(([title, plays, minutes]) => ({ title, plays, minutes }))
   return {
     ok: true,
-    visual: { kind: 'plex', sessions, counts: { streams: 3, transcodes: 1, direct: 2 }, bandwidth: { totalMbps: 41.6, lanMbps: 32.4, wanMbps: 9.2 }, topWatchers, topTitles, recent },
+    visual: { kind: 'plex', sessions, counts: { streams: 3, transcodes: 1, direct: 2 }, bandwidth: { totalMbps: Math.round(wobble(41.6, 7, 'ptot') * 10) / 10, lanMbps: Math.round(wobble(32.4, 5, 'plan') * 10) / 10, wanMbps: Math.round(wobble(9.2, 2.2, 'pwan') * 10) / 10 }, libraries: PLEX_LIBRARIES, topWatchers, topTitles, recent },
     stats: [{ label: 'Watching now', value: '3' }, { label: 'Transcoding', value: '1' }, { label: 'Direct play', value: '2' }, { label: 'Bandwidth', value: '41.6 Mbps' }, { label: 'LAN bandwidth', value: '32.4 Mbps' }, { label: 'WAN bandwidth', value: '9.2 Mbps' }],
     tables: [
       { title: 'Playing now', empty: 'Nobody is watching anything.', columns: [['user', 'Who'], ['title', 'What'], ['player', 'Player'], ['quality', 'Quality'], ['mode', 'Mode'], ['state', 'State'], ['at', 'Progress']].map(([key, label]) => ({ key, label })),
@@ -211,8 +210,8 @@ export const PLUGIN_ROUTES: FixtureRoute[] = [
       { slug: 'adguard-home', name: 'AdGuard Home', category: 'network', would: 'Queries blocked today, the noisiest clients, and whether filtering is on.', api: 'AdGuard Home REST API' },
     ] }) },
   { path: '/api/plugins/metrics', refuse: true },
-  { path: '/api/plugins/:id/data', get: p => ok(DATA[p.id] ?? { ok: false, error: 'Not part of the demo.' }) },
-  { path: '/api/plugins/:id/detail', get: p => ok(DETAIL[p.id]?.() ?? { ok: false, error: 'Not part of the demo.' }) },
+  { path: '/api/plugins/:id/data', get: p => ok(EXTRA_DATA[p.id] ?? DATA[p.id] ?? { ok: false, error: 'Not part of the demo.' }) },
+  { path: '/api/plugins/:id/detail', get: p => ok(EXTRA_DETAIL[p.id]?.() ?? DETAIL[p.id]?.() ?? { ok: false, error: 'Not part of the demo.' }) },
   { path: '/api/plugins/:id/stuck', get: () => ok([]) },
   { path: '/api/plugins/home-assistant/instances', get: () => ok(haInstances()) },
   { path: '/api/plugins/home-assistant/instances/:iid/status', get: () => ok({ reachable: true, error: null, version: '2026.11.1', location: 'Home', user: { name: 'hyperprox', isAdmin: false, isOwner: false } }) },
