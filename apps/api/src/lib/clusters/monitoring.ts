@@ -144,7 +144,7 @@ export function productionMonitoringDeps(): MonitoringDeps {
       try { const r = await fetch(`http://${hostPort(listen, 9100)}/metrics`, { signal: AbortSignal.timeout(5000) }); return r.ok ? await r.text() : null } catch { return null }
     },
     writeTargets: (id, entries) => writeRemoteTargets(id, entries),
-    async reload() { try { await fetch(`${prometheusBase()}/-/reload`, { method: 'POST' }) } catch { /* not running */ } },
+    async reload() { try { await fetch(`${prometheusBase()}/-/reload`, { method: 'POST', signal: AbortSignal.timeout(10_000) }) } catch { /* not running */ } },
     async up(id) {
       try {
         const r = await fetch(`${prometheusBase()}/api/v1/query?query=${encodeURIComponent(`up{job="node",hpx_cluster="${id}"}`)}`, { signal: AbortSignal.timeout(4000) })

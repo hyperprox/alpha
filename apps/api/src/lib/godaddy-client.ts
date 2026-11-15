@@ -83,6 +83,8 @@ export class GoDaddyClient {
         ...(body ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
+      // A hung answer must not hold a request open forever.
+      signal: AbortSignal.timeout(15_000),
     })
 
     if (!res.ok) {

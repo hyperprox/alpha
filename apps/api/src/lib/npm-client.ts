@@ -63,6 +63,9 @@ const signingIn = new Map<string, Promise<{ token: string; expires: Date }>>()
 /** Tests: forget every cached token. */
 export function clearNpmTokens(): void { tokens.clear(); signingIn.clear() }
 
+/** How long one try of one NPM request may take. */
+const NPM_TRY_TIMEOUT_MS = 15_000
+
 export class NPMClient {
   private url:      string
   private email:    string
@@ -75,7 +78,9 @@ export class NPMClient {
     this.url      = url.replace(/\/$/, '')
     this.email    = email
     this.password = password
-    this.fetchImpl = fetchImpl ?? ((u, i) => fetch(u, i))
+    // Each try gets its own 15 s limit (the retry loop in idempotent() then starts a fresh one); a caller's own signal wins.
+    const inner = fetchImpl ?? ((u: string, i?: RequestInit) => fetch(u, i))
+    this.fetchImpl = (u, i) => inner(u, { ...i, signal: i?.signal ?? AbortSignal.timeout(NPM_TRY_TIMEOUT_MS) })
   }
 
   private cacheKey(): string {

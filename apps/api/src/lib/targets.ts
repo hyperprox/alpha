@@ -91,7 +91,7 @@ export async function productionTargetDeps(): Promise<TargetSyncDeps> {
       }
       return new Set()
     },
-    async reload() { try { await fetch(`${prometheusBase()}/-/reload`, { method: 'POST' }) } catch { /* not running */ } },
+    async reload() { try { await fetch(`${prometheusBase()}/-/reload`, { method: 'POST', signal: AbortSignal.timeout(10_000) }) } catch { /* not running */ } },
     dir: targetsDir(),
     dashboard: vendors => { dashboard.writeClusterDashboard(process.env.HYPERPROX_DIR || '/opt/hyperprox', vendors) },
   }

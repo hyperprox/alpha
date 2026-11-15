@@ -25,21 +25,24 @@ export interface GrafanaAdminDeps {
   generate(): string
 }
 
+/** Longest a docker call about Grafana may take before it is stopped. */
+const DOCKER_TIMEOUT_MS = 30_000
+
 export function grafanaCliReset(password: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const p = spawn('docker', ['exec', '-i', 'hyperprox-grafana', 'grafana', 'cli', 'admin', 'reset-admin-password', '--password-from-stdin'],
-      { stdio: ['pipe', 'ignore', 'pipe'] })
+      { stdio: ['pipe', 'ignore', 'pipe'], timeout: DOCKER_TIMEOUT_MS })
     let err = ''
     p.stderr.on('data', d => { err += d })
     p.on('error', reject)
-    p.on('close', code => code === 0 ? resolve() : reject(new Error(`grafana cli exited ${code}: ${err.trim().split('\n').pop()}`)))
+    p.on('close', (code, signal) => code === 0 ? resolve() : reject(new Error(signal ? `grafana cli did not finish within ${DOCKER_TIMEOUT_MS / 1000} seconds` : `grafana cli exited ${code}: ${err.trim().split('\n').pop()}`)))
     p.stdin.end(password + '\n')
   })
 }
 
 export function productionGrafanaDeps(): GrafanaAdminDeps {
   return {
-    running: () => new Promise(r => execFile('docker', ['inspect', '-f', '{{.State.Running}}', 'hyperprox-grafana'], (e, out) => r(!e && out.trim() === 'true'))),
+    running: () => new Promise(r => execFile('docker', ['inspect', '-f', '{{.State.Running}}', 'hyperprox-grafana'], { timeout: DOCKER_TIMEOUT_MS }, (e, out) => r(!e && out.trim() === 'true'))),
     apply: grafanaCliReset,
     read: () => getCredential('system', 'grafana', 'admin_password'),
     write: pw => setCredential('system', 'grafana', 'admin_password', pw),

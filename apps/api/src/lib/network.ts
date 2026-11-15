@@ -31,14 +31,17 @@ export interface ClusterNetworkStats {
 const CACHE_TTL = 4_000
 let cache: { data: ClusterNetworkStats; ts: number } | null = null
 
-function proxmoxFetch<T>(host: string, port: number, token: string, path: string): Promise<T> {
+/** How long one Proxmox read may take: this runs every two seconds, so a hung connection must not pile up. */
+export const PROXMOX_READ_TIMEOUT_MS = 10_000
+
+export function proxmoxFetch<T>(host: string, port: number, token: string, path: string, timeoutMs = PROXMOX_READ_TIMEOUT_MS, agent: https.Agent | false | undefined = homeTlsAgent()): Promise<T> {
   return new Promise((resolve, reject) => {
     const url  = new URL(`https://${host}:${port}/api2/json${path}`)
     const opts: https.RequestOptions = {
       hostname: url.hostname, port: url.port,
       path: url.pathname + url.search, method: 'GET',
       // The home cluster's certificate rule (lib/home-tls.ts), checked before the token is sent.
-      agent: homeTlsAgent(),
+      agent,
       headers: { Authorization: `PVEAPIToken=${token}` },
     }
     const req = https.request(opts, (res) => {
@@ -49,6 +52,9 @@ function proxmoxFetch<T>(host: string, port: number, token: string, path: string
         catch (e) { reject(new Error(`Parse error: ${data.slice(0, 100)}`)) }
       })
     })
+    // A hard deadline for the whole read, not an idle timer: a slow trickle must not keep it alive.
+    const timer = setTimeout(() => req.destroy(new Error(`Proxmox did not answer within ${Math.round(timeoutMs / 1000)} seconds`)), timeoutMs)
+    req.on('close', () => clearTimeout(timer))
     req.on('error', reject)
     req.end()
   })
