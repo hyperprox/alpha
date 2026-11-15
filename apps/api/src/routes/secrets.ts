@@ -7,6 +7,7 @@
 //  re-confirmed (gate) and audited before anything is removed.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync } from 'fastify'
 import { randomInt } from 'crypto'
 import { getBroker, type SecretItem } from '../lib/vault/broker'
@@ -60,7 +61,7 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
           .sort((a, b) => a.name.localeCompare(b.name)),
       }
     } catch (e: any) {
-      return reply.status(502).send({ ok: false, error: e?.message ?? 'Vault request failed' })
+      return sendFailure(reply.request, reply, e, 'Vault request failed.', { status: 502 })
     }
   })
 
@@ -102,7 +103,7 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
         req.log.info({ name, field: b.field, by: req.session!.email, hours, maxViews }, '[secrets] sent')
         return { ok: true, data: sent }
       } catch (e: any) {
-        return reply.status(502).send({ ok: false, error: e?.message ?? 'Could not create the Send' })
+        return sendFailure(reply.request, reply, e, 'Could not create the Send.', { status: 502 })
       }
     })
 
@@ -123,7 +124,7 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
     if (!broker.deleteSecretById) return reply.status(501).send({ ok: false, error: 'This vault connection cannot delete one item by itself.' })
     let all: SecretItem[]
     try { all = await broker.listSecrets(req.session!.sid) }
-    catch (e: any) { return reply.status(502).send({ ok: false, error: e?.message ?? 'Could not read the vault' }) }
+    catch (e: any) { return sendFailure(reply.request, reply, e, 'Could not read the vault.', { status: 502 }) }
     const item = all.find(i => i.id === id)
     if (!item || item.name !== name) return reply.status(404).send({ ok: false, error: 'No such secret (it may have been changed or deleted since the page loaded)' })
     try {
@@ -134,7 +135,7 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       await broker.deleteSecretById(req.session!.sid, item.id)
     } catch (e: any) {
-      return reply.status(502).send({ ok: false, error: e?.message ?? 'Could not delete from the vault' })
+      return sendFailure(reply.request, reply, e, 'Could not delete from the vault.', { status: 502 })
     }
     // The cache is keyed by name. If it held this item, a same-named item that is still there takes its place.
     if (cachedSecret(name)?.id === item.id) {
@@ -166,7 +167,7 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
       putCachedSecret(saved)
       return { ok: true, data: { name: saved.name, fields: Object.keys(saved.fields) } }
     } catch (e: any) {
-      return reply.status(502).send({ ok: false, error: e?.message ?? 'Could not save to the vault' })
+      return sendFailure(reply.request, reply, e, 'Could not save to the vault.', { status: 502 })
     }
   })
 }

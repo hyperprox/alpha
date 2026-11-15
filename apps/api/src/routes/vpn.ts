@@ -7,6 +7,7 @@
 //  keeps API tokens out. Responses that carry a config are never cached.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
 import { execFile } from 'node:child_process'
@@ -94,7 +95,7 @@ function sendError(reply: FastifyReply, e: any) {
   if (e instanceof WgInputError) return reply.status(400).send({ error: e.message })
   if (e instanceof WgNotFoundError) return reply.status(404).send({ error: e.message })
   if (e?.name === 'VaultLockedError') throw e   // 423 from the gate's error handler
-  return reply.status(503).send({ error: e?.message ?? String(e) })
+  return sendFailure(reply.request, reply, e, undefined, { status: 503 })
 }
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/

@@ -10,6 +10,7 @@
 //  The work is in lib/remote; this file translates HTTP to it.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
 import { isUnlocked, onUnlock } from '../lib/vault/state'
@@ -76,7 +77,7 @@ function sendError(reply: FastifyReply, e: any) {
   if (e instanceof RemoteNotFoundError) return reply.status(404).send({ error: e.message })
   if (e instanceof RemoteBusyError) return reply.status(409).send({ error: e.message, runningJobId: e.jobId })
   if (e?.name === 'VaultLockedError') throw e        // the gate's error handler answers 423
-  return reply.status(503).send({ error: e?.message ?? String(e) })
+  return sendFailure(reply.request, reply, e, undefined, { status: 503 })
 }
 
 type MachineParams = { id: string; provider: string }

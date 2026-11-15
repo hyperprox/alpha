@@ -10,6 +10,7 @@
 //  only against the address it was stored for.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { PrismaRemoteStore } from '../lib/remote/store'
 import { AutoConnectError, autoConnect, onUnlock, setAutoConnectExclusionSource } from '../lib/auto-connect'
@@ -21,7 +22,7 @@ const KEY = /^[A-Za-z0-9_.:@*#/[\]-]{1,200}$/
 function fail(reply: FastifyReply, e: any) {
   if (e instanceof AutoConnectError) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
   if (e?.name === 'VaultLockedError') throw e
-  return reply.status(409).send({ success: false, code: 'failed', error: String(e?.message ?? 'That did not work.').slice(0, 300) })
+  return sendFailure(reply.request, reply, e, 'That did not work. The details are in the log.')
 }
 
 export const autoConnectRoutes: FastifyPluginAsync = async (fastify) => {

@@ -17,6 +17,7 @@
 //  five minutes — which an API token can never do.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import type { UpdatesInventory, UpdatesWsPayload } from '../lib/updates/types'
 import { hasRole } from '../lib/roles'
@@ -145,7 +146,7 @@ function sendError(reply: FastifyReply, e: any) {
   if (e instanceof ActiveJobError) return reply.status(409).send({ error: e.message, runningJobId: e.runningJobId })
   if (e instanceof PolicyRequiredError) return reply.status(400).send({ error: e.message })
   if (e instanceof JobStateError) return reply.status(/^No (job|node)/.test(e.message) ? 404 : 409).send({ error: e.message })
-  return reply.status(503).send({ error: e?.message ?? String(e) })
+  return sendFailure(reply.request, reply, e, undefined, { status: 503 })
 }
 
 /** Approval ids from a query string; null when any is malformed. */

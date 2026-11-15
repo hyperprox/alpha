@@ -30,6 +30,7 @@
 //
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { auditCredentialUse, auditOrThrow } from '../lib/audit'
 import { hasRole } from '../lib/roles'
@@ -82,7 +83,7 @@ export const libraryService = (): LibraryService => (sharedLibrary ??= new Libra
 
 function fail(reply: FastifyReply, e: any) {
   if (e instanceof ClearoutRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
-  return reply.status(502).send({ success: false, code: 'unreachable', error: String(e?.message ?? e).slice(0, 300) })
+  return sendFailure(reply.request, reply, e, 'Plex did not answer as expected. The details are in the log.', { status: 502 })
 }
 
 /**

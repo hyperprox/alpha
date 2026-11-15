@@ -12,6 +12,7 @@
 //  The update itself runs outside the API (lib/self-update/updater-main.ts).
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import path from 'path'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
@@ -161,7 +162,7 @@ export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPl
         return reply.status(202).send({ job })
       } catch (e: any) {
         if (e instanceof RefusedError) return reply.status(409).send({ ok: false, code: 'refused', error: e.message, refusals: e.refusals })
-        return reply.status(503).send({ ok: false, error: `The update could not be started: ${e?.message ?? e}` })
+        return sendFailure(req, reply, e, 'The update could not be started.', { status: 503 })
       }
     })
 
@@ -172,7 +173,7 @@ export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPl
       try { return { settings: await svc.saveSettings(req.body, req.session!.email) } }
       catch (e: any) {
         if (e instanceof SettingsError) return reply.status(400).send({ ok: false, error: e.message })
-        return reply.status(503).send({ ok: false, error: e?.message ?? String(e) })
+        return sendFailure(req, reply, e, 'The update settings could not be saved.', { status: 503 })
       }
     })
   }

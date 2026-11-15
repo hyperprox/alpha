@@ -15,6 +15,7 @@ import { grafanaCliReset, resetGrafanaAdmin, productionGrafanaDeps } from '../li
 import {
   exporterStatus, provisionPveExporter, pveAccessFromEnv, type ExporterStatus, type ProvisionResult,
 } from '../lib/pve-exporter'
+import { sendFailure } from '../lib/failure'
 
 export interface MonitoringRouteOptions {
   status?:    () => Promise<ExporterStatus>
@@ -41,7 +42,7 @@ export const monitoringRoutes: FastifyPluginAsync<MonitoringRouteOptions> = asyn
       await resetGrafanaAdmin(d, req.session?.email)
       return { success: true, data: { savedInVault: 'hyperprox:system/grafana' } }
     } catch (e: any) {
-      return reply.status(502).send({ success: false, error: e?.message ?? String(e) })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -57,7 +58,7 @@ export const monitoringRoutes: FastifyPluginAsync<MonitoringRouteOptions> = asyn
       if (e?.code === 'not_read_only') {
         return reply.status(409).send({ success: false, code: 'not_read_only', error: e.message, reasons: e.reasons ?? [] })
       }
-      return reply.status(502).send({ success: false, error: e?.message ?? String(e) })
+      return sendFailure(reply.request, reply, e)
     }
   })
 }

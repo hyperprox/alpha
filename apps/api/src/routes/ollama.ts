@@ -7,6 +7,7 @@
 import { FastifyPluginAsync } from 'fastify'
 import { getCredential, setCredential } from '../lib/credentials'
 import { prometheusBase } from '../lib/service-health'
+import { sendFailure } from '../lib/failure'
 
 // ── Model catalog ─────────────────────────────────────────────────────────────
 
@@ -225,7 +226,7 @@ export async function clearOllamaConnection(set: typeof setCredential = setCrede
 export const ollamaRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /api/ai/status — connection status + installed models
-  fastify.get('/status', async (_req, reply) => {
+  fastify.get('/status', async (req, reply) => {
     const url = await getOllamaUrl()
     if (!url) {
       return reply.send({ connected: false, url: null, models: [], managed: false })
@@ -240,12 +241,13 @@ export const ollamaRoutes: FastifyPluginAsync = async (fastify) => {
         managed: url.includes('localhost') || url.includes('127.0.0.1'),
       })
     } catch (err: any) {
-      return reply.send({ connected: false, url, error: err.message, models: [] })
+      req.log.warn({ err, url }, '[ollama] could not list models')
+      return reply.send({ connected: false, url, error: 'Ollama did not answer at that address.', models: [] })
     }
   })
 
   // GET /api/ai/detect — scan cluster for running Ollama instances
-  fastify.get('/detect', async (_req, reply) => {
+  fastify.get('/detect', async (req, reply) => {
     try {
       const { ProxmoxClient } = await import('../lib/proxmox-client')
       const host   = process.env.PROXMOX_HOST ?? ''
@@ -284,7 +286,8 @@ export const ollamaRoutes: FastifyPluginAsync = async (fastify) => {
       await Promise.all(probes)
       return reply.send({ ok: true, found })
     } catch (err: any) {
-      return reply.send({ ok: true, found: [], error: err.message })
+      req.log.warn({ err }, '[ollama] scan failed')
+      return reply.send({ ok: true, found: [], error: 'The scan for Ollama could not finish.' })
     }
   })
 
@@ -354,7 +357,8 @@ export const ollamaRoutes: FastifyPluginAsync = async (fastify) => {
       const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(5000) })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
     } catch (err: any) {
-      return reply.status(400).send({ ok: false, error: `Cannot reach Ollama at ${url}: ${err.message}` })
+      req.log.warn({ err, url }, '[ollama] connection test failed')
+      return reply.status(400).send({ ok: false, code: 'unreachable', error: `Cannot reach Ollama at ${url}. Check the address and that Ollama is running.` })
     }
 
     await setCredential('ai', 'ollama', 'url', url, false)
@@ -389,7 +393,7 @@ export const ollamaRoutes: FastifyPluginAsync = async (fastify) => {
       })
       return reply.send({ ok: true })
     } catch (err: any) {
-      return reply.status(400).send({ ok: false, error: err.message })
+      return sendFailure(req, reply, err, 'Ollama could not delete that model.')
     }
   })
 
@@ -420,7 +424,7 @@ export const ollamaRoutes: FastifyPluginAsync = async (fastify) => {
       if (data.error) throw new Error(data.error)
       return reply.send({ ok: true, content: data.message?.content ?? '' })
     } catch (err: any) {
-      return reply.status(500).send({ ok: false, error: err.message })
+      return sendFailure(reply.request, reply, err)
     }
   })
 }

@@ -16,6 +16,7 @@ import {
 } from '../lib/plugin-host'
 import { siteMetricsExposition } from '../lib/site-metrics'
 import { apiTokenStore } from '../lib/api-tokens'
+import { sendFailure } from '../lib/failure'
 
 export function metricsTokenMatches(offered: string, expected: string): boolean {
   if (!offered || !expected) return false
@@ -76,7 +77,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
       }))
       return { success: true, data: rows }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -92,7 +93,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
       fastify.log.info({ found: findings.length }, '[plugin] discovery scan')
       return { success: true, data: findings }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -119,7 +120,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       return reply.send({ success: true, data: await runPluginRescueScan(plugin) })
     } catch (e: any) {
-      return reply.status(502).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -185,7 +186,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
       } catch (e: any) {
         if (e instanceof PluginSettingsError) return reply.status(400).send({ success: false, code: 'credential_required', error: e.message })
         if (e?.name === 'TokenVaultWriteError') return reply.status(403).send({ success: false, code: 'token_forbidden', error: e.message })
-        return reply.status(500).send({ success: false, error: e.message })
+        return sendFailure(reply.request, reply, e)
       }
     },
   )

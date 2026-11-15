@@ -9,6 +9,7 @@ import axios from 'axios'
 import { clusterPower }  from '../lib/power'
 import { ProxmoxClient } from '../lib/proxmox-client'
 import { prometheusBase } from '../lib/service-health'
+import { sendFailure } from '../lib/failure'
 
 // Prometheus listens on 127.0.0.1 only; this used to be HOST_IP, which it no longer answers on.
 const PROMETHEUS = prometheusBase()
@@ -45,7 +46,7 @@ export async function prometheusRoutes(fastify: FastifyInstance) {
 
       return reply.send({ success: true, data: mapped })
     } catch (err: any) {
-      return reply.status(500).send({ success: false, error: err.message })
+      return sendFailure(reply.request, reply, err)
     }
   })
 
@@ -71,7 +72,7 @@ export async function prometheusRoutes(fastify: FastifyInstance) {
 
       return reply.send({ success: true, data: await clusterPower(names) })
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -88,7 +89,7 @@ export async function prometheusRoutes(fastify: FastifyInstance) {
       })
       return reply.send({ success: true, data: data.data })
     } catch (err: any) {
-      return reply.status(500).send({ success: false, error: err.message })
+      return sendFailure(reply.request, reply, err)
     }
   })
 
@@ -108,7 +109,7 @@ export async function prometheusRoutes(fastify: FastifyInstance) {
         })
         return reply.send({ success: true, data: data.data })
       } catch (err: any) {
-        return reply.status(500).send({ success: false, error: err.message })
+        return sendFailure(reply.request, reply, err)
       }
     }
   )
@@ -148,7 +149,7 @@ export async function prometheusRoutes(fastify: FastifyInstance) {
 
       return reply.send({ success: true, data: Object.values(nodes) })
     } catch (err: any) {
-      return reply.status(500).send({ success: false, error: err.message })
+      return sendFailure(reply.request, reply, err)
     }
   })
 }

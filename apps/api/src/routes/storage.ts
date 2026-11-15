@@ -1,11 +1,12 @@
 import { FastifyPluginAsync } from 'fastify'
 import { livePve }            from '../lib/pve-env'
 import { withCephMon, CephUnavailableError } from '../lib/ceph'
+import { sendFailure } from '../lib/failure'
 
 
 const wrap = async (reply: any, fn: () => Promise<any>) => {
   try   { return { success: true, data: await fn() } }
-  catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+  catch (e: any) { return sendFailure(reply.request, reply, e) }
 }
 
 // See routes/proxmox.ts — a CEPH-less cluster is a configuration, not a fault.
@@ -15,7 +16,7 @@ const wrapCeph = async (reply: any, fn: () => Promise<any>) => {
     if (e instanceof CephUnavailableError) {
       return reply.status(503).send({ success: false, error: e.message, cephAvailable: false })
     }
-    return reply.status(500).send({ success: false, error: e.message })
+    return sendFailure(reply.request, reply, e)
   }
 }
 
@@ -104,7 +105,7 @@ export const storageRoutes: FastifyPluginAsync = async (fastify) => {
 
       return { success: true, data: { storage, ceph, osds, pools, nodes, warnings } }
     } catch (e: any) {
-      return r.status(500).send({ success: false, error: e.message })
+      return sendFailure(r.request, r, e)
     }
   })
 

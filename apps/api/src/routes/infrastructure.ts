@@ -6,6 +6,7 @@ import { strictParams } from '../lib/route-params'
 import { FastifyPluginAsync } from 'fastify'
 import { livePve }            from '../lib/pve-env'
 import { maskConfig }         from '../lib/guest-config/secrets'
+import { sendFailure } from '../lib/failure'
 
 /** The Proxmox tag that keeps HyperProx out of a guest (lib/remote/service.ts IGNORE_TAG). */
 const IGNORE_TAG = 'hyperprox-ignore'
@@ -13,7 +14,7 @@ const IGNORE_TAG = 'hyperprox-ignore'
 
 const wrap = async (reply: any, fn: () => Promise<any>) => {
   try   { return { success: true, data: await fn() } }
-  catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+  catch (e: any) { return sendFailure(reply.request, reply, e) }
 }
 
 type VMParams     = { Params: { node: string; vmid: string; type: 'qemu' | 'lxc' } }

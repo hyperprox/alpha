@@ -7,6 +7,7 @@
 //  fails.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { CATALOGUE, CATEGORY_LABELS, findRecipe } from '../lib/catalogue'
 import {
@@ -171,7 +172,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       const r = await deps.detected(req.query.refresh === '1')
       return reply.send({ success: true, data: r })
     } catch (e: any) {
-      return reply.status(502).send({ success: false, error: `Could not look for running apps: ${e?.message ?? e}` })
+      return sendFailure(req, reply, e, 'Could not look for running apps.', { status: 502 })
     }
   })
 
@@ -216,7 +217,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       })
       return reply.send({ success: true, data: list })
     } catch (e: any) {
-      return reply.status(400).send({ success: false, error: String(e?.message ?? 'Could not list the NAS.').slice(0, 300) })
+      return sendFailure(req, reply, e, 'Could not list the NAS.', { status: 502 })
     }
   })
 
@@ -408,7 +409,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
     const nodes = await pve().getNodes().catch(() => [] as any[])
     if (!((nodes as any[]) ?? []).some((n: any) => n?.node === node)) return reply.status(404).send({ success: false, error: 'No such node.' })
     try { return reply.send({ success: true, data: await transcodeHardware(node, deps.wizard) }) }
-    catch (e: any) { return reply.status(502).send({ success: false, error: e?.message ?? 'Could not look at the node.' }) }
+    catch (e: any) { return sendFailure(req, reply, e, 'Could not look at the node.', { status: 502 }) }
   })
 
   // GET /wizard/arr/seerr — the caller's Arr Stacks whose Seerr waits for a Plex server
@@ -493,7 +494,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       await saveCredential(`node-${node}`, cred)
       return reply.send({ success: true, data: { node, version: probe.output.trim().split('\n')[0] } })
     } catch (e: any) {
-      return reply.status(400).send({ success: false, error: e.message })
+      return sendFailure(req, reply, e, 'Could not reach the node with that login.', { status: 502 })
     }
   })
 
@@ -516,7 +517,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
         data: { node, code: probe.code, output: probe.output.trim().split('\n')[0] },
       })
     } catch (e: any) {
-      return reply.status(400).send({ success: false, error: e.message })
+      return sendFailure(req, reply, e, 'Could not reach the node with that login.', { status: 502 })
     }
   })
   }

@@ -37,6 +37,7 @@ import { listHostAddresses } from '../lib/terminal-hosts'
 import { liveAddresses } from '../lib/wizard-placement'
 import { proxyService } from '../lib/proxy'
 import { ownHeaders } from '../lib/own-user-agent'
+import { sendFailure } from '../lib/failure'
 
 export interface SiteMetricsRouteDeps {
   store: MetricsStore
@@ -305,7 +306,7 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       const st = await stateFor(site)
       if (st.kind !== 'wordpress') return reply.status(400).send({ success: false, error: 'This is not a WordPress site.' })
       if (st.wordpress && d.now().getTime() - st.wordpress.checkedAt < 60_000) return reply.send({ success: true, data: { wordpress: st.wordpress } })
-      try { await refreshWordPress(site, st, { run: d.run, now: d.now }) } catch (e: any) { return reply.status(502).send({ success: false, error: e.message }) }
+      try { await refreshWordPress(site, st, { run: d.run, now: d.now }) } catch (e: any) { return sendFailure(reply.request, reply, e) }
       await d.store.putState(st)
       return reply.send({ success: true, data: { wordpress: st.wordpress } })
     })
@@ -347,7 +348,10 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
         const r = await d.run(fake, adoptProbeScript(i), 256 * 1024)
         facts = parseAdoptProbe(r.output)
         if (!facts.complete) throw new Error(`the check exited ${r.code}`)
-      } catch (e: any) { return { errors: [`Could not look inside container ${i.vmid}: ${e.message}`] } }
+      } catch (e: any) {
+        fastify.log.warn({ err: e, vmid: i.vmid }, '[site-metrics] adopt probe failed')
+        return { errors: [`Could not look inside container ${i.vmid}. The details are in the log.`] }
+      }
       const errors: string[] = [], warnings: string[] = []
       if (!facts.logExists) errors.push(`${i.logPath} does not exist in container ${i.vmid}.`)
       else if (!facts.logReadable) errors.push(`${i.logPath} cannot be read.`)
@@ -424,7 +428,7 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       try {
         const r = await d.run(site, inspectScript(st.logPath), 512 * 1024)
         plan = planLogFormat(parseInspect(r.output), st.logPath)
-      } catch (e: any) { return reply.status(502).send({ success: false, error: `Could not read nginx's configuration: ${e.message}` }) }
+      } catch (e: any) { return sendFailure(req, reply, e, "Could not read nginx's configuration.", { status: 502 }) }
       const now = d.now().getTime()
       for (const [k, v] of plans) if (v.expires < now) plans.delete(k)
       const id = plan.refusal ? null : planId(plan)
@@ -445,7 +449,10 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       try {
         const r = await d.run(site, script, 64 * 1024)
         res = parseApply(r.output, r.code)
-      } catch (e: any) { res = { ok: false, backups: [], message: e.message } }
+      } catch (e: any) {
+        req.log.error({ err: e, site: site.id }, '[site-metrics] log format change failed')
+        res = { ok: false, backups: [], message: 'The change could not be made. The details are in the log.' }
+      }
       await d.audit('site.log-format', `site:${site.id}`, { by: who(req), ok: res.ok, files: Object.keys(p.plan.hashes), message: res.message })
       return reply.status(res.ok ? 200 : 502).send({ success: res.ok, data: res, ...(res.ok ? {} : { error: res.message }) })
     })

@@ -11,6 +11,7 @@ import * as net from 'net'
 import { getProviderCredentials } from '../lib/credentials'
 import { ProxmoxClient } from '../lib/proxmox-client'
 import { hardware, gpuBadges } from '../lib/hardware'
+import { sendFailure } from '../lib/failure'
 
 export type GPUType = 'nvidia' | 'amd' | 'intel-igpu' | 'intel-arc' | 'unknown'
 
@@ -52,7 +53,7 @@ export async function detectNodeGPUs(nodeName: string, client: ProxmoxClient): P
 
 const wrap = async (reply: any, fn: () => Promise<any>) => {
   try   { return { success: true, data: await fn() } }
-  catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+  catch (e: any) { return sendFailure(reply.request, reply, e) }
 }
 
 // Where each vendor's figures are served. AMD's come from node_exporter's drm collector, on its own port.

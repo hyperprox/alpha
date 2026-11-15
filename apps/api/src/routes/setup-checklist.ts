@@ -16,13 +16,14 @@ import type { FastifyPluginAsync } from 'fastify'
 import { confirmHostKey, saveHostKeyAnchor, checklistState, startItem, getJob, activeJob, saveNodeLoginForAll, ChecklistRefusal, productionChecklistDeps, type ChecklistDeps, type ItemId } from '../lib/setup-checklist'
 import { currentContext, reconfirmedWithin, dropReconfirm } from '../lib/auth'
 import { igpuAccess, IgpuRefusal } from '../lib/igpu-access'
+import { sendFailure } from '../lib/failure'
 
 export function buildSetupChecklistRoutes(deps?: () => ChecklistDeps): FastifyPluginAsync {
   const d = deps ?? productionChecklistDeps
   const who = () => currentContext()?.email ?? 'unknown'
   const fail = (reply: any, e: any) => e instanceof ChecklistRefusal
     ? reply.status(e.status).send({ success: false, error: e.message })
-    : reply.status(500).send({ success: false, error: e?.message ?? String(e) })
+    : sendFailure(reply.request, reply, e)
 
   return async (fastify) => {
     fastify.get('/', async (_req, reply) => {

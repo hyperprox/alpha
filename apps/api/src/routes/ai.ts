@@ -8,6 +8,7 @@
 //  the server's copy, derived and validated again against fresh facts first.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import { detail as metricsDetail } from '../lib/site-metrics/view'
 import { metricsStore } from '../lib/site-metrics/store'
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
@@ -577,7 +578,8 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
           sample: { service: x.values.service ?? null, fields: Object.keys(x.values).length },
         })
       } catch (err: any) {
-        return reply.status(502).send({ ok: false, ms: Date.now() - started, error: err.message })
+        req.log.warn({ err }, '[ai] model test failed')
+        return reply.status(502).send({ ok: false, ms: Date.now() - started, code: 'model_failed', error: err instanceof ModelCallError ? err.message : 'The model did not give a usable answer.', requestId: String(req.id) })
       }
     })
 
@@ -676,7 +678,7 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         try {
           [facts, settings] = await Promise.all([deps.facts(), deps.settings()])
         } catch (err: any) {
-          return reply.status(502).send({ ok: false, error: `Cannot read the cluster, so there is nothing to plan against: ${err.message}` })
+          return sendFailure(req, reply, err, 'Cannot read the cluster, so there is nothing to plan against.', { status: 502 })
         }
 
         const loopDeps: LoopDeps = {
@@ -696,7 +698,7 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
             return reply.send({ ok: true, conversational: true, needsModel: true, provider: chosen,
               message: err instanceof ModelCallError ? `${err.message} ${NEEDS_MODEL}` : NEEDS_MODEL })
           }
-          return reply.status(502).send({ ok: false, provider: chosen, error: err.message })
+          return sendFailure(req, reply, err, 'The assistant could not work out a plan. Try again.', { status: 502 })
         }
 
         // Not a task: the answer is shown, and nothing is planned.
@@ -779,9 +781,10 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
       try {
         [facts, settings] = await Promise.all([deps.facts(), deps.settings()])
       } catch (err: any) {
+        req.log.error({ err }, '[ai] cannot re-read the cluster before running a plan')
         return reply.status(502).send({
-          ok: false, blocked: true,
-          error: `Cannot read the cluster, so the plan cannot be checked again before it runs: ${err.message}`,
+          ok: false, blocked: true, requestId: String(req.id),
+          error: 'Cannot read the cluster, so the plan cannot be checked again before it runs.',
         })
       }
       const unavailable = unreadFor(run.fields, facts)

@@ -7,6 +7,7 @@
 //  vault; nothing here returns one.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import { FastifyPluginAsync } from 'fastify'
 import { GoDaddyClient } from '../lib/godaddy-client'
 import { dnsRouter, PROVIDER_LABEL, type DnsProviderId, type DnsRouter } from '../lib/dns-providers'
@@ -36,7 +37,7 @@ const wrap = async (reply: any, fn: () => Promise<any>) => {
   catch (e: any) {
     // 409: the request is fine, the install is not set up for it yet. The page shows its empty state.
     if (e instanceof DnsNotConfigured) return reply.status(409).send({ success: false, configured: false, code: e.code, error: e.message })
-    return reply.status(e?.statusCode === 400 ? 400 : 500).send({ success: false, error: e.message })
+    return sendFailure(reply.request, reply, e, 'The DNS provider did not accept that or did not answer. The details are in the log.')
   }
 }
 

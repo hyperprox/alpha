@@ -23,6 +23,7 @@ import { ipFromLxcNet, isNodeLoginId, resolveTerminalTarget, terminalIdProblem, 
 import { verifyForPane, trustVerdict, hostKeyCheckDeps, HostKeyCheckRefusal } from '../lib/terminal-hostkey'
 import { auditOrThrow } from '../lib/audit'
 import { isTokenContext } from '../lib/auth'
+import { sendFailure } from '../lib/failure'
 
 
 export interface TerminalHost {
@@ -147,7 +148,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
 
       return { success: true, data: [...hosts, ...manualHosts, ...pluginHosts] }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -167,7 +168,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         },
       }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -203,7 +204,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         fastify.log.info({ host: req.params.id, shared: !!alsoShared }, '[terminal] credential saved')
         return { success: true }
       } catch (e: any) {
-        return reply.status(500).send({ success: false, error: e.message })
+        return sendFailure(reply.request, reply, e)
       }
     },
   )
@@ -215,7 +216,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       await removeCredential(req.params.id)
       return { success: true }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -235,7 +236,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         fastify.log.info({ id: host.id, address }, '[terminal] manual host added')
         return { success: true, data: host }
       } catch (e: any) {
-        return reply.status(500).send({ success: false, error: e.message })
+        return sendFailure(reply.request, reply, e)
       }
     },
   )
@@ -246,7 +247,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       await removeCredential(req.params.id)
       return { success: true }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -264,7 +265,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
 
       let cred
       try { cred = await loadCredential(req.params.id) }
-      catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+      catch (e: any) { return sendFailure(reply.request, reply, e) }
       if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${req.params.id}.` })
       let host: string, port: number
       try { ({ host, port } = await resolveTerminalTarget(req.params.id, cred.port, terminalTargetDeps())) }
@@ -304,7 +305,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         fastify.log.info({ host, port }, '[terminal] tmux installed for session persistence')
         return { success: true, data: { installed: true, message: 'tmux installed — reconnect the pane and the session will survive a closed browser.' } }
       } catch (e: any) {
-        return reply.status(500).send({ success: false, error: e.message })
+        return sendFailure(reply.request, reply, e)
       }
     },
   )
@@ -324,7 +325,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
 
       let cred
       try { cred = await loadCredential(req.params.id) }
-      catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+      catch (e: any) { return sendFailure(reply.request, reply, e) }
       if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${req.params.id}.` })
       let host: string, port: number
       try { ({ host, port } = await resolveTerminalTarget(req.params.id, cred.port, terminalTargetDeps())) }
@@ -349,7 +350,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         sessions.sort((a, b) => b.activity - a.activity)
         return { success: true, data: sessions }
       } catch (e: any) {
-        return reply.status(500).send({ success: false, error: e.message })
+        return sendFailure(reply.request, reply, e)
       }
     },
   )
@@ -372,7 +373,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       })
       return { success: true, data }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -399,7 +400,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         fastify.log.info({ name, panes: panes.length, view }, '[terminal] layout saved')
         return { success: true, data: { ...row, name } }
       } catch (e: any) {
-        return reply.status(500).send({ success: false, error: e.message })
+        return sendFailure(reply.request, reply, e)
       }
     },
   )
@@ -413,7 +414,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       await fastify.prisma.terminalLayout.deleteMany({ where: { name: { in: names } } })
       return { success: true }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -428,7 +429,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       fastify.log.warn({ host: req.params.host }, '[terminal] pinned host key cleared')
       return { success: true }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -445,7 +446,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       if (e.retryAfter) reply.header('retry-after', String(e.retryAfter))
       return reply.status(e.status).send({ success: false, error: e.message })
     }
-    return reply.status(500).send({ success: false, error: e?.message ?? String(e) })
+    return sendFailure(reply.request, reply, e)
   }
 
   fastify.post<{ Params: { id: string } }>('/hosts/:id/hostkey/verify', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {

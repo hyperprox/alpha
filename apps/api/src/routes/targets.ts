@@ -6,6 +6,7 @@
 // =============================================================================
 import { FastifyPluginAsync } from 'fastify'
 import { readTargets, syncTargets } from '../lib/targets'
+import { sendFailure } from '../lib/failure'
 
 export const targetsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/status', async () => ({
@@ -35,7 +36,7 @@ export const targetsRoutes: FastifyPluginAsync = async (fastify) => {
         },
       }
     } catch (e: any) {
-      return r.status(500).send({ success: false, error: e.message })
+      return sendFailure(r.request, r, e)
     }
   })
 }

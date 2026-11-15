@@ -3,6 +3,7 @@
 // =============================================================================
 
 import { FastifyPluginAsync } from 'fastify'
+import { sendFailure } from '../lib/failure'
 import {
   getCategoryForUI,
   setCredential,
@@ -19,6 +20,22 @@ const SECRET_DESTINATIONS: Record<string, { address: string[]; secrets: string[]
   'proxy/npm':       { address: ['url'],            secrets: ['password'],     name: 'Nginx Proxy Manager' },
   'ai/openai':       { address: ['base_url'],       secrets: ['api_key'],      name: 'OpenAI' },
   'remote/netbird':  { address: ['management_url'], secrets: ['api_token'],    name: 'NetBird' },
+}
+
+/** The longest value a credential field may hold: longer than any real key, URL or certificate fingerprint. */
+export const SETTING_MAX_LENGTH = 4096
+// Control characters (newlines included) never belong in a credential, and in .env or a header they would split it.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
+
+/** Null when every value is acceptable text; otherwise the plain reason, naming the field. */
+export function settingsValueProblem(updates: Record<string, unknown>): string | null {
+  for (const [k, v] of Object.entries(updates)) {
+    if (typeof v !== 'string') return 'Every setting must be text'
+    const name = /^[A-Za-z0-9_]{1,40}$/.test(k) ? k : 'a field'
+    if (v.length > SETTING_MAX_LENGTH) return `The value for ${name} is too long (at most ${SETTING_MAX_LENGTH} characters).`
+    if (CONTROL_CHARS.test(v)) return `The value for ${name} contains a line break or another control character. Paste it again as a single line.`
+  }
+  return null
 }
 
 /** Compare addresses the way a request sees them: a URL by its origin, anything else as typed (trimmed, any case). */
@@ -84,9 +101,8 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
     if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
       return r.status(400).send({ success: false, error: 'Send the settings as an object of field: value' })
     }
-    if (Object.values(updates).some(v => typeof v !== 'string')) {
-      return r.status(400).send({ success: false, error: 'Every setting must be text' })
-    }
+    const valueProblem = settingsValueProblem(updates)
+    if (valueProblem) return r.status(400).send({ success: false, code: 'invalid_input', error: valueProblem })
     // What is stored now, the .env copy included for a value not moved into the vault yet.
     const stored = await getProviderCredentials(category, provider)
     for (const d of CREDENTIAL_DEFS) {
@@ -122,7 +138,10 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
             creds.token_secret,
           )
           const result = await client.ping()
-          return { success: result.ok, data: result }
+          if (result.ok) return { success: true, data: { ...result, message: result.cluster ? `Connected to cluster ${result.cluster}` : 'Connected' } }
+          // The reason in words (a refused token says so); Proxmox's own answer only in the log.
+          req.log.warn({ code: result.code, detail: result.detail }, '[settings] Proxmox connection test failed')
+          return r.status(502).send({ ok: false, success: false, code: result.code, error: result.error })
         }
 
         if (category === 'proxy' && provider === 'npm') {
@@ -155,7 +174,7 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
 
         return { success: false, error: `No test available for ${category}/${provider}` }
       } catch (e: any) {
-        return r.status(400).send({ success: false, error: e.message })
+        return sendFailure(req, r, e, `HyperProx couldn't connect with these settings. Check the address and the key, then try again.`, { status: 502 })
       }
     }
   )

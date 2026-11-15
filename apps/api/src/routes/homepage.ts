@@ -13,6 +13,7 @@
 //  made, by its id.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { PrismaRemoteStore } from '../lib/remote/store'
 import { onInstallCompleted } from '../lib/catalogue-installer'
@@ -34,7 +35,7 @@ function fail(reply: FastifyReply, e: any) {
   if (e instanceof UnsafeValueError) return reply.status(400).send({ success: false, code: 'unsafe', error: e.message })
   if (e?.name === 'TransportError') return reply.status(502).send({ success: false, code: 'unreachable', error: e.message })
   if (e?.name === 'VaultLockedError') throw e
-  return reply.status(500).send({ success: false, code: 'failed', error: String(e?.message ?? 'That did not work.').slice(0, 300) })
+  return sendFailure(reply.request, reply, e, 'That did not work. The details are in the log.')
 }
 
 /** A dashboard as the page sees it. No secret is ever part of it (the token's id is not a secret). */

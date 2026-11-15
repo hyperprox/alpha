@@ -9,6 +9,7 @@
 //  written to the audit log by the service, with the signed-in user.
 // =============================================================================
 
+import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
 import { isUnlocked } from '../lib/vault/state'
@@ -38,7 +39,7 @@ function sendError(reply: FastifyReply, e: any) {
   if (e instanceof CertsInputError) return reply.status(400).send({ error: e.message })
   if (e instanceof CertsNotFoundError) return reply.status(404).send({ error: e.message })
   if (e instanceof RenewingError || e instanceof CertsBusyError) return reply.status(409).send({ error: e.message })
-  return reply.status(503).send({ error: e?.message ?? String(e) })
+  return sendFailure(reply.request, reply, e, undefined, { status: 503 })
 }
 
 // A label is a YAML key from the policy; anything else in the path is refused before it reaches a lookup.

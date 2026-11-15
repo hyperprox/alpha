@@ -3,6 +3,7 @@ import { getClusterNetworkStats } from '../lib/network'
 import { ProxmoxClient }          from '../lib/proxmox-client'
 import { PLUGINS }                from '../plugins'
 import { runPluginBandwidth, type PluginLink } from '../lib/plugin-host'
+import { sendFailure } from '../lib/failure'
 
 export const networkRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/stats', async (_, reply) => {
@@ -19,7 +20,7 @@ export const networkRoutes: FastifyPluginAsync = async (fastify) => {
       const stats = await getClusterNetworkStats(host, port, tokenId, secret, nodeNames)
       return { success: true, data: stats }
     } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+      return sendFailure(reply.request, reply, e)
     }
   })
 
@@ -44,7 +45,8 @@ export const networkRoutes: FastifyPluginAsync = async (fastify) => {
       } catch (e: any) {
         // A plug-in that is not set up is not an error here — the panel just
         // has nothing to draw, and should say which plug-in would fill it.
-        unavailable.push({ plugin: plugin.manifest.name, reason: e.message })
+        fastify.log.info({ err: e, plugin: plugin.manifest.id }, '[network] bandwidth plug-in unavailable')
+        unavailable.push({ plugin: plugin.manifest.name, reason: 'not set up, or not answering' })
       }
     }
 

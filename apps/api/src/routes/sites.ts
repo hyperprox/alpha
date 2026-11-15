@@ -33,6 +33,7 @@ import {
 } from '../lib/site-delete'
 import { getProviderCredentials } from '../lib/credentials'
 import { ghostStats, type GhostStatsDeps } from '../lib/ghost/stats'
+import { sendFailure } from '../lib/failure'
 
 export interface SiteRouteDeps {
   whoami(): string
@@ -138,7 +139,7 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
   }
   const refused = (reply: FastifyReply, e: any) => e instanceof SiteDeleteRefusal
     ? reply.status(e.status).send({ success: false, code: e.code, error: e.message })
-    : reply.status(502).send({ success: false, error: String(e?.message ?? e).slice(0, 300) })
+    : sendFailure(reply.request, reply, e, 'The website could not be changed. The details are in the log.', { status: 502 })
 
   return async (fastify) => {
     // GET / — the websites HyperProx made or adopted, each with whether its container is still there
@@ -204,7 +205,7 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
       try {
         reply.header('Cache-Control', 'no-store')
         return reply.send({ success: true, data: await ghostStats(site, d.ghost, q.query.refresh === '1') })
-      } catch (e: any) { return reply.status(502).send({ success: false, error: e.message }) }
+      } catch (e: any) { return sendFailure(reply.request, reply, e) }
     })
 
     // POST /:id/pull — pull a static site from its git repository now
@@ -216,7 +217,7 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
         const r = await d.run(site, 'set -e\n/usr/local/bin/site-pull')
         const tail = r.output.trim().split('\n').slice(-6).join('\n')
         return reply.status(r.code === 0 ? 200 : 502).send({ success: r.code === 0, data: { output: tail }, ...(r.code === 0 ? {} : { error: `site-pull exited ${r.code}` }) })
-      } catch (e: any) { return reply.status(502).send({ success: false, error: e.message }) }
+      } catch (e: any) { return sendFailure(reply.request, reply, e) }
     })
 
     // POST /:id/admin-login — a one-time WordPress sign-in: 60 seconds, once, POSTed by the browser
@@ -230,7 +231,7 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
         if (r.code !== 0) throw new Error(`storing the sign-in in WordPress exited ${r.code}`)
       } catch (e: any) {
         await d.audit('site.admin-login', `site:${site.id}`, { by: d.whoami(), ok: false, error: e.message })
-        return reply.status(502).send({ success: false, error: e.message })
+        return sendFailure(reply.request, reply, e)
       }
       // The token is in this answer only: not in the audit, the log or any store.
       await d.audit('site.admin-login', `site:${site.id}`, { by: d.whoami(), ok: true, user: site.adminUser, expires: made.expiresAt })
