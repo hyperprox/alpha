@@ -19,16 +19,30 @@ let fastInterval: ReturnType<typeof setInterval> | null = null
 let slowInterval: ReturnType<typeof setInterval> | null = null
 
 
+/** A tick that has run this long is treated as stuck: the guard lets the next one start. */
+export const TICK_WATCHDOG_MS = 60_000
+
 /**
  * Wraps a timer body so a tick is skipped while the previous one is still running (a slow Proxmox must not pile
- * up requests every two seconds). Never rejects.
+ * up requests every two seconds). Never rejects. A watchdog releases the guard if a tick never finishes, so one
+ * hung call cannot freeze the feed until a restart; `onStuck` says so, and the late result of that tick is ignored.
  */
-export function overlapGuard(run: () => Promise<void>, onError: (e: unknown) => void = () => undefined): () => Promise<void> {
-  let busy = false
+export function overlapGuard(
+  run: () => Promise<void>,
+  onError: (e: unknown) => void = () => undefined,
+  opts: { watchdogMs?: number; onStuck?: () => void } = {},
+): () => Promise<void> {
+  const watchdogMs = opts.watchdogMs ?? TICK_WATCHDOG_MS
+  let gen = 0
+  let busySince: number | null = null
   return async () => {
-    if (busy) return
-    busy = true
-    try { await run() } catch (e) { onError(e) } finally { busy = false }
+    if (busySince !== null) {
+      if (Date.now() - busySince < watchdogMs) return
+      try { opts.onStuck?.() } catch { /* logging must not break the timer */ }
+    }
+    const mine = ++gen
+    busySince = Date.now()
+    try { await run() } catch (e) { if (mine === gen) onError(e) } finally { if (mine === gen) busySince = null }
   }
 }
 
@@ -99,7 +113,7 @@ export function startBroadcast(server: FastifyInstance) {
       problem('live status (fast)', e)
       if (lastFast) broadcast(server, 'fast', { ...lastFast, stale: true })
     }
-  }), 2000)
+  }, undefined, { onStuck: () => problem('live status (fast)', new Error('a tick was stuck for over 60 seconds and was released')) }), 2000)
 
   // ---------------------------------------------------------------------------
   //  SLOW — every 15s: ceph + ha + storage + services
@@ -130,7 +144,7 @@ export function startBroadcast(server: FastifyInstance) {
         },
       })
     } catch (e) { problem('live status (slow)', e) }
-  }), 15000)
+  }, undefined, { onStuck: () => problem('live status (slow)', new Error('a tick was stuck for over 60 seconds and was released')) }), 15000)
 
   server.log.info('[ws] Broadcast service started (fast: 2s, slow: 15s)')
   // A deploy job's progress goes to the person who started it, nobody else; with no owner, to nobody.

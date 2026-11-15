@@ -28,3 +28,22 @@ test('a failing tick is reported, frees the guard, and never rejects', async () 
   assert.equal(calls, 2)
   assert.deepEqual(errors, ['proxmox down', 'proxmox down'])
 })
+
+test('a tick that never finishes is released by the watchdog, and its late result is ignored', async () => {
+  let started = 0
+  let stuck = 0
+  const errors: string[] = []
+  let releaseFirst!: () => void
+  const first = new Promise<void>(r => { releaseFirst = r })
+  const tick = overlapGuard(async () => { started++; if (started === 1) { await first; throw new Error('late') } }, e => errors.push((e as Error).message), { watchdogMs: 30, onStuck: () => { stuck++ } })
+  const p1 = tick()
+  await tick()
+  assert.equal(started, 1)            // still inside the limit: skipped
+  await new Promise(r => setTimeout(r, 50))
+  await tick()                         // past the limit: released, a new tick runs
+  assert.equal(started, 2)
+  assert.equal(stuck, 1)
+  releaseFirst()
+  await p1
+  assert.deepEqual(errors, [])         // the abandoned tick's failure is not reported
+})

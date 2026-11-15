@@ -35,7 +35,14 @@ let cache: { data: ClusterNetworkStats; ts: number } | null = null
 export const PROXMOX_READ_TIMEOUT_MS = 10_000
 
 export function proxmoxFetch<T>(host: string, port: number, token: string, path: string, timeoutMs = PROXMOX_READ_TIMEOUT_MS, agent: https.Agent | false | undefined = homeTlsAgent()): Promise<T> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolveP, rejectP) => {
+    // Exactly one outcome, whichever way the request ends: an answer, an error, a timeout, or a connection cut
+    // mid-body (which fires no 'end'). The timer is cleared only when the promise settles.
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    const settle = (f: () => void) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); f() }
+    const resolve = (v: T) => settle(() => resolveP(v))
+    const reject = (e: Error) => settle(() => rejectP(e))
     const url  = new URL(`https://${host}:${port}/api2/json${path}`)
     const opts: https.RequestOptions = {
       hostname: url.hostname, port: url.port,
@@ -46,6 +53,9 @@ export function proxmoxFetch<T>(host: string, port: number, token: string, path:
     }
     const req = https.request(opts, (res) => {
       let data = ''
+      res.on('error', reject)
+      res.on('aborted', () => reject(new Error('Proxmox closed the connection mid-answer')))
+      res.on('close', () => { if (!res.complete) reject(new Error('Proxmox closed the connection before the answer finished')) })
       res.on('data', c => { data += c })
       res.on('end', () => {
         try { resolve((JSON.parse(data) as { data: T }).data) }
@@ -53,9 +63,9 @@ export function proxmoxFetch<T>(host: string, port: number, token: string, path:
       })
     })
     // A hard deadline for the whole read, not an idle timer: a slow trickle must not keep it alive.
-    const timer = setTimeout(() => req.destroy(new Error(`Proxmox did not answer within ${Math.round(timeoutMs / 1000)} seconds`)), timeoutMs)
-    req.on('close', () => clearTimeout(timer))
+    timer = setTimeout(() => { const e = new Error(`Proxmox did not answer within ${Math.round(timeoutMs / 1000)} seconds`); reject(e); req.destroy(e) }, timeoutMs)
     req.on('error', reject)
+    req.on('close', () => reject(new Error('Proxmox closed the connection without an answer')))
     req.end()
   })
 }
