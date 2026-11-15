@@ -3,7 +3,7 @@
 // =============================================================================
 
 import { strictParams } from '../lib/route-params'
-import { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { getGPUInfo }         from '../lib/gpu'
 import { NPMClient }          from '../lib/npm-client'
 import { withCephMon, CephUnavailableError } from '../lib/ceph'
@@ -14,6 +14,8 @@ import { npmHealth, withTimeout } from '../lib/service-health'
 import { isRemoteContext } from '../lib/clusters/context'
 import { guardRawCreate } from '../lib/naming'
 import { auditCredentialUse } from '../lib/audit'
+import { sendFailure } from '../lib/failure'
+import { ProxmoxUnreachableError } from '../lib/proxmox-client'
 
 // Not cached here: the token arrives from the vault after start-up and can change (lib/pve-env.ts).
 const getClient = pveFromEnv
@@ -26,28 +28,34 @@ async function getNPM(): Promise<NPMClient | null> {
   } catch { return null }
 }
 
-const wrap = async (reply: any, fn: () => Promise<any>) => {
+const wrap = async (reply: FastifyReply, fn: () => Promise<any>, friendly = "HyperProx couldn't get that from Proxmox.") => {
   try   { return { success: true, data: await fn() } }
-  catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+  catch (e: any) { return sendFailure(reply.request, reply, e, friendly) }
 }
 
 // A cluster with no CEPH is a normal configuration, not a server fault — 503
 // with a readable reason, so the UI can hide the panel instead of showing a
 // stack trace about an empty node name.
-const wrapCeph = async (reply: any, fn: () => Promise<any>) => {
+const wrapCeph = async (reply: FastifyReply, fn: () => Promise<any>) => {
   try { return { success: true, data: await fn() } }
   catch (e: any) {
     if (e instanceof CephUnavailableError) {
       return reply.status(503).send({ success: false, error: e.message, cephAvailable: false })
     }
-    return reply.status(500).send({ success: false, error: e.message })
+    return sendFailure(reply.request, reply, e, "HyperProx couldn't read Ceph's status from Proxmox.")
   }
 }
 
 export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
   strictParams(fastify)   // node, vmid, type and snapshot names are checked before any handler (lib/route-params.ts)
 
-  fastify.get('/ping',      async (_, r) => wrap(r, () => getClient().ping()))
+  // Whether Proxmox answers: the reason in plain words (ping() never throws), the raw detail only in the log.
+  fastify.get('/ping', async (req, r) => {
+    const p = await getClient().ping()
+    if (p.ok) return { success: true, data: p }
+    req.log.warn({ code: p.code, detail: p.detail }, '[proxmox] ping failed')
+    return r.status(502).send({ ok: false, success: false, code: p.code, error: p.error, data: { ok: false, code: p.code, error: p.error } })
+  })
   // The cluster's own name (PVE /cluster/status), for the page header. null on a standalone node or when unreachable.
   fastify.get('/cluster-name', async () => {
     try {
@@ -152,7 +160,7 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
     wrap(r, () => getClient().createVM(req.body.node, req.body.params)))
 
 
-  fastify.get('/summary', async (_, r) => {
+  fastify.get('/summary', async (req, r) => {
     try {
       // A remote cluster's summary is its Proxmox only: the GPU reader and the proxy are the home cluster's.
       const remote = isRemoteContext()
@@ -164,6 +172,12 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
         getClient().getAllVMs(),
       ])
       const vmList = vmsR.status === 'fulfilled' ? vmsR.value : undefined
+      // No node list means no summary: a refused token (proxmox_auth) or no answer (proxmox_unreachable) is said as
+      // such, never shown as an empty cluster.
+      if (nodesR.status === 'rejected') {
+        const e = nodesR.reason
+        return sendFailure(req, r, e?.name === 'ProxmoxAuthError' || e?.name === 'ProxmoxUnreachableError' ? e : new ProxmoxUnreachableError(e))
+      }
 
       const [cephR, osdR, haR, storageR, gpuR, npmR, pingR] = await Promise.allSettled([
         getClient().getClusterCephStatus(),
@@ -218,7 +232,7 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
         },
       }
     } catch (e: any) {
-      return r.status(500).send({ success: false, error: e.message })
+      return sendFailure(req, r, e, "HyperProx couldn't put the cluster summary together.")
     }
   })
 }

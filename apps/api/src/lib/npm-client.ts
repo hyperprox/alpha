@@ -80,15 +80,22 @@ export class NPMClient {
   private password: string
   private cache:    TokenCache = null
   private fetchImpl: (url: string, init?: RequestInit) => Promise<Response>
+  private tries: number
 
-  /** `fetchImpl` is for tests (recorded fixtures); production uses the global fetch. */
-  constructor(url: string, email: string, password: string, fetchImpl?: (url: string, init?: RequestInit) => Promise<Response>) {
+  /**
+   * `fetchImpl` is for tests (recorded fixtures); production uses the global fetch. `opts.tries` (default 5) is how
+   * many times a read or the sign-in is tried on a connection error; `opts.timeoutMs` replaces the per-try limit
+   * for every call (the live feed uses one 10 s try, so a hung NPM cannot hold up its tick).
+   */
+  constructor(url: string, email: string, password: string, fetchImpl?: (url: string, init?: RequestInit) => Promise<Response>,
+    opts: { tries?: number; timeoutMs?: number } = {}) {
     this.url      = url.replace(/\/$/, '')
     this.email    = email
     this.password = password
     // Each try gets its own limit (the retry loop in idempotent() then starts a fresh one); a caller's own signal wins.
     const inner = fetchImpl ?? ((u: string, i?: RequestInit) => fetch(u, i))
-    this.fetchImpl = (u, i) => inner(u, { ...i, signal: i?.signal ?? AbortSignal.timeout(npmTimeoutFor(i?.method, u)) })
+    this.fetchImpl = (u, i) => inner(u, { ...i, signal: i?.signal ?? AbortSignal.timeout(opts.timeoutMs ?? npmTimeoutFor(i?.method, u)) })
+    this.tries = Math.max(1, Math.floor(opts.tries ?? 5))
   }
 
   private cacheKey(): string {
@@ -131,7 +138,7 @@ export class NPMClient {
   private async idempotent(url: string, init: RequestInit): Promise<Response> {
     for (let i = 0; ; i++) {
       try { return await this.fetchImpl(url, init) }
-      catch (e) { if (i >= 4) throw e; await new Promise(r => setTimeout(r, 400 * (i + 1))) }
+      catch (e) { if (i >= this.tries - 1) throw e; await new Promise(r => setTimeout(r, 400 * (i + 1))) }
     }
   }
 

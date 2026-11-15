@@ -96,9 +96,30 @@ export function homeCertDecision(pin: HomePin | null, presented: string, authori
   return { accept: pin.fingerprint === presented }
 }
 
-/** An agent for one home host:port that applies the rule above before handing the socket to the request. */
+/** How long connecting (TCP and the TLS handshake together) may take before the attempt is given up. */
+export const HOME_CONNECT_TIMEOUT_MS = 20_000
+
+/** Proxmox accepted no connection, or never finished the handshake, within the connect timeout. */
+export class HomeConnectTimeoutError extends Error {
+  readonly code = 'ETIMEDOUT'
+  constructor(readonly host: string, readonly port: number, ms: number) {
+    super(`Proxmox did not answer within ${Math.round(ms / 1000)} seconds`)
+    this.name = 'HomeConnectTimeoutError'
+  }
+}
+
+/**
+ * An agent for one home host:port that applies the rule above before handing the socket to the request.
+ * Connecting has its own limit (`connectTimeoutMs`, 20 s): the request's own timer only starts once the socket is
+ * handed over, so without this an address that never answers held a request for the system's TCP timeout (minutes).
+ */
 export class HomePinAgent extends https.Agent {
-  constructor(opts: https.AgentOptions = {}) { super({ keepAlive: false, ...opts }) }
+  private connectTimeoutMs: number
+  constructor(opts: https.AgentOptions & { connectTimeoutMs?: number } = {}) {
+    const { connectTimeoutMs, ...rest } = opts
+    super({ keepAlive: false, ...rest })
+    this.connectTimeoutMs = connectTimeoutMs ?? HOME_CONNECT_TIMEOUT_MS
+  }
 
   createConnection(options: any, oncreate?: (err: Error | null, socket: Duplex) => void): Duplex | undefined {
     const host = String(options.host ?? options.hostname ?? '')
@@ -110,9 +131,12 @@ export class HomePinAgent extends https.Agent {
       timeout: options.timeout,
     })
     let done = false
+    const timer = setTimeout(() => finish(new HomeConnectTimeoutError(host, port, this.connectTimeoutMs)), this.connectTimeoutMs)
+    timer.unref?.()
     const finish = (err: Error | null) => {
       if (done) return
       done = true
+      clearTimeout(timer)
       if (err) { socket.destroy(); oncreate?.(err, socket) } else oncreate?.(null, socket)
     }
     socket.once('secureConnect', () => {

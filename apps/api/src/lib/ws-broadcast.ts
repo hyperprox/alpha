@@ -14,6 +14,8 @@ import { withCephMon } from './ceph'
 import { NPMClient }       from './npm-client'
 import { openSockets }     from './session-sockets'
 import { createLogOnce }   from './log-once'
+import { withTimeout }     from './service-health'
+import { classifyFailure } from './failure'
 
 let fastInterval: ReturnType<typeof setInterval> | null = null
 let slowInterval: ReturnType<typeof setInterval> | null = null
@@ -26,9 +28,11 @@ export const TICK_WATCHDOG_MS = 60_000
  * Wraps a timer body so a tick is skipped while the previous one is still running (a slow Proxmox must not pile
  * up requests every two seconds). Never rejects. A watchdog releases the guard if a tick never finishes, so one
  * hung call cannot freeze the feed until a restart; `onStuck` says so, and the late result of that tick is ignored.
+ * The tick body gets `stillCurrent()`: false once the watchdog has given up on it and a newer tick has started, so a
+ * late finish never broadcasts old numbers as fresh (or marks the problem cleared).
  */
 export function overlapGuard(
-  run: () => Promise<void>,
+  run: (stillCurrent: () => boolean) => Promise<void>,
   onError: (e: unknown) => void = () => undefined,
   opts: { watchdogMs?: number; onStuck?: () => void } = {},
 ): () => Promise<void> {
@@ -42,13 +46,26 @@ export function overlapGuard(
     }
     const mine = ++gen
     busySince = Date.now()
-    try { await run() } catch (e) { if (mine === gen) onError(e) } finally { if (mine === gen) busySince = null }
+    try { await run(() => mine === gen) } catch (e) { if (mine === gen) onError(e) } finally { if (mine === gen) busySince = null }
   }
 }
 
+/** The live feed's NPM read: one try, 10 s per call and 10 s in all, so a hung NPM cannot make ticks overlap. */
+export const FEED_NPM_TIMEOUT_MS = 10_000
+
 function getNPM(): NPMClient | null {
   if (!process.env.NPM_URL) return null
-  return new NPMClient(process.env.NPM_URL, process.env.NPM_EMAIL!, process.env.NPM_PASSWORD!)
+  return new NPMClient(process.env.NPM_URL, process.env.NPM_EMAIL!, process.env.NPM_PASSWORD!, undefined, { tries: 1, timeoutMs: FEED_NPM_TIMEOUT_MS })
+}
+
+/**
+ * Why the live feed has no fresh numbers, in words for the dashboard: `proxmox_auth` (the token was refused),
+ * `proxmox_unreachable` (no answer), or `internal`. Never the error's own text.
+ */
+export function feedProblem(e: unknown): { code: string; error: string } {
+  const c = classifyFailure(e)
+  if (c.body.code === 'proxmox_auth' || c.body.code === 'proxmox_unreachable') return { code: c.body.code, error: c.body.error }
+  return { code: 'proxmox_error', error: "HyperProx couldn't read your Proxmox's status. It will keep trying." }
 }
 
 /**
@@ -73,9 +90,10 @@ export function startBroadcast(server: FastifyInstance) {
   // ---------------------------------------------------------------------------
   //  FAST — every 2s: nodes + VMs + GPU + cluster totals
   // ---------------------------------------------------------------------------
-  fastInterval = setInterval(overlapGuard(async () => {
+  fastInterval = setInterval(overlapGuard(async (stillCurrent) => {
     if (!isUnlocked()) return   // nothing to read (and nothing to show) while locked
     try {
+      // The node list first: a refused token (ProxmoxAuthError) stops the tick here, before anything else starts.
       const nodes = await pve.getNodes()
       const [vms, gpu, network] = await Promise.all([
         pve.getAllVMs(),
@@ -98,6 +116,8 @@ export function startBroadcast(server: FastifyInstance) {
         disk_total: acc.disk_total + n.maxdisk,
       }), { cpu_used: 0, cpu_total: 0, mem_used: 0, mem_total: 0, disk_used: 0, disk_total: 0 })
 
+      // Released by the watchdog and overtaken by a newer tick: these numbers are old, so they are not sent.
+      if (!stillCurrent()) return
       lastFast = {
         nodes, vms, gpu, network,
         cluster: {
@@ -110,15 +130,18 @@ export function startBroadcast(server: FastifyInstance) {
       broadcast(server, 'fast', { ...lastFast, stale: false })
       problem.ok('live status (fast)')
     } catch (e) {
+      if (!stillCurrent()) return
       problem('live status (fast)', e)
-      if (lastFast) broadcast(server, 'fast', { ...lastFast, stale: true })
+      const why = feedProblem(e)
+      if (lastFast) broadcast(server, 'fast', { ...lastFast, stale: true, problem: why })
+      else broadcast(server, 'feed-problem', why)
     }
   }, undefined, { onStuck: () => problem('live status (fast)', new Error('a tick was stuck for over 60 seconds and was released')) }), 2000)
 
   // ---------------------------------------------------------------------------
   //  SLOW — every 15s: ceph + ha + storage + services
   // ---------------------------------------------------------------------------
-  slowInterval = setInterval(overlapGuard(async () => {
+  slowInterval = setInterval(overlapGuard(async (stillCurrent) => {
     if (!isUnlocked()) return
     try {
       const [ceph, osds, ha, storage, npmStats] = await Promise.allSettled([
@@ -126,8 +149,9 @@ export function startBroadcast(server: FastifyInstance) {
         withCephMon(pve, n => pve.getCephOSDs(n)),
         pve.getHAStatus(),
         pve.getAllStorage(),
-        (() => { const npm = getNPM(); return npm ? npm.getStats() : Promise.resolve(null) })(),
+        (() => { const npm = getNPM(); return npm ? withTimeout(npm.getStats(), FEED_NPM_TIMEOUT_MS, 'Nginx Proxy Manager') : Promise.resolve(null) })(),
       ])
+      if (!stillCurrent()) return
 
       const failed = [ceph, osds, ha, storage].filter(x => x.status === 'rejected') as PromiseRejectedResult[]
       if (failed.length) problem('live status (slow)', failed[0].reason); else problem.ok('live status (slow)')

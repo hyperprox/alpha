@@ -48,6 +48,32 @@ export interface HAStatus {
 
 const DEFAULT_TIMEOUT_MS = 20_000
 
+/** What a person is told when Proxmox refuses HyperProx's API token (HTTP 401, or 403 on the node list). */
+export const PROXMOX_AUTH_MESSAGE = "Proxmox refused HyperProx's access key. Check the token in Settings → Proxmox."
+/** What a person is told when Proxmox cannot be reached at all. */
+export const PROXMOX_UNREACHABLE_MESSAGE = "HyperProx can't reach your Proxmox right now. It will keep trying."
+
+/**
+ * Proxmox answered, but refused the token: wrong, revoked, expired, or without the rights to list nodes. Its
+ * message is written for people (lib/failure.ts passes it on, code proxmox_auth); the HTTP detail is `detail`.
+ */
+export class ProxmoxAuthError extends Error {
+  readonly code = 'proxmox_auth'
+  constructor(readonly httpStatus: number, readonly detail = '') {
+    super(PROXMOX_AUTH_MESSAGE)
+    this.name = 'ProxmoxAuthError'
+  }
+}
+
+/** Proxmox did not answer (refused, timed out, no route). The cause is kept for the log. */
+export class ProxmoxUnreachableError extends Error {
+  readonly code = 'proxmox_unreachable'
+  constructor(cause?: unknown) {
+    super(PROXMOX_UNREACHABLE_MESSAGE, cause !== undefined ? { cause } : undefined)
+    this.name = 'ProxmoxUnreachableError'
+  }
+}
+
 /**
  * One URL path segment from a value (a node, a guest id, a snapshot name, a storage). Encoded, so a "/", "?" or
  * "#" inside it can never become a second segment or a query, and "." / ".." are refused because the URL parser
@@ -149,14 +175,36 @@ export class ProxmoxClient {
     })
   }
 
-  async ping() {
+  /**
+   * Whether Proxmox answers with this token. `error` is a sentence for a person, `code` says which kind of failure
+   * (proxmox_auth: the token was refused; proxmox_unreachable: no answer); the raw reason is `detail`, for the log.
+   */
+  async ping(): Promise<{ ok: true; cluster?: string } | { ok: false; code: string; error: string; detail?: string }> {
     try {
-      const s = await this.fetchNode<any[]>('/cluster/status')
-      return { ok: true, cluster: s.find(x => x.type === 'cluster')?.name }
-    } catch (e: any) { return { ok: false, error: e.message } }
+      const r = await this.request<any[]>('/cluster/status', 'GET', undefined, DEFAULT_TIMEOUT_MS)
+      if (r.status === 401 || r.status === 403) return { ok: false, code: 'proxmox_auth', error: PROXMOX_AUTH_MESSAGE, detail: `HTTP ${r.status}${r.message ? ` ${r.message}` : ''}` }
+      if (r.status < 200 || r.status >= 300 || !Array.isArray(r.data)) {
+        return { ok: false, code: 'proxmox_error', error: 'Proxmox answered, but not with the cluster status. Check the address and port in Settings → Proxmox.', detail: `HTTP ${r.status}${r.message ? ` ${r.message}` : ''}` }
+      }
+      return { ok: true, cluster: r.data.find(x => x?.type === 'cluster')?.name }
+    } catch (e: any) {
+      return { ok: false, code: 'proxmox_unreachable', error: PROXMOX_UNREACHABLE_MESSAGE, detail: String(e?.message ?? e) }
+    }
   }
 
-  async getNodes()                  { return this.fetchNode<PVENode[]>('/nodes') }
+  /**
+   * The cluster's nodes. Rejects, never resolves null: a refused token is a ProxmoxAuthError, no answer at all a
+   * ProxmoxUnreachableError, any other non-2xx a plain Error with Proxmox's status (for the log).
+   */
+  async getNodes(): Promise<PVENode[]> {
+    let r: { status: number; data: PVENode[]; message?: string }
+    try { r = await this.request<PVENode[]>('/nodes', 'GET', undefined, DEFAULT_TIMEOUT_MS) }
+    catch (e) { throw new ProxmoxUnreachableError(e) }
+    if (r.status === 401 || r.status === 403) throw new ProxmoxAuthError(r.status, r.message ?? '')
+    if (r.status < 200 || r.status >= 300) throw new Error(`Proxmox GET /nodes: HTTP ${r.status}${r.message ? ` — ${r.message}` : ''}`)
+    if (!Array.isArray(r.data)) throw new Error('Proxmox GET /nodes: the answer had no node list')
+    return r.data
+  }
   async getNodeStatus(node: string) { return this.fetchNode<any>(`/nodes/${seg(node)}/status`) }
 
   /** Read-only: the certificates pveproxy has on this node (the root CA, pve-ssl.pem, and pveproxy-ssl.pem if one is installed). */
@@ -172,15 +220,16 @@ export class ProxmoxClient {
   }
 
   async getQemuVMs(node: string): Promise<PVEVM[]> {
-    const v = await this.fetchNode<any[]>(`/nodes/${seg(node)}/qemu`)
+    const v = (await this.fetchNode<any[]>(`/nodes/${seg(node)}/qemu`)) ?? []
     return v.map(x => ({ ...x, type: 'qemu' as const, node }))
   }
 
   async getLXCs(node: string): Promise<PVEVM[]> {
-    const v = await this.fetchNode<any[]>(`/nodes/${seg(node)}/lxc`)
+    const v = (await this.fetchNode<any[]>(`/nodes/${seg(node)}/lxc`)) ?? []
     return v.map(x => ({ ...x, type: 'lxc' as const, node }))
   }
 
+  /** Every guest on every node. A refused token rejects with ProxmoxAuthError (from getNodes); a node that fails is left out. */
   async getAllVMs(): Promise<PVEVM[]> {
     const nodes = await this.getNodes()
     const r = await Promise.allSettled(nodes.map(async n => {
