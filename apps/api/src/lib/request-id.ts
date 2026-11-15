@@ -23,15 +23,16 @@ export function genReqId(req: IncomingMessage): string {
 let installed = new WeakSet<FastifyInstance>()
 
 /**
- * X-Request-Id on every reply, and `requestId` in every JSON failure body (ok:false / success:false) that a route
- * built itself without one. Idempotent per server.
+ * X-Request-Id on every reply, and `requestId` in every JSON 5xx failure body a route built itself without one
+ * (sendFailure and the error handler put it in every failure they answer, 4xx included; the gate's own short
+ * refusals, locked or signed out, carry it in the header). Idempotent per server.
  */
 export function installRequestIds(server: FastifyInstance): void {
   if (installed.has(server)) return
   installed.add(server)
   server.addHook('onSend', async (req, reply, payload) => {
     reply.header('X-Request-Id', String(req.id))
-    if (reply.statusCode < 400 || typeof payload !== 'string' || payload.length > 65_536 || payload[0] !== '{') return payload
+    if (reply.statusCode < 500 || typeof payload !== 'string' || payload.length > 65_536 || payload[0] !== '{') return payload
     const type = String(reply.getHeader('content-type') ?? '')
     if (!type.includes('json')) return payload
     try {
