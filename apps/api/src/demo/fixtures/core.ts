@@ -1,5 +1,5 @@
 // Demo fixtures: dashboard, infrastructure, storage, monitoring and HA.
-import type { FixtureRoute } from './types'
+import { NOT_FOUND, type FixtureRoute } from './types'
 import {
   NODES, GUESTS, GiB, CLUSTER_NAME, DOMAIN, pveNodes, pveGuests, clusterTotals, pveStorage, cephStatus, cephOsds,
   cephPools, pveHa, sidOf, wobble, seeded, iso, HOUR, MIN, nodeOf,
@@ -210,7 +210,7 @@ export const CORE: FixtureRoute[] = [
   { path: '/api/storage/ceph/status', get: () => ok(cephStatus()) },
   { path: '/api/storage/ceph/osds', get: () => ok(cephOsds()) },
   { path: '/api/storage/ceph/pools', get: () => ok(cephPools()) },
-  { path: '/api/storage/nodes/:node', get: p => ok(pveStorage(p.node)) },
+  { path: '/api/storage/nodes/:node', get: p => NODES.some(n => n.node === p.node) ? ok(pveStorage(p.node)) : NOT_FOUND },
 ]
 
 export { backupAt }

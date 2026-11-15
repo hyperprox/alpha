@@ -14,3 +14,6 @@ export interface FixtureRoute {
   /** A read that would reveal or open something (a secret, a shell): refused like a write. */
   refuse?: true
 }
+
+/** What a fixture returns for an id the invented world does not have: the demo answers 404. */
+export const NOT_FOUND = Symbol('not-found')

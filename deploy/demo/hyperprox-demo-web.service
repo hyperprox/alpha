@@ -17,12 +17,29 @@ Restart=always
 RestartSec=3
 NoNewPrivileges=yes
 PrivateTmp=yes
+PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/opt/hyperprox-demo/app/apps/frontend/.next-demo
 ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+# No MemoryDenyWriteExecute: Node's JIT needs writable, executable memory.
+ReadWritePaths=/opt/hyperprox-demo/app/apps/frontend/.next-demo/cache
 MemoryMax=900M
 
 [Install]

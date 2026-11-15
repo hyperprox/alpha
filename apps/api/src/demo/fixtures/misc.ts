@@ -1,7 +1,7 @@
 // Demo fixtures: the smaller reads the pages make that the other files do not cover: the top bar's cluster name, the Users page,
 // a guest's HA panel and migration check, a guest's config drawer, the proxy's certificates, the new-website address options,
 // the VPN pages' install checks and the install wizard's placement. All invented.
-import type { FixtureRoute } from './types'
+import { NOT_FOUND, type FixtureRoute } from './types'
 import { NODES, GUESTS, CLUSTER_NAME, DOMAIN, DOMAIN2, DEMO_OWNER, PEOPLE, GiB, iso, DAY, HOUR, MIN, guestByVmid, nodeOf, sidOf, wobble, seeded, fingerprint } from './data'
 import { placementGuest } from './placement'
 
@@ -124,7 +124,7 @@ export const MISC_ROUTES: FixtureRoute[] = [
   { path: '/api/ha/guests/:type/:vmid/preflight', get: p => ok(preflight(p.type, p.vmid)) },
   { path: '/api/infra/guest-config/guests/:node/:type/:vmid', get: p => ok(guestConfig(p.node, p.type, p.vmid)) },
   { path: '/api/infra/guest-config/guests/:node/:type/:vmid/history', get: () => ok([]) },
-  { path: '/api/infra/guest-config/nodes/:node/devices', get: p => ({ success: true, data: nodeDevices(p.node), redacted: false }) },
+  { path: '/api/infra/guest-config/nodes/:node/devices', get: p => NODES.some(n => n.node === p.node) ? { success: true, data: nodeDevices(p.node), redacted: false } : NOT_FOUND },
   { path: '/api/infra/vms/:node/:vmid/:type/snapshots', get: p => ok(snapshots(p.vmid)) },
   { path: '/api/infra/tasks/:node/:upid', get: () => ok({ status: 'stopped', exitstatus: 'OK', running: false, ok: true }) },
   { path: '/api/proxy/instances/:id/certificates', get: () => ok(proxyCerts()) },

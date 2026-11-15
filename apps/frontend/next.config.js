@@ -74,6 +74,9 @@ const nextConfig = {
     return movedPages
   },
   async rewrites() {
+    // The public demo build: its front server answers /api itself, so the frontend must never pass a path on to an
+    // API port of its own (scripts/demo.sh's local demo still needs the rewrite).
+    if (process.env.HYPERPROX_DEMO_PUBLIC === '1') return []
     return [
       {
         source: '/api/:path*',

@@ -14,7 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
 import net from 'node:net'
-import { buildDemoServer, DEMO_MESSAGE } from '../src/demo/server'
+import { buildDemoServer, canonical, DEMO_MESSAGE } from '../src/demo/server'
 import { checkDemoEnvironment, DemoRefused, type PublicConfig } from '../src/demo/safety'
 
 function fakeRoot(withEnv: string | null): string {
@@ -76,18 +76,86 @@ test('rate limit: per address, a smaller bucket for changes, and 429 with a plai
   } finally { await app.close() }
 })
 
-test('rate limit: a static-looking path that climbs back into the API is counted like the API', async () => {
-  const app = await buildDemoServer({ public: PUB(), limits: { perMinute: 2 } })
+const raw = (port: number, path: string) => new Promise<number>((resolve, reject) =>
+  http.get({ host: '127.0.0.1', port, path }, res => { res.resume(); resolve(res.statusCode ?? 0) }).on('error', reject))
+
+test('paths: only one spelling of a path is served; dot segments, encoded dots and backslashes are refused raw', async () => {
+  const seen: string[] = []
+  const web = http.createServer((req, res) => { seen.push(req.url ?? ''); res.end('page') })
+  await new Promise<void>(r => web.listen(0, '127.0.0.1', r))
+  const app = await buildDemoServer({ public: PUB({ webPort: (web.address() as net.AddressInfo).port }) })
   await app.listen({ port: 0, host: '127.0.0.1' })
   try {
     const port = (app.server.address() as net.AddressInfo).port
-    const codes: number[] = []
-    for (let i = 0; i < 3; i++) {
-      // Sent raw: a browser or light-my-request would tidy the dot segments away first.
-      codes.push(await new Promise<number>((resolve, reject) => http.get({ host: '127.0.0.1', port, path: '/_next/static/../../api/proxmox/nodes' }, res => { res.resume(); resolve(res.statusCode ?? 0) }).on('error', reject)))
+    // Sent raw: a browser or light-my-request would tidy these away first.
+    for (const p of ['/api/../dashboard', '/_next/static/../../api/proxmox/nodes', '/%2e%2e/dashboard', '/api/%2E%2E/x', '/a\\b', '/a%5cb', '/api%2fproxmox', '//example.com/x', '/./dashboard']) {
+      assert.equal(await raw(port, p), 400, p)
     }
-    assert.deepEqual(codes, [200, 200, 429])
+    assert.deepEqual(seen, [], 'none of them reached the frontend')
+    assert.equal(await raw(port, '/dashboard?tab=a%20b'), 200)
+    assert.deepEqual(seen, ['/dashboard?tab=a%20b'])
+  } finally { await app.close(); web.close() }
+})
+
+test('canonical(): the check itself', () => {
+  for (const p of ['/', '/dashboard', '/api/proxmox/nodes?x=1', '/_next/static/chunks/a-1.js', '/plugins/home-assistant']) assert.equal(canonical(p), true, p)
+  for (const p of ['', 'x', '/..', '/a/../b', '/a/./b', '/%2e/', '/a\\b', '//host/x', '/a%2Fb']) assert.equal(canonical(p), false, p)
+})
+
+test('rate limit: keyed on the address the proxy saw (rightmost X-Forwarded-For); X-Real-IP and earlier entries are ignored', async () => {
+  const app = await buildDemoServer({ public: PUB({ trustedProxies: ['10.0.0.2'] }), limits: { perMinute: 2 } })
+  try {
+    const get = (headers: Record<string, string>) => app.inject({ method: 'GET', url: '/health', remoteAddress: '10.0.0.2', headers })
+    assert.equal((await get({ 'x-forwarded-for': '198.51.100.5', 'x-real-ip': '203.0.113.1' })).statusCode, 200)
+    assert.equal((await get({ 'x-forwarded-for': '203.0.113.9, 198.51.100.5', 'x-real-ip': '203.0.113.2' })).statusCode, 200)
+    assert.equal((await get({ 'x-forwarded-for': '203.0.113.10, 198.51.100.5', 'x-real-ip': '203.0.113.3' })).statusCode, 429)
   } finally { await app.close() }
+})
+
+test('rate limit: static paths are free only while they are files; misses count, then everything counts', async () => {
+  const web = http.createServer((req, res) => { if (req.url?.includes('missing')) { res.statusCode = 404 } res.end('x') })
+  await new Promise<void>(r => web.listen(0, '127.0.0.1', r))
+  const app = await buildDemoServer({ public: PUB({ webPort: (web.address() as net.AddressInfo).port }), limits: { perMinute: 3, writesPerMinute: 2 } })
+  try {
+    const get = (url: string) => app.inject({ method: 'GET', url, remoteAddress: '10.0.2.1' }).then(r => r.statusCode)
+    // Real files: never counted.
+    for (let i = 0; i < 6; i++) assert.equal(await get('/_next/static/chunks/real.js'), 200)
+    // Misses: free until the change budget (2) is used, then counted like any request (3 a minute).
+    const codes: number[] = []
+    for (let i = 0; i < 7; i++) codes.push(await get(`/_next/static/missing-${i}.js`))
+    assert.deepEqual(codes, [404, 404, 404, 404, 404, 429, 429])
+    // Another address is untouched.
+    assert.equal(await app.inject({ method: 'GET', url: '/_next/static/missing.js', remoteAddress: '10.0.2.2' }).then(r => r.statusCode), 404)
+  } finally { await app.close(); web.close() }
+})
+
+test('errors: unknown ids are 404, and no error text from the code reaches a visitor', async () => {
+  const app = await buildDemoServer({ public: PUB() })
+  try {
+    for (const url of ['/api/storage/nodes/no-such-node', '/api/infra/guest-config/nodes/no-such-node/devices']) {
+      const res = await app.inject({ method: 'GET', url })
+      assert.equal(res.statusCode, 404, url); assert.equal(res.json().error, 'Not part of the demo.')
+    }
+    assert.equal((await app.inject({ method: 'GET', url: '/api/storage/nodes/pve-a' })).statusCode, 200)
+    const big = await app.inject({ method: 'POST', url: '/api/secrets', payload: 'x'.repeat(70 * 1024), headers: { 'content-type': 'text/plain' } })
+    assert.equal(big.statusCode, 413); assert.doesNotMatch(big.body, /at |Error|stack/)
+    const bad = await app.inject({ method: 'POST', url: '/api/updates/jobs', payload: '{', headers: { 'content-type': 'application/json' } })
+    assert.doesNotMatch(bad.body, /Unexpected|JSON|at /)
+  } finally { await app.close() }
+})
+
+test('cookies are Secure in public mode (behind HTTPS) and not in the local demo; one HSTS policy, the proxy\'s', async () => {
+  const pub = await buildDemoServer({ public: PUB() })
+  const local = await buildDemoServer()
+  try {
+    for (const [app, secure] of [[pub, true], [local, false]] as const) {
+      const st = await app.inject({ method: 'GET', url: '/api/auth/status' })
+      const rc = await app.inject({ method: 'POST', url: '/api/auth/reconfirm', payload: {} })
+      const si = await app.inject({ method: 'POST', url: '/api/auth/sign-in', payload: {} })
+      for (const r of [st, rc, si]) assert.equal(/;\s*Secure/.test(String(r.headers['set-cookie'])), secure, String(r.headers['set-cookie']))
+      assert.equal(st.headers['strict-transport-security'], undefined)
+    }
+  } finally { await pub.close(); await local.close() }
 })
 
 test('rate limit: behind a named proxy, each visitor (X-Forwarded-For) has their own budget', async () => {

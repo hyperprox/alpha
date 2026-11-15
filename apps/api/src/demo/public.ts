@@ -27,7 +27,7 @@ export const SECURITY_HEADERS: Record<string, string> = {
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), usb=(), serial=(), bluetooth=(), payment=(), interest-cohort=()',
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Resource-Policy': 'same-origin',
-  'Strict-Transport-Security': 'max-age=31536000',
+  // No Strict-Transport-Security here: HTTPS ends at the reverse proxy, which sets it (one header, one policy).
 }
 
 /** Request headers worth passing to the frontend. Anything else (hop-by-hop, proxies' own) stays here. */
@@ -52,7 +52,9 @@ export function forwardToWeb(req: FastifyRequest, reply: FastifyReply, pub: Publ
   headers.host = `127.0.0.1:${pub.webPort}`
 
   return new Promise(resolve => {
-    const up = http.request({ host: '127.0.0.1', port: pub.webPort, method: req.method, path: req.url, headers, timeout: 15_000 }, res => {
+    // The path as parsed, never the raw text: the frontend sees exactly what was routed and rate-limited here.
+    const u = new URL(req.url, 'http://demo.invalid')
+    const up = http.request({ host: '127.0.0.1', port: pub.webPort, method: req.method, path: u.pathname + u.search, headers, timeout: 15_000 }, res => {
       reply.status(res.statusCode ?? 502)
       for (const [k, v] of Object.entries(res.headers)) {
         if (v === undefined || DROP_RESPONSE.has(k)) continue

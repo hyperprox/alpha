@@ -22,6 +22,7 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
 import rateLimit from '@fastify/rate-limit'
 import { FIXTURES, type FixtureRoute } from './fixtures'
+import { NOT_FOUND } from './fixtures/types'
 import { DEMO_OWNER } from './fixtures/data'
 import { needsReconfirm } from '../lib/roles'
 import { forwardToWeb, SECURITY_HEADERS } from './public'
@@ -85,6 +86,18 @@ function hasCookie(cookie: string | undefined, name: string, value: string): boo
 /** The frontend's static files: content-hashed or fixed assets, never an API call or a page. */
 const STATIC = /^\/(_next\/static\/|demo-fonts\/|favicon\.ico$|icon[-.\w]*\.(svg|png)$|apple-touch-icon\.png$|manifest\.webmanifest$)/
 
+/**
+ * True when the raw request path is already in the form every reader agrees on: what is routed, rate-limited and
+ * passed on is then exactly what was asked for. "/api/../dashboard", "/%2e%2e/", "/a\\b" and anything a URL
+ * parser would rewrite are not.
+ */
+export function canonical(raw: string): boolean {
+  const path = raw.split('?')[0]
+  if (!path.startsWith('/') || path.startsWith('//')) return false
+  if (path.includes('..') || /%2e/i.test(path) || path.includes('\\') || /%5c/i.test(path) || /%2f/i.test(path)) return false
+  try { return new URL(raw, 'http://demo.invalid').pathname === path } catch { return false }
+}
+
 const pathOf = (url: string) => { try { return new URL(url, 'http://demo.invalid').pathname } catch { return url } }
 
 const isWrite = (method: string) => method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS'
@@ -138,11 +151,20 @@ export async function buildDemoServer(opts: DemoServerOptions = {}): Promise<Fas
   // Very long addresses are refused before anything else looks at them.
   app.addHook('onRequest', async (req, reply) => {
     if (req.url.length > limits.urlChars) return reply.status(414).send({ ok: false, demo: true, error: 'That address is too long.' })
+    // One spelling per path: no dot segments, encoded dots or backslashes, nothing a server could read two ways.
+    if (!canonical(req.url)) return reply.status(400).send({ ok: false, demo: true, error: 'That address is not one the demo serves.' })
     const len = Number(req.headers['content-length'] ?? 0)
     if (len > limits.bodyBytes) return reply.status(413).send({ ok: false, demo: true, error: 'Request body is too large for the demo.' })
   })
 
+  // Static files are free only while they are files: a visitor's static-looking requests that are not answered
+  // with the file (a 404, an error) are counted here, and past the change budget they are counted like the rest.
+  const staticMisses = new MissCounter(limits.writesPerMinute, limits.trackedAddresses)
   if (pub) {
+    app.addHook('onResponse', async (req, reply) => {
+      if (STATIC.test(pathOf(req.url)) && reply.statusCode !== 200 && reply.statusCode !== 304) staticMisses.add(req.ip)
+    })
+    app.addHook('onClose', async () => staticMisses.stop())
     await app.register(rateLimit, {
       global: true,
       cache: limits.trackedAddresses,
@@ -150,7 +172,7 @@ export async function buildDemoServer(opts: DemoServerOptions = {}): Promise<Fas
       // Changes get a bucket of their own, smaller than the one for everything else.
       keyGenerator: (req: FastifyRequest) => `${req.ip}${isWrite(req.method) ? ':w' : ''}`,
       // Judged on the path as the handler will see it, so "/_next/static/../../api/..." is counted like the API it is.
-      allowList: (req: FastifyRequest) => (req.method === 'GET' || req.method === 'HEAD') && STATIC.test(pathOf(req.url)),
+      allowList: (req: FastifyRequest) => (req.method === 'GET' || req.method === 'HEAD') && STATIC.test(pathOf(req.url)) && !staticMisses.over(req.ip),
       max: async (_req: FastifyRequest, key: string) => key.endsWith(':w') ? limits.writesPerMinute : limits.perMinute,
       errorResponseBuilder: (_req, ctx) => ({ statusCode: 429, ok: false, demo: true, code: 'rate_limited', error: `Too many requests from your address. Try again in ${Math.ceil(ctx.ttl / 1000)} s.` }),
     })
@@ -164,24 +186,35 @@ export async function buildDemoServer(opts: DemoServerOptions = {}): Promise<Fas
     return payload
   })
 
+  // Behind HTTPS in public mode, every cookie is Secure.
+  const cookie = (v: string) => pub ? `${v}; Secure` : v
+  // No error text from the code ever reaches a visitor: a status and a plain sentence for it.
+  app.setErrorHandler((err, _req, reply) => {
+    // The rate limiter's own answer (errorResponseBuilder below) is ours already: plain words, no detail.
+    if ((err as any).code === 'rate_limited') return reply.status(429).send(err)
+    const code = typeof (err as any).statusCode === 'number' && (err as any).statusCode >= 400 && (err as any).statusCode < 500 ? (err as any).statusCode : 500
+    const words: Record<number, string> = { 400: 'That request is not one the demo understands.', 413: 'Request body is too large for the demo.', 414: 'That address is too long.', 429: 'Too many requests from your address.' }
+    return reply.status(code).send({ ok: false, success: false, demo: true, error: words[code] ?? (code < 500 ? 'The demo cannot answer that.' : 'Something went wrong in the demo.') })
+  })
+
   const refuse = (reply: any) => reply.status(403).header(REFUSED_HEADER, '1').send(DEMO_REFUSAL)
 
   // There is no account. Sign-in checks nothing and sets the cookie the frontend's middleware expects.
   app.post('/api/auth/sign-in', async (_req, reply) => {
-    reply.header('Set-Cookie', `${SESSION_COOKIE}=${SESSION_VALUE}; Path=/; HttpOnly; SameSite=Lax`)
+    reply.header('Set-Cookie', cookie(`${SESSION_COOKIE}=${SESSION_VALUE}; Path=/; HttpOnly; SameSite=Lax`))
     return { ok: true, demo: true, user: { email: DEMO_OWNER.email, role: DEMO_OWNER.role } }
   })
 
   // Always signed in as the invented owner: the demo opens straight onto the dashboard.
   app.get('/api/auth/status', async (req, reply) => {
-    if (!hasCookie(req.headers.cookie, SESSION_COOKIE, SESSION_VALUE)) reply.header('Set-Cookie', `${SESSION_COOKIE}=${SESSION_VALUE}; Path=/; HttpOnly; SameSite=Lax`)
+    if (!hasCookie(req.headers.cookie, SESSION_COOKIE, SESSION_VALUE)) reply.header('Set-Cookie', cookie(`${SESSION_COOKIE}=${SESSION_VALUE}; Path=/; HttpOnly; SameSite=Lax`))
     return { ok: true, locked: false, bootstrapped: true, reachable: true, demo: true, install: INSTALL_URL, user: { email: DEMO_OWNER.email, role: DEMO_OWNER.role } }
   })
 
   // The master-password prompt: any password "confirms", for five minutes, held only in the visitor's cookie.
   app.post('/api/auth/reconfirm', async (_req, reply) => {
     const until = Date.now() + RECONFIRM_SECONDS * 1000
-    reply.header('Set-Cookie', `${RECONFIRM_COOKIE}=1; Path=/; Max-Age=${RECONFIRM_SECONDS}; HttpOnly; SameSite=Strict`)
+    reply.header('Set-Cookie', cookie(`${RECONFIRM_COOKIE}=1; Path=/; Max-Age=${RECONFIRM_SECONDS}; HttpOnly; SameSite=Strict`))
     return { ok: true, demo: true, until }
   })
 
@@ -219,6 +252,7 @@ export async function buildDemoServer(opts: DemoServerOptions = {}): Promise<Fas
       if (!hit) return reply.status(404).send({ ok: false, success: false, demo: true, error: 'Not part of the demo.' })
       if (hit.route.refuse) return refuse(reply)
       const body = hit.route.get!(hit.params, Object.fromEntries(url.searchParams), { cluster: clusterOf(req) })
+      if (body === NOT_FOUND) return reply.status(404).send({ ok: false, success: false, demo: true, error: 'Not part of the demo.' })
       return reply.send(body)
     },
   })
@@ -230,4 +264,20 @@ export async function buildDemoServer(opts: DemoServerOptions = {}): Promise<Fas
 function clusterOf(req: FastifyRequest): string | null {
   const h = req.headers['x-hyperprox-cluster']
   return typeof h === 'string' && /^c[0-9a-f]{10}$/.test(h) ? h : null
+}
+
+/** Per-address counts in one-minute windows, holding at most `cap` addresses (all are dropped when it is full). */
+class MissCounter {
+  private counts = new Map<string, number>()
+  private timer: NodeJS.Timeout
+  constructor(private max: number, private cap: number) {
+    this.timer = setInterval(() => this.counts.clear(), 60_000)
+    this.timer.unref()
+  }
+  add(ip: string) {
+    if (!this.counts.has(ip) && this.counts.size >= this.cap) this.counts.clear()
+    this.counts.set(ip, (this.counts.get(ip) ?? 0) + 1)
+  }
+  over(ip: string) { return (this.counts.get(ip) ?? 0) >= this.max }
+  stop() { clearInterval(this.timer) }
 }
