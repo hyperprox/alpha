@@ -21,6 +21,7 @@
 //  servers.
 // =============================================================================
 
+import { changedMessage } from '../log-once'
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -494,7 +495,7 @@ export async function recheckJob(j: JobRow, runner: NodeRunner): Promise<{ srcRo
 /** One step of the runner: start the oldest queued job when none runs, and follow running ones. */
 export class CopyRunner {
   private busy = false
-  private lastLogged: string | null = null
+  private changed = changedMessage()
   private timer: NodeJS.Timeout | null = null
   constructor(private runner: NodeRunner = liveNodeRunner, private plex: (clusterId: string, job: JobRow) => Promise<string | null> = plexScan, private log: (m: string) => void = () => {}, private notify: (e: NotifyEventInput) => Promise<void> = publish) {}
 
@@ -514,7 +515,7 @@ export class CopyRunner {
     } catch (e: any) {
       // The same problem every ten seconds (the table not there yet, say) is logged once, until it changes.
       const m = `[files] ${e?.message ?? e}`
-      if (m !== this.lastLogged) { this.lastLogged = m; this.log(m) }
+      if (this.changed(m)) this.log(m)
     } finally { this.busy = false }
   }
 
