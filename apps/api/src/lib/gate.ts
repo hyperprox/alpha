@@ -83,6 +83,28 @@ function routePath(req: FastifyRequest): string | null {
   return typeof url === 'string' && url ? url : null
 }
 
+/**
+ * The path the router actually served: the matched route with the values it read for each parameter put back
+ * (`/api/proxmox/vms/:node/:vmid/:type/:action` → `/api/proxmox/vms/n1/100/lxc/start`), so the role rules, which
+ * look at literal segments, judge it the way they judge a plain path. Null when no route matched.
+ */
+function servedPath(req: FastifyRequest): string | null {
+  const route = routePath(req)
+  if (route === null) return null
+  const params = (req.params && typeof req.params === 'object' ? req.params : {}) as Record<string, unknown>
+  const value = (name: string, fallback: string) => (typeof params[name] === 'string' ? params[name] as string : fallback)
+  return route
+    .replace(/:([A-Za-z0-9_]+)(\([^)]*\))?/g, (whole, name: string) => value(name, whole))
+    .replace(/\*$/, () => value('*', '*'))
+}
+
+/** The stricter of two role requirements: a role beats none, and the higher role wins. */
+function stricterRole(a: Role | null, b: Role | null): Role | null {
+  if (a === null) return b
+  if (b === null) return a
+  return hasRole(a, b) ? a : b
+}
+
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
@@ -144,18 +166,24 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
   }
 
   server.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
+    // Only a plain path is accepted as the request target. An absolute-form target (GET http://host/api/... HTTP/1.1)
+    // keeps the scheme and host in req.url, so every check below would read a different path from the one the
+    // router serves.
+    if (!req.url.startsWith('/')) return reply.status(400).send({ ok: false, code: 'bad_path', error: 'That address contains characters HyperProx does not accept here.' })
     if (req.method === 'OPTIONS') return
     // A path that could smuggle a second segment or a query into a Proxmox call is refused outright.
     if (unsafeRequestPath(req.url)) return reply.status(400).send({ ok: false, code: 'bad_path', error: 'That address contains characters HyperProx does not accept here.' })
     // Another site's page driving a signed-in browser (a form post, a fetch, a WebSocket): refused, locked or not.
     if (crossOriginRequest(req)) return reply.status(403).send({ ok: false, code: 'cross_origin', error: 'This request came from another site, so HyperProx refused it.' })
 
+    // Every check below is made on the raw path and on the matched route, and the stricter answer wins, so a path
+    // the router reads differently from these checks (encoded, doubled slashes, odd case) cannot get a weaker one.
     const path   = normalisePath(req.url)
-    const needed = requiredRole(req.method, path)
-
-    // Checked on the raw path and on the matched route, so an encoded path cannot slip past.
-    const apiToken = bearerApiToken(req.headers as Record<string, any>)
     const route = routePath(req)
+    const served = servedPath(req)
+    const needed = stricterRole(requiredRole(req.method, path), served !== null ? requiredRole(req.method, served) : null)
+
+    const apiToken = bearerApiToken(req.headers as Record<string, any>)
     const tokenRefused = apiToken !== null && (tokenForbidden(req.method, path) || (route !== null && tokenForbidden(req.method, route)))
 
     if (!isUnlocked()) {
@@ -211,7 +239,9 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       return reply.status(403).send({ ok: false, code: 'forbidden', error: `This needs the ${needed} role`, required: needed, role: session.role })
     }
     // A token with the plug-in settings permission skips only that one rule; every other rule still applies.
-    if (needsReconfirm(req.method, path, { tokenPluginScope: !!req.tokenPluginSettings }) && !isReconfirmed(session.sid)) {
+    const reconfirmOpts = { tokenPluginScope: !!req.tokenPluginSettings }
+    const reconfirm = needsReconfirm(req.method, path, reconfirmOpts) || (served !== null && needsReconfirm(req.method, served, reconfirmOpts))
+    if (reconfirm && !isReconfirmed(session.sid)) {
       return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue' })
     }
   })
