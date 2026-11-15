@@ -1,6 +1,7 @@
 // The Fastify options the API starts with (src/index.ts), kept here so tests build the same server.
 
 import type { FastifyRouterOptions, RawServerDefault } from 'fastify'
+import { genReqId } from './request-id'
 
 /**
  * nginx on this machine is the only proxy whose X-Forwarded-For is believed. It appends the browser's address,
@@ -50,5 +51,8 @@ export function serverOptions<L>(logger: L) {
     routerOptions: { useSemicolonDelimiter: false } as FastifyRouterOptions<RawServerDefault>,
     trustProxy: TRUSTED_PROXIES,
     logger: safeLogger(logger),
+    // A random id per request (or nginx's own, from loopback only): lib/request-id.ts. Never a client's header.
+    requestIdHeader: false as const,
+    genReqId,
   }
 }

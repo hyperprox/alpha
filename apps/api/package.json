@@ -32,7 +32,6 @@
     "dotenv": "^17.4.2",
     "fastify": "5.12.8",
     "fastify-plugin": "6.0.1",
-    "ioredis": "^5.4.1",
     "js-yaml": "4.3.2",
     "pino": "^9.4.0",
     "ssh2": "^1.17.0",

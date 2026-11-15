@@ -71,7 +71,6 @@ import { setJobStore, PrismaJobStore } from './lib/clusters/files'
 import { setHomeVerifier }      from './lib/hostkey-verify'
 import { verifyHomeHostKeys }   from './lib/setup-checklist'
 import { prismaPlugin }         from './plugins/prisma'
-import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
 import { attachUnlockState, setStateLogger } from './lib/vault/state'
 import { installLockAlerts }    from './lib/vault/lock-alert'
@@ -90,6 +89,19 @@ const server = Fastify(serverOptions({
     : undefined,
 }))
 
+// A promise nobody waited on that failed must not take the API down (Node's default is to exit): it is logged with
+// its stack and the API carries on. An uncaught exception leaves the process in an unknown state, so that one is
+// logged and the process exits; systemd starts it again.
+process.on('unhandledRejection', (reason) => {
+  server.log.error({ err: reason }, 'unhandled promise rejection (the API keeps running)')
+})
+process.on('uncaughtException', (err, origin) => {
+  server.log.fatal({ err, origin }, 'uncaught exception: the API is stopping')
+  process.exitCode = 1
+  // Give the logger a moment to flush, then go.
+  setTimeout(() => process.exit(1), 200).unref()
+})
+
 async function main() {
   // Code with no logger of its own (the installer, the audit sink, host-key pins) reports through the server's.
   setAppLog(server.log)
@@ -101,7 +113,6 @@ async function main() {
   await server.register(rateLimit, { max: 200, timeWindow: '1 minute' })
   await server.register(websocket)
   await server.register(prismaPlugin)
-  await server.register(redisPlugin)
 
   // -- Vault gate ---------------------------------------------------------------
   // Replaces the old password guard. Starts locked: every route except /health*
@@ -233,4 +244,4 @@ async function main() {
   server.log.info(`HyperProx API running on port ${port}`)
 }
 
-main().catch((err) => { console.error(err); process.exit(1) })
+main().catch((err) => { server.log.fatal({ err }, 'the API could not start'); console.error(err); process.exit(1) })

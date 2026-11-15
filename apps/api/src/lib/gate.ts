@@ -16,6 +16,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import jwt from '@fastify/jwt'
 import { isUnlocked, signingKey, touch, onLock } from './vault/state'
 import { VaultSessionError, type Role } from './vault/broker'
+import { describeFailure } from './failure'
+import { installRequestIds } from './request-id'
+import { securityEvent } from './security-events'
 import { bearerApiToken, tokenForbidden, verifyApiToken, apiTokenStore, type ApiTokenRecord } from './api-tokens'
 import { unsafeRequestPath, requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath, tokenPluginScope, SESSION_CHECK, type TokenPluginScope } from './roles'
 import {
@@ -149,6 +152,7 @@ export function crossOriginRequest(req: FastifyRequest): boolean {
  * Call before registering any route.
  */
 export async function registerGate(server: FastifyInstance): Promise<void> {
+  installRequestIds(server)
   await server.register(jwt, {
     // Read at every sign and verify: null while locked, a fresh key per unlock.
     secret: async () => {
@@ -188,7 +192,10 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
 
     if (!isUnlocked()) {
       if (bypassesLock(path)) {
-        if (tokenRefused) return reply.status(403).send({ ok: false, code: 'token_forbidden', error: 'API tokens cannot use this route' })
+        if (tokenRefused) {
+          securityEvent(req, 'api_token_forbidden', 'token_forbidden')
+          return reply.status(403).send({ ok: false, code: 'token_forbidden', error: 'API tokens cannot use this route' })
+        }
         return
       }
       return reply.status(423).send({ ok: false, locked: true })
@@ -198,8 +205,14 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
     if (apiToken !== null) {
       // A token is checked even on routes that need no session: a bad one is never ignored.
       const row = await verifyApiToken(apiToken)
-      if (!row) return reply.status(401).send({ ok: false, code: 'invalid_token', error: 'API token is invalid, revoked or expired' })
-      if (tokenRefused) return reply.status(403).send({ ok: false, code: 'token_forbidden', error: 'API tokens cannot use this route' })
+      if (!row) {
+        securityEvent(req, 'api_token_invalid', 'invalid_token', 'api token (unknown)')
+        return reply.status(401).send({ ok: false, code: 'invalid_token', error: 'API token is invalid, revoked or expired' })
+      }
+      if (tokenRefused) {
+        securityEvent(req, 'api_token_forbidden', 'token_forbidden', `token:${row.name}`)
+        return reply.status(403).send({ ok: false, code: 'token_forbidden', error: 'API tokens cannot use this route' })
+      }
       session = tokenSession(row)
       req.session = session
       req.apiToken = { id: row.id, name: row.name }
@@ -236,6 +249,7 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       return reply.status(401).send({ ok: false, code: 'unauthenticated', error: 'Authentication required' })
     }
     if (!hasRole(session.role, needed)) {
+      securityEvent(req, 'role_denied', 'forbidden', undefined, { required: needed, role: session.role })
       return reply.status(403).send({ ok: false, code: 'forbidden', error: `This needs the ${needed} role`, required: needed, role: session.role })
     }
     // A token with the plug-in settings permission skips only that one rule; every other rule still applies.
@@ -247,7 +261,8 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
   })
 
   // A vault session that the vault no longer knows (signed out elsewhere, expired) is a 401; a
-  // credential read that raced a lock is a 423. Everything else keeps Fastify's default handling.
+  // credential read that raced a lock is a 423. Everything else gets the one failure answer (lib/failure.ts):
+  // a plain sentence, a code and the request id, with the error itself in the log.
   server.setErrorHandler((err, req, reply) => {
     if (err instanceof VaultSessionError) {
       // For a token request the ended session is the signed-in one it borrowed, not the caller's cookie.
@@ -257,16 +272,11 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       }
       return reply.status(401).send({ ok: false, code: 'session_expired', error: 'Your vault session has ended — sign in again' })
     }
-    if ((err as Error)?.name === 'TokenVaultWriteError') return reply.status(403).send({ ok: false, code: 'token_forbidden', error: (err as Error).message })
-    if ((err as Error)?.name === 'VaultLockedError') return reply.status(423).send({ ok: false, locked: true })
-    if ((err as Error)?.name === 'KeyholderLockError') {
-      // Never { locked: true }: the keyholder may still hold the unlocked state.
-      return reply.status(503).send({ ok: false, code: 'keyholder_lock_unconfirmed', error: (err as Error).message })
-    }
-    if ((err as Error)?.name === 'KeyholderUnavailableError') {
-      return reply.status(503).send({ ok: false, locked: true, code: 'keyholder_unavailable', error: (err as Error).message })
-    }
-    reply.send(err)
+    if ((err as Error)?.name === 'TokenVaultWriteError') return reply.status(403).send({ ok: false, code: 'token_forbidden', error: (err as Error).message, requestId: String(req.id) })
+    if ((err as Error)?.name === 'VaultLockedError') return reply.status(423).send({ ok: false, locked: true, requestId: String(req.id) })
+    // KeyholderLockError is never { locked: true } (the keyholder may still hold the unlocked state); KeyholderUnavailableError is.
+    const { status, body } = describeFailure(req, err)
+    return reply.status(status).send(body)
   })
 
   // Every state-changing request made with an API token goes to the audit log: token name, method,
