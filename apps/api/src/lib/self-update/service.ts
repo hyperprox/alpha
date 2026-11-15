@@ -13,6 +13,7 @@
 // =============================================================================
 
 import fs from 'fs'
+import { busyJobs, busyWords } from '../long-jobs'
 import path from 'path'
 import { randomBytes } from 'crypto'
 import type { Shell } from './shell'
@@ -244,6 +245,9 @@ export class SelfUpdateService {
     const job = await this.job()
     if (job?.status === 'running') out.push({ code: 'update_running', text: 'An update is already running.' })
     else if (await this.lockBusy()) out.push({ code: 'deploy_running', text: 'A deploy (deploy.sh) is running right now. Try again when it has finished.' })
+    // Long plug-in work (lib/long-jobs.ts) must not be cut short by the restart; deploy.sh refuses it too.
+    const busy = busyJobs()
+    if (busy.length) out.push({ code: 'plugin_job_running', text: `A long plug-in job is running (${busyWords(busy)}). Update HyperProx when it has finished.` })
     if (!inst.git) out.push({ code: 'not_git', text: 'This install is not a git checkout, so it cannot update itself. Reinstall with install.sh.' })
     else {
       // An exec bit is not a local change: the installer marks bin/* executable (and the updater ignores modes too).

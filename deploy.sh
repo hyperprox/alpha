@@ -23,6 +23,26 @@ if [ "${HYPERPROX_DEPLOY_LOCK_HELD:-}" != 1 ]; then
   fi
 fi
 
+# Long plug-in work (a Nextcloud update, a database repair) registers in this directory while it runs
+# (apps/api/src/lib/long-jobs.ts). Restarting the API under it would cut it short or leave it unwatched, so the
+# deploy waits. Work in the API process counts only while that process lives; detached work (in a guest) until
+# HyperProx sees it finish. HYPERPROX_IGNORE_BUSY=1 overrides, for a job that can no longer be reached.
+BUSY_DIR="${HYPERPROX_BUSY_DIR:-/run/hyperprox-busy}"
+if [ "${HYPERPROX_IGNORE_BUSY:-}" != 1 ] && [ -d "$BUSY_DIR" ]; then
+  busy=""
+  for f in "$BUSY_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    pid="$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$f")"
+    if grep -q '"detached":true' "$f" || { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; then
+      busy="${busy}  - $(sed -n 's/.*"label":"\([^"]*\)".*/\1/p' "$f")"$'\n'
+    fi
+  done
+  if [ -n "$busy" ]; then
+    printf '✗ A long plug-in job is running, so HyperProx is not restarted now:\n%sWait for it to finish (its page shows it), or set HYPERPROX_IGNORE_BUSY=1 if it can no longer be reached.\n' "$busy" >&2
+    exit 1
+  fi
+fi
+
 # Since the vault gate, the API cannot run without the bundled vault: an install that predates it would
 # restart into a HyperProx that stays locked forever. Re-running the installer adds the vault and keeps
 # all existing data and settings.

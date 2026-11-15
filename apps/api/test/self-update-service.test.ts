@@ -24,6 +24,7 @@ import { SelfUpdateService, RefusedError, type SelfUpdateDeps } from '../src/lib
 import { FileStateSink, readState, type UpdateJob } from '../src/lib/self-update/state'
 import type { Shell } from '../src/lib/self-update/shell'
 import type { Upstream } from '../src/lib/self-update/upstream'
+import { registerLongJob } from '../src/lib/long-jobs'
 
 const A = 'a'.repeat(40), B = 'b'.repeat(40)
 
@@ -90,6 +91,24 @@ after(() => { for (const d of rigs) fs.rmSync(d, { recursive: true, force: true 
 const codes = async (r: Rig) => (await r.svc.refusals(r.svc.lastCheck()?.available ?? null)).refusals.map(x => x.code)
 
 // --- guards -------------------------------------------------------------------------------------------------
+
+test('refusals: a long plug-in job running (lib/long-jobs.ts) stops an update, so the restart cannot cut it short', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-busy-'))
+  const prev = process.env.HYPERPROX_BUSY_DIR
+  process.env.HYPERPROX_BUSY_DIR = dir
+  try {
+    const r = rig()
+    await r.svc.check()
+    assert.ok(!(await codes(r)).includes('plugin_job_running'))
+    registerLongJob({ id: 'j1', owner: 'nextcloud', label: 'Nextcloud Cloud: update', detached: true })
+    const d = await r.svc.refusals(r.svc.lastCheck()!.available)
+    const busy = d.refusals.find(x => x.code === 'plugin_job_running')!
+    assert.ok(busy); assert.match(busy.text, /Nextcloud Cloud: update/)
+  } finally {
+    if (prev === undefined) delete process.env.HYPERPROX_BUSY_DIR; else process.env.HYPERPROX_BUSY_DIR = prev
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('refusals: locked, an update running, a deploy running, local changes (listed), alpha with signed-only, no update', async () => {
   const r = rig()
