@@ -13,10 +13,24 @@ import { getGPUInfo }      from './gpu'
 import { withCephMon } from './ceph'
 import { NPMClient }       from './npm-client'
 import { openSockets }     from './session-sockets'
+import { createLogOnce }   from './log-once'
 
 let fastInterval: ReturnType<typeof setInterval> | null = null
 let slowInterval: ReturnType<typeof setInterval> | null = null
 
+
+/**
+ * Wraps a timer body so a tick is skipped while the previous one is still running (a slow Proxmox must not pile
+ * up requests every two seconds). Never rejects.
+ */
+export function overlapGuard(run: () => Promise<void>, onError: (e: unknown) => void = () => undefined): () => Promise<void> {
+  let busy = false
+  return async () => {
+    if (busy) return
+    busy = true
+    try { await run() } catch (e) { onError(e) } finally { busy = false }
+  }
+}
 
 function getNPM(): NPMClient | null {
   if (!process.env.NPM_URL) return null
@@ -38,11 +52,14 @@ export function broadcast(_server: FastifyInstance | null, type: string, payload
 export function startBroadcast(server: FastifyInstance) {
   // Both resolve at each tick: the Proxmox token and NPM login arrive from the vault after start-up.
   const pve = livePve()
+  const problem = createLogOnce(server.log)
+  // The last good numbers, re-sent marked stale when a read fails, so the dashboard can say they are out of date.
+  let lastFast: Record<string, unknown> | null = null
 
   // ---------------------------------------------------------------------------
   //  FAST — every 2s: nodes + VMs + GPU + cluster totals
   // ---------------------------------------------------------------------------
-  fastInterval = setInterval(async () => {
+  fastInterval = setInterval(overlapGuard(async () => {
     if (!isUnlocked()) return   // nothing to read (and nothing to show) while locked
     try {
       const nodes = await pve.getNodes()
@@ -67,7 +84,7 @@ export function startBroadcast(server: FastifyInstance) {
         disk_total: acc.disk_total + n.maxdisk,
       }), { cpu_used: 0, cpu_total: 0, mem_used: 0, mem_total: 0, disk_used: 0, disk_total: 0 })
 
-      broadcast(server, 'fast', {
+      lastFast = {
         nodes, vms, gpu, network,
         cluster: {
           ...cluster,
@@ -75,14 +92,19 @@ export function startBroadcast(server: FastifyInstance) {
           mem_pct:  cluster.mem_total  ? Math.round((cluster.mem_used  / cluster.mem_total)  * 100) : 0,
           disk_pct: cluster.disk_total ? Math.round((cluster.disk_used / cluster.disk_total) * 100) : 0,
         },
-      })
-    } catch { /* swallow — don't crash the interval */ }
-  }, 2000)
+      }
+      broadcast(server, 'fast', { ...lastFast, stale: false })
+      problem.ok('live status (fast)')
+    } catch (e) {
+      problem('live status (fast)', e)
+      if (lastFast) broadcast(server, 'fast', { ...lastFast, stale: true })
+    }
+  }), 2000)
 
   // ---------------------------------------------------------------------------
   //  SLOW — every 15s: ceph + ha + storage + services
   // ---------------------------------------------------------------------------
-  slowInterval = setInterval(async () => {
+  slowInterval = setInterval(overlapGuard(async () => {
     if (!isUnlocked()) return
     try {
       const [ceph, osds, ha, storage, npmStats] = await Promise.allSettled([
@@ -93,7 +115,10 @@ export function startBroadcast(server: FastifyInstance) {
         (() => { const npm = getNPM(); return npm ? npm.getStats() : Promise.resolve(null) })(),
       ])
 
+      const failed = [ceph, osds, ha, storage].filter(x => x.status === 'rejected') as PromiseRejectedResult[]
+      if (failed.length) problem('live status (slow)', failed[0].reason); else problem.ok('live status (slow)')
       broadcast(server, 'slow', {
+        stale: failed.length > 0,
         ceph:    ceph.status    === 'fulfilled' ? ceph.value    : null,
         osds:    osds.status    === 'fulfilled' ? osds.value    : [],
         ha:      ha.status      === 'fulfilled' ? ha.value      : [],
@@ -104,8 +129,8 @@ export function startBroadcast(server: FastifyInstance) {
             : { connected: false },
         },
       })
-    } catch { /* swallow */ }
-  }, 15000)
+    } catch (e) { problem('live status (slow)', e) }
+  }), 15000)
 
   server.log.info('[ws] Broadcast service started (fast: 2s, slow: 15s)')
   // A deploy job's progress goes to the person who started it, nobody else; with no owner, to nobody.
