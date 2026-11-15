@@ -59,14 +59,14 @@ export async function snapshotNote(g: GuestRef): Promise<string | null> {
  * Where Nextcloud was seen without looking inside a guest: the shared scan's Nextcloud probe (status.php) on a guest's
  * address, and the Catalogue's finished Nextcloud installs. Auto-connect detects in each (read-only) before adding it.
  */
-export async function sightings(): Promise<Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null }>> {
-  const out: Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null }> = []
+export async function sightings(): Promise<Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null; ip?: string | null }>> {
+  const out: Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null; ip?: string | null }> = []
   const scan = await sharedServiceScan().result(false)
-  for (const f of scan.findings) if (f.key === 'nextcloud' && f.guest) out.push({ guest: { kind: f.guest.type, vmid: Number(f.guest.vmid) }, url: f.address, via: 'scan' })
+  for (const f of scan.findings) if (f.key === 'nextcloud' && f.guest) out.push({ guest: { kind: f.guest.type, vmid: Number(f.guest.vmid) }, url: f.address, via: 'scan', ip: f.host })
   for (const r of await wizardStore().list('job').catch(() => [])) {
     const j: any = r.data
     // The Catalogue makes containers.
-    if (j?.recipeId === 'nextcloud' && j.status === 'completed' && Number(j.vmid) >= 100) out.push({ guest: { kind: 'lxc', vmid: Number(j.vmid) }, url: typeof j.url === 'string' ? j.url : null, via: 'catalogue',
+    if (j?.recipeId === 'nextcloud' && j.status === 'completed' && Number(j.vmid) >= 100) out.push({ guest: { kind: 'lxc', vmid: Number(j.vmid) }, url: typeof j.url === 'string' ? j.url : null, via: 'catalogue', ip: typeof j.ip === 'string' ? j.ip.split('/')[0] : null,
       // The admin the installer made (its name only; its password stays in the vault and is never used here).
       admin: typeof j.adminCredential?.user === 'string' ? j.adminCredential.user : null })
   }

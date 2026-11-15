@@ -35,7 +35,7 @@ const DEFAULT_PORT: Record<string, string> = { 'http:': '80', 'https:': '443' }
 
 interface Origin { scheme: string; host: string; port: string }
 
-/** scheme, host and port of an address; a bare host or host:port is read without a scheme (any scheme then matches). */
+/** scheme, host and port of an address; a bare host or host:port is read without a scheme. */
 export function originParts(v: string): (Origin & { schemeGiven: boolean; portGiven: boolean }) | null {
   const s = String(v ?? '').trim()
   if (!s) return null
@@ -45,12 +45,16 @@ export function originParts(v: string): (Origin & { schemeGiven: boolean; portGi
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
   if (!host) return null
-  return { scheme: u.protocol, host, port: u.port || DEFAULT_PORT[u.protocol], schemeGiven, portGiven: !!u.port || schemeGiven }
+  // URL drops a port that is the scheme's default; it was still given when the text names it.
+  const portGiven = !!u.port || /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:\[[^\]]*\]|[^/:?#]+):\d+/i.test(s)
+  return { scheme: u.protocol, host, port: u.port || DEFAULT_PORT[u.protocol], schemeGiven, portGiven }
 }
 
 /**
- * Whether a vault URI is for this address: the same host, always; the same scheme when the URI names one; the same
- * port when the URI names one (a scheme names its default port). A URI that cannot be read never matches.
+ * Whether a vault URI is for this address. Always the same host. The same scheme when the URI names one. The same
+ * port: the URI's own port, or, when it names none, the default port of its scheme (of the address's scheme for a
+ * bare host), so a URI for a host's web page never matches every other app on that host. A URI that cannot be read
+ * never matches.
  */
 export function uriMatches(uri: string, address: string): boolean {
   const a = originParts(address)
@@ -58,8 +62,8 @@ export function uriMatches(uri: string, address: string): boolean {
   if (!a || !u || !a.schemeGiven) return false
   if (u.host !== a.host) return false
   if (u.schemeGiven && u.scheme !== a.scheme) return false
-  if (u.portGiven && u.port !== a.port) return false
-  return true
+  const wantPort = u.portGiven ? u.port : u.schemeGiven ? DEFAULT_PORT[u.scheme] : DEFAULT_PORT[a.scheme]
+  return wantPort === a.port
 }
 
 /** The credential this item carries for the kind wanted, or null. Field names only decide; values are not looked at. */

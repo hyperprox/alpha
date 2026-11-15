@@ -39,3 +39,32 @@ export function pluginBadge(p: PluginReading): string {
     default: return 'LIVE'
   }
 }
+
+/** What auto-connect says about a plug-in (GET /api/auto-connect), as much as a card needs. */
+export interface AutoConnectSummary {
+  pending: Record<string, unknown>
+  lastRun: { results: Record<string, Partial<Record<string, number>>> } | null
+  waitingForUnlock: boolean
+}
+
+/** Plug-ins whose installs auto-connect finds and connects by itself. */
+export const AUTO_CONNECT_PLUGINS = ['homepage', 'nextcloud', 'unmanic', 'arrstack', 'plex']
+
+/**
+ * The card's state line for a plug-in that is not set up but that auto-connect is handling, or null to show the
+ * plug-in's own "needs …" and its Set up button. A pick waiting wins; then a locked vault; then "connecting" while it
+ * has found something it has not finished (or before its first pass has run, for a plug-in with nothing to type).
+ */
+export function autoConnectWord(pluginId: string, s: AutoConnectSummary | null): { word: string; pick: boolean } | null {
+  if (!s || !AUTO_CONNECT_PLUGINS.includes(pluginId)) return null
+  if (Object.keys(s.pending ?? {}).some(k => k.startsWith(`${pluginId}/`))) return { word: 'one to pick: see "Connecting by itself"', pick: true }
+  const r = s.lastRun?.results?.[pluginId] ?? {}
+  const n = (did: string) => r[did] ?? 0
+  const noForm = pluginId === 'homepage' || pluginId === 'nextcloud'
+  // Found and being connected (the card turns "connected" on its next read). A key that is missing, or a failure,
+  // is not "connecting": those keep the plug-in's own "needs …" and Set up.
+  const busy = n('connected') + n('filled') > 0 || (noForm && !s.lastRun)
+  if (s.waitingForUnlock && (busy || noForm)) return { word: 'connects automatically once HyperProx is unlocked', pick: false }
+  if (busy) return { word: 'connecting automatically…', pick: false }
+  return null
+}

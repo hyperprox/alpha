@@ -8,6 +8,7 @@ import "./css-stub"
 import { renderToStaticMarkup } from 'react-dom/server'
 import { DashboardPreview, DiffView, ProblemList, WidgetList } from '../components/plugins/homepage/HomepagePage'
 import { AutoConnectedNote } from '../components/plugins/AutoConnect'
+import { autoConnectWord } from '../lib/plugin-status'
 import { applyGate, diffStats, foldDiff, grouped, keptWords, monogram, syncWords, validSubnets, KEYS_WARNING, type PreviewEntry } from '../components/plugins/homepage/logic'
 
 const e = (o: Partial<PreviewEntry>): PreviewEntry => ({
@@ -103,4 +104,15 @@ test('a dashboard HyperProx connected by itself says so, with how it was found a
   const html = renderToStaticMarkup(<AutoConnectedNote evidence={['found by catalogue', 'found by proxy']} extra="Wrote services.yaml; backups beside them." />)
   assert.match(html, /Connected automatically \(found by catalogue, found by proxy\)\./)
   assert.match(html, /Wrote services\.yaml/)
+})
+
+test('plug-in cards: auto-connect\'s state replaces "needs …" and Set up while it connects or waits for a pick', () => {
+  const base = { pending: {}, lastRun: null, waitingForUnlock: false }
+  assert.deepEqual(autoConnectWord('homepage', base), { word: 'connecting automatically…', pick: false }, 'before its first pass')
+  assert.equal(autoConnectWord('arrstack', base), null, 'a plug-in with a form keeps Set up until something is found')
+  assert.deepEqual(autoConnectWord('nextcloud', { ...base, pending: { 'nextcloud/lxc-1': {} } })?.pick, true)
+  assert.match(autoConnectWord('nextcloud', { ...base, waitingForUnlock: true })!.word, /once HyperProx is unlocked/)
+  assert.equal(autoConnectWord('arrstack', { ...base, lastRun: { results: { arrstack: { needs_credential: 1 } } } }), null, 'a missing key keeps Set up')
+  assert.equal(autoConnectWord('nextcloud', { ...base, lastRun: { results: {} } }), null, 'nothing found: the plug-in\'s own words')
+  assert.equal(autoConnectWord('mikrotik', base), null)
 })

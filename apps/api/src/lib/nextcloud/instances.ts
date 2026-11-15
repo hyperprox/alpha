@@ -94,7 +94,11 @@ function parseIndex(raw: string | null): NcMeta[] {
       const snoozed: Record<string, string> = {}
       for (const [k, t] of Object.entries(x.snoozed ?? {})) if (/^[A-Za-z0-9_\\:-]{1,160}$/.test(k) && typeof t === 'string' && (t === 'forever' || !Number.isNaN(Date.parse(t)))) snoozed[k] = t
       const ac = x.autoConnected && typeof x.autoConnected === 'object' ? x.autoConnected : null
-      const autoConnected = ac ? { at: String(ac.at ?? '').slice(0, 40), evidence: (Array.isArray(ac.evidence) ? ac.evidence : []).map(String).map((e: string) => e.slice(0, 120)).slice(0, 10), webLogin: typeof ac.webLogin === 'string' ? ac.webLogin.slice(0, 200) : null } : null
+      const autoConnected = ac ? {
+        at: String(ac.at ?? '').slice(0, 40), evidence: (Array.isArray(ac.evidence) ? ac.evidence : []).map(String).map((e: string) => e.slice(0, 120)).slice(0, 10), webLogin: typeof ac.webLogin === 'string' ? ac.webLogin.slice(0, 200) : null,
+        ...(typeof ac.webLoginTriedAt === 'string' && !Number.isNaN(Date.parse(ac.webLoginTriedAt)) ? { webLoginTriedAt: ac.webLoginTriedAt.slice(0, 40) } : {}),
+        ...(Number.isInteger(ac.webLoginFailures) && ac.webLoginFailures >= 0 ? { webLoginFailures: Math.min(ac.webLoginFailures, 64) } : {}),
+      } : null
       return { id: x.id, name: String(x.name).slice(0, 40), guest, deployment: (x.deployment ?? null) as Deployment | null, snoozed, addedAt: typeof x.addedAt === 'string' ? x.addedAt.slice(0, 40) : '', ...(autoConnected ? { autoConnected } : {}) }
     }).filter(m => m.guest.vmid > 0)
   } catch { return [] }

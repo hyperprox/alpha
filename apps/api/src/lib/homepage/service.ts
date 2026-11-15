@@ -330,6 +330,8 @@ export class HomepageService {
             choices: found.map(f => ({ id: f.container, label: `${f.container} (${f.configDir})` })) })
           continue
         }
+        // A person may have disconnected it while the look-up ran: read the dismissal again right before connecting.
+        if (ctx.dismissed(d.machineId)) { out.push({ key: d.machineId, label, did: 'dismissed' }); continue }
         const i = await this.connect(d.machineId, { email: SYSTEM_ACTOR, token: null }, found[0].container, { evidence: d.via.map(v => `found by ${v}`) })
         out.push({ key: d.machineId, label, did: 'connected', evidence: d.via.map(v => `found by ${v}`), message: await this.autoFirstFill(i.id).catch((e: any) => `first fill not done: ${e?.message ?? e}`) })
       } catch (e: any) {
@@ -339,8 +341,13 @@ export class HomepageService {
     return out
   }
 
-  /** A person picked which Homepage container of a guest to connect. */
-  async autoPick(machineId: string, container: string): Promise<Outcome> {
+  /** A person picked which Homepage container of a guest to connect. Excluded and dismissed guests are refused here too. */
+  async autoPick(machineId: string, container: string, ctx: AdapterContext): Promise<Outcome> {
+    const d = (await this.detected()).find(x => x.machineId === machineId)
+    const m = (await this.d.exec.listMachines()).find(x => x.id === machineId)
+    if (!d || !m || exclusionOf(ctx, { machineId, tags: m.tags, addresses: [d.url, m.address] }) || ctx.dismissed(machineId)) {
+      throw new HomepageRefusal('excluded', 'That guest is not there any more, or HyperProx must leave it alone.', 409)
+    }
     const i = await this.connect(machineId, { email: SYSTEM_ACTOR, token: null }, container, { evidence: ['picked by a person'] })
     return { key: machineId, label: i.name, did: 'connected', evidence: ['picked by a person'], message: await this.autoFirstFill(i.id).catch((e: any) => `first fill not done: ${e?.message ?? e}`) }
   }

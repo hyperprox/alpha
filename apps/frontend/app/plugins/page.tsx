@@ -10,7 +10,7 @@
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
-import { isNotConfigured } from '@/lib/plugin-status'
+import { autoConnectWord, isNotConfigured, type AutoConnectSummary } from '@/lib/plugin-status'
 import Link from 'next/link'
 import { Page, HudHeader, Panel, styles } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
@@ -295,6 +295,13 @@ export default function PluginsPage() {
   const [scanning, setScanning] = useState(false)
   const [findings, setFindings] = useState<Finding[] | null>(null)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
+  // What auto-connect is doing: a plug-in it handles does not show "needs …" and Set up while it connects or waits for a pick.
+  const [auto, setAuto] = useState<AutoConnectSummary | null>(null)
+  const loadAuto = useCallback(async () => {
+    const r = await fetch('/api/auto-connect').then(x => x.json()).catch(() => null)
+    setAuto(r?.success ? r.data : null)
+  }, [])
+  useEffect(() => { void loadAuto() }, [loadAuto])
 
   const readOne = useCallback(async (id: string) => {
     setBusy(b => ({ ...b, [id]: true }))
@@ -338,6 +345,7 @@ export default function PluginsPage() {
       const rest = (res.data as Finding[]).filter(f => !(f.setting && filled.has(`${f.pluginId}:${f.setting}:${f.address}`)))
       setFindings(rest)
       await load()
+      await loadAuto()
       if (auto?.data?.waited === 'locked') setNotice('HyperProx is locked: what it found is connected once it is unlocked.')
       else if (!res.data.length) setNotice('Nothing found. Only running containers with a readable address are scanned.')
       else if (!rest.length) setNotice('Everything found is connected.')
@@ -415,7 +423,7 @@ export default function PluginsPage() {
         </div>
       )}
 
-        <AutoConnectPanel plugins={['unmanic', 'arrstack', 'plex', 'homepage', 'nextcloud']} onChanged={() => void load()} />
+        <div id="auto-connect"><AutoConnectPanel plugins={['unmanic', 'arrstack', 'plex', 'homepage', 'nextcloud']} onChanged={() => { void load(); void loadAuto() }} /></div>
 
         {findings && findings.length > 0 && (
           <Panel title="Found on your cluster" sub={`${findings.length}`}
@@ -471,6 +479,7 @@ export default function PluginsPage() {
           {plugins.map(p => {
             const d    = data[p.id]
             const tone = !p.configured ? 'idle' : d && !d.ok ? (isNotConfigured(d.error) ? 'idle' : 'bad') : d ? (d.tone ?? 'good') : 'idle'
+            const autoWord = !p.configured ? autoConnectWord(p.id, auto) : null
             return (
               <article key={p.id} className={styles.card} style={{ padding: 0 }}>
                 {/* Severity stripe — state readable before any text is parsed. */}
@@ -501,7 +510,7 @@ export default function PluginsPage() {
 
                 <div className="mt-4 flex flex-wrap items-center gap-2 border-t px-5 py-3.5" style={{ borderColor: BORDER }}>
                   <span className="font-mono text-[11px]" style={{ color: TONE[tone] }}>
-                    <span aria-hidden>● </span>{!p.configured
+                    <span aria-hidden>● </span>{autoWord ? autoWord.word : !p.configured
                       ? `needs ${p.needs || p.missing.join(' and ') || 'setting up'}`
                       : d && !d.ok ? (isNotConfigured(d.error) ? 'not set up' : 'unreachable')
                       : d ? 'connected' : 'idle'}
@@ -520,10 +529,14 @@ export default function PluginsPage() {
                         Refresh
                       </button>
                     )}
-                    <button onClick={() => setEditing(p)}
-                      className={`${styles.btn} ${styles.btnPri}`}>
-                      {p.configured ? 'Settings' : 'Set up'}
-                    </button>
+                    {autoWord?.pick ? (
+                      <a href="#auto-connect" className={`${styles.btn} ${styles.btnPri}`} style={{ textDecoration: 'none' }}>Pick one</a>
+                    ) : !autoWord && (
+                      <button onClick={() => setEditing(p)}
+                        className={`${styles.btn} ${styles.btnPri}`}>
+                        {p.configured ? 'Settings' : 'Set up'}
+                      </button>
+                    )}
                   </div>
                 </div>
               </article>

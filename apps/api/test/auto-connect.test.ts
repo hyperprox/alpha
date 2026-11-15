@@ -79,7 +79,11 @@ test('excluded guests and subnets, and the hyperprox-ignore tag, are never conne
   assert.equal(exclusionOf({ excludedMachines: new Set(), excludedSubnets: [] }, { tags: ['hyperprox-ignore'] }), 'the hyperprox-ignore tag')
   assert.ok(inSubnets('https://192.0.2.200:8443/x', ['192.0.2.0/24']))
   assert.ok(!inSubnets('https://cloud.example.com', ['0.0.0.0/0']), 'a name is never taken as inside a subnet')
-  assert.deepEqual(envExcludedSubnets({ HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS: '192.0.2.0/24, junk,198.51.100.0/24' } as any), ['192.0.2.0/24', '198.51.100.0/24'])
+  assert.deepEqual(envExcludedSubnets({ HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS: '192.0.2.0/24; 198.51.100.0/24,203.0.113.0/24' } as any), ['192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24'])
+  // IPv4-mapped IPv6 is its IPv4.
+  assert.ok(inSubnets('http://[::ffff:192.0.2.9]:3000', ['192.0.2.0/24']))
+  assert.ok(inSubnets('::ffff:192.0.2.9', ['192.0.2.0/24']))
+  assert.ok(inSubnets('[::ffff:c000:209]:80', ['192.0.2.0/24']))
 })
 
 test('the exclusion list unreadable: nothing is connected (fail closed)', async () => {
@@ -164,7 +168,7 @@ test('vault: exactly one item for the host is used; two are a pick; another host
   // A URI with a scheme: http and https are different origins.
   assert.equal(matchVault(items, 'https://10.0.0.12:8989', 'api_key').kind, 'none')
   // Two items for the same address: never guessed.
-  const two = matchVault([...items, item('i4', 'Sonarr (old)', ['10.0.0.12'], { api_key: 'old' })], 'http://10.0.0.12:8989', 'api_key')
+  const two = matchVault([...items, item('i4', 'Sonarr (old)', ['10.0.0.12:8989'], { api_key: 'old' })], 'http://10.0.0.12:8989', 'api_key')
   assert.equal(two.kind, 'several')
   assert.deepEqual(two.kind === 'several' && two.items, [{ id: 'i1', name: 'Sonarr' }, { id: 'i4', name: 'Sonarr (old)' }])
   assert.ok(!JSON.stringify(two).includes(SECRET), 'a pick carries ids and names, never a value')
@@ -249,7 +253,7 @@ test('address settings: an Arr key comes only from one vault item for that same 
   assert.ok(!JSON.stringify(rc.audits).includes(SECRET) && !JSON.stringify(await rc.r.state()).includes(SECRET) && !rc.logs.join('\n').includes(SECRET), 'no value in the audit, the state or the log')
   // Two: a pick by item, and the picked item is used for that host only.
   s = settingsDeps(finds)
-  rc = reconciler([settingsAdapter('arrstack', s.d)], { items: [item('i1', 'Sonarr', ['http://10.0.0.12:8989'], { api_key: SECRET }), item('i3', 'Sonarr 2', ['10.0.0.12'], { api_key: 'other' })] })
+  rc = reconciler([settingsAdapter('arrstack', s.d)], { items: [item('i1', 'Sonarr', ['http://10.0.0.12:8989'], { api_key: SECRET }), item('i3', 'Sonarr 2', ['10.0.0.12:8989'], { api_key: 'other' })] })
   res = await rc.r.run('timer')
   assert.equal(res.outcomes.arrstack[0].did, 'ambiguous')
   assert.equal(s.saves.length, 0)
@@ -280,4 +284,135 @@ test('roles: auto-connect is admin for every method; the plug-ins\' writes keep 
     '/api/plugins/nextcloud/instances/n1234abcd/secure-actions/update', '/api/plugins/nextcloud/instances']) assert.ok(needsReconfirm(p.endsWith('widgets') ? 'PUT' : 'POST', p), p)
   assert.ok(needsReconfirm('PUT', '/api/plugins/arrstack/settings'))
   assert.ok(needsReconfirm('DELETE', '/api/plugins/nextcloud/instances/n1234abcd'))
+})
+
+test('subnet list fails closed: one unreadable entry stops every pass and every pick, loudly', async () => {
+  assert.throws(() => envExcludedSubnets({ HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS: '192.0.2.0/24, junk' } as any), /not IPv4 CIDRs \(junk\)/)
+  assert.throws(() => envExcludedSubnets({ HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS: '192.0.2.0/33' } as any))
+  assert.throws(() => envExcludedSubnets({ HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS: '300.0.2.0/24' } as any))
+  assert.deepEqual(envExcludedSubnets({} as any), [])
+  const a = fakeAdapter([{ key: 'lxc-101', machineId: 'lxc-101', candidates: ['x', 'y'] }])
+  const store = new MemoryStateStore()
+  store.s.pending['fake/lxc-101'] = { at: 1, label: 'x', message: 'm', choiceKind: 'container', choices: [{ id: 'x', label: 'x' }] }
+  const errors: string[] = []
+  const orig = console.error
+  console.error = (m: string) => { errors.push(m) }
+  try {
+    const r = new Reconciler({ store, adapters: [a], unlocked: () => true, excluded: async () => [], excludedSubnets: () => envExcludedSubnets({ HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS: 'nope' } as any), vaultItems: () => [], audit: async () => {} })
+    assert.equal((await r.run('timer')).waited, 'subnets')
+    await assert.rejects(r.pick('fake', 'lxc-101', 'x', 'admin@example.com'), (e: any) => e.code === 'subnets_unknown')
+  } finally { console.error = orig }
+  assert.deepEqual(a.connected, [])
+  assert.ok(errors.some(e => /REFUSING TO RUN/.test(e)))
+})
+
+test('vault: a URI with no port means its scheme\'s default port, never every app on that host', () => {
+  const items = [item('w', 'NAS web page', ['https://10.0.0.12'], { username: 'u', password: 'p', api_key: SECRET }), item('b', 'Bare host', ['10.0.0.13'], { api_key: SECRET })]
+  assert.equal(matchVault(items, 'http://10.0.0.12:8989', 'api_key').kind, 'none', 'https://host is port 443 only')
+  assert.equal(matchVault(items, 'https://10.0.0.12', 'api_key').kind, 'one')
+  assert.equal(matchVault(items, 'https://10.0.0.12:443', 'api_key').kind, 'one')
+  assert.equal(matchVault(items, 'http://10.0.0.13:8080', 'api_key').kind, 'none', 'a bare host is only the address\'s default port')
+  assert.equal(matchVault(items, 'http://10.0.0.13', 'api_key').kind, 'one')
+  assert.ok(uriMatches('http://10.0.0.13:80', 'http://10.0.0.13'), 'a default port written out is the same port')
+})
+
+// ── B1: a person's change during a slow pass is never lost ───────────────────
+
+/** An adapter whose pass waits until released, so a person's action can land in the middle of it. */
+function slowAdapter(keys: string[]) {
+  let release!: () => void
+  const gate = new Promise<void>(r => { release = r })
+  let started!: () => void
+  const running = new Promise<void>(r => { started = r })
+  const connected: string[] = []
+  const seen: Array<{ key: string; dismissed: boolean }> = []
+  const a: AutoConnectAdapter = {
+    plugin: 'slow',
+    async reconcile(ctx) {
+      started()
+      await gate
+      const out: Outcome[] = []
+      for (const k of keys) {
+        seen.push({ key: k, dismissed: ctx.dismissed(k) })
+        if (ctx.dismissed(k)) { out.push({ key: k, label: k, did: 'dismissed' }); continue }
+        if (k.startsWith('amb')) { out.push({ key: k, label: k, did: 'ambiguous', choices: [{ id: 'c1', label: 'c1' }, { id: 'c2', label: 'c2' }] }); continue }
+        connected.push(k)
+        out.push({ key: k, label: k, did: 'connected' })
+      }
+      return out
+    },
+    async pick(key, choice) { return { key, label: key, did: 'connected', evidence: [choice] } },
+  }
+  return { a, release, running, connected, seen }
+}
+
+test('B1: a dismiss that lands during a slow pass is kept, and the pass does not connect it', async () => {
+  const s = slowAdapter(['lxc-101'])
+  const { r, store } = reconciler([s.a])
+  const pass = r.run('timer')
+  await s.running
+  await r.dismiss('slow', 'lxc-101', 'dash', 'admin@example.com')
+  s.release()
+  await pass
+  assert.ok(store.s.dismissed['slow/lxc-101'], 'the dismissal survives the pass\'s write')
+  assert.equal(store.s.connected['slow/lxc-101'], undefined)
+  assert.deepEqual(s.connected, [], 'the adapter read the dismissal live')
+})
+
+test('B1: a dismiss after the adapter already connected still wins in the remembered state', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(res => { release = res })
+  let reached!: () => void
+  const at = new Promise<void>(res => { reached = res })
+  const a: AutoConnectAdapter = { plugin: 'slow', async reconcile() { reached(); await gate; return [{ key: 'lxc-101', label: 'x', did: 'connected' }] } }
+  const { r, store } = reconciler([a])
+  const pass = r.run('timer')
+  await at
+  await r.dismiss('slow', 'lxc-101', 'dash', 'admin@example.com')
+  release()
+  await pass
+  assert.ok(store.s.dismissed['slow/lxc-101'])
+  assert.equal(store.s.connected['slow/lxc-101'], undefined)
+})
+
+test('B1: connect-again during a slow pass starts a fresh pass after it, never hands back the old one', async () => {
+  const s = slowAdapter(['lxc-101'])
+  const { r, store } = reconciler([s.a])
+  await r.dismiss('slow', 'lxc-101', 'dash', 'admin@example.com')
+  const pass = r.run('timer')
+  await s.running
+  const again = r.connectAgain('slow', 'lxc-101', 'admin@example.com')
+  const old = await Promise.race([again.then(() => 'again'), new Promise(res => setTimeout(() => res('waiting'), 20))])
+  assert.equal(old, 'waiting', 'connect-again does not resolve with the pass that started before it')
+  s.release()
+  await pass
+  await again
+  assert.equal(s.seen.length, 2, 'a second, fresh pass ran')
+  assert.deepEqual(s.connected.filter(k => k === 'lxc-101').length >= 1, true)
+  assert.equal(store.s.dismissed['slow/lxc-101'], undefined)
+  assert.ok(store.s.connected['slow/lxc-101'])
+})
+
+test('B1: a pick during a slow pass is kept, and only its own choice is resolved', async () => {
+  const s = slowAdapter(['amb-1', 'amb-2'])
+  const { r, store } = reconciler([s.a])
+  // The first pass leaves two choices.
+  s.release()
+  await r.run('timer')
+  assert.ok(store.s.pending['slow/amb-1'] && store.s.pending['slow/amb-2'])
+  // A second, slow pass; the pick lands in the middle of it.
+  const s2 = slowAdapter(['amb-1', 'amb-2'])
+  ;(r as any).d.adapters = [s2.a]
+  const pass = r.run('timer')
+  await s2.running
+  const o = await r.pick('slow', 'amb-1', 'c2', 'admin@example.com')
+  assert.equal(o.did, 'connected')
+  assert.equal(store.s.pending['slow/amb-1'], undefined)
+  assert.ok(store.s.pending['slow/amb-2'], 'the other choice is left alone')
+  assert.ok(store.s.connected['slow/amb-1'])
+  s2.release()
+  await pass
+  assert.ok(store.s.connected['slow/amb-1'], 'the pass\'s write does not undo the pick')
+  assert.equal(store.s.pending['slow/amb-1'], undefined, 'a stale "ambiguous" from the pass does not re-open a picked choice')
+  assert.ok(store.s.pending['slow/amb-2'])
 })

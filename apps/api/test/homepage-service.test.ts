@@ -882,3 +882,14 @@ test('first fill rule: only missing, empty, the sample, or HyperProx\'s own file
   assert.equal(firstFillReason(f('- Mine:\n'), { notes, failed: [] }), null)
   assert.equal(firstFillReason(undefined, { notes, failed: ['scan'] }), null)
 })
+
+test('G3: a pick is refused for a guest that is excluded (list, tag or subnet) or dismissed by the time it is made', async () => {
+  const t = setup()
+  await assert.rejects(t.svc.autoPick('lxc-130', 'app-homepage-1', acx({ excludedMachines: new Set(['lxc-130']) })), (e: any) => e.code === 'excluded')
+  await assert.rejects(t.svc.autoPick('lxc-130', 'app-homepage-1', acx({ dismissed: k => k === 'lxc-130' })), (e: any) => e.code === 'excluded')
+  ;(machine as any).address = '10.0.0.30'
+  try { await assert.rejects(t.svc.autoPick('lxc-130', 'app-homepage-1', acx({ excludedSubnets: ['10.0.0.0/24'] })), (e: any) => e.code === 'excluded') }
+  finally { delete (machine as any).address }
+  assert.equal((await t.svc.instances()).length, 0)
+  assert.equal((await t.svc.autoPick('lxc-130', 'app-homepage-1', acx())).did, 'connected')
+})

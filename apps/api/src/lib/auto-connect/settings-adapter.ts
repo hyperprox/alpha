@@ -68,6 +68,8 @@ export function settingsAdapter(plugin: string, d: SettingsAdapterDeps): AutoCon
   /** Fill one slot: the address (and, when the spec needs one, the vault's credential for that address). */
   async function fill(ctx: AdapterContext, m: PluginManifest, spec: SettingSpec, slot: number, f: ScanSighting, item: { choice: VaultChoice; secret: string } | null, by: 'system' | 'pick'): Promise<Outcome> {
     const setting = spec.urlSettings[slot]
+    // A person may have dismissed it while this pass ran: read again right before anything is saved.
+    if (ctx.dismissed(outKey(setting, f.address))) return { key: outKey(setting, f.address), label: `${m.name}: ${f.address}`, did: 'dismissed' }
     const values: Record<string, string> = { [setting]: f.address }
     if (spec.labelSettings?.[slot] && f.guest) values[spec.labelSettings[slot]] = f.guest.name.slice(0, 60)
     if (spec.secret && item) values[spec.secret.setting] = item.secret

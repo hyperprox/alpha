@@ -55,7 +55,7 @@ function adapters(): AutoConnectAdapter[] {
     save: (m: any, values: Record<string, string>) => saveSettings(m, values),
   }
   return [
-    { plugin: 'homepage', reconcile: async ctx => (await lazy.homepage()).autoConnect(ctx), pick: async (key, choice) => (await lazy.homepage()).autoPick(key, choice) },
+    { plugin: 'homepage', reconcile: async ctx => (await lazy.homepage()).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.homepage()).autoPick(key, choice, ctx) },
     { plugin: 'nextcloud', reconcile: async ctx => (await lazy.nextcloud()).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.nextcloud()).autoPick(key, choice, ctx) },
     settingsAdapter('unmanic', settingsDeps),
     settingsAdapter('arrstack', settingsDeps),
@@ -76,6 +76,7 @@ export function autoConnect(): Reconciler {
       if (!manifests) manifests = new Map((await lazy.plugins()).map(p => [p.manifest.id, p.manifest]))
       return exclusionSource()
     },
+    // Throws on an unreadable entry: the pass then does not run at all (fail closed, logged loudly).
     excludedSubnets: () => envExcludedSubnets(),
     vaultItems: () => cachedSecrets(),
     audit: (a, r, d) => auditOrThrow(a, r, d),

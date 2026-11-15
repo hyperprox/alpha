@@ -39,7 +39,7 @@ import {
   type HpbPlan, type RunIO, type UpdatePlan,
 } from './update'
 import { MemoryJobStore, type JobStore } from './jobs'
-import { SYSTEM_ACTOR, exclusionOf, type AdapterContext, type Outcome } from '../auto-connect/core'
+import { SYSTEM_ACTOR, exclusionOf, hostIPv4, inSubnets, type AdapterContext, type Outcome } from '../auto-connect/core'
 import { matchVault, pickVault, type VaultChoice } from '../auto-connect/vault-match'
 import { NcRefusal, type Actor, type BusyHoursLike, type CheckView, type GuestRef, type Job, type JobStep, type NcMeta, type Reading } from './types'
 
@@ -76,12 +76,13 @@ export interface ServiceDeps {
   now?: () => number
   sleep?: (ms: number) => Promise<void>
   /** Where Nextcloud was seen without looking inside: the shared scan's probe, Catalogue installs (auto-connect). */
-  sightings?: () => Promise<Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null }>>
+  sightings?: () => Promise<Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null; ip?: string | null }>>
   /** A person removed this instance: auto-connect must never add its guest back by itself. */
   dismissed?: (key: string, label: string, by: string) => Promise<void>
 }
 
 const WEB_LOGIN_RETRY_MS = 6 * 60 * 60_000
+const WEB_LOGIN_MAX_MS = 24 * 60 * 60_000
 
 /** The auto-connect key of a guest (Remote access's machine id). */
 export const machineKey = (g: GuestRef) => `${g.kind}-${g.vmid}`
@@ -290,6 +291,8 @@ export class NextcloudService {
       // The app password HyperProx made is replaced (or the login removed): revoke it in Nextcloud first.
       if (login.made && (newPw || body.url === '')) await this.revokeMade(prev, login, actor.email)
       await this.d.audit('nextcloud.instance.update', `nextcloud:${id}`, { by: actor.email, changed: Object.keys(body).filter(k => ['name', 'url', 'user', 'appPassword', 'redetect'].includes(k)).map(k => (k === 'appPassword' ? 'credential' : k)) })
+      // The web login cleared by a person: auto-connect must not make it again by itself.
+      if (body.url === '' && login.appPassword && prev.autoConnected) await this.d.dismissed?.(`${machineKey(prev.guest)}#web-login`, `${prev.name}: web login`, actor.email)
       const meta = await this.d.store.update(id, { ...body, ...(tokenId !== undefined ? { tokenId } : {}) })
       if (dep) await this.d.store.setDeployment(id, dep)
       this.cache.delete(id)
@@ -335,6 +338,34 @@ export class NextcloudService {
 
   // ── auto-connect (lib/auto-connect) ───────────────────────────────────────
 
+  /** Guests whose detection found no Nextcloud, or two candidates: not detected again for an hour (the pick stays). */
+  private autoMiss = new Map<string, { at: number; outcome: Outcome }>()
+
+  /**
+   * Why auto-connect leaves this guest alone, or null: the ignore tag, Remote access's exclusion list, or an excluded
+   * subnet, judged on every address HyperProx saw it at (the scan's, the Catalogue's) and the guest's own IP. Checked
+   * before anything is run in the guest, for a new guest and for one added already alike.
+   */
+  private autoExcluded(ctx: AdapterContext, key: string, row: GuestRow | undefined, s: { urls: string[]; ips: string[] }): string | null {
+    return exclusionOf(ctx, { machineId: key, tags: row?.ignored ? ['hyperprox-ignore'] : [], addresses: [...s.urls, ...s.ips] })
+  }
+
+  /** When the background pass may try the web login again: never before the persisted time (it survives a restart). */
+  private webLoginDue(m: NcMeta): boolean {
+    const a = m.autoConnected
+    if (!a?.webLoginTriedAt) return true
+    const f = a.webLoginFailures ?? 0
+    // Nothing to use (no vault login, several admins): every 6 hours. A login that failed its test: 1 h, 2 h, 4 h... at most once a day.
+    const wait = f > 0 ? Math.min(60 * 60_000 * 2 ** (f - 1), WEB_LOGIN_MAX_MS) : WEB_LOGIN_RETRY_MS
+    return this.now() - Date.parse(a.webLoginTriedAt) >= wait
+  }
+
+  private async noteWebLoginTry(m: NcMeta, failed: boolean): Promise<void> {
+    const cur = (await this.d.store.get(m.id))?.autoConnected
+    if (!cur) return
+    await this.d.store.setAutoConnected(m.id, { ...cur, webLoginTriedAt: new Date(this.now()).toISOString(), webLoginFailures: failed ? (cur.webLoginFailures ?? 0) + 1 : 0 })
+  }
+
   /**
    * One auto-connect pass. Every guest where Nextcloud was seen and that is not added yet is detected (read-only, the
    * same script "Detect" runs) and added with occ through the node login: no password, health and setup checks work
@@ -345,12 +376,13 @@ export class NextcloudService {
     const out: Outcome[] = []
     if (!this.d.sightings) return out
     const [sightings, rows, list] = await Promise.all([this.d.sightings(), this.d.guests(), this.d.store.list()])
-    const byGuest = new Map<string, { guest: GuestRef; urls: string[]; via: string[]; admins: string[] }>()
+    const byGuest = new Map<string, { guest: GuestRef; urls: string[]; ips: string[]; via: string[]; admins: string[] }>()
     for (const s of sightings) {
       const k = machineKey(s.guest)
-      const e = byGuest.get(k) ?? { guest: s.guest, urls: [], via: [], admins: [] }
+      const e = byGuest.get(k) ?? { guest: s.guest, urls: [], ips: [], via: [], admins: [] }
       if (s.admin && !e.admins.includes(s.admin)) e.admins.push(s.admin)
       if (s.url && !e.urls.includes(s.url)) e.urls.push(s.url)
+      if (s.ip && !e.ips.includes(s.ip)) e.ips.push(s.ip)
       if (!e.via.includes(s.via)) e.via.push(s.via)
       byGuest.set(k, e)
     }
@@ -358,19 +390,20 @@ export class NextcloudService {
       const row = rows.find(r => r.kind === s.guest.kind && r.vmid === s.guest.vmid)
       const label = row?.name ?? key
       const have = list.find(m => m.guest.kind === s.guest.kind && m.guest.vmid === s.guest.vmid)
+      // Excluded: nothing is run in the guest at all, added already or not.
+      const why = this.autoExcluded(ctx, key, row, s)
+      if (why) { out.push({ key, label, did: 'excluded', message: why }); continue }
       if (have) {
         out.push({ key, label, did: 'present' })
-        // Connected earlier with occ only: the web login is tried again (a vault item may have been added since).
-        const tried = this.webLoginTried.get(have.id)
-        if (have.autoConnected && !(tried && this.now() - tried < WEB_LOGIN_RETRY_MS) && !(await this.d.store.login(have.id)).appPassword && !ctx.dismissed(`${key}#web-login`)) {
+        // Connected earlier with occ only: the web login is tried again (a vault item may have been added since),
+        // on a back-off that survives a restart, and never after a person cleared it.
+        if (have.autoConnected && row?.running && this.webLoginDue(have) && !ctx.dismissed(`${key}#web-login`) && !(await this.d.store.login(have.id)).appPassword) {
           const w = await this.autoWebLogin(have, s.urls, ctx, undefined, s.admins).catch((e: any) => ({ key: `${key}#web-login`, label, did: 'failed' as const, message: String(e?.message ?? e).slice(0, 200) }))
           if (w) out.push(w)
         }
         continue
       }
       if (!row) { out.push({ key, label, did: 'skipped', message: 'not on the cluster' }); continue }
-      const why = exclusionOf(ctx, { machineId: key, tags: row.ignored ? ['hyperprox-ignore'] : [], addresses: s.urls })
-      if (why) { out.push({ key, label, did: 'excluded', message: why }); continue }
       if (ctx.dismissed(key)) { out.push({ key, label, did: 'dismissed' }); continue }
       if (!row.running) { out.push({ key, label, did: 'skipped', message: 'not running' }); continue }
       const miss = this.autoMiss.get(key)
@@ -399,6 +432,8 @@ export class NextcloudService {
     return this.locked(`guest:${key}`, async () => {
       const dep = await this.detectIn(guest, name, prefer)
       if ((await this.d.store.list()).some(m => m.guest.kind === guest.kind && m.guest.vmid === guest.vmid)) return [{ key, label: name, did: 'present' as const }]
+      // A person may have removed it while the detection ran: the dismissal is read again right before adding.
+      if (ctx.dismissed(key)) return [{ key, label: name, did: 'dismissed' as const }]
       const evidence = [...via.map(v => `found by ${v}`), `occ in ${dep.kind === 'bare' ? 'a plain install' : `container ${dep.occ.mode === 'docker' ? dep.occ.container : ''}`}`]
       await ctx.audit('nextcloud.instance.auto_connect', `guest:${key}`, { guest: key, deployment: dep.kind, evidence })
       const meta = await this.d.store.create({ name: cleanName(name.slice(0, 40)), guest, deployment: dep, url: null, user: null, appPassword: null,
@@ -410,42 +445,50 @@ export class NextcloudService {
     })
   }
 
-  /** The addresses Nextcloud may be reached on: where it was seen, and its own overwrite.cli.url. */
-  private async ncUrls(m: NcMeta, seen: string[]): Promise<string[]> {
+  /**
+   * The addresses a vault login may be matched against and the web login may be sent to: only ones HyperProx saw
+   * itself (the service scan's, a Catalogue install's), never one the guest reports about itself (overwrite.cli.url
+   * is the guest's to set, so it is a display hint at most), and never one in an excluded subnet. Names before IPs:
+   * Nextcloud's trusted domains usually list its name.
+   */
+  private observedUrls(seen: string[], ctx: AdapterContext): string[] {
     const out: string[] = []
-    for (const u of seen) { try { const c = cleanUrl(u); if (!out.includes(c)) out.push(c) } catch { /* not usable */ } }
-    if (m.deployment) {
-      const b = batch(m.deployment.occ, [{ key: 'u', id: 'config-get', params: { key: 'overwrite.cli.url' } }])
-      const cli = configValue(b.parse((await this.run(m.guest, b.script)).output).u)
-      if (cli) { try { const c = cleanUrl(cli); if (!out.includes(c)) out.unshift(c) } catch { /* not usable */ } }
+    for (const u of seen) {
+      try { const c = cleanUrl(u); if (!out.includes(c) && !inSubnets(c, ctx.excludedSubnets)) out.push(c) } catch { /* not usable */ }
     }
-    return out
+    return out.sort((a, b) => Number(hostIPv4(a) !== null) - Number(hostIPv4(b) !== null))
   }
 
   /**
    * The optional web login, made without a person when it can be done safely:
-   *   - a vault item whose login URI is this Nextcloud's host (exactly one; several are a pick): an app password in
-   *     it is used as it is, against that same address only; an ordinary password is never sent anywhere, its user
-   *     name says which admin HyperProx makes its own app password for;
-   *   - no vault item: when the admin group has exactly one member, HyperProx makes its own app password for them.
+   *   - a vault item whose login URI is one of the addresses HyperProx saw Nextcloud at (exactly one; several are a
+   *     pick): an app password in it is used as it is, against that same address only; an ordinary password is never
+   *     sent anywhere, its user name says which admin HyperProx makes its own app password for;
+   *   - no vault item: the admin the Catalogue made, else the admin group's only member gets HyperProx's own app
+   *     password, tested against an observed address.
    * HyperProx's own app password is kept in the vault and revoked when the instance is removed. Anything else is
    * left: occ already gives the health and setup checks.
    */
-  private webLoginTried = new Map<string, number>()
-  /** Guests whose detection found no Nextcloud, or two candidates: not detected again for an hour (the pick stays). */
-  private autoMiss = new Map<string, { at: number; outcome: Outcome }>()
-
   private async autoWebLogin(m: NcMeta, seen: string[], ctx: AdapterContext, pickedItem?: string, admins: string[] = []): Promise<Outcome | null> {
     const key = `${machineKey(m.guest)}#web-login`
     if (!m.deployment || (await this.d.store.login(m.id)).appPassword) return null
-    // Tried at most every few hours by the background pass: a login that does not work is not retried every five minutes.
-    if (!pickedItem) this.webLoginTried.set(m.id, this.now())
-    const urls = await this.ncUrls(m, seen)
+    const urls = this.observedUrls(seen, ctx)
+    let failed = false
+    try {
+      const o = await this.webLoginFrom(m, urls, ctx, key, pickedItem, admins)
+      failed = o.did === 'failed'
+      return o
+    } catch (e) { failed = true; throw e }
+    finally { if (!pickedItem) await this.noteWebLoginTry(m, failed).catch(() => {}) }
+  }
+
+  private async webLoginFrom(m: NcMeta, urls: string[], ctx: AdapterContext, key: string, pickedItem: string | undefined, admins: string[]): Promise<Outcome> {
+    if (!urls.length) return { key, label: m.name, did: 'needs_credential', message: 'HyperProx has not seen Nextcloud at an address it may send a login to.' }
     const items = ctx.vaultItems()
     let hit: { url: string; item: VaultChoice; user: string | null; secret: string } | null = null
     if (pickedItem) {
       for (const u of urls) { const p = pickVault(items, pickedItem, u, 'login'); if (p) { hit = { url: u, item: p.item, user: p.value.username, secret: p.value.secret }; break } }
-      if (!hit) return { key, label: m.name, did: 'failed', message: 'That vault item is not for this Nextcloud\'s address any more.' }
+      if (!hit) return { key, label: m.name, did: 'failed', message: 'That vault item is not for an address HyperProx saw this Nextcloud at.' }
     } else {
       const found = new Map<string, { url: string; item: VaultChoice; user: string | null; secret: string }>()
       for (const u of urls) {
@@ -465,28 +508,31 @@ export class NextcloudService {
       url = hit.url; user = cleanUser(hit.user); appPassword = hit.secret
       await ctx.audit('nextcloud.web_login.auto', `nextcloud:${m.id}`, { from: 'vault', vaultItemId: hit.item.id, vaultItemName: hit.item.name, address: url, user })
       const since = this.now()
-      await this.testLogin(url, user, appPassword)
-      tokenId = await this.tokenIdFor(m.guest, m.deployment.occ, user, since).catch(() => null)
+      try { await this.testLogin(url, user, appPassword) } catch (e: any) { return { key, label: m.name, did: 'failed', message: String(e?.message ?? e).slice(0, 200) } }
+      tokenId = await this.tokenIdFor(m.guest, m.deployment!.occ, user, since).catch(() => null)
       how = `the app password in the vault item "${hit.item.name}"`
     } else {
       // Which admin: the vault item's user, else the one admin the Catalogue made, else the admin group's only member.
       let admin: string | null = hit?.user ?? (admins.length === 1 ? admins[0] : null)
       if (!admin) {
-        const b = batch(m.deployment.occ, [{ key: 'groups', id: 'group-list' }])
+        const b = batch(m.deployment!.occ, [{ key: 'groups', id: 'group-list' }])
         const g = b.parse((await this.run(m.guest, b.script)).output).groups
-        const admins = g ? parseGroupMembers(g.output, 'admin') ?? [] : []
-        if (admins.length !== 1) return { key, label: m.name, did: 'needs_credential', message: admins.length ? `The admin group has ${admins.length} members, so HyperProx does not pick whose app password to make. Add the web login in Settings if you want the extra details.` : 'No admin user was found.' }
-        admin = admins[0]
+        const list = g ? parseGroupMembers(g.output, 'admin') ?? [] : []
+        if (list.length !== 1) return { key, label: m.name, did: 'needs_credential', message: list.length ? `The admin group has ${list.length} members, so HyperProx does not pick whose app password to make. Add the web login in Settings if you want the extra details.` : 'No admin user was found.' }
+        admin = list[0]
       }
       try { user = cleanUser(admin) } catch { return { key, label: m.name, did: 'needs_credential', message: 'The admin user\'s name is not one HyperProx passes to occ.' } }
-      url = hit?.url ?? urls[0]
-      if (!url) return { key, label: m.name, did: 'needs_credential', message: 'Nextcloud\'s address is not known (no overwrite.cli.url).' }
       const made1 = await this.makeAppPassword(m, user, ctx, hit?.item ?? null)
       appPassword = made1.appPassword; tokenId = made1.tokenId; made = true
-      try { await this.testLogin(url, user, appPassword) } catch (e) {
+      // Tested against the vault item's address, or each address HyperProx saw, until one answers.
+      const targets = hit ? [hit.url] : urls
+      let ok: string | null = null, last: any = null
+      for (const t of targets) { try { await this.testLogin(t, user, appPassword); ok = t; break } catch (e) { last = e } }
+      if (!ok) {
         await this.revokeMade(m, { user, tokenId, made: true }, SYSTEM_ACTOR).catch(() => {})
-        throw e
+        return { key, label: m.name, did: 'failed', message: String(last?.message ?? 'the web login did not work').slice(0, 200) }
       }
+      url = ok
       how = hit ? `an app password HyperProx made for ${user} (the user of the vault item "${hit.item.name}")` : admins.length === 1 ? `an app password HyperProx made for ${user}, the admin the Catalogue made` : `an app password HyperProx made for ${user}, the only admin`
     }
     try { await this.d.store.setLogin(m.id, { url, user, appPassword, tokenId, made }) } catch (e) {
@@ -499,7 +545,7 @@ export class NextcloudService {
     return { key, label: m.name, did: 'connected', evidence: [`web login: ${how}`], vaultItem: hit?.item ?? null }
   }
 
-  /** HyperProx's own app password for `user` (occ), with its token id; revoked again if its id cannot be told. */
+  /** HyperProx's own app password for `user` (occ), with its token id. */
   private async makeAppPassword(m: NcMeta, user: string, ctx: AdapterContext, fromItem: VaultChoice | null): Promise<{ appPassword: string; tokenId: number }> {
     const dep = m.deployment!
     const b = batch(dep.occ, [{ key: 't', id: 'auth-tokens', params: { uid: user } }])
@@ -522,14 +568,15 @@ export class NextcloudService {
     const guest: GuestRef = { kind: g[1] as 'lxc' | 'qemu', vmid: Number(g[2]) }
     const sightings = this.d.sightings ? (await this.d.sightings()).filter(s => s.guest.kind === guest.kind && s.guest.vmid === guest.vmid) : []
     const urls = sightings.map(s => s.url).filter((u): u is string => !!u)
+    const ips = sightings.map(s => s.ip).filter((u): u is string => !!u)
+    const row = (await this.d.guests()).find(r => r.kind === guest.kind && r.vmid === guest.vmid)
+    if (!row || !row.running || this.autoExcluded(ctx, machineKey(guest), row, { urls, ips })) throw new NcRefusal('no_guest', 'That guest is not there, not running, or excluded.', 409)
     if (web) {
       const m = (await this.d.store.list()).find(x => x.guest.kind === guest.kind && x.guest.vmid === guest.vmid)
       if (!m) throw new NcRefusal('no_instance', 'That Nextcloud is not added any more.', 404)
       return (await this.autoWebLogin(m, urls, ctx, choiceId)) ?? { key, label: m.name, did: 'present' }
     }
     if (!CONTAINER_RE.test(choiceId)) throw new NcRefusal('bad_input', 'Pick one of the listed containers.')
-    const row = (await this.d.guests()).find(r => r.kind === guest.kind && r.vmid === guest.vmid)
-    if (!row || !row.running || exclusionOf(ctx, { machineId: machineKey(guest), tags: row.ignored ? ['hyperprox-ignore'] : [], addresses: urls })) throw new NcRefusal('no_guest', 'That guest is not there, not running, or excluded.', 409)
     const out = await this.autoAdd(guest, row.name, ['a person\'s pick'], urls, ctx, choiceId)
     this.autoMiss.delete(machineKey(guest))
     return out[0]

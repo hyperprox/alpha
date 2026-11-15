@@ -2074,8 +2074,10 @@ press:
   server only. With none, the plug-in waits for you. With two or more, the plug-ins page asks you to pick
   one. A web password is never used as an API key.
 - **Never** a guest tagged `hyperprox-ignore`, a guest on Remote access's "never look inside" list, or an
-  address in a subnet listed in `HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS`; never while that list cannot be
-  read; never a setting you filled in yourself.
+  address in a subnet listed in `HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS` (CIDRs separated by commas or
+  semicolons; one entry that cannot be read stops auto-connect altogether); never while either list cannot be
+  read; never a setting you filled in yourself. A vault login with no port in its address counts only for
+  that scheme's default port.
 - **Something you disconnect or clear stays that way.** HyperProx remembers it and shows **Connect again**
   instead of adding it back.
 
@@ -2453,7 +2455,8 @@ Catalogue installed. It looks inside the guest, read-only, the same way **Look f
 (below), and adds it with `occ` through the node's login, which needs no password. The health and setup checks
 work straight away. For the optional web login it uses, in this order:
 
-1. A vault login whose saved web address is this Nextcloud's address. If it holds an app password, that is
+1. A vault login whose saved web address is one HyperProx saw this Nextcloud at itself (the service scan, a
+   Catalogue install), never the address the guest reports about itself. If it holds an app password, that is
    used, against that address only. An ordinary password is never sent anywhere; only its user name is used,
    to say which admin HyperProx makes its own app password for.
 2. The admin the Catalogue made.

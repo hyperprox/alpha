@@ -28,7 +28,11 @@ export interface NcMeta {
   snoozed:   Record<string, string>
   addedAt:   string
   /** Set when HyperProx connected it by itself (lib/auto-connect): when, how it was found, how the web login was made. */
-  autoConnected?: { at: string; evidence: string[]; webLogin: string | null } | null
+  autoConnected?: {
+    at: string; evidence: string[]; webLogin: string | null
+    /** When the background pass last tried the web login, and how many tries in a row failed (its back-off). */
+    webLoginTriedAt?: string; webLoginFailures?: number
+  } | null
 }
 
 export interface NcView extends NcMeta { url: string | null; user: string | null; hasAppPassword: boolean; appPasswordMadeByHyperProx: boolean }

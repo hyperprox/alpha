@@ -21,6 +21,20 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-15 — Plug-ins connect what they find by themselves
+
+### New
+- **Plug-ins connect what HyperProx finds, with no Connect button to press.** A Homepage or Nextcloud on your cluster is connected within a few minutes of being found, and again right after you unlock HyperProx. Unmanic workers and qBittorrent get their address filled in, and the Arr apps, Plex and Tautulli too when the vault holds their key for that same server.
+  - Technical: `lib/auto-connect` runs every 5 minutes, after an unlock and after "Scan for services"; `/api/auto-connect` (admin; API tokens cannot pick). Never a `hyperprox-ignore` guest, a guest on Remote access's exclusion list, or an address in `HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS` (an unreadable entry stops auto-connect altogether). Every connection is audited as the system, with how it was found and the vault item's id and name, never its value.
+- **A new Homepage gets filled by itself.** When the dashboard is still Homepage's sample (or empty, or exactly what HyperProx wrote before), HyperProx fills it with your apps straight away, after backing up the old file. A dashboard with your own groups is never changed without your Apply, and auto-sync stays off.
+- **Nextcloud's web login sets itself up when it safely can.** HyperProx uses an app password from a vault login saved for that same address. Otherwise it makes its own app password for the admin the Catalogue made, or for the only admin, keeps it in the vault, and revokes it when you remove the Nextcloud.
+  - Technical: Nextcloud is added over `occ` through the node login, so health and setup checks need no password. Vault logins are matched only against addresses HyperProx saw itself (the service scan, Catalogue installs), never against the guest's own `overwrite.cli.url`. An ordinary password is never sent anywhere; only its user name is used. A failing web login is retried with a back-off (at most once a day) that survives a restart.
+
+### Improved
+- **Nothing is guessed, and what you undo stays undone.** When there are two candidates (two containers, two servers, or two vault logins), the page asks you to pick one. Something you disconnect, remove or clear is remembered, and only **Connect again** brings it back.
+  - Technical: a vault login matches only the same host, scheme and port; a URI without a port means its scheme's default port. State changes are serialised and merged key by key, so a disconnect, pick or connect-again made during a pass is never lost.
+- **The Plug-ins page shows "connecting automatically…" or the pick waiting** instead of "needs a device added on its page" for a plug-in HyperProx is connecting by itself.
+
 ## 2026-11-15 — Load balancing, choose exactly what to update, Nextcloud and Homepage plug-ins
 
 ### New

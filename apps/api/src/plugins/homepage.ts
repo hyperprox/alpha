@@ -13,7 +13,7 @@ import type { Plugin, PluginContext, PluginTileData } from '../lib/plugin-host'
 type Row = { id: string; name: string; url: string | null; autoSync: boolean; entries: number; lastSync: { at: number; ok: boolean; message: string } | null }
 
 export function tileOf(rows: Row[]): PluginTileData {
-  if (!rows.length) throw new Error('Not configured yet: connect a Homepage dashboard on the Homepage page.')
+  if (!rows.length) throw new Error('Not configured yet: HyperProx connects a Homepage it finds by itself; none found so far.')
   const lines = rows.map(r => ({
     label: r.name,
     value: !r.lastSync ? 'not filled yet' : r.lastSync.ok ? `${r.entries} entr${r.entries === 1 ? 'y' : 'ies'}${r.autoSync ? ', auto-sync on' : ''}` : r.lastSync.message.slice(0, 120),
@@ -39,7 +39,7 @@ export const homepagePlugin: Plugin = {
     auth: { kind: 'none' },
     settings: [],
   },
-  needsWhat: 'a dashboard connected on its page',
+  needsWhat: 'a Homepage on the cluster (connected by itself once found)',
   // Loaded when asked, so the plug-in list does not pull in the executor and inventory at import time.
   async isConfigured() { return (await (await import('../lib/homepage')).homepageService().instances()).length > 0 },
   async load(ctx: PluginContext): Promise<PluginTileData> { return tileOf(await ctx.get('/readings')) },

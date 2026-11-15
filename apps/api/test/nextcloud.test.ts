@@ -759,7 +759,8 @@ const acx = (o: Partial<AdapterContext> = {}, audits: Array<{ action: string; de
   dismissed: () => false, autoConnectedBefore: () => false, excludedMachines: new Set(), excludedSubnets: [], vaultItems: () => [],
   audit: async (action, _r, details) => { audits.push({ action, details: { ...details, by: SYSTEM_ACTOR } }) }, now: () => NOW, ...o,
 })
-const SEEN = [{ guest: { kind: 'lxc' as const, vmid: 100 }, url: 'https://10.0.0.25', via: 'scan' }]
+const SEEN = [{ guest: { kind: 'lxc' as const, vmid: 100 }, url: 'https://10.0.0.25', via: 'scan', ip: '10.0.0.25' }, { guest: { kind: 'lxc' as const, vmid: 100 }, url: 'https://cloud.example.com', via: 'catalogue' }]
+const SEEN_IP = [SEEN[0]]
 /** A guest where "make the app password" works: the new token shows up as id 42. */
 function makerGuest(o: Parameters<typeof fakeGuest>[0] = {}) {
   let made = false
@@ -787,7 +788,7 @@ test('auto-connect: a single sighting is detected and added over occ with no pas
   assert.equal(login.user, 'alice')
   assert.equal(login.tokenId, 42)
   assert.equal(login.made, true, 'kept in the vault and marked, so removing revokes it')
-  assert.equal(login.url, 'https://cloud.example.com', 'tested against Nextcloud\'s own address')
+  assert.equal(login.url, 'https://cloud.example.com', 'tested against an address HyperProx saw (its name first)')
   // The next pass changes nothing.
   const n = audits.length
   assert.deepEqual((await s.svc.autoConnect(acx({}, audits))).map(o => o.did), ['present'])
@@ -890,4 +891,60 @@ test('removing: the app password HyperProx made is revoked first (refused when i
   const m3 = await added(s3)
   await s3.svc.remove(m3.id, ADMIN)
   assert.ok(!g3.calls.some(c => c.includes('user:auth-tokens:delete')))
+})
+
+test('G4: a vault login is matched only against addresses HyperProx saw; overwrite.cli.url (the guest\'s own claim) is never a target', async () => {
+  // The guest says it is https://cloud.example.com (overwrite.cli.url); HyperProx only ever saw it at its IP.
+  const s = service(makerGuest({ parts: { groups: '{"admin":["alice","bob"]}' } }), { sightings: async () => SEEN_IP })
+  const items = [{ id: 'v1', name: 'NC', uris: ['https://cloud.example.com'], fields: { username: 'alice', password: APP_PW } }]
+  const out = await s.svc.autoConnect(acx({ vaultItems: () => items }))
+  assert.equal(out[0].did, 'connected', 'added over occ all the same')
+  assert.equal(out[1].did, 'needs_credential', 'the vault item for the claimed name is not matched')
+  assert.ok(s.ocsCalls.every(c => !c.url.includes('cloud.example.com') && c.appPassword !== APP_PW))
+  // Any address it was seen at in an excluded subnet: the guest is left alone, so no OCS target in it is ever used.
+  const s2 = service(makerGuest(), { sightings: async () => [{ ...SEEN_IP[0], ip: null }, { guest: { kind: 'lxc' as const, vmid: 100 }, url: 'https://192.0.2.50', via: 'catalogue' }] })
+  assert.equal((await s2.svc.autoConnect(acx({ excludedSubnets: ['192.0.2.0/24'] })))[0].did, 'excluded')
+  assert.equal(s2.ocsCalls.length, 0)
+})
+
+test('G2 and minor 3: an instance added already whose guest is now excluded gets no occ call at all; the guest\'s own IP counts', async () => {
+  const g = makerGuest({ parts: { groups: '{"admin":["alice","bob"]}' } })
+  const s = service(g, { sightings: async () => SEEN })
+  await s.svc.autoConnect(acx())
+  s.advance(7 * 60 * 60_000)
+  for (const ctx of [acx({ excludedMachines: new Set(['lxc-100']) }), acx({ excludedSubnets: ['10.0.0.25/32'] })]) {
+    const n = g.calls.length
+    const out = await s.svc.autoConnect(ctx)
+    assert.equal(out[0].did, 'excluded')
+    assert.equal(g.calls.length, n, 'nothing ran in the guest')
+  }
+  // The guest's own IP, with no address URL in the subnet.
+  const s2 = service(fakeGuest(), { sightings: async () => [{ guest: { kind: 'lxc' as const, vmid: 100 }, url: 'https://cloud.example.com', via: 'catalogue', ip: '10.0.0.25' }] })
+  assert.equal((await s2.svc.autoConnect(acx({ excludedSubnets: ['10.0.0.0/24'] })))[0].did, 'excluded')
+})
+
+test('G1: a web login a person clears is not made again; the retry time survives a restart', async () => {
+  const io = memoryIO()
+  const dismissed: string[] = []
+  const g = makerGuest()
+  const s = service(g, { sightings: async () => SEEN, store: new NcInstanceStore(io), dismissed: async k => { dismissed.push(k) } })
+  await s.svc.autoConnect(acx())
+  const [m] = await s.svc.instances.list()
+  assert.ok((await s.svc.instances.login(m.id)).appPassword)
+  await s.svc.update(m.id, { url: '' }, ADMIN)
+  assert.deepEqual(dismissed, ['lxc-100#web-login'])
+  assert.equal((await s.svc.instances.login(m.id)).appPassword, null)
+  // A "restart": a new service on the same store. Nothing to use (two admins): tried once, then not again for hours.
+  const g2 = makerGuest({ parts: { groups: '{"admin":["alice","bob"]}' } })
+  const io2 = memoryIO()
+  const s2 = service(g2, { sightings: async () => SEEN, store: new NcInstanceStore(io2) })
+  assert.equal((await s2.svc.autoConnect(acx()))[1].did, 'needs_credential')
+  const triedAt = (await s2.svc.instances.list())[0].autoConnected?.webLoginTriedAt
+  assert.ok(triedAt, 'the try is persisted')
+  const s3 = service(g2, { sightings: async () => SEEN, store: new NcInstanceStore(io2) })
+  const n = g2.calls.length
+  assert.deepEqual((await s3.svc.autoConnect(acx())).map(o => o.did), ['present'], 'no immediate retry after a restart')
+  assert.equal(g2.calls.length, n)
+  s3.advance(6 * 60 * 60_000 + 1)
+  assert.equal((await s3.svc.autoConnect(acx()))[1].did, 'needs_credential', 'tried again once the wait is over')
 })
