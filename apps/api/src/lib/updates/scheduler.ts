@@ -91,7 +91,7 @@ export class UpdatesScheduler {
         this.deps.log?.(`[updates] scheduled run skipped: job ${e.runningJobId} is still active`)
         return 'busy'
       }
-      this.deps.log?.(`[updates] scheduled run did not start: ${e.message}`)
+      this.deps.log?.(`[updates] scheduled run did not start: ${e.message}`, 'error')
       return 'error'
     }
   }

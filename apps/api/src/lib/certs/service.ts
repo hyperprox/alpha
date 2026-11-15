@@ -711,7 +711,7 @@ export class CertsService {
   private async runCheck(): Promise<void> {
     const load = this.policy()
     const policy = load.policy
-    if (!load.loaded) this.deps.log(`[certs] daily check without a policy (${load.error ?? 'no file'}): probes only`)
+    if (!load.loaded) this.deps.log(`[certs] daily check without a policy (${load.error ?? 'no file'}): probes only`, 'warn')
     try { await this.sweepChallenges() } catch (e) { this.deps.log(`[certs] challenge sweep failed: ${msg(e)}`, 'warn') }
     for (const row of await this.deps.store.listManaged()) {
       try { await this.checkOne(row, policy) }

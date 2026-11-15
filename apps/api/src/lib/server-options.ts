@@ -27,6 +27,16 @@ export function safeErr(e: unknown, depth = 0): unknown {
   const status = x.status ?? x.statusCode
   if (typeof status === 'number') out.status = status
   if (x.cause && depth < 5) out.cause = safeErr(x.cause, depth + 1)
+  // An AggregateError (Promise.any, a connection tried on several addresses) says why only in its errors: the first
+  // few, message and code only.
+  if (Array.isArray(x.errors) && x.errors.length) {
+    out.errors = x.errors.slice(0, 5).map((s: any) => {
+      const one: Record<string, unknown> = { message: typeof s?.message === 'string' ? s.message : String(s) }
+      if (typeof s?.code === 'string' || typeof s?.code === 'number') one.code = s.code
+      return one
+    })
+    if (x.errors.length > 5) out.moreErrors = x.errors.length - 5
+  }
   return out
 }
 
