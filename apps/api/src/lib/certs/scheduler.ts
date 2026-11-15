@@ -20,7 +20,7 @@ export interface CertsSchedulerDeps {
   /** The `schedule.check` expression now in force. */
   cron:       () => string
   isUnlocked: () => boolean
-  log?:       (msg: string) => void
+  log?:       (msg: string, level?: 'warn' | 'error') => void
   now?:       () => Date
 }
 
@@ -40,7 +40,7 @@ export class CertsScheduler {
 
   start(intervalMs = 30_000): void {
     if (this.timer) return
-    this.timer = setInterval(() => { this.tick().catch(e => this.deps.log?.(`[certs] scheduler: ${e.message}`)) }, intervalMs)
+    this.timer = setInterval(() => { this.tick().catch(e => this.deps.log?.(`[certs] scheduler: ${e.message}`, 'error')) }, intervalMs)
     this.timer.unref?.()
   }
 
@@ -58,14 +58,14 @@ export class CertsScheduler {
     // restart left in DNS; it needs the DNS credential, so it cannot run while locked.
     if (!this.swept && this.deps.service.sweepChallenges && this.deps.isUnlocked()) {
       this.swept = true
-      await this.deps.service.sweepChallenges().catch(e => this.deps.log?.(`[certs] challenge sweep failed: ${e?.message ?? e}`))
+      await this.deps.service.sweepChallenges().catch(e => this.deps.log?.(`[certs] challenge sweep failed: ${e?.message ?? e}`, 'warn'))
     }
     const now = this.now()
     const since = this.last
     this.last = now
     let due: Date[]
     try { due = dueMinutes(this.deps.cron(), since, now) }
-    catch (e: any) { this.deps.log?.(`[certs] schedule not understood: ${e.message}`); return 'error' }
+    catch (e: any) { this.deps.log?.(`[certs] schedule not understood: ${e.message}`, 'warn'); return 'error' }
     if (!due.length) return 'idle'
     if (!this.deps.isUnlocked()) {
       this.deps.log?.('[certs] daily check skipped: HyperProx is locked, so it has no keys or credentials to work with')
@@ -77,7 +77,7 @@ export class CertsScheduler {
       return 'busy'
     }
     this.running = this.deps.service.dailyCheck()
-      .catch(e => this.deps.log?.(`[certs] daily check failed: ${e?.message ?? e}`))
+      .catch(e => this.deps.log?.(`[certs] daily check failed: ${e?.message ?? e}`, 'error'))
       .finally(() => { this.running = null })
     return 'started'
   }

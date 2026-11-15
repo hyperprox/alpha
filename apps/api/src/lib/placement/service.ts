@@ -71,7 +71,7 @@ import { copySeconds } from './network'
 import { readCluster, readHistory, taskRunning, type ClusterRead, type PromRange } from './read'
 import { DEFAULT_SETTINGS, IN_FLIGHT, MoveSlotTaken, PlanSlotTaken, mergeAuto, mergeSettings, stricterAuto, stricterSettings, type PlacementStore } from './store'
 import { backupMask, quietStatus, type QuietStatus } from './windows'
-import { createLogOnce, type LogLike, type LogOnce } from '../log-once'
+import { appLog, createLogOnce, type LogLike, type LogOnce } from '../log-once'
 import type {
   Advice, AutoSettings, AutoState, BalanceGoal, BalanceResult, GuestPlacement, MoveRecord, NetworkCost, PlacementMap, PlacementSettings,
   AutoConfig, PlanRecord, PlanSnapshot, PlanStatus, PlanStepRecord,
@@ -198,7 +198,7 @@ export class PlacementService {
   readonly owner: string
   private readonly problem: LogOnce
   constructor(private d: PlacementDeps, log?: LogLike) {
-    this.problem = createLogOnce(log)
+    this.problem = createLogOnce(log ?? appLog)
     this.owner = d.ownerId ?? `${process.pid}@${Date.now()}`
   }
 
@@ -1338,8 +1338,9 @@ export class PlacementService {
 
   /** Every minute; the first pass right away takes over moves a dead process left behind. */
   async start(): Promise<() => void> {
-    await this.tick().catch(e => this.problem('placement scheduler pass', e))
-    if (!this.timer) this.timer = setInterval(() => { void this.tick().catch(e => this.problem('placement scheduler pass', e)) }, 60_000)
+    const pass = () => this.tick().then(() => this.problem.ok('placement scheduler pass'), e => this.problem('placement scheduler pass', e))
+    await pass()
+    if (!this.timer) this.timer = setInterval(() => { void pass() }, 60_000)
     ;(this.timer as any).unref?.()
     return () => { if (this.timer) clearInterval(this.timer); this.timer = null }
   }

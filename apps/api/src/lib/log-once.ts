@@ -12,21 +12,38 @@ export interface LogLike {
 export const silentLog: LogLike = { info: () => undefined, warn: () => undefined, error: () => undefined }
 
 export interface LogOnce {
-  /** Report a failure of `phase`; logged only when its message differs from the last one for that phase. */
-  (phase: string, err: unknown): void
-  /** The phase worked: forget its last message, so the next failure is logged again. */
+  /**
+   * Report a failure of `phase`. Logged the first time; the same message again is counted and stays quiet, and is
+   * logged once more (with how many were held back) after an hour. A different message is logged at once, but never
+   * more than one line per phase per minute, so a flapping job cannot flood the log. `text` is the log line
+   * (default "<phase> failed").
+   */
+  (phase: string, err: unknown, text?: string, level?: 'warn' | 'error'): void
+  /** The phase worked: forget its last message, so the next failure is logged again (still at most once a minute). */
   ok(phase: string): void
+  /** Every phase worked. */
+  reset(): void
 }
 
-export function createLogOnce(log: LogLike | undefined, level: 'warn' | 'error' = 'warn'): LogOnce {
-  const last = new Map<string, string>()
-  const fn = ((phase: string, err: unknown) => {
+export const LOG_ONCE_REPEAT_MS = 60 * 60_000
+export const LOG_ONCE_MIN_GAP_MS = 60_000
+
+export function createLogOnce(log: LogLike | undefined, level: 'warn' | 'error' = 'warn', now: () => number = Date.now): LogOnce {
+  const state = new Map<string, { msg: string | null; at: number; suppressed: number }>()
+  const fn = ((phase: string, err: unknown, text?: string, lvl?: 'warn' | 'error') => {
     const msg = String((err as any)?.message ?? err)
-    if (last.get(phase) === msg) return
-    last.set(phase, msg)
-    try { (log ?? silentLog)[level]({ err, phase }, `${phase} failed`) } catch { /* a broken logger must not break the job */ }
+    const t = now()
+    const st = state.get(phase) ?? { msg: null, at: -Infinity, suppressed: 0 }
+    state.set(phase, st)
+    const same = st.msg === msg
+    if (same && t - st.at < LOG_ONCE_REPEAT_MS) { st.suppressed++; return }
+    if (!same && t - st.at < LOG_ONCE_MIN_GAP_MS) { st.suppressed++; return }
+    const suppressed = st.suppressed
+    st.msg = msg; st.at = t; st.suppressed = 0
+    try { (log ?? silentLog)[lvl ?? level]({ err, phase, ...(suppressed ? { suppressed } : {}) }, text ?? `${phase} failed`) } catch { /* a broken logger must not break the job */ }
   }) as LogOnce
-  fn.ok = (phase: string) => { last.delete(phase) }
+  fn.ok = (phase: string) => { const st = state.get(phase); if (st) st.msg = null }
+  fn.reset = () => { for (const st of state.values()) st.msg = null }
   return fn
 }
 
@@ -53,11 +70,7 @@ export const appLog: LogLike = {
   error: (o, m) => (current ? current.error(o, m) : fallback('error')(o, m)),
 }
 
-/**
- * For job loggers that take one plain string: lines that describe a failure go to warn, the rest to info, so
- * problems stand out in the log and can be filtered by level.
- */
-const FAILURE_WORDS = /\b(fail(?:ed|s|ure)?|could not|cannot|unavailable|error|refus(?:ed|ing)|did not answer|unreadable|crash(?:ed)?)\b/i
-export function leveled(log: Pick<LogLike, 'info' | 'warn'>): (m: string) => void {
-  return m => { if (FAILURE_WORDS.test(m)) log.warn(m); else log.info(m) }
+/** Adapts a logger to the one-string job loggers: the level the caller names (info when none) picks the method. */
+export function jobLog(l: Pick<LogLike, 'info' | 'warn' | 'error'>): (m: string, level?: 'warn' | 'error') => void {
+  return (m, level) => { if (level) l[level](m); else l.info(m) }
 }

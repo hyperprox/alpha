@@ -41,7 +41,7 @@ import { HOME_ID, clusterRow, listClusters, setRenameGuard } from '../lib/cluste
 import { selfVmidOf } from '../lib/updates/inventory'
 import { buildTargets, buildSelectedPlan, parseTargetId, MAX_SELECTION } from '../lib/updates/targets'
 import { setTargetsSource } from '../lib/updates/targets-summary'
-import { leveled } from '../lib/log-once'
+import { jobLog } from '../lib/log-once'
 
 export interface UpdatesRouteDeps {
   store?:      UpdatesStore
@@ -165,7 +165,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       store, exec: deps.exec, remoteExec: deps.remoteExec, loadPolicy,
       hostname: deps.hostname, timing: deps.timing, apps,
       publish: deps.publish ?? publish, emit: broadcast,
-      log: leveled(fastify.log), connection: deps.connection,
+      log: jobLog(fastify.log), connection: deps.connection,
     })
     const home = services.get(HOME_ID)
     const runner = home.runner
@@ -182,7 +182,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       activeJob: () => store.activeJob(),
       state: deps.checkState ?? new FileCheckState(),
       publish: deps.publish ?? publish,
-      log: leveled(fastify.log),
+      log: jobLog(fastify.log),
       gapMs: deps.checkGapMs, clusterGapMs: deps.checkGapMs,
     })
     setCheckSummarySource(id => checker.summary(id))
@@ -207,7 +207,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     }
     if (deps.scheduler !== false) {
       // Scheduled runs are home-only. The daily check covers every cluster, read-only.
-      const scheduler = new UpdatesScheduler({ runner, loadPolicy, isUnlocked, busy: () => checker.running, log: leveled(fastify.log) })
+      const scheduler = new UpdatesScheduler({ runner, loadPolicy, isUnlocked, busy: () => checker.running, log: jobLog(fastify.log) })
       fastify.addHook('onReady', async () => scheduler.start())
       fastify.addHook('onClose', async () => scheduler.stop())
     }

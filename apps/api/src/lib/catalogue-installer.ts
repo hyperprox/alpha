@@ -7,7 +7,7 @@
 //  copying a URL into a settings form has done the easy half.
 // =============================================================================
 
-import { silentLog, type LogLike } from './log-once'
+import { appLog, type LogLike } from './log-once'
 import { ProxmoxClient } from './proxmox-client'
 import { ownHeaders } from './own-user-agent'
 import { execInGuest, nodeCredential } from './node-exec'
@@ -204,7 +204,7 @@ function pve(): ProxmoxClient {
   )
 }
 
-let installerLog: LogLike = silentLog
+let installerLog: LogLike = appLog
 /** Where the installer reports problems it cannot show to the person installing. Never given a secret. */
 export function setInstallerLogger(l: LogLike): void { installerLog = l }
 

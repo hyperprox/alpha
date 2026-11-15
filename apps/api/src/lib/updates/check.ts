@@ -232,7 +232,7 @@ export interface CheckDeps {
   isUnlocked: () => boolean
   state: CheckStateStore
   publish?: (e: NotifyEventInput) => Promise<void>
-  log?: (msg: string) => void
+  log?: (msg: string, level?: 'warn' | 'error') => void
   now?: () => Date
   /** Pause between machines (default 3 s) and between clusters (default 10 s). */
   gapMs?: number
@@ -358,7 +358,7 @@ export class UpdatesChecker {
     const policy = load.policy
     for (const n of reach.s.nodes.filter(x => x.online)) {
       if (await stop()) break
-      await exec.nodeAptRefresh(n.name).catch(e => this.deps.log?.(`[updates] check: apt update on ${n.name} failed: ${e.message}`))
+      await exec.nodeAptRefresh(n.name).catch(e => this.deps.log?.(`[updates] check: apt update on ${n.name} failed: ${e.message}`, 'warn'))
       await gap()
     }
     // Without a policy file nothing says which guests to leave alone, so no guest is touched or read.
@@ -401,7 +401,7 @@ export class UpdatesChecker {
     if (!msg.lines?.length) return
     if (this.deps.publish) {
       try { await this.deps.publish({ ...msg, fingerprint: 'updates.available' }) }
-      catch (e: any) { this.deps.log?.(`[updates] could not send the check message: ${e?.name ?? 'error'}`); return }
+      catch (e: any) { this.deps.log?.(`[updates] could not send the check message: ${e?.name ?? 'error'}`, 'warn'); return }
     }
     state.notified = { at: this.now().toISOString(), keys: current }
   }
@@ -410,7 +410,7 @@ export class UpdatesChecker {
 
   start(intervalMs = 30_000): void {
     if (this.timer) return
-    this.timer = setInterval(() => { this.tick().catch(e => this.deps.log?.(`[updates] check scheduler: ${e.message}`)) }, intervalMs)
+    this.timer = setInterval(() => { this.tick().catch(e => this.deps.log?.(`[updates] check scheduler: ${e.message}`, 'error')) }, intervalMs)
     this.timer.unref?.()
   }
 
@@ -427,7 +427,7 @@ export class UpdatesChecker {
     const blocked = this.blocked(load)
     if (blocked) { this.deps.log?.(`[updates] ${blocked}`); return 'off' }
     let due: Date[]
-    try { due = dueMinutes(pol.cron, since, now) } catch (e: any) { this.deps.log?.(`[updates] check schedule not understood: ${e.message}`); return 'error' }
+    try { due = dueMinutes(pol.cron, since, now) } catch (e: any) { this.deps.log?.(`[updates] check schedule not understood: ${e.message}`, 'warn'); return 'error' }
     if (!due.length) return 'idle'
     if (!this.deps.isUnlocked()) { this.deps.log?.('[updates] daily check skipped: HyperProx is locked, so it has no credentials to read with'); return 'locked' }
     if (this.running) return 'busy'

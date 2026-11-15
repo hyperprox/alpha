@@ -2,7 +2,7 @@
 // or after the job has worked once in between.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createLogOnce, changedMessage, leveled, type LogLike } from '../src/lib/log-once'
+import { createLogOnce, changedMessage, LOG_ONCE_MIN_GAP_MS, LOG_ONCE_REPEAT_MS, type LogLike } from '../src/lib/log-once'
 
 function recorder() {
   const lines: Array<{ level: string; obj: any; msg?: string }> = []
@@ -26,8 +26,10 @@ test('the same error again and again is logged once', () => {
 
 test('a different message, or a different phase, is logged', () => {
   const { lines, log } = recorder()
-  const problem = createLogOnce(log)
+  let t = 0
+  const problem = createLogOnce(log, 'warn', () => t)
   problem('sync', new Error('a'))
+  t += LOG_ONCE_MIN_GAP_MS
   problem('sync', new Error('b'))
   problem('other', new Error('b'))
   assert.equal(lines.length, 3)
@@ -35,9 +37,11 @@ test('a different message, or a different phase, is logged', () => {
 
 test('after the phase works once, the same error is logged again', () => {
   const { lines, log } = recorder()
-  const problem = createLogOnce(log)
+  let t = 0
+  const problem = createLogOnce(log, 'warn', () => t)
   problem('sync', new Error('x'))
   problem.ok('sync')
+  t += LOG_ONCE_MIN_GAP_MS
   problem('sync', new Error('x'))
   assert.equal(lines.length, 2)
 })
@@ -53,10 +57,38 @@ test('changedMessage is true only when the text changes', () => {
   assert.deepEqual([c('a'), c('a'), c('b'), c('a')], [true, false, true, true])
 })
 
-test('leveled sends failure lines to warn and the rest to info', () => {
-  const seen: string[] = []
-  const f = leveled({ info: m => seen.push(`info:${m}`), warn: m => seen.push(`warn:${m}`) } as any)
-  f('[certs] refresh probe failed: boom')
-  f('[certs] created the policy')
-  assert.deepEqual(seen, ['warn:[certs] refresh probe failed: boom', 'info:[certs] created the policy'])
+test('the same error is logged again after an hour, with how many were held back', () => {
+  const { lines, log } = recorder()
+  let t = 0
+  const problem = createLogOnce(log, 'warn', () => t)
+  problem('sync', new Error('x'))
+  for (let i = 0; i < 4; i++) { t += 60_000; problem('sync', new Error('x')) }
+  assert.equal(lines.length, 1)
+  t = LOG_ONCE_REPEAT_MS
+  problem('sync', new Error('x'))
+  assert.equal(lines.length, 2)
+  assert.equal(lines[1].obj.suppressed, 4)
+})
+
+test('a flapping phase logs at most one line a minute', () => {
+  const { lines, log } = recorder()
+  let t = 0
+  const problem = createLogOnce(log, 'warn', () => t)
+  problem('sync', new Error('a'))
+  problem.ok('sync')
+  t = 10_000
+  problem('sync', new Error('a'))
+  problem('sync', new Error('b'))
+  assert.equal(lines.length, 1)
+  t = LOG_ONCE_MIN_GAP_MS + 1
+  problem('sync', new Error('b'))
+  assert.equal(lines.length, 2)
+})
+
+test('reset() re-arms every phase; an explicit level and text are honoured', () => {
+  const { lines, log } = recorder()
+  const problem = createLogOnce(log, 'warn', () => 10 * LOG_ONCE_REPEAT_MS)
+  problem('a', new Error('x'), 'custom line', 'error')
+  assert.equal(lines[0].level, 'error')
+  assert.equal(lines[0].msg, 'custom line')
 })

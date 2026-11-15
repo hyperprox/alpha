@@ -25,7 +25,7 @@
 
 import type { SecretItem } from '../vault/broker'
 import type { VaultChoice } from './vault-match'
-import { appLog } from '../log-once'
+import { appLog, createLogOnce } from '../log-once'
 
 export const SYSTEM_ACTOR = 'system (auto-connect)'
 export const AUTO_TICK_MS = 5 * 60_000
@@ -150,16 +150,18 @@ export class Reconciler {
     }
   }
 
-  /** One line in the log for a problem; the same problem again and again (the timer) is logged once until it changes. */
-  private lastReported = ''
-  private report(m: string, e: unknown, level: 'warn' | 'error' = 'warn'): void {
-    const key = `${m}|${(e as any)?.message ?? e}`
-    if (key === this.lastReported) return
-    this.lastReported = key
+  /** One line in the log for a problem; the timer repeating it is logged once (again after an hour, or after a good pass). */
+  private once = createLogOnce({
+    info: () => undefined,
+    warn: (o, m) => this.emit('warn', o?.err, String(m)),
+    error: (o, m) => this.emit('error', o?.err, String(m)),
+  })
+  private emit(level: 'warn' | 'error', e: unknown, m: string): void {
     if (this.d.logError) this.d.logError(m, e, level)
     else if (this.d.log) this.d.log(`${m}: ${(e as any)?.message ?? e}`)
     else appLog[level]({ err: e }, m)
   }
+  private report(m: string, e: unknown, level: 'warn' | 'error' = 'warn'): void { this.once(m, e, m, level) }
 
   /** One pass over every plug-in. One at a time; a second call while one runs gets the same answer. */
   run(reason: string): Promise<RunResult> {
@@ -210,6 +212,8 @@ export class Reconciler {
     const results: Record<string, Partial<Record<Did, number>>> = {}
     for (const [p, list] of Object.entries(outcomes)) for (const o of list) { results[p] ??= {}; results[p][o.did] = (results[p][o.did] ?? 0) + 1 }
     await this.mutate(s => { s.lastRun = { at: this.now(), reason: reason.slice(0, 40), waited: lockedMidway ? 'locked' : null, results } })
+    // A pass with no failure: the next problem is news again.
+    if (!lockedMidway && !Object.values(outcomes).some(l => l.some(o => o.did === 'failed'))) this.once.reset()
     return { waited: lockedMidway ? 'locked' : null, outcomes }
   }
 

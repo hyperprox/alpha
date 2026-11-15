@@ -22,7 +22,7 @@ export interface SchedulerDeps {
   isUnlocked: () => boolean
   /** True while the daily check is reading machines: a scheduled run waits for the next time instead. */
   busy?:      () => boolean
-  log?:       (msg: string) => void
+  log?:       (msg: string, level?: 'warn' | 'error') => void
   now?:       () => Date
 }
 
@@ -55,7 +55,7 @@ export class UpdatesScheduler {
 
   start(intervalMs = 30_000): void {
     if (this.timer) return
-    this.timer = setInterval(() => { this.tick().catch(e => this.deps.log?.(`[updates] scheduler: ${e.message}`)) }, intervalMs)
+    this.timer = setInterval(() => { this.tick().catch(e => this.deps.log?.(`[updates] scheduler: ${e.message}`, 'error')) }, intervalMs)
     this.timer.unref?.()
   }
 
@@ -73,7 +73,7 @@ export class UpdatesScheduler {
     if (!load.loaded || !load.policy.schedule.enabled) return 'off'
     let due: Date[]
     try { due = dueMinutes(load.policy.schedule.cron, since, now) }
-    catch (e: any) { this.deps.log?.(`[updates] schedule not understood: ${e.message}`); return 'error' }
+    catch (e: any) { this.deps.log?.(`[updates] schedule not understood: ${e.message}`, 'warn'); return 'error' }
     if (!due.length) return 'idle'
     if (!this.deps.isUnlocked()) {
       this.deps.log?.('[updates] scheduled run skipped: HyperProx is locked, so it has no credentials to run with')

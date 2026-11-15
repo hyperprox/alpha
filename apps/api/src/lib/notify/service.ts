@@ -209,8 +209,8 @@ export class NotifyService {
     if (this.seeding) return this.seeding
     this.seeding = (async () => {
       try {
-        await this.d.beforeOwnerSeed?.().catch(e => this.problem('notify pre-seed migration', e))
-        await this.reconcile().catch(e => this.problem('notify channel sync', e))
+        await this.d.beforeOwnerSeed?.().then(() => this.problem.ok('notify pre-seed migration'), e => this.problem('notify pre-seed migration', e))
+        await this.reconcile().then(() => this.problem.ok('notify channel sync'), e => this.problem('notify channel sync', e))
         await this.seedYaml()
       } catch (e) {
         this.log(`moving the Updates/Certificates webhooks failed (${(e as any)?.code ?? (e as Error)?.name ?? 'error'}); the old settings keep working and the next Owner sign-in tries again`)
@@ -279,9 +279,10 @@ export class NotifyService {
           resolved: false, payload: msg, status: out.ok ? 'sent' : 'failed', attempts: 1, httpStatus: out.status ?? null,
           errorCode: out.code ?? null, createdAt: now, nextAttemptAt: now, sentAt: out.ok ? now : null,
         })))
+        this.problem.ok('notify outbox write')
         for (const { en, out } of results) {
           const lastResult: DeliveryResult = { ok: out.ok, ...(out.status ? { status: out.status } : {}), ...(out.code ? { code: out.code } : {}), at: now.toISOString() }
-          await this.d.store.updateChannel(en.id, { lastResult, ...(out.ok ? { lastSentAt: now, failingSince: null } : {}) }).catch(e => this.problem('notify delivery result save', e))
+          await this.d.store.updateChannel(en.id, { lastResult, ...(out.ok ? { lastSentAt: now, failingSince: null } : {}) }).then(() => this.problem.ok('notify delivery result save'), e => this.problem('notify delivery result save', e))
         }
       } catch (e) { this.problem('notify outbox write', e) /* the message went anyway */ }
     })()

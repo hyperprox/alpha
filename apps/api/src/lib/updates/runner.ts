@@ -95,7 +95,7 @@ export interface RunnerDeps {
   onInventory?: (r: InventoryResult) => void
   /** The notification bus (lib/notify). Without it, nothing is announced. */
   publish?:   (e: NotifyEventInput) => Promise<void>
-  log?:       (msg: string) => void
+  log?:       (msg: string, level?: 'warn' | 'error') => void
   hostname?:  string
   timing?:    Partial<RunnerTiming>
   /** App-update providers. Without it, no app is looked for or planned. */
@@ -754,7 +754,7 @@ export class UpdatesRunner {
         .sort((a, b) => (b.snaptime ?? 0) - (a.snaptime ?? 0) || b.name.localeCompare(a.name))
       for (const old of ours.slice(1)) await this.exec.deleteSnapshot(guest, old.name)
     } catch (e: any) {
-      this.log(`could not prune old snapshots of ${guest.vmid}: ${e.message}`)
+      this.log(`could not prune old snapshots of ${guest.vmid}: ${e.message}`, 'warn')
     }
   }
 
@@ -1522,7 +1522,7 @@ export class UpdatesRunner {
     this.driving = this.driving.then(async () => {
       try { await fn() }
       catch (e: any) {
-        this.log(`job ${jobId}: ${e?.stack ?? e}`)
+        this.log(`job ${jobId}: ${e?.stack ?? e}`, 'error')
         const job = await this.store.getJob(jobId).catch(() => null)
         if (job && job.status === 'running') await this.pause(jobId, `Internal error: ${e?.message ?? e}`).catch(() => {})
       }
@@ -1666,7 +1666,7 @@ export class UpdatesRunner {
       ? { ...e, title: `${c.name} (remote): ${e.title}`, plain: [...(e.plain ?? []), c.name], link: `/clusters/${c.id}/updates` }
       : { ...e, link: '/updates' }
     try { await this.deps.publish({ ...ev, where: 'Updates page', fingerprint: `updates.job:${jobId}` }) }
-    catch (err: any) { this.log(`could not announce the job: ${err?.name ?? 'error'}`) }
+    catch (err: any) { this.log(`could not announce the job: ${err?.name ?? 'error'}`, 'warn') }
   }
 
   /** The plan-time safety note on every Ceph restart and node reboot. A check that cannot run says so. */
@@ -1762,7 +1762,7 @@ export class UpdatesRunner {
     return j
   }
 
-  private log(msg: string) { this.deps.log?.(`[updates] ${msg}`) }
+  private log(msg: string, level?: 'warn' | 'error') { this.deps.log?.(`[updates] ${msg}`, level) }
 }
 
 function newestKernel(f: NodeFacts): string | null {

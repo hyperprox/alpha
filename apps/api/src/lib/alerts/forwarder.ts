@@ -115,7 +115,7 @@ export interface ForwarderDeps {
   now?: () => Date
   /** Time zone for "since" times (IANA); default the server's. */
   timeZone?: string
-  log?: (m: string) => void
+  log?: (m: string, level?: 'warn' | 'error') => void
 }
 
 /** Prometheus's alerts, from the bundled Prometheus (or PROMETHEUS_URL). */
@@ -207,7 +207,7 @@ export class AlertForwarder {
   constructor(private d: ForwarderDeps) {}
 
   private now(): Date { return this.d.now ? this.d.now() : new Date() }
-  private log(m: string): void { this.d.log?.(`[alerts] ${m}`) }
+  private log(m: string, level?: 'warn' | 'error'): void { this.d.log?.(`[alerts] ${m}`, level) }
 
   /** One poll. Returns what happened, for tests and logs. */
   async tick(): Promise<{ fired: number; resolved: number; prometheus: 'ok' | 'down' }> {
@@ -295,7 +295,7 @@ export class AlertForwarder {
     const p = state.prometheus
     // An install without Prometheus (charts answered no) has never had it answer: nothing is down.
     if (!p.seenOk) return
-    if (!p.failingSince) { p.failingSince = now.toISOString(); this.log(`Prometheus did not answer (${why})`); return }
+    if (!p.failingSince) { p.failingSince = now.toISOString(); this.log(`Prometheus did not answer (${why})`, 'warn'); return }
     if (p.announced) return
     const since = new Date(p.failingSince)
     if (now.getTime() - since.getTime() < PROMETHEUS_DOWN_MS) return
@@ -310,16 +310,16 @@ export class AlertForwarder {
   /** True when the bus took it. A failure is retried on the next poll, because nothing was recorded. */
   private async send(e: NotifyEventInput): Promise<boolean> {
     try { await this.d.publish(e); return true }
-    catch (err: any) { this.log(`could not publish ${e.type}: ${err?.name ?? 'error'}`); return false }
+    catch (err: any) { this.log(`could not publish ${e.type}: ${err?.name ?? 'error'}`, 'warn'); return false }
   }
 
   private save(s: ForwarderState): void {
-    try { this.d.store.save(s) } catch (e: any) { this.log(`could not save its state: ${e?.code ?? e?.name ?? 'error'}`) }
+    try { this.d.store.save(s) } catch (e: any) { this.log(`could not save its state: ${e?.code ?? e?.name ?? 'error'}`, 'warn') }
   }
 
   start(intervalMs = POLL_MS, firstDelayMs = 15_000): void {
     if (this.timer) return
-    const run = () => { this.tick().catch(e => this.log(`poll failed: ${e?.message ?? 'error'}`)) }
+    const run = () => { this.tick().catch(e => this.log(`poll failed: ${e?.message ?? 'error'}`, 'warn')) }
     this.first = setTimeout(run, firstDelayMs); this.first.unref?.()
     this.timer = setInterval(run, intervalMs); this.timer.unref?.()
   }
@@ -332,7 +332,7 @@ export class AlertForwarder {
 }
 
 /** The production forwarder: the bundled Prometheus, the notification bus, the cluster registry for names. */
-export function productionAlertForwarder(log?: (m: string) => void): AlertForwarder {
+export function productionAlertForwarder(log?: (m: string, level?: 'warn' | 'error') => void): AlertForwarder {
   return new AlertForwarder({
     fetchAlerts: () => fetchPrometheusAlerts(),
     publish: e => busPublish(e),

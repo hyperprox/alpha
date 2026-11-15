@@ -135,7 +135,7 @@ export interface CertsServiceDeps {
   dnsProviders(): Promise<DnsProvider[]>
   deploy:  Omit<DeployDeps, 'endpoints' | 'probe'>
   sources: CertsSources
-  log(msg: string): void
+  log(msg: string, level?: 'warn' | 'error'): void
   now?(): Date
   probeConcurrency?: number
   probeTimeoutMs?: number
@@ -215,7 +215,7 @@ export class CertsService {
       this.policyEnsured = true
       const r = this.deps.ensurePolicy(this.deps.policyPath)
       if (r.created) { this.policyCreated = true; this.deps.log('[certs] created the certificates policy with safe defaults (nothing is issued until a certificate is added)') }
-      if (r.error) { this.policyCreateError = r.error; this.deps.log(`[certs] ${r.error}`) }
+      if (r.error) { this.policyCreateError = r.error; this.deps.log(`[certs] ${r.error}`, 'warn') }
     }
     return this.m.loadCertsPolicy(this.deps.policyPath)
   }
@@ -228,7 +228,7 @@ export class CertsService {
   private track<T>(p: Promise<T>): Promise<T> {
     const t = p.finally(() => this.jobs.delete(t))
     this.jobs.add(t)
-    t.catch(e => this.deps.log(`[certs] background job failed: ${msg(e)}`))
+    t.catch(e => this.deps.log(`[certs] background job failed: ${msg(e)}`, 'error'))
     return t
   }
 
@@ -306,7 +306,7 @@ export class CertsService {
 
   private async event(label: string | null, kind: CertsEvent['kind'], ok: boolean, detail: string): Promise<void> {
     try { await this.deps.store.addEvent({ label, kind, ok, detail }) }
-    catch (e) { this.deps.log(`[certs] could not record an event (${kind} ${label ?? ''}): ${msg(e)}`) }
+    catch (e) { this.deps.log(`[certs] could not record an event (${kind} ${label ?? ''}): ${msg(e)}`, 'warn') }
   }
 
   // --- Overview ---------------------------------------------------------------------------------
@@ -331,7 +331,7 @@ export class CertsService {
     const none: CertsManaged['dns'] = names.map(name => ({ name, zone: null, provider: null }))
     let dns = none
     try { dns = await this.m.zonesFor(names, await this.deps.dnsProviders()) }
-    catch (e) { this.deps.log(`[certs] zone lookup failed: ${msg(e)}`); return none }
+    catch (e) { this.deps.log(`[certs] zone lookup failed: ${msg(e)}`, 'warn'); return none }
     this.dnsCache.set(k, { at: this.now().getTime(), dns })
     return dns
   }
@@ -382,12 +382,12 @@ export class CertsService {
 
   /** Each source on its own: a proxy that is down must not blank the hypervisor's certificates. */
   private safe<T>(what: string, fn: () => Promise<T[]>): () => Promise<T[]> {
-    return () => fn().catch(e => { this.deps.log(`[certs] ${what} unavailable: ${msg(e)}`); return [] as T[] })
+    return () => fn().catch(e => { this.deps.log(`[certs] ${what} unavailable: ${msg(e)}`, 'warn'); return [] as T[] })
   }
 
   async overview(refresh: boolean): Promise<CertsOverview> {
     if (refresh) {
-      try { await this.probeAll() } catch (e) { this.deps.log(`[certs] refresh probe failed: ${msg(e)}`) }
+      try { await this.probeAll() } catch (e) { this.deps.log(`[certs] refresh probe failed: ${msg(e)}`, 'warn') }
     }
     const load = this.policy()
     const managed = await this.managed(load.policy)
@@ -405,7 +405,7 @@ export class CertsService {
           nodeCertificates: this.safe('node certificates', s.nodeCertificates),
           managed, probes, policy: load.policy, now: this.now(),
         })
-      } catch (e) { this.deps.log(`[certs] inventory failed: ${msg(e)}`) }
+      } catch (e) { this.deps.log(`[certs] inventory failed: ${msg(e)}`, 'warn') }
       this.inventoryCache = { at: this.now().getTime(), cluster, entries }
     }
     const checked = await this.deps.store.getState<string>('lastCheck')
@@ -414,7 +414,7 @@ export class CertsService {
     if (this.deps.autoFirstCheck && !checked && !probes.length && !this.firstCheck) {
       this.firstCheckRunning = true
       this.firstCheck = this.probeAll()
-        .catch(e => this.deps.log(`[certs] first check failed: ${msg(e)}`))
+        .catch(e => this.deps.log(`[certs] first check failed: ${msg(e)}`, 'warn'))
         .finally(() => { this.firstCheckRunning = false })
     }
     return { policy: this.policyStatus(load), inventory: this.inventoryCache!.entries, probes, managed, checkedAt: checked,
@@ -476,7 +476,7 @@ export class CertsService {
         policy, managed: await this.managed(policy),
       })
     } catch (e) {
-      this.deps.log(`[certs] endpoint discovery failed, probing the policy's endpoints only: ${msg(e)}`)
+      this.deps.log(`[certs] endpoint discovery failed, probing the policy's endpoints only: ${msg(e)}`, 'warn')
       list = policy.probes.map(p => ({ ...p, source: 'policy' as const }))
     }
     const seen = new Set(list.map(t => key(t.host, t.port)))
@@ -571,7 +571,7 @@ export class CertsService {
     } catch (e) {
       const kept = before?.notAfter ? '; the current certificate stays in place' : ''
       await store.updateManaged(label, { status: 'failed', lastError: msg(e) })
-        .catch(err => this.deps.log(`[certs] ${label}: could not record the failure: ${msg(err)}`))
+        .catch(err => this.deps.log(`[certs] ${label}: could not record the failure: ${msg(err)}`, 'warn'))
       await this.event(label, before?.notAfter ? 'renew' : 'issue', false, `${before?.notAfter ? 'Renewal' : 'Issuance'} failed (${trigger}): ${msg(e)}${kept}`)
       return
     }
@@ -712,15 +712,15 @@ export class CertsService {
     const load = this.policy()
     const policy = load.policy
     if (!load.loaded) this.deps.log(`[certs] daily check without a policy (${load.error ?? 'no file'}): probes only`)
-    try { await this.sweepChallenges() } catch (e) { this.deps.log(`[certs] challenge sweep failed: ${msg(e)}`) }
+    try { await this.sweepChallenges() } catch (e) { this.deps.log(`[certs] challenge sweep failed: ${msg(e)}`, 'warn') }
     for (const row of await this.deps.store.listManaged()) {
       try { await this.checkOne(row, policy) }
-      catch (e) { this.deps.log(`[certs] daily check of ${row.label} failed: ${msg(e)}`) }
+      catch (e) { this.deps.log(`[certs] daily check of ${row.label} failed: ${msg(e)}`, 'warn') }
     }
     // Verdicts as they stood before this check: the baseline for alerts when none has been saved yet.
     const before = await this.deps.store.listProbes()
-    try { await this.probeAll() } catch (e) { this.deps.log(`[certs] daily probe failed: ${msg(e)}`) }
-    try { await this.alerts(policy, before) } catch (e) { this.deps.log(`[certs] alerts failed: ${msg(e)}`) }
+    try { await this.probeAll() } catch (e) { this.deps.log(`[certs] daily probe failed: ${msg(e)}`, 'warn') }
+    try { await this.alerts(policy, before) } catch (e) { this.deps.log(`[certs] alerts failed: ${msg(e)}`, 'warn') }
   }
 
   private async checkOne(row: ManagedRecord, policy: CertsPolicy): Promise<void> {
@@ -730,7 +730,7 @@ export class CertsService {
     const now = this.now()
     // Nothing between here and the due check may stop it: a damaged vault entry is exactly when renewal matters.
     const stored = await this.deps.secrets.getBundle(row.label).catch(e => {
-      this.deps.log(`[certs] ${row.label}: could not read the stored certificate: ${msg(e)}`); return null
+      this.deps.log(`[certs] ${row.label}: could not read the stored certificate: ${msg(e)}`, 'warn'); return null
     })
     let renewAt = row.renewAfter
     if (stored) {

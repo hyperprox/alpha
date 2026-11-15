@@ -130,7 +130,7 @@ export async function syncTargets(deps?: TargetSyncDeps): Promise<SyncResult> {
  * Keep the lists current without anyone asking: sync on unlock, then whenever the node list changes.
  * Nothing runs while locked (there is no Proxmox token to read with).
  */
-export function watchTargets(opts: { everyMs?: number; log?: (m: string) => void; deps?: () => Promise<TargetSyncDeps> } = {}): () => void {
+export function watchTargets(opts: { everyMs?: number; log?: (m: string, level?: 'warn' | 'error') => void; deps?: () => Promise<TargetSyncDeps> } = {}): () => void {
   const log = opts.log ?? (() => {})
   let seen = ''
   let busy = false
@@ -148,7 +148,7 @@ export function watchTargets(opts: { everyMs?: number; log?: (m: string) => void
         if (n) log(`[targets] metrics list updated for ${r.nodes.length} node(s): ${n} target(s) added`)
       }
     } catch (e: any) {
-      log(`[targets] could not sync: ${e?.message ?? e}`)
+      log(`[targets] could not sync: ${e?.message ?? e}`, 'warn')
     } finally { busy = false }
   }
   const timer = setInterval(() => { void tick() }, opts.everyMs ?? 5 * 60_000)
