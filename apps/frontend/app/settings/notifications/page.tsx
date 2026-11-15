@@ -9,6 +9,7 @@
 //  only ever sees a mask. Owners can mark a channel "works while locked".
 // =============================================================================
 
+import { ErrorNotice } from '@/components/layout/ErrorNotice'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { apiJson, atLeast } from '@/lib/api'
@@ -356,6 +357,9 @@ export default function NotificationsPage() {
   const [meta, setMeta] = useState<Meta>({ canSetUsableWhileLocked: false, publicUrlSet: true })
   const [deliveries, setDeliveries] = useState<Delivery[]>([])
   const [error, setError] = useState('')
+  // The channel list or the message history could not be read: said as such, never shown as "none".
+  const [loadFailed, setLoadFailed] = useState<{ message: string; reference?: string } | null>(null)
+  const [deliveriesFailed, setDeliveriesFailed] = useState<string | null>(null)
   const [editing, setEditing] = useState<Channel | null | 'new'>(null)
   const [deleting, setDeleting] = useState<Channel | null>(null)
   const [reconfirmRemove, setReconfirmRemove] = useState<null | (() => void)>(null)
@@ -372,10 +376,12 @@ export default function NotificationsPage() {
     const r = await apiJson<{ channels: Channel[]; meta: Meta }>('/api/settings/notifications/channels', 'GET', undefined, { 'Cache-Control': 'no-cache' })
     if (seq !== loadSeq.current) return
     if (r.status === 403) { setError('Only owners and admins can manage notifications.'); setChannels([]); return }
-    if (!r.ok) { setError(r.error ?? 'Could not load the channels'); setChannels([]); return }
-    setError(''); setChannels(r.body?.channels ?? []); if (r.body?.meta) setMeta(r.body.meta)
+    if (!r.ok) { setLoadFailed({ message: `Couldn't load the channels — ${r.error ?? 'the server did not answer.'}`, reference: r.requestId }); setChannels(null); return }
+    setLoadFailed(null); setError(''); setChannels(r.body?.channels ?? []); if (r.body?.meta) setMeta(r.body.meta)
     const d = await apiJson<{ deliveries: Delivery[] }>('/api/settings/notifications/deliveries?limit=20', 'GET', undefined, { 'Cache-Control': 'no-cache' })
-    if (seq === loadSeq.current && d.ok) setDeliveries(d.body?.deliveries ?? [])
+    if (seq !== loadSeq.current) return
+    if (d.ok) { setDeliveries(d.body?.deliveries ?? []); setDeliveriesFailed(null) }
+    else setDeliveriesFailed(`Couldn't load the recent messages — ${d.error ?? 'the server did not answer.'}`)
   }, [])
   useEffect(() => { if (role === undefined || canUse) load() }, [load, role, canUse])
   useEffect(() => () => clearTimeout(toastTimer.current), [])
@@ -418,7 +424,7 @@ export default function NotificationsPage() {
     { label: 'failing', value: channels ? failing : '…', tone: failing ? 'crit' : undefined },
     { label: 'work while locked', value: channels ? locked : '…', tone: channels && list.length > 0 && !locked ? 'warn' : undefined },
   ]
-  const title = channels === null ? 'Loading channels...'
+  const title = loadFailed ? 'Notifications' : channels === null ? 'Loading channels...'
     : list.length === 0 ? 'No channels yet'
     : failing ? `${failing} channel${failing === 1 ? '' : 's'} failing`
     : `${on} of ${list.length} channel${list.length === 1 ? '' : 's'} on`
@@ -438,6 +444,8 @@ export default function NotificationsPage() {
 
       {toast && <Notice kind={toast.kind === 'error' ? 'error' : 'info'}>{toast.text}</Notice>}
       {error && <Notice kind="error">{error}</Notice>}
+      {loadFailed && <ErrorNotice message={loadFailed.message} reference={loadFailed.reference} />}
+      {deliveriesFailed && !loadFailed && <ErrorNotice tone="warn" message={deliveriesFailed} />}
       {!meta.publicUrlSet && canUse && (
         <Notice kind="info">Messages say which page to open instead of linking to it. Set HYPERPROX_PUBLIC_URL to the address you open HyperProx at for one-tap links.</Notice>
       )}
@@ -448,7 +456,9 @@ export default function NotificationsPage() {
       )}
 
       <Panel title="Channels" sub="where alerts go">
-        {channels === null ? (
+        {channels === null && loadFailed ? (
+          <p className={ks.empty}>The channel list is not available right now.</p>
+        ) : channels === null ? (
           <p className={`${ks.empty} animate-pulse`}>Loading channels...</p>
         ) : channels.length === 0 && !error ? (
           <Notice kind="info">No channels yet, so HyperProx tells nobody when something goes wrong. Add one: ntfy is the simplest way to get alerts on a phone.</Notice>

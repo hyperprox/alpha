@@ -15,7 +15,7 @@ import { AddHostDialog, ConnectDialog, SaveLayoutDialog, type CredentialDraft } 
 import { HostPalette } from '@/components/terminal/HostPalette'
 import { HostKeyPanel, type HostKeyChange } from '@/components/terminal/HostKeyPanel'
 import { useSession } from '@/lib/session'
-import { atLeast } from '@/lib/api'
+import { atLeast, failureText } from '@/lib/api'
 import { alpha } from '@/lib/theme'
 import { styles } from '@/components/visual/kit'
 import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
@@ -142,7 +142,7 @@ export default function TerminalPage() {
       setHasShared(!!credRes?.data?.shared)
       setNotice(null)
     } catch (e: any) {
-      setNotice(e.message)
+      setNotice(failureText(e))
     } finally {
       setLoading(false)
     }
@@ -296,7 +296,7 @@ export default function TerminalPage() {
       // started without it.
       patch(sess.key, { attempt: sess.attempt + 1, attach: null })
     } catch (e: any) {
-      setNotice(e.message)
+      setNotice(failureText(e))
     } finally {
       setEnabling(false)
     }
@@ -319,7 +319,7 @@ export default function TerminalPage() {
       if (!res.success) return setTmuxMenu({ key: sess.key, loading: false, items: [], error: res.error })
       setTmuxMenu({ key: sess.key, loading: false, items: res.data })
     } catch (e: any) {
-      setTmuxMenu({ key: sess.key, loading: false, items: [], error: e.message })
+      setTmuxMenu({ key: sess.key, loading: false, items: [], error: failureText(e) })
     }
   }
 

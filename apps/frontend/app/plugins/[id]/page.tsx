@@ -9,6 +9,7 @@
 //  table in full, filterable, folded into Details at the bottom.
 // =============================================================================
 
+import { failureText } from '@/lib/api'
 import { useCallback, useEffect, useMemo, useRef, useState, use } from 'react'
 import type { PluginVisual } from '@hyperprox/types'
 import { HomeAssistantPage } from '@/components/plugins/home-assistant/HomeAssistant'
@@ -227,7 +228,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
       // A failed BACKGROUND poll keeps the last good page. Replacing a working
       // table with an error because one refresh timed out loses data the reader
       // was in the middle of using, and the next tick usually succeeds.
-      if (!quiet) setDetail({ ok: false, error: e.message })
+      if (!quiet) setDetail({ ok: false, error: failureText(e) })
     } finally {
       inFlight.current = false
       if (!quiet) setLoading(false)

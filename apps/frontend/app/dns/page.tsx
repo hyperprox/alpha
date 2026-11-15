@@ -1,5 +1,6 @@
 'use client'
 
+import { failureText } from '@/lib/api'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useFocusTrap } from '@/lib/focus-trap'
 import { alpha } from '@/lib/theme'
@@ -275,7 +276,7 @@ function RecordModal({ record, domain, provider, onClose, onSave, wanIp }: {
       }
       setStatus('Saved!')
       setTimeout(() => { onSave(); onClose() }, 500)
-    } catch (e: any) { setError(e.message) }
+    } catch (e: any) { setError(failureText(e)) }
     finally { setSaving(false) }
   }
 
@@ -675,7 +676,7 @@ export default function DNSPage() {
       } else if (domsJson.kind === 'not-configured') setNotConfigured(domsJson.message)
       else setError(domsJson.message)
       if (wanJson?.success) setWanIP(wanJson.data.ip)
-    }).catch(e => setError(e.message))
+    }).catch(e => setError(failureText(e)))
     .finally(() => setLoading(false))
   }, [])
 

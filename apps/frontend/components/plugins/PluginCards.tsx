@@ -11,6 +11,7 @@
 //  scrape, so a card and its graph never disagree about what is happening.
 // =============================================================================
 
+import { failureText } from '@/lib/api'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { alpha } from '@/lib/theme'
@@ -59,7 +60,7 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'car
               ? { ...base, headline: data.headline, tone: data.tone, rows: data.rows }
               : { ...base, error: data.error }
           } catch (e: any) {
-            return { ...base, error: e.message }
+            return { ...base, error: failureText(e) }
           }
         }))
 

@@ -8,6 +8,7 @@
 //  you to sign in.
 // =============================================================================
 
+import { apiJson, errorText, failureText } from '@/lib/api'
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
@@ -44,19 +45,19 @@ export default function SetupChecklistPage() {
   const [confirm, setConfirm] = useState<null | (() => void)>(null)
   async function send(method: string, url: string, body: unknown, retry: () => void): Promise<any | null> {
     const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
-    const j = await r.json().catch(() => ({}))
+    const j = await r.json().catch(() => ({ success: false, error: errorText(null, 'That did not work.', r.status) }))
     if (r.status === 403 && j.code === 'reconfirm_required') { setConfirm(() => retry); return null }
     return j
   }
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch('/api/setup-checklist')
-      const j = await r.json()
-      if (!r.ok || !j.success) throw new Error(j.error ?? `HTTP ${r.status}`)
+      const r = await apiJson('/api/setup-checklist')
+      if (!r.ok) throw new Error(r.error ?? 'The checklist could not be read.')
+      const j = r.body
       setData(j.data); setError(null)
       if (j.data.running) setJob(j.data.running)
-    } catch (e: any) { setError(e.message) }
+    } catch (e: any) { setError(failureText(e)) }
   }, [])
   useEffect(() => { void load() }, [load])
 
@@ -79,7 +80,7 @@ export default function SetupChecklistPage() {
       if (!j.success) throw new Error(j.error)
       setJob(j.data)
       if (item.id === 'dns') { setDns({ key: '', secret: '' }); void load() }
-    } catch (e: any) { setError(e.message) } finally { setBusy(null) }
+    } catch (e: any) { setError(failureText(e)) } finally { setBusy(null) }
   }
 
   async function saveLogin() {
@@ -91,7 +92,7 @@ export default function SetupChecklistPage() {
       if (j.data?.nodes) setLoginRows(j.data.nodes)
       if (!j.success && !j.data) throw new Error(j.error)
       void load()
-    } catch (e: any) { setError(e.message) } finally { setBusy(null) }
+    } catch (e: any) { setError(failureText(e)) } finally { setBusy(null) }
   }
 
   async function igpu(node: string, verb: 'apply' | 'undo') {
@@ -102,7 +103,7 @@ export default function SetupChecklistPage() {
       if (!j.success) throw new Error(j.error)
       if (j.data.status === 'failed') setError(`${node}: ${j.data.reason}`)
       void load()
-    } catch (e: any) { setError(e.message) } finally { setBusy(null) }
+    } catch (e: any) { setError(failureText(e)) } finally { setBusy(null) }
   }
 
   // The one-line command's output from one of the nodes: kept as what keys are checked against, then verified.
@@ -119,7 +120,7 @@ export default function SetupChecklistPage() {
       if (!j.success) throw new Error(j.error)
       setAnchorOut('')
       await run(item)
-    } catch (e: any) { setError(e.message) } finally { setBusy(null) }
+    } catch (e: any) { setError(failureText(e)) } finally { setBusy(null) }
   }
 
   async function confirmKey(r: Row) {
@@ -129,7 +130,7 @@ export default function SetupChecklistPage() {
       if (!j) return
       if (!j.success) throw new Error(j.error)
       void load()
-    } catch (e: any) { setError(e.message) } finally { setBusy(null) }
+    } catch (e: any) { setError(failureText(e)) } finally { setBusy(null) }
   }
 
   const missingLogin = data ? Object.entries(data.logins).filter(([, v]) => !v).map(([n]) => n) : []

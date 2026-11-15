@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
-import { atLeast } from '@/lib/api'
+import { atLeast, failureText } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { HudHeader, Icon, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
 import ss from './settings.module.css'
@@ -231,7 +231,7 @@ export default function SettingsPage() {
       if (json?.success) fetchCategory(category)
       return { success: !!json?.success, error: json?.error ?? 'Could not save' }
     } catch (e: any) {
-      return { success: false, error: e.message }
+      return { success: false, error: failureText(e) }
     }
   }
 
@@ -242,7 +242,7 @@ export default function SettingsPage() {
         details: Array.isArray(json.data?.details) ? json.data.details.map(String) : undefined,
         error: json.error ?? json.data?.error ?? 'Test failed' }
     } catch (e: any) {
-      return { success: false, error: e.message }
+      return { success: false, error: failureText(e) }
     }
   }
 

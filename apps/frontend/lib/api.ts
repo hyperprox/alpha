@@ -102,13 +102,56 @@ export function installAuthInterceptor(): void {
   }
 }
 
-/** Reads whatever error text the API sent, whichever envelope it used. */
-export function errorText(body: any, fallback: string): string {
-  if (!body) return fallback
-  if (typeof body.error === 'string') return body.error
-  if (typeof body.message === 'string') return body.message
-  if (typeof body.error?.message === 'string') return body.error.message
+/** What a person is told when the API itself is not running (nginx's JSON api_down page, or no JSON at all). */
+export const API_DOWN_TEXT = "HyperProx's server is restarting or stopped. This page will reconnect by itself."
+/** What a person is told when the network request itself failed (offline, the host unreachable). */
+export const NO_CONNECTION_TEXT = "Could not reach HyperProx. Check your connection, then try again."
+/** A 5xx that came with no sentence of its own. */
+export const SERVER_ERROR_TEXT = 'Something went wrong inside HyperProx. Try again in a minute.'
+
+/**
+ * Reads whatever error text the API sent, whichever envelope it used. With `status`, a 5xx with no sentence of its
+ * own (an HTML error page, an empty body) becomes a plain one, and nginx's api_down answer is recognised. A raw
+ * text that looks technical (a stack, a JSON dump, an HTTP status line) is never shown.
+ */
+export function errorText(body: any, fallback: string, status?: number): string {
+  if (body && typeof body === 'object' && body.code === 'api_down') return API_DOWN_TEXT
+  const raw = !body || typeof body !== 'object' ? null
+    : typeof body.error === 'string' ? body.error
+    : typeof body.message === 'string' ? body.message
+    : typeof body.error?.message === 'string' ? body.error.message
+    : null
+  if (raw && !looksTechnical(raw)) return raw
+  if (status === 0) return NO_CONNECTION_TEXT
+  if (status === 502 || status === 503 || status === 504) return body && typeof body === 'object' ? SERVER_ERROR_TEXT : API_DOWN_TEXT
+  if (status !== undefined && status >= 500) return SERVER_ERROR_TEXT
   return fallback
+}
+
+/** Text that is a machine's, not a sentence: a stack frame, a JSON or HTML dump, a bare "HTTP 500" or error class. */
+export function looksTechnical(text: string): boolean {
+  const t = text.trim()
+  return !t || /^\s*[{[<]/.test(t) || /\n\s+at\s|\(?[\w./-]+\.(?:js|ts|mjs|cjs|tsx):\d+:\d+/.test(t) || /^(HTTP\s*)?\d{3}\b/.test(t) ||
+    /^(TypeError|SyntaxError|ReferenceError|Error|FetchError|AbortError)\b/.test(t) || /Unexpected token|is not valid JSON|Failed to fetch|NetworkError/i.test(t)
+}
+
+/** The request id a failure body carries (lib/failure.ts on the API), for "Reference: …". */
+export function requestIdOf(body: any): string | undefined {
+  return body && typeof body === 'object' && typeof body.requestId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(body.requestId) ? body.requestId : undefined
+}
+
+/**
+ * The words for an error a page caught: a failed fetch, a page that was not JSON, or an Error a page threw with the
+ * API's own sentence in it. Never a browser's technical message.
+ */
+export function failureText(e: unknown, fallback = SERVER_ERROR_TEXT): string {
+  const err = e as any
+  const name = String(err?.name ?? '')
+  const msg = typeof err?.message === 'string' ? err.message : typeof e === 'string' ? e : ''
+  if (name === 'TypeError' && /fetch|network|load failed/i.test(msg)) return NO_CONNECTION_TEXT
+  if (name === 'SyntaxError') return API_DOWN_TEXT
+  if (name === 'AbortError' || name === 'TimeoutError') return 'HyperProx took too long to answer. Try again.'
+  return msg && !looksTechnical(msg) ? msg : fallback
 }
 
 export interface ApiResult<T = any> {
@@ -117,6 +160,8 @@ export interface ApiResult<T = any> {
   body:   T | null
   code?:  string
   error?: string
+  /** The API's reference for this request (shown as "Reference: …" next to the error). */
+  requestId?: string
 }
 
 /** JSON request that never throws: network failure becomes status 0. */
@@ -133,9 +178,10 @@ export async function apiJson<T = any>(path: string, method = 'GET', payload?: u
     return {
       ok: !failed, status: res.status, body,
       code:  typeof body?.code === 'string' ? body.code : undefined,
-      error: failed ? errorText(body, `Request failed (${res.status})`) : undefined,
+      error: failed ? errorText(body, 'That did not work.', res.status) : undefined,
+      requestId: failed ? requestIdOf(body) ?? res.headers.get('x-request-id') ?? undefined : undefined,
     }
   } catch {
-    return { ok: false, status: 0, body: null, error: 'Could not reach the API' }
+    return { ok: false, status: 0, body: null, error: NO_CONNECTION_TEXT }
   }
 }

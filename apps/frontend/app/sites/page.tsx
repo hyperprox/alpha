@@ -15,6 +15,7 @@
 //  by POST from a window opened on the click, so it never sits in a URL.
 // =============================================================================
 
+import { ErrorNotice } from '@/components/layout/ErrorNotice'
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { apiJson } from '@/lib/api'
@@ -51,6 +52,7 @@ export default function SitesPage() {
   const [sites, setSites] = useState<Site[]>([])
   const [recipes, setRecipes] = useState<SiteRecipe[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<{ message: string; reference?: string } | null>(null)
   const [wizard, setWizard] = useState(false)
   // /sites?preview=<id>: a plan the AI assistant made with the wizard's own code, opened at its review step.
   const [previewId, setPreviewId] = useState<string | null>(null)
@@ -78,7 +80,9 @@ export default function SitesPage() {
 
   const load = useCallback(async () => {
     const [s, c] = await Promise.all([apiJson<{ data: { sites: Site[] } }>('/api/sites'), apiJson<{ data: { recipes: SiteRecipe[]; websites?: SiteRecipe[] } }>('/api/catalogue')])
-    if (s.ok && s.body) setSites(s.body.data.sites)
+    if (s.ok && s.body) { setSites(s.body.data.sites); setLoadError(null) }
+    // A list that could not be read is said as such, never shown as "no websites".
+    else setLoadError({ message: s.error ?? 'The website list could not be read.', reference: s.requestId })
     // The website recipes are not in the catalogue's list; the API sends them apart for this section.
     if (c.ok && c.body) setRecipes(c.body.data.websites ?? c.body.data.recipes.filter(r => r.category === 'web'))
     setLoading(false)
@@ -130,7 +134,9 @@ export default function SitesPage() {
   return (
     <Page>
       <HudHeader level={1} eyebrow="Web" title="Websites" icon="home" label="Websites overview"
-        chips={[{ label: 'sites', value: sites.length }, { label: 'published', value: sites.filter(s => s.url).length }]} />
+        chips={[{ label: 'sites', value: loadError ? '…' : sites.length }, { label: 'published', value: loadError ? '…' : sites.filter(s => s.url).length }]} />
+
+      {loadError && <ErrorNotice message={`Couldn't load your websites — ${loadError.message}`} reference={loadError.reference} />}
 
       <div className={ms.seg} role="tablist" aria-label="Websites" style={{ alignSelf: 'flex-start', flexWrap: 'wrap' }}>
         {SITE_TABS.map(t => (
@@ -160,7 +166,7 @@ export default function SitesPage() {
 
       {tab === 'metrics' && <SitesOverview sites={sites.map(x => metrics[x.id]).filter((x): x is SiteSummary => !!x)} />}
 
-      {tab === 'sites' && sites.length === 0 && (
+      {tab === 'sites' && sites.length === 0 && !loadError && (
         <Panel title="No websites yet" sub="one flow from nothing to a live site">
           <p style={{ margin: 0, fontSize: 14, color: 'var(--text-muted)' }}>
             New website picks the kind, the public name, the node and the basics, shows the whole plan, then makes the container,

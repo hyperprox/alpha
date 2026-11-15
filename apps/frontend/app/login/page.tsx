@@ -52,9 +52,13 @@ function authError(r: { status: number; code?: string; error?: string }, fallbac
     case 'locked_out':      return 'Too many failed attempts. Wait a few minutes and try again.'
     case 'setup_key_required': return 'The setup key is missing or wrong. It is the part of the setup link after k=, or on the host: grep SETUP_SECRET /opt/hyperprox/.env'
     case 'setup_key_missing':  return r.error ?? 'This install has no setup key.'
+    // The vault being down is not a wrong password or code: the API's own sentence says so.
+    case 'vault_unreachable': return r.error ?? "The vault is not running, so HyperProx can't check your sign-in. It usually comes back by itself in a minute."
+    case 'invalid_input':      return r.error ?? 'Check what you entered and try again.'
+    case 'api_down':           return r.error ?? "HyperProx's server is restarting or stopped. This page will reconnect by itself."
     case 'keyholder_unavailable': return 'The keyholder service is not running, so HyperProx cannot unlock. On the host: systemctl start hyperprox-keyholder'
   }
-  if (r.status === 0) return 'Could not reach the API.'
+  if (r.status === 0) return 'Could not reach HyperProx. Check your connection, then try again.'
   if (r.status === 502 || r.status === 503 || r.status === 504) return 'The vault is unreachable. HyperProx cannot sign anyone in until it is back.'
   if (r.status === 401) return 'Wrong email, master password or 2FA code.'
   if (r.status === 429) return 'Too many attempts. Wait a few minutes and try again.'

@@ -11,7 +11,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useFocusTrap } from '@/lib/focus-trap'
 import { alpha } from '@/lib/theme'
-import { atLeast } from '@/lib/api'
+import { atLeast, errorText, failureText } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { Details, HudHeader, Page, Panel, Pill, styles, type PillTone, type StatChip } from '@/components/visual/kit'
 
@@ -66,8 +66,8 @@ const BTN_PRIMARY = {
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init?.body ? { ...init, headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) } } : init)
-  const json = await res.json().catch(() => ({ success: false, error: `HTTP ${res.status}` }))
-  if (!json.success) throw new Error(json.error ?? `HTTP ${res.status}`)
+  const json = await res.json().catch(() => null)
+  if (!json?.success) throw new Error(errorText(json, 'The proxy did not answer as expected.', res.status))
   return json.data as T
 }
 
@@ -130,7 +130,7 @@ function PlanDialog({ plan: first, onClose, onDone }: { plan: Plan; onClose: () 
   const apply = async () => {
     setBusy(true); setError(null)
     try { setResult(await api<ApplyResult>(`/api/proxy/plans/${plan.id}/apply`, { method: 'POST' })); onDone() }
-    catch (e: any) { setError(e.message) }
+    catch (e: any) { setError(failureText(e)) }
     finally { setBusy(false) }
   }
 
@@ -219,7 +219,7 @@ function HostForm({ host, instances, onClose, onPlan }: {
     try {
       onPlan(await api<Plan>(`/api/proxy/instances/${instanceId}/preview`, { method: 'POST',
         body: JSON.stringify(host ? { action: 'update', hostId: host.id, host: body() } : { action: 'create', host: body() }) }))
-    } catch (e: any) { setError(e.message) }
+    } catch (e: any) { setError(failureText(e)) }
     finally { setBusy(false) }
   }
 
@@ -230,7 +230,7 @@ function HostForm({ host, instances, onClose, onPlan }: {
       setCerts(cs => [...cs, { ...c, instanceId }])
       setNpm(x => ({ ...x, certificate_id: Number(c.id), ssl_forced: true }))
       setMsg(`Certificate #${c.id} issued. It is attached when you preview and apply.`)
-    } catch (e: any) { setError(e.message); setMsg(null) }
+    } catch (e: any) { setError(failureText(e)); setMsg(null) }
     finally { setBusy(false) }
   }
 
@@ -325,7 +325,7 @@ function InstanceForm({ kinds, onClose, onSaved }: { kinds: KindInfo[]; onClose:
       }) })
       setHealth(r.health)
       onSaved()
-    } catch (e: any) { setError(e.message) }
+    } catch (e: any) { setError(failureText(e)) }
     finally { setBusy(false) }
   }
 
@@ -417,12 +417,12 @@ function InstancesPanel({ instances, kinds, admin, onChanged }: { instances: Ins
   const check = async (id: string) => {
     setHealth(h => ({ ...h, [id]: 'checking' }))
     try { const r = await api<Health>(`/api/proxy/instances/${id}/health`); setHealth(h => ({ ...h, [id]: r })) }
-    catch (e: any) { setHealth(h => ({ ...h, [id]: { ok: false, checks: [{ name: 'api', ok: false, detail: e.message }] } })) }
+    catch (e: any) { setHealth(h => ({ ...h, [id]: { ok: false, checks: [{ name: 'api', ok: false, detail: failureText(e) }] } })) }
   }
   const remove = async (i: Instance) => {
     if (!confirm(`Forget "${i.name}"? HyperProx stops showing and managing it; nothing on the proxy itself changes.`)) return
     setError(null)
-    try { await api(`/api/proxy/instances/${i.id}`, { method: 'DELETE' }); onChanged() } catch (e: any) { setError(e.message) }
+    try { await api(`/api/proxy/instances/${i.id}`, { method: 'DELETE' }); onChanged() } catch (e: any) { setError(failureText(e)) }
   }
 
   return (
@@ -559,7 +559,7 @@ export default function ProxyPage() {
         api<Instance[]>('/api/proxy/instances'), api<KindInfo[]>('/api/proxy/kinds'),
       ])
       setHosts(h.hosts); setFailing(h.errors); setInstances(i); setKinds(k); setError(null); setLastSync(new Date())
-    } catch (e: any) { setError(e.message) }
+    } catch (e: any) { setError(failureText(e)) }
     finally { setLoading(false) }
   }, [])
 
@@ -575,7 +575,7 @@ export default function ProxyPage() {
   const act = async (h: HostView, action: 'enable' | 'disable' | 'delete') => {
     setActionError(null)
     try { setPlan(await api<Plan>(`/api/proxy/instances/${h.instanceId}/preview`, { method: 'POST', body: JSON.stringify({ action, hostId: h.id }) })) }
-    catch (e: any) { setActionError(e.message) }
+    catch (e: any) { setActionError(failureText(e)) }
   }
 
   const shown = useMemo(() => hosts

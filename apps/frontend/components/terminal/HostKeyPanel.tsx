@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { styles } from '@/components/visual/kit'
 import { useSession } from '@/lib/session'
-import { atLeast } from '@/lib/api'
+import { atLeast, failureText } from '@/lib/api'
 
 export interface HostKeyChange { host: string; port: number; pinned: string; offered: string; offeredType: string }
 
@@ -62,7 +62,7 @@ export function HostKeyPanel({ hostId, change, onTrusted, onClose }: {
       const res = await fetch(`/api/terminal/hosts/${encodeURIComponent(hostId)}/hostkey/verify`, { method: 'POST' }).then(r => r.json())
       if (!res.success) return setError(res.error ?? 'HyperProx could not check the key.')
       setVerdict(res.data)
-    } catch (e: any) { setError(e?.message ?? 'HyperProx could not check the key.') }
+    } catch (e: any) { setError(failureText(e, 'HyperProx could not check the key.')) }
   }, [hostId])
 
   useEffect(() => { check() }, [check])
@@ -76,7 +76,7 @@ export function HostKeyPanel({ hostId, change, onTrusted, onClose }: {
       }).then(r => r.json())
       if (!res.success) return setError(res.error ?? 'The key was not trusted.')
       onTrusted(`The new key for ${verdict.host}:${verdict.port} is pinned. Reconnecting.`)
-    } catch (e: any) { setError(e?.message ?? 'The key was not trusted.') }
+    } catch (e: any) { setError(failureText(e, 'The key was not trusted.')) }
     finally { setBusy(false) }
   }
 

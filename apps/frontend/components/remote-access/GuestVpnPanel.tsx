@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import type { RemoteJob, RemoteProviderId, VpnInstallPreview, VpnMachineStatus, VpnPrefs, VpnSettingsPreview, VpnStatusSource } from '@hyperprox/types'
-import { atLeast } from '@/lib/api'
+import { atLeast, failureText } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { vpnStatusSource, VpnApiError } from '@/lib/vpn'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
@@ -45,7 +45,7 @@ export function GuestVpnPanel({ type, vmid, name, admin, source = vpnStatusSourc
   const [confirm, setConfirm] = useState<null | (() => void)>(null)
 
   const load = useCallback(async () => {
-    try { setSt(await source.statusFor(id)); setErr(null) } catch (e: any) { setErr(e?.message ?? 'Could not read VPN status') }
+    try { setSt(await source.statusFor(id)); setErr(null) } catch (e: any) { setErr(failureText(e, 'Could not read VPN status')) }
   }, [source, id])
   useEffect(() => { load() }, [load])
 
@@ -60,8 +60,8 @@ export function GuestVpnPanel({ type, vmid, name, admin, source = vpnStatusSourc
 
   /** Run an action; if it needs the master password, ask and try again. */
   const act = (fn: () => Promise<void>) => fn().catch((e: any) => {
-    if (e instanceof VpnApiError && e.code === 'reconfirm_required') setConfirm(() => () => { setConfirm(null); fn().catch(x => setErr(x?.message)) })
-    else setErr(e?.message ?? 'Failed')
+    if (e instanceof VpnApiError && e.code === 'reconfirm_required') setConfirm(() => () => { setConfirm(null); fn().catch(x => setErr(failureText(x))) })
+    else setErr(failureText(e, 'That did not work.'))
   })
 
   const who = name ?? id

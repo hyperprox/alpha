@@ -3,7 +3,7 @@
 // Creating a container or VM. Moved as it was from the old Infrastructure page; the page opens it with a type.
 
 import { useEffect, useRef, useState } from 'react'
-import { apiJson } from '@/lib/api'
+import { apiJson, failureText } from '@/lib/api'
 import { applyProposal, withoutProposal, defaultNode, hostArch, nestingByDefault, pickRootStorage, storagesFor, templateOptions, templatesForArch, type FormNode } from '@/lib/lxc-form'
 import { ConfirmOverride, confirmNeeded, type NamingSettingsView, type Proposal } from '@/components/catalogue/NamingProposal'
 
@@ -157,7 +157,7 @@ export function CreateGuestModal({ type, nodes, viewedNode, onClose }: { type: '
         setCreateError(res.error ?? 'Creation failed')
       }
     } catch (e: any) {
-      setCreateError(e.message ?? 'Unknown error')
+      setCreateError(failureText(e, 'The guest could not be created.'))
     } finally {
       setCreating(false)
     }

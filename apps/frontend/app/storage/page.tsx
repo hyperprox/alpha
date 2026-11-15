@@ -1,5 +1,6 @@
 'use client'
 
+import { apiJson, failureText } from '@/lib/api'
 import { useEffect, useState, useCallback } from 'react'
 import { formatBytes } from '@/lib/utils'
 import { alpha } from '@/lib/theme'
@@ -239,11 +240,10 @@ export default function StoragePage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const res  = await fetch('/api/storage/overview')
-      const json = await res.json()
-      if (json.success) { setOverview(json.data); setLastSync(new Date()) }
-      else setError(json.error)
-    } catch (e: any) { setError(e.message) }
+      const r = await apiJson('/api/storage/overview')
+      if (r.ok && r.body?.success) { setOverview(r.body.data); setLastSync(new Date()); setError(null) }
+      else setError(r.error ?? 'The storage overview could not be read.')
+    } catch (e: any) { setError(failureText(e)) }
     finally { setLoading(false) }
   }, [])
 

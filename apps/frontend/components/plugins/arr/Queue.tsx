@@ -13,7 +13,7 @@
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { apiJson } from '@/lib/api'
+import { apiJson, failureText } from '@/lib/api'
 import { Panel, Pill, ProgressBar, RingGauge, Tiles, bytes, duration, styles as s } from '@/components/visual/kit'
 import { badgeOf, problemsOnly, problemsOnlyMusic, type Badge, type Scoped, type ScopedArtist } from './queue-view'
 import { ActionResults, ActionsProvider, ClearDone, DownloadActions, FixStalled, SeasonActions, type Instance } from './QueueActions'
@@ -70,7 +70,7 @@ export function useArrQueue(enabled: boolean, everyMs = 4000) {
         if (gone) return
         if (r.ok && r.body?.data) { setData(r.body.data); setError(null); setAt(Date.now()); fails = 0 }
         else { setError(r.error ?? 'The queue could not be read.'); fails++ }
-      } catch (e: any) { fails++; if (!gone) setError(String(e?.message ?? e)) } finally { busy.current = false; schedule() }
+      } catch (e: any) { fails++; if (!gone) setError(failureText(e, 'The queue could not be read.')) } finally { busy.current = false; schedule() }
     }
     const stop = () => { if (timer) { clearTimeout(timer); timer = null } }
     kick.current = () => { stop(); fails = 0; void tick() }

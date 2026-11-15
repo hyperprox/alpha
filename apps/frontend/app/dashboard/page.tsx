@@ -7,6 +7,8 @@ import { CommandCenterIfRemotes } from '@/components/clusters/CommandCenter'
 import Link from 'next/link'
 import { pct } from '@/lib/utils'
 import { wsBase } from '@/lib/ws'
+import { summaryProblem, feedProblem, SERVER_DOWN_TEXT, type DashboardProblem } from '@/lib/dashboard-problem'
+import { ErrorNotice } from '@/components/layout/ErrorNotice'
 import { PluginCards } from '@/components/plugins/PluginCards'
 import { DashboardSitesCard } from '@/components/sites/metrics/DashboardSitesCard'
 import { Speedometer, Sparkline, StreamChart, Meter, useHistory, zoneColor, ACCENT, GOOD, WARN, CRIT } from '@/components/dashboard/Viz'
@@ -708,6 +710,8 @@ export default function DashboardView() {
   const [lastSync, setLastSync] = useState<Date | null>(null)
   // The feed marks a message `stale` when HyperProx could not read Proxmox and is re-sending its last numbers.
   const [paused, setPaused] = useState(false)
+  // Why there are no (fresh) numbers: a refused token, Proxmox not answering, or HyperProx's server not answering.
+  const [problem, setProblem] = useState<DashboardProblem | null>(null)
   const alerts = useFiringAlerts()
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -721,7 +725,9 @@ export default function DashboardView() {
         fetch('/api/gpu/all/metrics-status'),
         fetch('/api/network/stats'),
       ])
-      const summary   = await summaryRes.json()
+      const summary   = await summaryRes.json().catch(() => null)
+      const failed = summaryProblem(summaryRes.status, summary)
+      setProblem(failed)
       const down = (what: string): ServiceInfo => ({ connected:false, state:'unreachable', message:`${what} health check failed` })
       const grafana    = await grafanaRes.json().catch(()=>({data: down('Grafana')}))
       const prometheus = await prometheusRes.json().catch(()=>({data: down('Prometheus')}))
@@ -735,7 +741,7 @@ export default function DashboardView() {
         .then(d=>{ if(d.success) setClusterPower(d.data) })
         .catch(()=>{})
 
-      if (summary.success) {
+      if (!failed && summary?.success) {
         const d = summary.data
         setFast({ nodes: d.nodes, vms: d.vms, gpu: d.gpu, cluster: d.cluster, network: networkData.success ? networkData.data : undefined, gpuStatus: gpuStatus.success ? gpuStatus.data : [], storage: d.storage ?? [], clusterName: d.clusterName ?? null })
         setSlow({
@@ -748,8 +754,18 @@ export default function DashboardView() {
         })
         setLastSync(new Date())
       }
-    } catch(e) { console.error(e) }
+    } catch(e) {
+      console.error(e)
+      setProblem({ kind: 'server', message: SERVER_DOWN_TEXT })
+    }
   }, [])
+
+  // Until the first numbers arrive, a failed load is retried every ten seconds (the feed may also bring them).
+  useEffect(() => {
+    if (fast || !problem) return
+    const id = setTimeout(fetchInitial, 10_000)
+    return () => clearTimeout(id)
+  }, [fast, problem, fetchInitial])
 
   // Grafana and Prometheus are not on the WebSocket feed. Without a re-check, a service that
   // came up (or went down) after the page loaded would show its first answer forever.
@@ -795,11 +811,16 @@ export default function DashboardView() {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data)
-        if (msg.type === 'fast' && msg.payload?.stale === true) {
+        if (msg.type === 'feed-problem') {
+          // No numbers yet and the feed says why.
+          setProblem(feedProblem(msg.payload))
+        } else if (msg.type === 'fast' && msg.payload?.stale === true) {
           // Old numbers: not a new reading, so they are not stamped as synced and add nothing to the charts.
           setPaused(true)
+          setProblem(feedProblem(msg.payload.problem))
         } else if (msg.type === 'fast') {
           setPaused(false)
+          setProblem(null)
           setFast(prev => ({ ...msg.payload, gpuStatus: prev?.gpuStatus ?? [], storage: msg.payload.storage ?? prev?.storage ?? [], clusterName: prev?.clusterName ?? null }))
           setLastSync(new Date())
         }
@@ -828,7 +849,17 @@ export default function DashboardView() {
 
   if (!fast) return (
     <div className="min-h-[50vh] flex items-center justify-center">
-      <div className="text-sm text-gray-500 animate-pulse" role="status">connecting to your cluster...</div>
+      {problem ? (
+        <div style={{ maxWidth: 560, width: '100%' }}>
+          <ErrorNotice message={problem.message} reference={problem.requestId} tone={problem.kind === 'proxmox_auth' ? 'error' : 'warn'}>
+            {problem.kind === 'proxmox_auth'
+              ? <a href="/settings?tab=proxmox" style={{ color: 'var(--accent)' }}>Open Settings → Proxmox</a>
+              : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>This page keeps trying by itself.</span>}
+          </ErrorNotice>
+        </div>
+      ) : (
+        <div className="text-sm text-gray-500 animate-pulse" role="status">connecting to your cluster...</div>
+      )}
     </div>
   )
 
@@ -839,7 +870,9 @@ export default function DashboardView() {
     <div className={vs.page}>
       {paused && (
         <div role="status" style={{ border: '1px solid var(--warn)', color: 'var(--warn)', borderRadius: 6, padding: '8px 12px', fontSize: 13 }}>
-          Live numbers paused. HyperProx can&apos;t reach Proxmox right now. Retrying.
+          {problem?.kind === 'proxmox_auth'
+            ? <>Live numbers paused. {problem.message} <a href="/settings?tab=proxmox" style={{ color: 'var(--accent)' }}>Settings → Proxmox</a></>
+            : <>Live numbers paused. HyperProx can&apos;t reach Proxmox right now. Retrying.</>}
         </div>
       )}
       <ClusterHud fast={fast} slow={slow} clusterLabel={clusterLabel} lastSync={lastSync} power={clusterPower} alerts={alerts}/>

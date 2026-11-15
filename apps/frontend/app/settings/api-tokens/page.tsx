@@ -10,6 +10,7 @@
 //  settings without it (re-confirmed; the API enforces owner-only).
 // =============================================================================
 
+import { ErrorNotice } from '@/components/layout/ErrorNotice'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { apiJson, atLeast, type Role } from '@/lib/api'
@@ -202,6 +203,9 @@ export default function ApiTokensPage() {
   const [scoping, setScoping] = useState<TokenRow | null>(null)
   const [rows, setRows] = useState<TokenRow[] | null>(null)
   const [error, setError] = useState('')
+  // The list could not be read (as opposed to: there are no tokens).
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [loadRef, setLoadRef] = useState<string | undefined>(undefined)
   const [creating, setCreating] = useState(false)
   const [created, setCreated] = useState<null | { token: string; row: TokenRow }>(null)
   const [revoking, setRevoking] = useState<TokenRow | null>(null)
@@ -212,7 +216,9 @@ export default function ApiTokensPage() {
   const load = useCallback(async () => {
     const r = await apiJson<{ data: TokenRow[] }>('/api/auth/tokens')
     if (r.status === 403) { setError('Only owners and admins can manage API tokens.'); setRows([]); return }
-    if (!r.ok) { setError(r.error ?? 'Could not load API tokens'); setRows([]); return }
+    // Not an empty list: the counts stay unknown and the page says why.
+    if (!r.ok) { setError(`Couldn't load API tokens — ${r.error ?? 'the server did not answer.'}`); setLoadRef(r.requestId); setRows(null); setLoadFailed(true); return }
+    setLoadFailed(false); setLoadRef(undefined)
     setError(''); setRows(Array.isArray(r.body?.data) ? r.body!.data : [])
   }, [])
   useEffect(() => { if (role === undefined || canUse) load() }, [load, role, canUse])
@@ -248,7 +254,7 @@ export default function ApiTokensPage() {
   return (
     <Page>
       <HudHeader level={2} label="API tokens overview" icon="plug" eyebrow={<><Link href="/settings" style={{ color: 'inherit' }}>&larr; Settings</Link> · API tokens</>}
-        title={rows === null ? 'Loading API tokens...' : `${counts.active} active token${counts.active === 1 ? '' : 's'}`}
+        title={rows === null ? (loadFailed ? 'API tokens' : 'Loading API tokens...') : `${counts.active} active token${counts.active === 1 ? '' : 's'}`}
         chips={chips}
         actions={canUse && <PrimaryButton onClick={() => setCreating(true)}>New token</PrimaryButton>}>
         <p className="text-sm max-w-3xl" style={{ margin: 0, color: 'var(--text-soft)' }}>
@@ -259,10 +265,12 @@ export default function ApiTokensPage() {
       </HudHeader>
 
       {toast && <Notice kind="info">{toast}</Notice>}
-      {error && <Notice kind="error">{error}</Notice>}
+      {error && (loadFailed ? <ErrorNotice message={error} reference={loadRef} /> : <Notice kind="error">{error}</Notice>)}
 
       <Panel title="Tokens" sub={rows ? `${rows.length} made` : undefined}>
-        {rows === null ? (
+        {rows === null && loadFailed ? (
+          <p className={ks.empty}>The token list is not available right now.</p>
+        ) : rows === null ? (
           <p className={`${ks.empty} animate-pulse`}>Loading API tokens...</p>
         ) : rows.length === 0 && !error ? (
           <Notice kind="info">No API tokens yet.</Notice>

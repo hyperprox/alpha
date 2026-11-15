@@ -9,6 +9,7 @@
 //  than after you have wired it into a pane.
 // =============================================================================
 
+import { failureText } from '@/lib/api'
 import { useCallback, useEffect, useState } from 'react'
 import { autoConnectWord, isNotConfigured, type AutoConnectSummary } from '@/lib/plugin-status'
 import Link from 'next/link'
@@ -309,7 +310,7 @@ export default function PluginsPage() {
       const res = await fetch(`/api/plugins/${id}/data`).then(r => r.json())
       setData(d => ({ ...d, [id]: res.success ? res.data : { ok: false, error: res.error } }))
     } catch (e: any) {
-      setData(d => ({ ...d, [id]: { ok: false, error: e.message } }))
+      setData(d => ({ ...d, [id]: { ok: false, error: failureText(e) } }))
     } finally {
       setBusy(b => ({ ...b, [id]: false }))
     }
@@ -322,7 +323,7 @@ export default function PluginsPage() {
       setPlugins(res.data)
       res.data.filter((p: PluginCard) => p.configured).forEach((p: PluginCard) => readOne(p.id))
     } catch (e: any) {
-      setNotice(e.message)
+      setNotice(failureText(e))
     } finally {
       setLoading(false)
     }
@@ -350,7 +351,7 @@ export default function PluginsPage() {
       else if (!res.data.length) setNotice('Nothing found. Only running containers with a readable address are scanned.')
       else if (!rest.length) setNotice('Everything found is connected.')
     } catch (e: any) {
-      setNotice(e.message)
+      setNotice(failureText(e))
     } finally {
       setScanning(false)
     }
