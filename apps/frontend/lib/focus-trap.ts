@@ -1,6 +1,6 @@
 // Modal dialogs keep the keyboard inside them: Tab and Shift+Tab cycle through the dialog's own controls, Escape
 // closes it, focus starts inside it and goes back to where it was when it closes. CSS-free so it can be tested.
-import { useEffect, type RefObject } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
@@ -13,6 +13,10 @@ export function nextFocusIndex(count: number, current: number, back: boolean): n
 
 /** Trap focus in `ref` while it is mounted; Escape calls onClose. */
 export function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose?: () => void): void {
+  // Callers pass a fresh onClose on every render. Keep it in a ref so the trap is set up once per mount:
+  // re-running the effect on each render moved focus back to the first control (the close button) while typing.
+  const close = useRef(onClose)
+  close.current = onClose
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -22,7 +26,7 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose?: () =>
     const onKey = (e: KeyboardEvent) => {
       // A dialog opened inside this one (the master-password prompt in a drawer) handled it already.
       if (e.defaultPrevented) return
-      if (e.key === 'Escape' && onClose) { e.preventDefault(); e.stopPropagation(); onClose(); return }
+      if (e.key === 'Escape' && close.current) { e.preventDefault(); e.stopPropagation(); close.current(); return }
       if (e.key !== 'Tab') return
       const list = items()
       if (!list.length) { e.preventDefault(); return }
@@ -32,5 +36,5 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose?: () =>
     }
     el.addEventListener('keydown', onKey)
     return () => { el.removeEventListener('keydown', onKey); before?.focus?.() }
-  }, [ref, onClose])
+  }, [ref])
 }
