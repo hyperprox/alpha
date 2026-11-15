@@ -93,6 +93,7 @@
 @keyframes pulse { 50% { opacity: .35; } }
 .result { margin: 0; font-weight: 600; color: var(--good); }
 .result[data-state="failed"] { color: var(--crit-soft); }
+.result[data-state="problems"] { color: var(--warn-2); }
 
 /* ── talk ── */
 .talk { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); gap: 12px; }

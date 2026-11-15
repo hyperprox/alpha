@@ -191,9 +191,10 @@ const PBS_MANAGE_RECONFIRM = /^\/api\/plugins\/pbs\/instances\/[^/]+\/manage(\/(
 // write is admin, the default for a POST/PUT/DELETE: detection and the update check only read, a snooze changes only
 // HyperProx's own list, and the plain actions (lib/nextcloud/checks.ts ACTIONS) each set one setting. Adding, changing or
 // removing an instance stores a login, and the secure actions (the update, the Talk signalling update, long database
-// work, enforcing 2FA, mail) change much more: those are re-confirmed, which keeps API tokens out too.
+// work, enforcing 2FA, mail) change much more: those are re-confirmed, which keeps API tokens out too, as is
+// "stop watching" a job (it lets a deploy restart HyperProx under work that may still be running).
 const NEXTCLOUD_ADMIN_READ = /^\/api\/plugins\/nextcloud\/(candidates|instances\/[^/]+\/(two-factor|jobs\/[^/]+))$/
-const NEXTCLOUD_RECONFIRM = /^\/api\/plugins\/nextcloud\/instances(\/[^/]+(\/secure-actions\/[^/]+)?)?$/
+const NEXTCLOUD_RECONFIRM = /^\/api\/plugins\/nextcloud\/instances(\/[^/]+(\/secure-actions\/[^/]+|\/jobs\/[^/]+\/stop-watching)?)?$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/

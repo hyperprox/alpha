@@ -221,12 +221,14 @@ export function updateJobScript(p: UpdatePlan, jobId: string): string {
         `docker exec ${DB} pg_dump -U ${sq(p.db.user, DB_IDENT_RE, 'database user')} -d ${sq(p.db.name, DB_IDENT_RE, 'database name')} -Fc > "$F.part" \\`,
         `  && mv "$F.part" "$F" && chmod 600 "$F" \\`,
         // Read back: pg_restore must be able to list every object in it.
-        `  && docker exec -i ${DB} pg_restore --list < "$F" > /dev/null`,
+        `  && docker exec -i ${DB} pg_restore --list < "$F" > /dev/null \\`,
+        '  || fail backup "The database dump, or reading it back, failed, so nothing else was changed."',
       ]
     : [
         // The password comes from the database container's own environment, in MYSQL_PWD, never on a command line.
         `docker exec ${DB} sh -c '${MYSQL_ENV}; D=$(command -v mariadb-dump || command -v mysqldump); exec "$D" --single-transaction --routines -u${MYSQL_USER} ${MYSQL_DB}' | gzip > "$F.part" \\`,
-        `  && [ "\${PIPESTATUS[0]}" = 0 ] && mv "$F.part" "$F" && chmod 600 "$F" && gzip -t "$F"`,
+        `  && [ "\${PIPESTATUS[0]}" = 0 ] && mv "$F.part" "$F" && chmod 600 "$F" && gzip -t "$F" \\`,
+        '  || fail backup "The database dump, or reading it back, failed, so nothing else was changed."',
       ]
   return [
     '#!/bin/bash',
@@ -286,7 +288,7 @@ export function updateJobScript(p: UpdatePlan, jobId: string): string {
     '[ "$NEXT" = "$FROM" ] && fail image "The new image is still Nextcloud $FROM: there is nothing newer under this tag yet; the running container was not touched."',
     '[ "$(printf \'%s\\n%s\\n\' "$FROM" "$NEXT" | sort -V | tail -1)" = "$FROM" ] && fail image "The new image holds Nextcloud $NEXT, older than $FROM; the running container was not touched."',
     '[ "${NEXT%%.*}" -gt $(( ${FROM%%.*} + 1 )) ] && fail image "The new image holds Nextcloud $NEXT, more than one major version ahead of $FROM; the running container was not touched."',
-    'step image done "Nextcloud $NEXT"',
+    'echo "NEXT|$NEXT" >> "$S"; step image done "Nextcloud $NEXT"',
     '',
     'CUR=recreate; step recreate running; RECREATED=1',
     'compose up -d --no-deps "$SVC" || fail recreate "The container could not be recreated. See the rollback steps."',
@@ -295,15 +297,22 @@ export function updateJobScript(p: UpdatePlan, jobId: string): string {
     '# The image upgrades Nextcloud when it starts. occ upgrade is run once, by HyperProx, only after 10 minutes and',
     '# only when the entrypoint is not upgrading (no occ upgrade process, its nextcloud-init-sync.lock not held).',
     'CUR=upgrade; step upgrade running "waiting for $NEXT"',
-    'start=$(date +%s); ran=0',
+    'start=$(date +%s); ran=0; moff=0',
     'while :; do',
-    '  sleep 10; now=$(date +%s)',
+    '  # The deadline first: nothing below (a continue included) can skip it.',
+    '  now=$(date +%s)',
+    '  [ $((now - start)) -gt 2400 ] && fail upgrade "Nextcloud did not report $NEXT within 40 minutes. Check docker logs $APP."',
+    '  sleep 10',
     '  st="$(occ status --no-interaction --output=json 2>/dev/null)"',
     '  v="$(printf %s "$st" | sed -n \'s/.*"versionstring":"\\([0-9.]*\\)".*/\\1/p\')"',
     '  case "$st" in *\'"needsDbUpgrade":true\'*) nu=1;; *) nu=0;; esac',
     '  case "$st" in *\'"maintenance":true\'*) m=1;; *) m=0;; esac',
     '  if [ -n "$st" ] && [ "$v" = "$NEXT" ] && [ "$nu" = 0 ]; then',
-    '    if [ "$m" = 1 ]; then occ maintenance:mode --no-interaction --off; continue; fi',
+    '    if [ "$m" = 1 ]; then',
+    '      moff=$((moff + 1))',
+    '      [ "$moff" -gt 5 ] && fail upgrade "Nextcloud reports $NEXT, but maintenance mode could not be turned off (5 tries)."',
+    '      occ maintenance:mode --no-interaction --off; continue',
+    '    fi',
     '    setmaint off; break',
     '  fi',
     '  if [ -n "$st" ] && [ "$nu" = 1 ] && [ "$ran" = 0 ] && [ $((now - start)) -gt 600 ]; then',
@@ -317,7 +326,6 @@ export function updateJobScript(p: UpdatePlan, jobId: string): string {
     '      occ upgrade --no-interaction || fail upgrade "occ upgrade failed. See the rollback steps."',
     '    fi',
     '  fi',
-    '  [ $((now - start)) -gt 2400 ] && fail upgrade "Nextcloud did not report $NEXT within 40 minutes. Check docker logs $APP."',
     'done',
     'step upgrade done "Nextcloud $NEXT, maintenance mode off"',
     '',
@@ -341,26 +349,41 @@ export function launchScript(p: UpdatePlan, jobId: string): string {
     `cat > ${J}/run.sh <<'${d}'`, body, d,
     `chmod 700 ${J}/run.sh; : > ${J}/state; : > ${J}/log; chmod 600 ${J}/state ${J}/log`,
     'if [ -d /run/systemd/system ] && command -v systemd-run >/dev/null 2>&1 \\',
-    `  && systemd-run --quiet --collect --unit='hyperprox-nc-${jobId}' /bin/bash ${J}/run.sh; then echo "LAUNCHED|systemd"; exit 0; fi`,
+    `  && systemd-run --quiet --collect --unit='hyperprox-nc-${jobId}' /bin/bash ${J}/run.sh; then echo "LAUNCH|systemd" >> ${J}/state; echo "LAUNCHED|systemd"; exit 0; fi`,
+    `echo "LAUNCH|setsid" >> ${J}/state`,
     `nohup setsid /bin/bash ${J}/run.sh >/dev/null 2>&1 </dev/null &`,
     'echo "LAUNCHED|setsid"',
     '',
   ].join('\n')
 }
 
-/** Read-only: the job's state file, the end of its log, and whether its process still runs. */
-export function pollScript(backupDir: string, jobId: string): string {
+/**
+ * Read-only: the job's state file, the end of its log, and whether the job still runs. The markers carry this poll's
+ * own nonce, and ALIVE/EXISTS come after the end of the log, so nothing the job printed can pose as either. A job
+ * started by systemd is alive while its unit is active; one started with setsid while a process with that PID runs
+ * this job's own run.sh (a reused PID running something else does not count).
+ */
+export function pollScript(backupDir: string, jobId: string, nonce: string): string {
   if (!JOB_ID_RE.test(jobId)) throw new UpdateRefusal('Bad job id.')
-  const J = sq(jobDirOf(backupDir, jobId), PATH_RE, 'job directory')
+  if (!/^[a-z0-9]{12,32}$/.test(nonce)) throw new UpdateRefusal('Bad marker.')
+  const dir = jobDirOf(backupDir, jobId)
+  const J = sq(dir, PATH_RE, 'job directory')
   return [
     'set +e',
     `cat ${J}/state 2>/dev/null`,
-    'echo "@@HPX-LOG@@"',
+    `echo "@@HPX-${nonce}-LOG@@"`,
     `tail -n 40 ${J}/log 2>/dev/null | cut -c1-400`,
-    'echo "@@HPX-LOG-END@@"',
-    `pid="$(sed -n 's/^PID|//p' ${J}/state 2>/dev/null | tail -1)"`,
-    'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "ALIVE|1"; else echo "ALIVE|0"; fi',
-    `[ -e ${J}/state ] && echo "EXISTS|1" || echo "EXISTS|0"`,
+    `echo "@@HPX-${nonce}-LOG-END@@"`,
+    `via="$(sed -n 's/^LAUNCH|//p' ${J}/state 2>/dev/null | tail -1)"`,
+    'alive=0',
+    'if [ "$via" = systemd ]; then',
+    `  systemctl is-active --quiet 'hyperprox-nc-${jobId}' 2>/dev/null && alive=1`,
+    'else',
+    `  pid="$(sed -n 's/^PID|\\([0-9][0-9]*\\)$/\\1/p' ${J}/state 2>/dev/null | tail -1)"`,
+    `  if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] && tr '\\0' ' ' < "/proc/$pid/cmdline" | grep -qF -- '${dir}/run.sh'; then alive=1; fi`,
+    'fi',
+    `echo "ALIVE-${nonce}|$alive"`,
+    `[ -e ${J}/state ] && echo "EXISTS-${nonce}|1" || echo "EXISTS-${nonce}|0"`,
     '',
   ].join('\n')
 }
@@ -372,24 +395,33 @@ export interface PolledJob {
   steps: Record<string, { state: JobStep['state']; detail: string }>
   maint: 'on' | 'off' | 'unknown' | null
   dump: string | null
+  /** The Nextcloud version the new image holds, once the job read it. */
+  next: string | null
   result: { state: 'done' | 'failed'; message: string } | null
   lines: string[]
 }
 
 const STEP_STATES = ['pending', 'running', 'done', 'failed', 'skipped']
 
-export function parsePoll(out: string): PolledJob {
-  const r: PolledJob = { exists: /^EXISTS\|1$/m.test(out), started: false, alive: /^ALIVE\|1$/m.test(out), steps: {}, maint: null, dump: null, result: null, lines: [] }
-  const [state, rest = ''] = out.split('@@HPX-LOG@@')
+export function parsePoll(out: string, nonce: string): PolledJob {
+  const r: PolledJob = { exists: false, started: false, alive: false, steps: {}, maint: null, dump: null, next: null, result: null, lines: [] }
+  const begin = out.indexOf(`@@HPX-${nonce}-LOG@@`)
+  const end = out.lastIndexOf(`@@HPX-${nonce}-LOG-END@@`)
+  if (begin < 0 || end < begin) return r
+  const state = out.slice(0, begin)
+  const after = out.slice(end + `@@HPX-${nonce}-LOG-END@@`.length)
+  r.alive = new RegExp(`^ALIVE-${nonce}\\|1$`, 'm').test(after)
+  r.exists = new RegExp(`^EXISTS-${nonce}\\|1$`, 'm').test(after)
   for (const line of state.split('\n')) {
     const f = line.split('|')
     if (f[0] === 'PID' && /^\d+$/.test(f[1] ?? '')) r.started = true
     else if (f[0] === 'STEP' && /^[a-z]{1,20}$/.test(f[1] ?? '') && STEP_STATES.includes(f[2])) r.steps[f[1]] = { state: f[2] as JobStep['state'], detail: (f.slice(3).join(' ')).slice(0, 300) }
     else if (f[0] === 'MAINT' && ['on', 'off', 'unknown'].includes(f[1])) r.maint = f[1] as PolledJob['maint']
     else if (f[0] === 'DUMP' && PATH_RE.test(f[1] ?? '')) r.dump = f[1]
+    else if (f[0] === 'NEXT' && /^\d{1,3}(\.\d{1,3}){1,3}$/.test(f[1] ?? '')) r.next = f[1]
     else if (f[0] === 'RESULT' && (f[1] === 'done' || f[1] === 'failed')) r.result = { state: f[1], message: f.slice(2).join(' ').slice(0, 800) }
   }
-  r.lines = (rest.split('@@HPX-LOG-END@@')[0] ?? '').split('\n').filter(l => l.trim()).slice(-40)
+  r.lines = out.slice(begin + `@@HPX-${nonce}-LOG@@`.length, end).split('\n').filter(l => l.trim()).slice(-40)
   return r
 }
 

@@ -57,7 +57,7 @@ export interface Reading {
 }
 
 export interface JobStep { key: string; label: string; state: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; detail?: string }
-export interface Job { id: string; action: ActionId; state: 'running' | 'done' | 'failed'; steps: JobStep[]; lines: string[]; startedAt: string; endedAt: string | null; result: string | null; rollback: string | null; by: string
+export interface Job { id: string; action: ActionId; state: 'running' | 'done' | 'failed' | 'problems'; steps: JobStep[]; lines: string[]; startedAt: string; endedAt: string | null; result: string | null; rollback: string | null; by: string
   detached?: { backupDir: string } | null; maintenance?: 'on' | 'off' | 'unknown' | null }
 
 export interface TwoFactorView {
@@ -242,4 +242,11 @@ export function twoFactorWords(v: TwoFactorView | null): { state: string; withou
   const without = lacking.length === 0 ? 'Everyone checked already has a second factor.'
     : `${lacking.length} of ${v.users.length} user${v.users.length === 1 ? ' has' : 's have'} no second factor yet. Once enforced, they must set one up at their next sign-in before they can use anything (apps and sync clients with an app password keep working).`
   return { state, without, lacking, unknown, adminsLacking, canEnforce: !!e && v.providers.length > 0 && !unknown.length && !v.truncated }
+}
+
+/** What "Stop watching this job" does, in words, before a person confirms it. */
+export function stopWatchingWords(j: Job): string {
+  return j.detached
+    ? `Stop watching this update? HyperProx forgets it and lets deploys and its own updates restart HyperProx again. It does NOT stop anything in the guest: the update may still be running there. Check ${j.detached.backupDir}/jobs/${j.id}/state and log on that machine before doing anything else.`
+    : 'Stop watching this job? HyperProx forgets it and lets deploys restart HyperProx again. It may still be running in the guest.'
 }

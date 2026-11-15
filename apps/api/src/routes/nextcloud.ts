@@ -139,6 +139,12 @@ export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
     try { return { success: true, data: await svc().act(req.params.iid, req.params.action, req.body ?? {}, actor(req), true) } } catch (e) { return fail(reply, e) }
   })
 
+  // For a job HyperProx can no longer reach: ends its record and clears its busy marker (deploys and HyperProx's own
+  // update are allowed again). Admin, master password, audited. The guest is not touched.
+  fastify.post<P & { Params: { jobId: string } }>('/instances/:iid/jobs/:jobId/stop-watching', async (req, reply) => {
+    try { return { success: true, data: await svc().stopWatching(req.params.iid, req.params.jobId, actor(req)) } } catch (e) { return fail(reply, e) }
+  })
+
   fastify.get<P & { Params: { jobId: string } }>('/instances/:iid/jobs/:jobId', async (req, reply) => {
     try { return { success: true, data: await svc().job(req.params.iid, req.params.jobId) } } catch (e) { return fail(reply, e) }
   })

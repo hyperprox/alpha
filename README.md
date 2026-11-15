@@ -2404,7 +2404,8 @@ The page opens with a health ring and counts of errors, warnings and notes, then
     send a test mail from Nextcloud afterwards to clear the check), enforcing two-factor authentication (it
     shows the enforcement as it stands and keeps its groups, lists who has no second factor yet and which
     admins have none, takes groups to leave out, only counts TOTP and WebAuthn as something a user can set up
-    at sign-in, refuses while any user could not be checked, and has **Stop enforcing** to undo it), Client
+    at sign-in, refuses while any user could not be checked, and has **Stop enforcing 2FA for everyone** to undo it, which does
+    not bring back an earlier group-only setting), Client
     Push, the log entries, and switching background jobs to cron;
   - *optional*: what the recording backend, SIP and the AppAPI deploy daemon would give you and what they
     need, with **Dismiss**.
@@ -2448,12 +2449,21 @@ restart too. Each step is on the page:
    was left on);
 8. `occ db:add-missing-indices`, `db:add-missing-columns` and `db:add-missing-primary-keys`.
 
-Every failure says whether maintenance mode is still on, and the rollback steps end by turning it off.
+Every failure says whether maintenance mode is still on, and the rollback steps end by turning it off. A
+dump that does not read back stops the update before anything else is touched, and the wait for the new
+version ends after 40 minutes whatever happens (maintenance mode that will not turn off included). When the
+script says it is done, HyperProx reads `occ status` itself: the new version with maintenance mode off is
+**done**; anything else is **finished with problems**, with both answers shown. The job is saved in
+HyperProx's database before it starts (if it cannot be saved, the update does not start), and HyperProx
+tells a finished job from a running one by its systemd unit, or by a process that really runs that job's
+script (a reused process id does not count).
 Nothing is deleted at any step: old dumps and old images stay until you remove them.
 
 While an update (or any other long Nextcloud job) runs, `deploy.sh` and the in-app updater refuse to restart
 HyperProx, and name the job. This works for any plug-in: long work registers in `/run/hyperprox-busy` while
-it runs. `HYPERPROX_IGNORE_BUSY=1 deploy.sh` overrides it for a job that can no longer be reached.
+it runs. For a job HyperProx can no longer reach, **Stop watching this job** on the job (admins, master
+password, audited) ends HyperProx's record and clears the marker; it does not touch the guest, where the update
+may still be running, and the page says so. `HYPERPROX_IGNORE_BUSY=1 deploy.sh` overrides it from the shell.
 
 **Updating Talk's signalling server** pulls its image and recreates only that container when the image
 changed (the previous one is tagged `hyperprox-pre-<version>`), refused while a call is running.

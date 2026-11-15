@@ -25,7 +25,7 @@ import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import n from './nextcloud.module.css'
 import { CheckGroups, JobView, LogView, Steps, SystemView, TalkView, UpdateCheckView, VersionTrack } from './parts'
 import {
-  ago, cronSnippet, healthScore, hourWords, manualUpdateSteps, pushComposeSnippet, pushNginxSnippet, regionOptions, twoFactorWords, verdictOf,
+  ago, cronSnippet, healthScore, hourWords, manualUpdateSteps, pushComposeSnippet, pushNginxSnippet, regionOptions, stopWatchingWords, twoFactorWords, verdictOf,
   type ActionId, type Check, type Job, type Reading, type TwoFactorView, type UpdatePreview,
 } from './logic'
 
@@ -153,7 +153,7 @@ function TwoFactorFlow({ inst, onRun, onUndo, onClose }: { inst: Instance; onRun
         </>
       )}
       <div className="flex flex-wrap justify-end gap-2">
-        {data?.enforcement?.enforced && <GhostButton type="button" onClick={onUndo} style={{ color: 'var(--crit-soft)' }}>Stop enforcing (master password)</GhostButton>}
+        {data?.enforcement?.enforced && <GhostButton type="button" onClick={onUndo} style={{ color: 'var(--crit-soft)' }} title="Turns enforcement off for everyone; earlier group-only settings are not restored">Stop enforcing 2FA for everyone (master password)</GhostButton>}
         <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
         <PrimaryButton type="button" disabled={!data || !ack || !v.canEnforce || (v.adminsLacking.length > 0 && !adminAck)}
           onClick={() => onRun({ acknowledged: true, adminWithout2fa: adminAck, exclude: exclude.split(',').map(s => s.trim()).filter(Boolean) })}>Enforce (master password)</PrimaryButton>
@@ -306,6 +306,16 @@ function InstanceView({ inst }: { inst: Instance }) {
     } else void load(true)
   }
 
+  const stopWatching = async (): Promise<void> => {
+    if (!job || !window.confirm(stopWatchingWords(job))) return
+    await stopWatchingConfirmed()
+  }
+  const stopWatchingConfirmed = async (): Promise<void> => {
+    if (!job) return
+    const res = await post<Job>(`${API}/instances/${inst.id}/jobs/${job.id}/stop-watching`, {}, f => setReconfirm(() => f), () => void stopWatchingConfirmed())
+    if (res?.ok) { setJob(res.data!); setNote({ text: res.data!.result ?? 'HyperProx stopped watching it.', ok: true }) } else if (res) setNote({ text: res.error ?? 'That did not work.', ok: false })
+  }
+
   const snooze = async (c: Check, days: number | 'forever' | 0) => {
     const r = await apiJson(`${API}/instances/${inst.id}/snooze`, 'POST', { check: c.id, days })
     if (!r.ok) setNote({ text: r.error ?? 'Could not snooze it.', ok: false }); else void load(true)
@@ -352,7 +362,7 @@ function InstanceView({ inst }: { inst: Instance }) {
           {note && <p className="text-sm" role="status" style={{ color: note.ok ? 'var(--good)' : 'var(--warn-2)' }}>{note.text}</p>}
           {r.missing.length > 0 && <Notice kind="warn">Not read: {r.missing.join(', ')}. The rest of the page is real.</Notice>}
           {job && (job.state === 'running' || Date.now() - Date.parse(job.endedAt ?? job.startedAt) < 30 * 60_000) && (
-            <Panel title="Running now" sub={`${job.action} · started by ${job.by}`}><JobView job={job} /></Panel>
+            <Panel title="Running now" sub={`${job.action} · started by ${job.by}`}><JobView job={job} onStopWatching={admin ? () => void stopWatching() : undefined} /></Panel>
           )}
           <Panel title="Version" sub={r.update.apps.length ? `${r.update.apps.length} app updates too` : undefined}>
             <VersionTrack r={r} admin={admin} busy={busy || job?.state === 'running'} onUpdate={() => (r.deployment?.kind === 'compose' ? void openUpdate() : updateCheck && setGuide(updateCheck))} />

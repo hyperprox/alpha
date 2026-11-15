@@ -145,7 +145,7 @@ export function tokenForbidden(method: string, path: string): boolean {
   // Arr Stack queue actions (remove, blocklist, search, retry, prioritise): a signed-in admin's act, never a token's.
   if (/^\/api\/plugins\/arrstack\/queue\/actions$/.test(p)) return true
   // Nextcloud actions (fixes, updates, mail, 2FA): a signed-in admin's act, never a token's.
-  if (/^\/api\/plugins\/nextcloud\/instances\/[^/]+\/(actions|secure-actions)\/[^/]+$/.test(p)) return true
+  if (/^\/api\/plugins\/nextcloud\/instances\/[^/]+\/((actions|secure-actions)\/[^/]+|jobs\/[^/]+\/stop-watching)$/.test(p)) return true
   // Installing a new HyperProx, or changing how it updates itself, is a person's act (routes/self-update.ts).
   if (p === '/api/self-update/install' || p === '/api/self-update/settings') return true
   return false

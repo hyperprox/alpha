@@ -26,7 +26,7 @@ import { hasRole } from '../roles'
 import { busyJobs as realBusyJobs, endLongJob as realEndLongJob, registerLongJob as realRegisterLongJob, type LongJob } from '../long-jobs'
 import { ACTIONS, countable, isAction, remedyFor, suggestRegion, suggestServerId, suggestWindow, type ActionId } from './checks'
 import { DetectAmbiguous, parseDetect, DETECT_SCRIPT, type Deployment } from './detect'
-import { OccRefusal, batch, occScript, REGIONS, SMTP_KEYS, type OccId, type OccTarget, type ReadKey, NC_GROUP_RE, CONTAINER_RE } from './occ'
+import { OccRefusal, batch, newNonce, occScript, REGIONS, SMTP_KEYS, type OccId, type OccTarget, type ReadKey, NC_GROUP_RE, CONTAINER_RE } from './occ'
 import type { NcInstanceStore } from './instances'
 import { cleanAppPassword, cleanGuest, cleanName, cleanUrl, cleanUser, loginChangeProblem } from './instances'
 import {
@@ -109,6 +109,8 @@ export class NextcloudService {
   private busy = new Set<string>()
   private actionTimes = new Map<string, number[]>()
   private resumed = false
+  /** Jobs a person told HyperProx to stop watching: their watch and their in-process completion change nothing. */
+  private abandoned = new Set<string>()
   readonly now: () => number
   private sleep: (ms: number) => Promise<void>
   private store: JobStore
@@ -738,7 +740,7 @@ export class NextcloudService {
     // A rollback is only worth reading when the container was recreated; before that nothing changed for good.
     const recreate = j.steps.find(st => st.key === 'recreate')
     if (j.state === 'failed' && recreate && recreate.state === 'pending') j.rollback = null
-    if (j.state === 'done') j.rollback = j.action === 'update' ? j.rollback : null
+    if (j.state === 'done' || j.state === 'problems') j.rollback = j.action === 'update' ? j.rollback : null
     await this.persist(j)
     this.long.end(j.id)
     this.busy.delete(j.instanceId)
@@ -762,12 +764,11 @@ export class NextcloudService {
       now: () => this.now(),
     }
     void (async () => {
-      try {
-        const r = await work(io)
-        job.state = 'done'; job.result = r.message; if (r.rollback) job.rollback = r.rollback
-      } catch (e: any) {
-        job.state = 'failed'; job.result = String(e?.message ?? 'It failed.').slice(0, 600)
-      }
+      let state: Job['state'], result: string, rb: string | undefined
+      try { const r = await work(io); state = 'done'; result = r.message; rb = r.rollback }
+      catch (e: any) { state = 'failed'; result = String(e?.message ?? 'It failed.').slice(0, 600) }
+      if (this.abandoned.has(job.id)) return
+      job.state = state; job.result = result; if (rb) job.rollback = rb
       await this.finishJob(job, audit)
     })()
     return { message: `${ACTIONS[action].label}: started.`, jobId: job.id }
@@ -812,6 +813,50 @@ export class NextcloudService {
     for (const mk of this.long.list('nextcloud')) if (!running.some(j => j.id === mk.id && j.detached) && !this.jobs.has(mk.id)) this.long.end(mk.id)
   }
 
+  /**
+   * After the script says done: one occ status from HyperProx. Done only when it reports the version the job put in
+   * place (`next`), with maintenance mode off and no upgrade pending; otherwise "finished with problems", with both.
+   */
+  private async verifyDone(j: Job, next: string | null): Promise<void> {
+    let seen = 'occ status did not answer'
+    let ok = false
+    try {
+      const m = await this.meta(j.instanceId)
+      const dep = await this.dep(m)
+      const b = batch(dep.occ, [{ key: 'status', id: 'status' }])
+      const st = b.parse((await this.run(j.detached!.guest, b.script, 60_000)).output).status
+      const s = st ? parseStatus(st.output) : null
+      if (s) {
+        seen = `version ${s.versionString || 'unknown'}, maintenance mode ${s.maintenance ? 'ON' : 'off'}${s.needsDbUpgrade ? ', a database upgrade still pending' : ''}`
+        ok = !!next && s.versionString === next && !s.maintenance && !s.needsDbUpgrade
+        j.maintenance = s.maintenance ? 'on' : 'off'
+      }
+    } catch (e: any) { seen = `occ status could not be read (${String(e?.message ?? e).slice(0, 120)})` }
+    if (ok) return
+    j.state = 'problems'
+    j.result = `Finished with problems. The update script reported: ${j.result ?? 'done'} HyperProx then read occ status: ${seen}${next ? `; it expected ${next} with maintenance mode off` : '; the script did not say which version it installed'}.`
+  }
+
+  /**
+   * Stop watching a job (admin, master password, audited first). For a job HyperProx can no longer reach: it ends
+   * the job record and clears its busy marker, so deploys and HyperProx's own update are allowed again. It does not
+   * touch the guest: a detached update may still be running there.
+   */
+  async stopWatching(id: string, jobId: string, actor: Actor): Promise<Job> {
+    this.mustPerson(actor)
+    const j = await this.job(id, jobId)
+    if (j.state !== 'running') throw new NcRefusal('not_running', 'That job is not running.', 409)
+    await this.d.audit('nextcloud.job.stop_watching', `nextcloud:${id}`, { by: actor.email, job: j.id, action: j.action })
+    this.abandoned.add(j.id)
+    this.jobs.set(j.id, j)
+    j.state = 'failed'
+    j.result = j.detached
+      ? `${actor.email} told HyperProx to stop watching this update. It may still be running inside the guest: check ${j.detached.backupDir}/jobs/${j.id}/state and log there before doing anything else. Maintenance mode was last ${j.maintenance ?? 'unknown'}.`
+      : `${actor.email} told HyperProx to stop watching this job. It may still be running in the guest.`
+    await this.finishJob(j, { stoppedBy: actor.email })
+    return j
+  }
+
   /** Read a detached job's state file until it says it finished (or its process is gone without saying so). */
   private async watch(j: Job): Promise<void> {
     const d = j.detached!
@@ -819,9 +864,11 @@ export class NextcloudService {
     let noted = false
     for (;;) {
       await this.sleep(this.d.pollMs ?? 5_000)
+      if (this.abandoned.has(j.id) || j.state !== 'running') return
       let out: string
+      const nonce = newNonce()
       try {
-        const r = await this.run(d.guest, pollScript(d.backupDir, j.id), 60_000)
+        const r = await this.run(d.guest, pollScript(d.backupDir, j.id, nonce), 60_000)
         out = r.output
         lastContact = this.now()
         noted = false
@@ -835,7 +882,8 @@ export class NextcloudService {
         }
         continue
       }
-      const p = parsePoll(out)
+      if (this.abandoned.has(j.id) || j.state !== 'running') return
+      const p = parsePoll(out, nonce)
       let changed = false
       for (const st of j.steps) {
         const s = p.steps[st.key]
@@ -847,6 +895,8 @@ export class NextcloudService {
         j.state = p.result.state
         j.result = p.result.message
         if (p.dump && j.rollback) j.rollback = j.rollback.replace(/\S*nextcloud-db-\d{8}T\d{6}Z\.(?:dump|sql\.gz)/, p.dump)
+        // "Done" is the script's word; HyperProx checks it itself before saying so.
+        if (j.state === 'done') await this.verifyDone(j, p.next)
         await this.finishJob(j, {})
         return
       }
@@ -980,7 +1030,11 @@ export class NextcloudService {
     this.busy.add(m.id)
     job.steps.find(s => s.key === 'preflight')!.state = 'done'
     job.steps.find(s => s.key === 'preflight')!.detail = 'nobody active, no call, no backup running, room for the dump'
-    await this.persist(job)
+    // Mandatory: a detached update nobody could find again after a restart must not start.
+    try { await this.store.save(job) } catch (e: any) {
+      this.jobs.delete(job.id); this.long.end(job.id); this.busy.delete(m.id)
+      throw new NcRefusal('job_store', `The job could not be saved, so the update was not started (${String(e?.message ?? e).slice(0, 120)}).`, 503)
+    }
     let launched = false
     try {
       const r = await this.run(m.guest, launchScript(plan, job.id), 120_000)

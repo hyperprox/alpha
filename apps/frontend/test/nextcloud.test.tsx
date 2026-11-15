@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { CheckCard, CheckGroups, JobView, TalkView, UpdateCheckView, VersionTrack } from '../components/plugins/nextcloud/parts'
-import { groupChecks, healthScore, hourWords, manualUpdateSteps, pushComposeSnippet, pushNginxSnippet, regionOptions, twoFactorWords, verdictOf, type Check, type Reading } from '../components/plugins/nextcloud/logic'
+import { groupChecks, healthScore, hourWords, manualUpdateSteps, pushComposeSnippet, pushNginxSnippet, regionOptions, stopWatchingWords, twoFactorWords, verdictOf, type Check, type Reading } from '../components/plugins/nextcloud/logic'
 
 const noop = () => {}
 const check = (o: Partial<Check> & Pick<Check, 'id' | 'severity' | 'remedy'>): Check => ({ category: 'system', name: o.id, description: 'words', doc: null, snoozed: null, ...o })
@@ -105,6 +105,18 @@ test('a job shows each step in words, the newest output, the result, and the rol
   assert.match(on, /Maintenance mode: ON/)
   const running = renderToStaticMarkup(<JobView job={{ ...job, state: 'running', result: null, detached: { backupDir: '/opt/nc/hyperprox-backups' } }} />)
   assert.match(running, /keeps going if this page closes or HyperProx restarts[\s\S]*\/opt\/nc\/hyperprox-backups\/jobs\/j1\/log/)
+})
+
+test('a job that finished with problems says so and keeps its rollback; stop watching says the update may still run', () => {
+  const job = { id: 'j1', action: 'update' as const, by: 'a@example.com', state: 'problems' as const, startedAt: '', endedAt: '', result: 'Finished with problems. HyperProx then read occ status: maintenance mode ON.',
+    rollback: '6. Turn maintenance mode off', lines: [], steps: [], detached: { backupDir: '/opt/nc/hyperprox-backups' } }
+  const html = renderToStaticMarkup(<JobView job={job} />)
+  assert.match(html, /Finished with problems: check Nextcloud/)
+  assert.match(html, /How to roll back[\s\S]*Turn maintenance mode off/)
+  const running = renderToStaticMarkup(<JobView job={{ ...job, state: 'running', result: null }} onStopWatching={() => {}} />)
+  assert.match(running, /Stop watching this job \(it may still be running in the guest\)/)
+  assert.ok(!/Stop watching/.test(renderToStaticMarkup(<JobView job={{ ...job, state: 'running', result: null }} />)), 'only for admins (a handler given)')
+  assert.match(stopWatchingWords({ ...job, state: 'running' }), /does NOT stop anything in the guest[\s\S]*\/opt\/nc\/hyperprox-backups\/jobs\/j1\/state/)
 })
 
 test('2FA review: the enforcement as it stands, who lacks one, admins without one, and when enforcing is not offered', () => {

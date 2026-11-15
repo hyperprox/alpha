@@ -138,7 +138,7 @@ export function UpdateCheckView({ p }: { p: UpdatePreview }) {
 const STEP_WORD = { pending: 'waiting', running: 'running', done: 'done', failed: 'failed', skipped: 'skipped' } as const
 
 /** A background job: its steps as a vertical rail, the newest output lines, and the result. */
-export function JobView({ job }: { job: Job }) {
+export function JobView({ job, onStopWatching }: { job: Job; onStopWatching?: () => void }) {
   return (
     <div className={n.job} data-state={job.state} aria-live="polite">
       <ol className={n.rail2} aria-label="Steps">
@@ -153,7 +153,11 @@ export function JobView({ job }: { job: Job }) {
       {job.maintenance && <p className={job.maintenance === 'on' ? n.snapNote : n.note}>Maintenance mode: {job.maintenance === 'on' ? 'ON (people see the maintenance page)' : job.maintenance === 'off' ? 'off' : 'could not be read'}</p>}
       {job.detached && job.state === 'running' && <p className={n.note}>It runs inside the guest, so it keeps going if this page closes or HyperProx restarts. Its log: <span className={n.mono}>{job.detached.backupDir}/jobs/{job.id}/log</span></p>}
       {job.result && <p className={n.result} data-state={job.state} role="status">{job.result}</p>}
-      {job.state === 'failed' && job.rollback && <details className={n.folded} open><summary>How to roll back</summary><pre className={n.pre}>{job.rollback}</pre></details>}
+      {job.state === 'problems' && <p className={n.snapNote} role="alert"><Icon name="warn" size={14} /> Finished with problems: check Nextcloud before relying on it.</p>}
+      {(job.state === 'failed' || job.state === 'problems') && job.rollback && <details className={n.folded} open><summary>How to roll back</summary><pre className={n.pre}>{job.rollback}</pre></details>}
+      {job.state === 'running' && onStopWatching && (
+        <div className={n.acts}><button type="button" className={n.link} onClick={onStopWatching}>Stop watching this job (it may still be running in the guest)</button></div>
+      )}
     </div>
   )
 }

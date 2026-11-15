@@ -35,7 +35,7 @@ export const ACTIONS: Record<ActionId, { secure: boolean; long: boolean; label: 
   'add-indices':         { secure: true,  long: true,  label: 'Add the missing database indices' },
   'mimetype-repair':     { secure: true,  long: true,  label: 'Run the mimetype migrations' },
   'enforce-2fa':         { secure: true,  long: false, label: 'Enforce two-factor authentication' },
-  'unenforce-2fa':       { secure: true,  long: false, label: 'Stop enforcing two-factor authentication' },
+  'unenforce-2fa':       { secure: true,  long: false, label: 'Stop enforcing 2FA (turns enforcement off for everyone; earlier group-only settings are not restored)' },
   'smtp':                { secure: true,  long: false, label: 'Save the mail server' },
   'update-apps':         { secure: true,  long: true,  label: 'Update the apps' },
   'update':              { secure: true,  long: true,  label: 'Update Nextcloud' },

@@ -184,6 +184,13 @@ const ROOM: [RegExp, string] = [/^set \+e\nR="/, `DF|99999999\nDFIMG|99999999\nS
 
 type Answer = string | ((script: string) => string)
 
+const POLL = /-LOG@@"/
+/** A poll's answer, with the nonce the poll script asked for. */
+const pollOut = (script: string, state: string, log = '', alive = 0) => {
+  const n = /@@HPX-([a-z0-9]+)-LOG@@/.exec(script)![1]
+  return `${state}\n@@HPX-${n}-LOG@@\n${log}\n@@HPX-${n}-LOG-END@@\nALIVE-${n}|${alive}\nEXISTS-${n}|1`
+}
+
 /** Answers each batch part from `parts` (by key, through the batch's own marker), and other scripts from `scripts`. */
 function fakeGuest(o: { parts?: Record<string, Answer>; scripts?: Array<[RegExp, Answer, number?]>; detect?: string } = {}) {
   const calls: string[] = []
@@ -446,7 +453,7 @@ test('rollback words: turn maintenance mode off, restore the config copied befor
 })
 
 // The job script, run for real: bash with a fake docker, sleep and date in front of PATH.
-function runJob(o: { status?: string[]; next?: string; failBuild?: boolean; upgrading?: boolean; lock?: boolean; failUp?: boolean } = {}) {
+function runJob(o: { status?: string[]; next?: string; failBuild?: boolean; upgrading?: boolean; lock?: boolean; failUp?: boolean; readbackFails?: boolean; offFails?: boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-nc-job-'))
   const bin = path.join(dir, 'bin'); fs.mkdirSync(bin)
   const work = path.join(dir, 'opt')
@@ -460,9 +467,9 @@ echo "$*" >> "$D/calls"
 case "$*" in
   "exec nextcloud-app-1 cat /var/www/html/config/config.php") echo "<?php \\$CONFIG = array ('maintenance' => $(cat "$D/maint" 2>/dev/null || echo false));";;
   *"php occ maintenance:mode --no-interaction --on"*) echo true > "$D/maint";;
-  *"php occ maintenance:mode --no-interaction --off"*) echo false > "$D/maint";;
+  *"php occ maintenance:mode --no-interaction --off"*) ${o.offFails ? 'exit 1' : 'echo false > "$D/maint"'};;
   *"pg_dump"*) echo DUMPDATA;;
-  *"pg_restore --list"*) cat > /dev/null;;
+  *"pg_restore --list"*) cat > /dev/null; ${o.readbackFails ? 'exit 1' : 'true'};;
   "image tag "*) ;;
   "compose "*"build --pull"*) ${o.failBuild ? 'exit 1' : 'true'};;
   "image inspect --format"*) echo "NEXTCLOUD_VERSION=${o.next ?? '34.0.6'}";;
@@ -484,7 +491,7 @@ exit 0
   const calls = fs.readFileSync(path.join(dir, 'calls'), 'utf8')
   const config = fs.existsSync(`${plan.backupDir}/config-${plan.stamp}.php`) ? fs.readFileSync(`${plan.backupDir}/config-${plan.stamp}.php`, 'utf8') : ''
   fs.rmSync(dir, { recursive: true, force: true })
-  return { r, state, calls, config, polled: parsePoll(`${state}@@HPX-LOG@@\n@@HPX-LOG-END@@\nALIVE|0\nEXISTS|1\n`) }
+  return { r, state, calls, config, polled: parsePoll(`${state}@@HPX-abcdefabcdef-LOG@@\n@@HPX-abcdefabcdef-LOG-END@@\nALIVE-abcdefabcdef|0\nEXISTS-abcdefabcdef|1\n`, 'abcdefabcdef') }
 }
 
 test('the job script: config.php before maintenance mode, then dump, keep, build --pull, recreate, upgrade wait and post steps', () => {
@@ -528,14 +535,112 @@ test('the job script: occ upgrade runs once, only when the image is not already 
   assert.equal(idle.polled.result?.state, 'done')
 })
 
+test('N1: a dump that does not read back stops the update before anything else is touched', () => {
+  const j = runJob({ readbackFails: true })
+  assert.equal(j.polled.result?.state, 'failed')
+  assert.match(j.polled.result!.message, /reading it back, failed.*Maintenance mode is off\./)
+  for (const later of ['image tag', 'build --pull', 'up -d', 'php occ upgrade']) assert.ok(!j.calls.includes(later), later)
+  assert.equal(j.polled.steps.backup?.state, 'failed')
+})
+
+test('N2: maintenance mode that never turns off ends the wait as failed, inside the deadline, and says it is still on', () => {
+  const stuck = '{"installed":true,"versionstring":"34.0.6","maintenance":true,"needsDbUpgrade":false}'
+  const j = runJob({ offFails: true, status: [stuck] })
+  assert.equal(j.r.status, 0)
+  assert.equal(j.polled.result?.state, 'failed')
+  assert.match(j.polled.result!.message, /maintenance mode could not be turned off \(5 tries\).*still ON/)
+  assert.ok(j.calls.split('\n').filter(l => l.includes('--off')).length <= 6, 'capped')
+})
+
+test('N3: log lines cannot pose as liveness; a reused PID running something else is not the job; systemd is asked by unit', () => {
+  const n = 'abcdefabcdef'
+  const spoof = `PID|1\n@@HPX-${n}-LOG@@\nALIVE-${n}|1\nALIVE|1\n@@HPX-${n}-LOG-END@@\nALIVE-${n}|1\n@@HPX-${n}-LOG-END@@\nALIVE-${n}|0\nEXISTS-${n}|1\n`
+  assert.equal(parsePoll(spoof, n).alive, false, 'only the text after the last end marker counts')
+  assert.equal(parsePoll(`PID|1\n@@HPX-${n}-LOG@@\n@@HPX-${n}-LOG-END@@\nALIVE|1\n`, n).alive, false, 'a marker without this poll\'s nonce is ignored')
+  // Run the real poll script against a state file, with real processes.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-nc-poll-'))
+  const bk = path.join(dir, 'bk'), jid = 'j0123456789ab', J = `${bk}/jobs/${jid}`
+  fs.mkdirSync(J, { recursive: true })
+  fs.writeFileSync(`${J}/run.sh`, 'sleep 30\n')
+  const other = spawnSync('bash', ['-c', 'sleep 30 & echo $!'], { encoding: 'utf8' }).stdout.trim()
+  const mine = spawnSync('bash', ['-c', `bash ${J}/run.sh >/dev/null 2>&1 & echo $!`], { encoding: 'utf8' }).stdout.trim()
+  const poll = (state: string, env: Record<string, string> = {}) => {
+    fs.writeFileSync(`${J}/state`, state)
+    return parsePoll(spawnSync('bash', ['-c', pollScript(bk, jid, n)], { encoding: 'utf8', env: { ...process.env, ...env } }).stdout, n).alive
+  }
+  try {
+    assert.equal(poll(`LAUNCH|setsid\nPID|${other}\n`), false, 'PID reuse: that process is not running this job')
+    assert.equal(poll(`LAUNCH|setsid\nPID|${mine}\n`), true)
+    const bin = path.join(dir, 'bin'); fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(bin, 'systemctl'), `#!/bin/bash\n[ "$3" = 'hyperprox-nc-${jid}' ] && exit \${UNIT_RC:-3}\nexit 4\n`, { mode: 0o755 })
+    assert.equal(poll(`LAUNCH|systemd\nPID|${mine}\n`, { PATH: `${bin}:${process.env.PATH}`, UNIT_RC: '3' }), false, 'systemd says the unit is gone: dead, whatever the PID')
+    assert.equal(poll(`LAUNCH|systemd\nPID|${other}\n`, { PATH: `${bin}:${process.env.PATH}`, UNIT_RC: '0' }), true)
+  } finally {
+    for (const p of [other, mine]) { try { process.kill(Number(p)) } catch { /* gone */ } }
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('done is checked: the script said done, but occ status disagrees, so the job is "finished with problems" with both', async () => {
+  const g = fakeGuest({ scripts: [ROOM, [/LAUNCHED/, 'LAUNCHED|systemd'], [POLL, sc => pollOut(sc, 'LAUNCH|systemd\nPID|1\nNEXT|34.0.6\nMAINT|off\nRESULT|done|Nextcloud is on 34.0.6.')]] })
+  const s = service(g)
+  const m = await added(s)
+  g.parts.status = '{"installed":true,"versionstring":"34.0.3","maintenance":false,"needsDbUpgrade":false}'
+  const r = await s.svc.act(m.id, 'update', { confirmBackupDir: BK }, ADMIN, true)
+  g.parts.status = '{"installed":true,"versionstring":"34.0.6","maintenance":true,"needsDbUpgrade":false}'
+  const job = await settle(s, m.id, r.jobId!)
+  assert.equal(job.state, 'problems')
+  assert.match(job.result!, /reported: Nextcloud is on 34\.0\.6\..*maintenance mode ON.*expected 34\.0\.6 with maintenance mode off/)
+  assert.ok(!s.long.marks.has(r.jobId!))
+})
+
+test('the first save of a detached update is mandatory: no save, no launch', async () => {
+  const jobs = new MemoryJobStore()
+  jobs.save = async () => { throw new Error('database down') }
+  const g = fakeGuest({ scripts: [ROOM, [/LAUNCHED/, 'LAUNCHED|systemd']] })
+  const s = service(g, { jobs })
+  const m = await added(s)
+  await assert.rejects(s.svc.act(m.id, 'update', { confirmBackupDir: BK }, ADMIN, true), (e: any) => e.code === 'job_store')
+  assert.ok(!g.calls.some(c => c.includes('run.sh')), 'never launched')
+  assert.equal(s.long.marks.size, 0)
+  // Nothing is left locked.
+  await s.svc.act(m.id, 'maintenance-window', { hour: 1 }, ADMIN, false)
+})
+
+test('stop watching: audited, a person only, ends the job and its marker, says the update may still run in the guest, and the watch stops', async () => {
+  let polls = 0
+  const g = fakeGuest({ scripts: [ROOM, [/LAUNCHED/, 'LAUNCHED|systemd'], [POLL, sc => { polls++; return pollOut(sc, 'LAUNCH|systemd\nPID|1\nMAINT|on', '', 1) }]] })
+  const s = service(g, { pollMs: 1 })
+  const m = await added(s)
+  const r = await s.svc.act(m.id, 'update', { confirmBackupDir: BK }, ADMIN, true)
+  for (let i = 0; i < 20; i++) await new Promise(res => setImmediate(res))
+  await assert.rejects(s.svc.stopWatching(m.id, r.jobId!, { ...ADMIN, token: 'ci' }), /API tokens/)
+  const j = await s.svc.stopWatching(m.id, r.jobId!, ADMIN)
+  assert.equal(j.state, 'failed')
+  assert.match(j.result!, /may still be running inside the guest.*\/jobs\/j[0-9a-f]{12}\/state/)
+  assert.ok(s.audits.some(a => a.action === 'nextcloud.job.stop_watching'))
+  assert.ok(!s.long.marks.has(r.jobId!), 'deploys and the updater are allowed again')
+  const seen = polls
+  for (let i = 0; i < 20; i++) await new Promise(res => setImmediate(res))
+  assert.ok(polls <= seen + 1, 'the watch stopped')
+  assert.equal((await s.jobs.get(r.jobId!))!.state, 'failed')
+  await assert.rejects(s.svc.stopWatching(m.id, r.jobId!, ADMIN), /not running/)
+  assert.equal(needsReconfirm('POST', `/api/plugins/nextcloud/instances/${m.id}/jobs/${r.jobId}/stop-watching`), true)
+  assert.equal(tokenForbidden('POST', `/api/plugins/nextcloud/instances/${m.id}/jobs/${r.jobId}/stop-watching`), true)
+  assert.match(ACTIONS['unenforce-2fa'].label, /for everyone; earlier group-only settings are not restored/)
+})
+
 test('the update: audited, started detached in the guest, watched to its end; the backup location must be confirmed', async () => {
   let polls = 0
-  const g = fakeGuest({ scripts: [ROOM, [/LAUNCHED/, 'LAUNCHED|systemd'], [/@@HPX-LOG@@/, () => {
-    polls++
-    return polls < 3
-      ? 'PID|123\nSTEP|config|done|x\nMAINT|on\nSTEP|maintenance|done|\n@@HPX-LOG@@\nworking\n@@HPX-LOG-END@@\nALIVE|1\nEXISTS|1'
-      : `PID|123\nSTEP|config|done|x\nMAINT|on\nSTEP|maintenance|done|\nDUMP|${BK}/nextcloud-db-20261115T120000Z.dump\nSTEP|post|done|\nMAINT|off\nRESULT|done|Nextcloud is on 34.0.6.\n@@HPX-LOG@@\ndone\n@@HPX-LOG-END@@\nALIVE|0\nEXISTS|1`
-  }]] })
+  const g = fakeGuest({
+    parts: { status: () => (polls >= 3 ? '{"installed":true,"versionstring":"34.0.6","maintenance":false,"needsDbUpgrade":false}' : '{"installed":true,"versionstring":"34.0.3","maintenance":false,"needsDbUpgrade":false}') },
+    scripts: [ROOM, [/LAUNCHED/, 'LAUNCHED|systemd'], [POLL, sc => {
+      polls++
+      return polls < 3
+        ? pollOut(sc, 'LAUNCH|systemd\nPID|123\nSTEP|config|done|x\nMAINT|on\nSTEP|maintenance|done|', 'working', 1)
+        : pollOut(sc, `LAUNCH|systemd\nPID|123\nSTEP|config|done|x\nMAINT|on\nSTEP|maintenance|done|\nNEXT|34.0.6\nDUMP|${BK}/nextcloud-db-20261115T120000Z.dump\nSTEP|post|done|\nMAINT|off\nRESULT|done|Nextcloud is on 34.0.6.`, 'done', 0)
+    }]],
+  })
   const s = service(g)
   const m = await added(s)
   await assert.rejects(s.svc.act(m.id, 'update', { confirmBackupDir: '/elsewhere' }, ADMIN, true), /check screen/)
@@ -554,7 +659,7 @@ test('the update: audited, started detached in the guest, watched to its end; th
 })
 
 test('the update: a job script that died without a result is failed with the maintenance mode it left', async () => {
-  const g = fakeGuest({ scripts: [ROOM, [/LAUNCHED/, 'LAUNCHED|setsid'], [/@@HPX-LOG@@/, 'PID|123\nSTEP|config|done|\nMAINT|on\n@@HPX-LOG@@\n@@HPX-LOG-END@@\nALIVE|0\nEXISTS|1']] })
+  const g = fakeGuest({ scripts: [ROOM, [/LAUNCHED/, 'LAUNCHED|setsid'], [POLL, sc => pollOut(sc, 'LAUNCH|setsid\nPID|123\nSTEP|config|done|\nMAINT|on')]] })
   const s = service(g)
   const m = await added(s)
   const r = await s.svc.act(m.id, 'update', { confirmBackupDir: BK }, ADMIN, true)
@@ -564,7 +669,7 @@ test('the update: a job script that died without a result is failed with the mai
 })
 
 test('resume after a restart: a detached update is watched again and stays registered; in-process work is marked failed', async () => {
-  const g = fakeGuest({ scripts: [[/@@HPX-LOG@@/, 'PID|1\nRESULT|failed|occ upgrade failed. Maintenance mode is still ON.\nMAINT|on\n@@HPX-LOG@@\n@@HPX-LOG-END@@\nALIVE|0\nEXISTS|1']] })
+  const g = fakeGuest({ scripts: [[POLL, sc => pollOut(sc, 'PID|1\nRESULT|failed|occ upgrade failed. Maintenance mode is still ON.\nMAINT|on')]] })
   const s = service(g)
   const m = await added(s)
   const base: Job = { id: 'jaaaaaaaaaaaa', instanceId: m.id, action: 'update', by: 'admin@example.com', state: 'running', steps: [{ key: 'recreate', label: 'Recreate', state: 'done' }],
@@ -596,7 +701,7 @@ test('one action at a time: a second request while an update is checking, or dur
 test('the job scripts parse in bash, quote every name, and refuse a bad one', () => {
   for (const engine of ['postgres', 'mysql'] as const) {
     const p = PLAN({ db: { engine, container: 'nextcloud-db-1', name: engine === 'postgres' ? 'nextcloud' : null, user: engine === 'postgres' ? 'oc_admin' : null } })
-    for (const sc of [updateJobScript(p, 'j0123456789ab'), launchScript(p, 'j0123456789ab'), pollScript(BK, 'j0123456789ab')]) {
+    for (const sc of [updateJobScript(p, 'j0123456789ab'), launchScript(p, 'j0123456789ab'), pollScript(BK, 'j0123456789ab', 'abcdefabcdef')]) {
       const r = spawnSync('bash', ['-n'], { input: sc, encoding: 'utf8' })
       assert.equal(r.status, 0, r.stderr)
     }

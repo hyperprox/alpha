@@ -38,7 +38,7 @@ if [ "${HYPERPROX_IGNORE_BUSY:-}" != 1 ] && [ -d "$BUSY_DIR" ]; then
     fi
   done
   if [ -n "$busy" ]; then
-    printf '✗ A long plug-in job is running, so HyperProx is not restarted now:\n%sWait for it to finish (its page shows it), or set HYPERPROX_IGNORE_BUSY=1 if it can no longer be reached.\n' "$busy" >&2
+    printf '✗ A long plug-in job is running, so HyperProx is not restarted now:\n%sWait for it to finish (its page shows it). If it can no longer be reached, use "Stop watching this job" on its page, or set HYPERPROX_IGNORE_BUSY=1.\n' "$busy" >&2
     exit 1
   fi
 fi

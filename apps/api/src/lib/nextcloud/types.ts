@@ -80,7 +80,8 @@ export interface Job {
   instanceId: string
   action: ActionId
   by: string
-  state: 'running' | 'done' | 'failed'
+  /** problems: the job said done, but HyperProx's own check afterwards did not agree (both are in `result`). */
+  state: 'running' | 'done' | 'failed' | 'problems'
   steps: JobStep[]
   lines: string[]
   startedAt: string
