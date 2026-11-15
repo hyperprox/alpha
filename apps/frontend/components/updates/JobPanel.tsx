@@ -5,6 +5,7 @@ import type { UpdatesJob, UpdatesStep } from '@hyperprox/types'
 import { ACTION_LABEL, Badge, Btn, Notice, Panel, StepIcon, fmtTime } from './ui'
 import { PlanList } from './PlanList'
 import { FlowPipeline, type FlowStage } from '@/components/visual/kit'
+import { ItemOrder, ItemResults } from './ItemList'
 
 export type LogLine = { stepId: string; line: string }
 
@@ -114,8 +115,8 @@ export function JobPanel({ job, logs, busy, onConfirm, onCancel, onResume, onRol
         )}
         {awaiting ? (
           <>
-            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Preflight and refresh passed. This is the plan; nothing has been changed yet.</p>
-            <PlanList plan={job.plan} />
+            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Preflight and refresh passed. This is the {job.plan.items ? 'order it runs in, item by item' : 'plan'}; nothing has been changed yet.</p>
+            {job.plan.items ? <ItemOrder plan={job.plan} /> : <PlanList plan={job.plan} />}
             <div className="flex gap-2">
               <Btn kind="primary" onClick={onConfirm} disabled={busy}>Confirm and run</Btn>
               <Btn onClick={onCancel} disabled={busy}>Cancel</Btn>
@@ -124,6 +125,7 @@ export function JobPanel({ job, logs, busy, onConfirm, onCancel, onResume, onRol
         ) : (
           <>
             {job.steps.length > 0 && <FlowPipeline stages={stepStages(job.steps)} label="Progress of this run by kind of step" />}
+            {job.plan.items && <ItemResults job={job} onRollback={job.status === 'paused' && !busy ? onRollback : undefined} />}
             {job.steps.length > 0
               ? <StepList steps={job.steps} onRollback={job.status === 'paused' && !busy ? onRollback : undefined} />
               : <PlanList plan={job.plan} />}

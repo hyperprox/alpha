@@ -492,6 +492,112 @@ export function kernelPurgeCommand(pkgs: string[]): string {
   ].join('; ')
 }
 
+// --- Chosen packages, one target at a time ---------------------------------------------
+
+/**
+ * A kernel and everything that moves one: the versioned images, the series metapackages (proxmox-kernel-7.0), the
+ * default-kernel metapackage and the headers that go with them. A node that holds or pins a kernel never gets any
+ * of these from a per-package update, whatever was asked for.
+ */
+const GUARDED_KERNEL_PKG = /^(proxmox-kernel-|pve-kernel-|proxmox-default-kernel$|proxmox-headers-|pve-headers-|proxmox-default-headers$|linux-image-|linux-headers-|linux-signed-)/
+export const isGuardedKernelPackage = (name: string) => GUARDED_KERNEL_PKG.test(name)
+
+/** A Debian package name. Anything else is refused before it reaches a shell. */
+export const PKG_NAME = /^[a-z0-9][a-z0-9+.-]{0,127}$/
+
+function pkgList(pkgs: string[]): string {
+  if (!pkgs.length || pkgs.length > 200 || pkgs.some(p => !PKG_NAME.test(p))) throw new Error(`not package names: ${pkgs.slice(0, 5).join(', ')}`)
+  return [...new Set(pkgs)].sort().map(shq).join(' ')
+}
+
+/**
+ * The only line a per-package node update runs. `install --only-upgrade` upgrades what is already installed and
+ * installs nothing new; `--no-remove` refuses anything that would take a package away; apt itself never moves a held
+ * package. There is no `upgrade`, `dist-upgrade` or `full-upgrade` in it, whatever the node's policy says.
+ */
+export function nodePackagesCommand(pkgs: string[]): string {
+  return withCephStartGuard(`apt-get -y -q ${CONFOLD} --no-remove --only-upgrade install ${pkgList(pkgs)}`)
+}
+
+/** Read-only: exactly what nodePackagesCommand would change, from apt's own simulation. */
+export function nodePackagesSimulateCommand(pkgs: string[]): string {
+  return `${APT_ENV}; apt-get -s -q -o Debug::NoLocking=1 ${CONFOLD} --no-remove --only-upgrade install ${pkgList(pkgs)} 2>&1; echo "HP_SIM_END $?"`
+}
+
+/**
+ * Chosen packages in a guest. A held package is refused inside the guest before apt runs (apt would skip it
+ * silently, and the step would look done).
+ */
+export function guestPackagesScript(pkgs: string[]): string {
+  const list = pkgList(pkgs)
+  return [
+    APT_ENV,
+    'set -e',
+    `held=$(apt-mark showhold 2>/dev/null || true)`,
+    `for p in ${list}; do if printf '%s\\n' "$held" | grep -qxF "$p"; then echo "refusing: $p is held"; exit 3; fi; done`,
+    `apt-get -y -q ${CONFOLD} --no-remove --only-upgrade install ${list}`,
+    '[ -f /var/run/reboot-required ] && echo HP_REBOOT_REQUIRED || true',
+  ].join('\n')
+}
+
+// --- Compose projects in a guest -------------------------------------------------------
+
+/** An absolute directory a compose project lives in: no `..`, nothing a shell could read as more than a path. */
+export const COMPOSE_DIR = /^\/(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9_.@+\/-]{0,250}$/
+export const isComposeDir = (d: string) => COMPOSE_DIR.test(d) && !d.includes('//')
+
+/** Read-only: the compose projects Docker knows in this guest, running or not. */
+export const COMPOSE_LS_SCRIPT = [
+  'command -v docker >/dev/null 2>&1 || { echo HP_NO_DOCKER; exit 0; }',
+  'echo HP_COMPOSE_BEGIN; docker compose ls -a --format json 2>/dev/null || echo "[]"; echo; echo HP_COMPOSE_END',
+].join('\n')
+
+/** The directories of the projects `docker compose ls` listed (from each project's first config file). */
+export function parseComposeLs(output: string): { noDocker: boolean; dirs: string[]; error?: string } {
+  const lines = String(output ?? '').split('\n').map(l => l.trim())
+  if (lines.includes('HP_NO_DOCKER')) return { noDocker: true, dirs: [] }
+  const block = between(lines, 'HP_COMPOSE_BEGIN', 'HP_COMPOSE_END').filter(Boolean)
+  if (!lines.includes('HP_COMPOSE_END')) return { noDocker: false, dirs: [], error: 'the compose listing did not finish' }
+  let rows: unknown
+  try { rows = JSON.parse(block[0] ?? '[]') } catch { return { noDocker: false, dirs: [], error: 'the compose listing was not JSON' } }
+  if (!Array.isArray(rows)) return { noDocker: false, dirs: [] }
+  const dirs = new Set<string>()
+  for (const r of rows as any[]) {
+    const first = String(r?.ConfigFiles ?? '').split(',')[0]?.trim() ?? ''
+    const dir = first.replace(/\/[^/]+$/, '')
+    if (dir && isComposeDir(dir)) dirs.add(dir)
+  }
+  return { noDocker: false, dirs: [...dirs].sort() }
+}
+
+/** Read-only: each project's images, the digest each runs and the registry's current one, per directory. */
+export function composeImagesScript(dirs: string[]): string {
+  const ok = dirs.filter(isComposeDir)
+  return [
+    'command -v docker >/dev/null 2>&1 || { echo HP_NO_DOCKER; exit 0; }',
+    ...ok.map(d => [
+      `echo ${shq(`HP_DIR ${d}`)}`,
+      `(cd ${shq(d)} && docker compose config --images 2>/dev/null) | sort -u | while read -r img; do [ -z "$img" ] && continue`,
+      `  cur=$(docker image inspect --format '{{index .RepoDigests 0}}' "$img" 2>/dev/null | sed 's/.*@//')`,
+      `  new=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$img" 2>/dev/null || true)`,
+      '  echo "HP_IMG $img ${cur:--} ${new:--}"',
+      'done',
+    ].join('\n')),
+    'echo HP_IMAGES_END',
+  ].join('\n')
+}
+
+export function parseComposeImages(output: string): { dir: string; images: { image: string; current: string; latest: string | null }[] }[] {
+  const out: { dir: string; images: { image: string; current: string; latest: string | null }[] }[] = []
+  for (const l of String(output ?? '').split('\n').map(x => x.trim())) {
+    const d = /^HP_DIR (\/\S*)$/.exec(l)
+    if (d) { if (isComposeDir(d[1])) out.push({ dir: d[1], images: [] }); continue }
+    const m = /^HP_IMG (\S+) (\S+) (\S+)$/.exec(l)
+    if (m && out.length) out[out.length - 1].images.push({ image: m[1], current: m[2], latest: m[3] === '-' ? null : m[3] })
+  }
+  return out
+}
+
 export function tail(text: string, max = 4000): string {
   return text.length <= max ? text : '…' + text.slice(-max)
 }

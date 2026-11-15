@@ -58,7 +58,16 @@ export type UpdatesNode = {
   error?:         string
 }
 
-export type UpdatesUnmanagedReason = 'excluded' | 'not-running' | 'no-apt' | 'no-agent' | 'windows'
+/** `ignored`: tagged hyperprox-ignore in Proxmox, so HyperProx never looks inside it. */
+export type UpdatesUnmanagedReason = 'excluded' | 'ignored' | 'not-running' | 'no-apt' | 'no-agent' | 'windows'
+
+/** A compose project in a guest: from the policy's compose_dirs, or found running there (`docker compose ls`). */
+export type UpdatesComposeProject = {
+  dir:     string
+  source:  'policy' | 'found'
+  images:  { image: string; current: string; latest: string | null }[]
+  error?:  string
+}
 
 export type UpdatesGuest = {
   vmid:             number
@@ -84,6 +93,8 @@ export type UpdatesGuest = {
   noSnapshotAckId?: string
   /** The newest backup task HyperProx could see on this cluster, and whether it named this guest. */
   lastBackup?:      { at: string; ok: boolean; thisGuest: boolean } | null
+  /** Compose projects in the guest and their images (home cluster). */
+  compose?:         UpdatesComposeProject[]
   error?:           string
 }
 
@@ -136,6 +147,8 @@ export type UpdatesInventory = { refreshedAt: string; nodes: UpdatesNode[]; gues
 export type UpdatesStepAction =
   | 'preflight' | 'refresh' | 'snapshot' | 'apt' | 'docker' | 'check' | 'ceph'
   | 'node-upgrade' | 'node-reboot' | 'kernel-cleanup' | 'self' | 'app' | 'app-config'
+  /** Chosen packages only: `apt-get install --only-upgrade`, never on a held or pinned package. */
+  | 'node-packages' | 'apt-packages'
 
 export type UpdatesStepStatus = 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
 
@@ -163,13 +176,73 @@ export type UpdatesPlan = {
   approved?: string[]
   /** The cluster this plan is for. A job is only ever confirmed, resumed or rolled back for this cluster. */
   cluster?:  UpdatesClusterRef
+  /** A run of chosen targets: what was chosen, and each item the plan made of it, in the order it runs. */
+  selection?: string[]
+  items?:    UpdatesPlanItem[]
+  /** Chosen targets the plan will not run, and why (a held package, a pinned kernel, unknown holds...). */
+  refused?:  { id: string; reason: string }[]
+  /** A job's steps carry the plan's seq plus this (its preflight and refresh come first). */
+  stepOffset?: number
 }
+
+/** One thing a person chose, as the plan runs it: its steps (plan seqs) and the items it waits for. */
+export type UpdatesPlanItem = {
+  id:        string
+  label:     string
+  kind:      UpdatesTargetKind
+  /** The chosen target ids this item covers. */
+  ids:       string[]
+  seqs:      number[]
+  /** Item ids that must succeed first: if one fails, this item is skipped. */
+  dependsOn: string[]
+}
+
+export type UpdatesItemOutcome = { id: string; label: string; status: UpdatesStepStatus; reason?: string | null }
+
+// --- Targets: everything that can be updated, as a tree ------------------------------
+
+export type UpdatesTargetKind =
+  | 'ceph' | 'node' | 'node-pkg' | 'node-reboot'
+  | 'guest' | 'guest-pkg' | 'compose' | 'app' | 'app-fix'
+
+export type UpdatesTarget = {
+  /** What a selection names, e.g. `node:<name>`, `guest:<vmid>:pkg:<package>`. */
+  id:          string
+  kind:        UpdatesTargetKind
+  /** The row above it: null for nodes and Ceph (they sit under the cluster). */
+  parent:      string | null
+  label:       string
+  /** One line under the label: a version change, an image, a note. */
+  sub?:        string
+  /** Updates this row covers (its own and its children's). */
+  pending:     number
+  security:    number
+  /** Can be chosen. When false, `blocked` says why in words. */
+  selectable:  boolean
+  blocked?:    string
+  /** Chosen by "Update everything": what a run of the whole plan does. */
+  everything?: boolean
+  needsReboot?: boolean
+  node?:       string
+  vmid?:       number
+  guestType?:  'lxc' | 'qemu'
+  /** The preview: the exact packages or images and versions. */
+  packages?:   UpdatesPkgChange[]
+  images?:     { image: string; current: string; latest: string | null }[]
+  /** Approval ids this target needs sent with the run (a remote guest updated without a snapshot). */
+  approvals?:  string[]
+  notes?:      string[]
+}
+
+export type UpdatesTargetTree = { refreshedAt: string; cluster?: UpdatesClusterRef; targets: UpdatesTarget[] }
 
 export type UpdatesReport = {
   summary:       string
   changed:       { target: string; packages: number }[]
   skipped:       { target: string; reason: string }[]
   rebootsPending: string[]
+  /** A run of chosen targets: each item's outcome. */
+  items?:        UpdatesItemOutcome[]
 }
 
 export type UpdatesJobStatus =

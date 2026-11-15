@@ -18,7 +18,7 @@
 //  executor, so every path here runs in tests against a fake.
 // =============================================================================
 
-import type { UpdatesClusterRef, UpdatesPlan, UpdatesRebootPreview, UpdatesReport, UpdatesStepAction, UpdatesWsPayload } from './types'
+import type { UpdatesClusterRef, UpdatesItemOutcome, UpdatesPlan, UpdatesPlanItem, UpdatesRebootPreview, UpdatesReport, UpdatesStepAction, UpdatesWsPayload } from './types'
 import type { UpdatesExecutor, GuestListing, LineSink } from './executor'
 import { parseOsdOkToStop, parseCephState, parseOsdFlags, judgeRestoredState, type CephState } from './ceph-safety'
 import { SAFETY_SKIP, osdVerdict, osdNames, monVerdict, annotatePlanSafety, withoutSafetyNote } from './ceph-checks'
@@ -38,7 +38,12 @@ import {
   nodeSimulateCommand, parseAptSimulation, REMOTE_NODE_SERVICES_COMMAND, GUEST_PENDING_SCRIPT, parseGuestPending,
   installedVersionsCommand, parseInstalledVersions, readBackProblems,
   parseNodeFacts, tail, type NodeFacts,
+  nodePackagesCommand, nodePackagesSimulateCommand, guestPackagesScript, isGuardedKernelPackage, PKG_NAME,
+  COMPOSE_LS_SCRIPT, parseComposeLs,
 } from './commands'
+import {
+  buildSelectedPlan, parseTargetId, packagesOf, composeDirOf, DEPENDS_ON, MAX_SELECTION, nodeGuarded,
+} from './targets'
 import { handoffNodeOf, handoffTag, readHandoff, selfGuestScript, selfNodeRebootScript, startHandoff } from './handoff'
 import { type AppEnv, APPROVAL_ID, runAppStep } from './apps'
 import { ActiveJobError, TERMINAL, jobView, stepView, type JobRecord, type StepRecord, type UpdatesStore } from './store'
@@ -107,6 +112,8 @@ export interface RunnerDeps {
    * cluster (the address, certificate or token changed since). lib/updates/cluster-store.ts provides it.
    */
   checkJob?:  (job: JobRecord) => void
+  /** Find the compose projects running in each guest, so each can be chosen on its own (production, home). */
+  discoverCompose?: boolean
 }
 
 type Outcome =
@@ -114,11 +121,18 @@ type Outcome =
   | { status: 'failed'; reason: string; output?: string; fatal?: boolean }
 
 /** Steps that belong to the guest phase. */
-const GUEST_ACTIONS: UpdatesStepAction[] = ['snapshot', 'apt', 'docker', 'app-config', 'app', 'check']
+const GUEST_ACTIONS: UpdatesStepAction[] = ['snapshot', 'apt', 'apt-packages', 'docker', 'app-config', 'app', 'check']
 const isGuestStep = (s: StepRecord) => GUEST_ACTIONS.includes(s.action)
 const PRE_STEPS = 2   // preflight, refresh
 
 const AFTER_GUEST_FAILURE = 'an earlier step for this guest failed'
+/** A chosen item stopped at a failed step: the rest of that item is not run. */
+const AFTER_ITEM_FAILURE = 'an earlier step of this item failed'
+/** A vzdump was running where the item would act: the item is left alone, and Resume tries it again. */
+const BACKUP_RUNNING = 'not run: a backup is running'
+/** Node steps whose failure, in a run of chosen targets, stops only their own item and the items that wait for it. */
+const ISOLATED_NODE_ACTIONS: UpdatesStepAction[] = ['node-upgrade', 'node-packages', 'kernel-cleanup']
+const retryable = (r: string | null | undefined) => !!r && (r === AFTER_GUEST_FAILURE || r === AFTER_ITEM_FAILURE || r.startsWith(DEPENDS_ON) || r.startsWith(BACKUP_RUNNING))
 const STALE_NOOUT = 'Ceph noout is set — left by an earlier run that stopped (a failed OSD restart, a node that did not return, a HyperProx restart mid-step) or set by hand. Nothing restarts or reboots while it is set: bring every OSD back up, then clear it with `ceph osd unset noout`'
 const INTERRUPTED = 'interrupted by a HyperProx restart'
 const NOT_FINISHED: UpdatesJobStatus[] = ['planned', 'awaiting-confirm', 'running', 'paused']
@@ -176,9 +190,15 @@ export class UpdatesRunner {
   // ===========================================================================
 
   async start(mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule' = 'manual', actor?: string, scope: 'all' | 'guests' = 'all',
-              approvals: string[] = []): Promise<JobRecord> {
-    // A scheduled run has nobody to approve anything: only `auto` apps go in.
-    if (trigger === 'schedule') approvals = []
+              approvals: string[] = [], selection?: string[]): Promise<JobRecord> {
+    // A scheduled run has nobody to approve anything: only `auto` apps go in. Nor does it choose targets.
+    if (trigger === 'schedule') { approvals = []; selection = undefined }
+    if (selection) {
+      const bad = selection.filter(id => !parseTargetId(id))
+      if (!selection.length || selection.length > MAX_SELECTION || bad.length) {
+        throw new JobStateError(selection.length ? `Not a target id: ${bad.slice(0, 3).join(', ') || 'too many'}` : 'Choose at least one target')
+      }
+    }
     const bad = approvals.filter(a => !APPROVAL_ID.test(a))
     if (bad.length || approvals.length > 200) throw new JobStateError(`Not an app approval id: ${bad.slice(0, 3).join(', ') || 'too many'}`)
     const load = this.deps.loadPolicy()
@@ -193,9 +213,11 @@ export class UpdatesRunner {
       status: 'running',
       plan: { steps: [], warnings: [] },
     })
-    await this.store.audit(`updates.job.${mode === 'dry-run' ? 'dry-run' : 'start'}`, job.id, { trigger, scope, by: actor ?? 'scheduler', ...(approvals.length ? { approvals } : {}) })
+    await this.store.audit(`updates.job.${mode === 'dry-run' ? 'dry-run' : 'start'}`, job.id, {
+      trigger, scope, by: actor ?? 'scheduler', ...(approvals.length ? { approvals } : {}), ...(selection ? { selection } : {}),
+    })
     await this.emitJob(job)
-    this.drive(job.id, () => this.prepare(job.id, mode, trigger, scope, approvals))
+    this.drive(job.id, () => this.prepare(job.id, mode, trigger, scope, approvals, selection))
     return job
   }
 
@@ -221,7 +243,7 @@ export class UpdatesRunner {
     this.cancelRequested.delete(id)
     // Resume retries what failed. Every step is written to be safe to run twice.
     for (const s of await this.store.getSteps(id)) {
-      const retry = s.status === 'failed' || (s.status === 'skipped' && s.reason === AFTER_GUEST_FAILURE)
+      const retry = s.status === 'failed' || (s.status === 'skipped' && retryable(s.reason))
       if (retry) await this.setStep(s, { status: 'pending', reason: null })
     }
     await this.store.audit('updates.job.resume', id, { by: actor })
@@ -380,8 +402,17 @@ export class UpdatesRunner {
 
   // The scope only shapes the plan: a run executes the steps stored with it, so a guests-only run stays
   // guests-only through a pause, a resume or a restart.
-  private async prepare(jobId: string, mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule', scope: 'all' | 'guests' = 'all', approvals: string[] = []): Promise<void> {
+  private async prepare(jobId: string, mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule', scope: 'all' | 'guests' = 'all', approvals: string[] = [],
+                        selection?: string[]): Promise<void> {
     const appPlan = { approvals, appProviders: this.deps.apps?.providers.map(r => r.provider.id) }
+    // A run of chosen targets: only the nodes it names are checked node by node, refreshed and planned.
+    const chosen = selection ? selection.map(parseTargetId).filter((t): t is NonNullable<typeof t> => !!t) : null
+    const allNodes = chosen?.some(t => t.kind === 'ceph') ?? true
+    const chosenNodes = new Set(chosen ? chosen.flatMap(t => ('node' in t ? [t.node] : [])) : [])
+    const chosenGuests = new Set(chosen ? chosen.flatMap(t => ('vmid' in t ? [t.vmid] : [])) : [])
+    const makePlan = (inv: InventoryResult, extra: { policyNote?: string }) => selection
+      ? buildSelectedPlan(inv.inventory, policy, { ...this.planContext(inv, policy, { ...extra, ...appPlan }), selection })
+      : buildPlan(inv.inventory, policy, this.planContext(inv, policy, { ...extra, scope, ...appPlan }))
     const load = this.deps.loadPolicy()
     const policy = load.policy
     const policyNote = load.loaded ? undefined : `${load.error ?? 'No policy file'} — this plan uses the built-in safe defaults.`
@@ -390,7 +421,11 @@ export class UpdatesRunner {
     const box: { inv: InventoryResult | null } = { inv: null }
     const pre = await this.runStep(jobId, preStep, async () => {
       box.inv = await this.inventory(policy)
-      const pf0 = await preflight(this.exec, policy, box.inv.facts, await this.ceph(jobId), this.remote)
+      // Chosen targets: the per-node gates cover the nodes it will act on and can (a node it cannot act on is refused
+      // in the plan, with the reason, instead of stopping the run for every other target).
+      const facts = box.inv.facts
+      const only = allNodes ? undefined : new Set([...chosenNodes].filter(n => facts[n] && holdsPinGate(n, facts[n], nodePolicy(policy, n)).ok))
+      const pf0 = await preflight(this.exec, policy, facts, await this.ceph(jobId), this.remote, only)
       const noout = await this.nooutGate(jobId)
       if (!noout.ok && noout.reason === STALE_NOOUT) await this.announceStaleNoout(jobId, 'at the start of an Updates run')
       const pf1 = noout.ok ? pf0 : { ok: false, reason: [pf0.ok ? '' : pf0.reason, noout.reason].filter(Boolean).join('; ') }
@@ -403,7 +438,7 @@ export class UpdatesRunner {
       }
       const pf = fences.length ? { ...pf1, reason: [pf1.reason, ...fences].join('; ') } : pf1
       // A node whose pending list or shell could not be read is not "reachable", whatever the gates say.
-      const unread = box.inv.inventory.nodes.filter(n => n.error).map(n => `${n.node}: ${n.error}`)
+      const unread = box.inv.inventory.nodes.filter(n => n.error && (!only || only.has(n.node))).map(n => `${n.node}: ${n.error}`)
       const g = unread.length ? { ok: false, reason: [pf.ok ? '' : pf.reason, ...unread].filter(Boolean).join('; ') } : pf
       return g.ok ? { status: 'ok', output: g.reason } : { status: 'failed', reason: g.reason }
     })
@@ -411,7 +446,7 @@ export class UpdatesRunner {
     if (mode === 'dry-run') {
       // A dry run reads what is already known and executes nothing — not even `apt update`.
       const inv = box.inv ?? await this.inventory(policy).catch(() => null)
-      const plan = inv ? await this.withSafety(jobId, buildPlan(inv.inventory, policy, this.planContext(inv, policy, { policyNote, scope, ...appPlan }))) : { steps: [], warnings: ['Inventory could not be read'] }
+      const plan = inv ? await this.withSafety(jobId, makePlan(inv, { policyNote })) : { steps: [], warnings: ['Inventory could not be read'] }
       await this.setJob(jobId, { plan })
       const verdict = pre.status === 'ok' ? 'preflight passed' : `preflight would stop the run: ${pre.reason}`
       await this.finish(jobId, 'done', undefined, {
@@ -428,13 +463,13 @@ export class UpdatesRunner {
     const ref = await this.runStep(jobId, refresh, async (log) => {
       const lines: string[] = []
       if (scope === 'all') {
-        for (const n of box.inv!.inventory.nodes.filter(x => x.online)) {
+        for (const n of box.inv!.inventory.nodes.filter(x => x.online && (allNodes || chosenNodes.has(x.node)))) {
           await this.exec.nodeAptRefresh(n.node)
           log(`${n.node}: apt update done`)
         }
       }
       const listing = await this.guestMap()
-      const managed = box.inv!.inventory.guests.filter(g => g.managed && guestPolicy(policy, g.vmid).apt)
+      const managed = box.inv!.inventory.guests.filter(g => g.managed && guestPolicy(policy, g.vmid).apt && (!chosen || chosenGuests.has(g.vmid)))
       for (let i = 0; i < managed.length; i += policy.batchSize) {
         await Promise.all(managed.slice(i, i + policy.batchSize).map(async g => {
           const ref = listing.get(g.vmid)
@@ -450,7 +485,8 @@ export class UpdatesRunner {
     if (ref.status !== 'ok') return void await this.finish(jobId, 'failed', `Refreshing package lists failed: ${ref.reason}`)
     if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
 
-    const plan = await this.withSafety(jobId, buildPlan(box.inv!.inventory, policy, this.planContext(box.inv!, policy, { scope, ...appPlan })))
+    const built = await this.withSafety(jobId, makePlan(box.inv!, {}))
+    const plan: UpdatesPlan = selection ? { ...built, stepOffset: PRE_STEPS } : built
     await this.store.addSteps(jobId, plan.steps.map(s => ({ ...s, seq: s.seq + PRE_STEPS })))
     if (trigger === 'manual') {
       await this.transition(jobId, ['running'], { plan, status: 'awaiting-confirm' })
@@ -470,6 +506,8 @@ export class UpdatesRunner {
     const policy = load.policy
     if (!this.runStartedAt.has(jobId)) this.runStartedAt.set(jobId, this.exec.now())
     const guests = await this.guestMap()
+    // A run of chosen targets: each item stands on its own (see `items` below).
+    const items = new Items((await this.mustGet(jobId)).plan)
 
     // --- Guest phase, batch_size at a time -----------------------------------------
     const all = await this.store.getSteps(jobId)
@@ -482,22 +520,34 @@ export class UpdatesRunner {
         ? await this.combine([...(await quorumHaGates(this.exec, true)).map(g => Promise.resolve(g)), this.cephGateFor(jobId, policy)])
         : await this.combine([quorumGate(this.exec), this.cephGateFor(jobId, policy)])
       if (!gate.ok) return this.pause(jobId, `Gate failed before the next guests: ${gate.reason}`)
-      await Promise.all(targets.slice(i, i + policy.batchSize).map(t =>
-        this.runGuest(jobId, t, guestSteps.filter(s => s.target === t), guests.get(Number(t)), policy)))
+      await Promise.all(targets.slice(i, i + policy.batchSize).map(async t => {
+        const mine = guestSteps.filter(s => s.target === t)
+        const guest = guests.get(Number(t))
+        if (items.active && guest) {
+          // Backups first: a guest being backed up right now is left alone (and Resume tries it again).
+          const busy = await this.backupBusy(guest.node, guest.vmid)
+          if (busy) { for (const s of mine) await this.setStep(s, { status: 'skipped', reason: `${BACKUP_RUNNING} (${busy})` }); return }
+        }
+        return this.runGuest(jobId, t, mine, guest, policy)
+      }))
     }
 
     const failedGuests = [...new Set((await this.store.getSteps(jobId)).filter(s => isGuestStep(s) && s.status === 'failed').map(s => s.target))]
-    if (failedGuests.length) {
+    if (failedGuests.length && !items.active) {
       return this.pause(jobId, `Guest${failedGuests.length > 1 ? 's' : ''} ${failedGuests.join(', ')} failed. The Ceph and node phases do not start while a guest has failed: fix it (its snapshot is named in the step) and press Resume, or Cancel.`)
     }
 
     // --- Ceph, nodes, self: strictly one step at a time -------------------------------
-    for (const step of (await this.store.getSteps(jobId)).filter(s => !isGuestStep(s))) {
-      if (step.action === 'preflight' || step.action === 'refresh') continue
+    for (const listed of (await this.store.getSteps(jobId)).filter(s => !isGuestStep(s))) {
+      if (listed.action === 'preflight' || listed.action === 'refresh') continue
       if (!await this.stillRunning(jobId)) return
+      // Re-read: a failure earlier in this loop may have skipped it since the list was read.
+      const step = (await this.store.getSteps(jobId)).find(x => x.id === listed.id) ?? listed
       // A failed step is never stepped over: only Resume (which resets it) gets past one.
       if (step.status === 'failed' && step.action !== 'kernel-cleanup') {
-        return this.pause(jobId, `${step.action} on ${step.target} has failed (${step.reason ?? 'no reason recorded'}); press Resume to retry it`)
+        if (!(items.active && ISOLATED_NODE_ACTIONS.includes(step.action))) {
+          return this.pause(jobId, `${step.action} on ${step.target} has failed (${step.reason ?? 'no reason recorded'}); press Resume to retry it`)
+        }
       }
       if (step.status !== 'pending' && step.status !== 'running') continue
       if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
@@ -509,20 +559,68 @@ export class UpdatesRunner {
         continue
       }
 
+      if (items.active) {
+        // An item whose prerequisite failed or was skipped does not run: a node is not rebooted after its guests failed.
+        const now = await this.store.getSteps(jobId)
+        // An item is one unit: a step whose own earlier step failed (HyperProx's snapshot, say) does not run.
+        if (items.brokenBefore(step, now)) { await this.skipItem(jobId, items, step, AFTER_ITEM_FAILURE); continue }
+        const waits = await items.unmet(step, now)
+        if (waits) { await this.skipItem(jobId, items, step, `${DEPENDS_ON} ${waits}, which did not finish`); continue }
+        const busy = step.action === 'kernel-cleanup' ? null : await this.backupBusy(step.target, null)
+        if (busy) {
+          // Ceph moves on every node together: half an install waits for a person rather than being skipped.
+          if (step.action === 'ceph') return this.pause(jobId, `A backup is running (${busy}); the Ceph item waits. Press Resume when it has finished.`)
+          await this.skipItem(jobId, items, step, `${BACKUP_RUNNING} (${busy})`)
+          continue
+        }
+      }
+
       if (step.action !== 'kernel-cleanup' && !(step.action === 'node-reboot' && detailKey(step) === DETAIL.rebootManual)) {
         const gate = await this.clusterGates(jobId, policy)
         if (!gate.ok) return this.pause(jobId, `Gate failed before ${step.action} on ${step.target}: ${gate.reason}`)
       }
 
-      const out = await this.runStep(jobId, step, log => this.dispatch(jobId, step, policy, log))
+      const out = await this.runStep(jobId, step, log => this.dispatch(jobId, step, policy, log, items.active))
       if (out.status === 'failed') {
         if (step.action === 'kernel-cleanup') continue   // old kernels left behind are untidy, not unsafe
+        // Chosen targets: a node update that failed changed nothing it could not report; its own item stops, and
+        // everything that waits for it with it, while unrelated items carry on (the gates still run before each).
+        if (items.active && ISOLATED_NODE_ACTIONS.includes(step.action)) { await this.skipItem(jobId, items, step, AFTER_ITEM_FAILURE, true); continue }
         return this.stopOnFailure(jobId, step, out)
       }
     }
 
     if (!await this.stillRunning(jobId)) return
     await this.finish(jobId, 'done', undefined, undefined, ['running'])
+  }
+
+  /**
+   * The rest of `step`'s item, and every item that waits for it, marked skipped. `after`: the step itself already
+   * failed (it keeps its own status); otherwise it is skipped too.
+   */
+  private async skipItem(jobId: string, items: Items, step: StepRecord, reason: string, after = false): Promise<void> {
+    const steps = await this.store.getSteps(jobId)
+    const it = items.of(step)
+    const mine = it ? steps.filter(s => items.of(s)?.id === it.id) : [step]
+    for (const s of mine) {
+      if (s.status !== 'pending') continue
+      await this.setStep(s, { status: 'skipped', reason: after ? AFTER_ITEM_FAILURE : reason })
+    }
+    if (!it) return
+    for (const d of items.dependents(it.id)) {
+      for (const s of steps.filter(x => items.of(x)?.id === d.id && x.status === 'pending')) {
+        await this.setStep(s, { status: 'skipped', reason: `${DEPENDS_ON} ${it.label}, which did not finish` })
+      }
+    }
+  }
+
+  /** A vzdump running on `node`, or of guest `vmid`: in words, or null. A read that fails counts as running. */
+  private async backupBusy(node: string, vmid: number | null): Promise<string | null> {
+    if (!this.exec.backupTasks) return null
+    try {
+      const t = (await this.exec.backupTasks()).find(x => x.ok === null && (x.node === node || (vmid !== null && x.vmid === vmid)))
+      return t ? `on ${t.node}${t.vmid !== null ? `, guest ${t.vmid}` : ''}` : null
+    } catch (e: any) { return `whether one is could not be read: ${e?.message ?? e}` }
   }
 
   private async stopOnFailure(jobId: string, step: StepRecord, out: Outcome & { status: 'failed' }): Promise<void> {
@@ -551,8 +649,17 @@ export class UpdatesRunner {
             return { status: 'ok', output: `snapshot ${name}` }
           }
           case 'apt':    return this.guestApt(guest, policy, log, snapshot)
+          case 'apt-packages': return this.guestPackages(guest, policy, packagesOf(step.detail), log, snapshot)
           case 'docker': {
-            const r = await this.exec.guestExec(guest, guestDockerScript(guestPolicy(policy, guest.vmid).composeDirs), log, 30 * 60_000)
+            // A chosen compose project: only that directory, and only if it is still one the policy names or Docker lists.
+            const chosenDir = detailKey(step) === 'compose-dir' ? composeDirOf(step.detail) : null
+            if (detailKey(step) === 'compose-dir' && !chosenDir) return { status: 'failed', reason: 'unreadable compose step' }
+            if (chosenDir) {
+              const known = await this.composeDirKnown(guest, policy, chosenDir)
+              if (known !== true) return { status: 'failed', reason: known }
+            }
+            const dirs = chosenDir ? [chosenDir] : guestPolicy(policy, guest.vmid).composeDirs
+            const r = await this.exec.guestExec(guest, guestDockerScript(dirs), log, 30 * 60_000)
             return r.code === 0 ? { status: 'ok', output: tail(r.output) } : { status: 'failed', reason: `containers not healthy${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
           }
           case 'app':
@@ -635,6 +742,84 @@ export class UpdatesRunner {
     for (const s of steps.filter(x => x.seq > failed.seq)) await this.setStep(s, { status: 'skipped', reason: AFTER_GUEST_FAILURE })
   }
 
+  /** Chosen packages in a guest: held ones are refused inside the guest, and nothing is installed new or removed. */
+  private async guestPackages(guest: GuestListing, policy: Policy, pkgs: string[], log: LineSink, snapshot: string | null): Promise<Outcome> {
+    if (!pkgs.length || pkgs.some(p => !PKG_NAME.test(p))) return { status: 'failed', reason: 'unreadable package list' }
+    if (!guestPolicy(policy, guest.vmid).apt) return { status: 'failed', reason: `apt is off for ${guest.vmid} in the policy` }
+    const r = await this.exec.guestExec(guest, guestPackagesScript(pkgs), log, 60 * 60_000)
+    if (r.code !== 0) return { status: 'failed', reason: /refusing: /.test(r.output) ? (/refusing: [^\n]*/.exec(r.output)![0]) : `apt failed${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
+    const wantsReboot = /HP_REBOOT_REQUIRED/.test(r.output)
+    return { status: 'ok', output: tail(r.output) + (wantsReboot ? '\n(the guest asks for a reboot; a chosen package update does not reboot it)' : '') }
+  }
+
+  /** True when `dir` is a compose project of this guest now (in the policy, or listed by Docker); else why not. */
+  private async composeDirKnown(guest: GuestListing, policy: Policy, dir: string): Promise<true | string> {
+    if (policy.guests[String(guest.vmid)]?.docker === 'none') return `docker is off for ${guest.vmid} in the policy`
+    const pol = guestPolicy(policy, guest.vmid)
+    if (pol.docker !== 'none' && pol.composeDirs.includes(dir)) return true
+    const r = await this.exec.guestExec(guest, COMPOSE_LS_SCRIPT, undefined, 60_000).catch((e: any) => ({ code: -1, output: String(e?.message ?? e), timedOut: false }))
+    const ls = parseComposeLs(r.output)
+    return ls.dirs.includes(dir) ? true : `${dir} is no longer a compose project in ${guest.vmid}${ls.error ? ` (${ls.error})` : ''}; nothing was pulled`
+  }
+
+  /**
+   * Chosen packages on a node: `apt-get install --only-upgrade`, after apt's own simulation shows exactly what moves.
+   * Refused, with nothing installed, when the node's holds or pin cannot be read, when a required hold or the pin is
+   * missing, or when anything that would move is held, required held, a Ceph package, or — on a node that keeps its
+   * kernel held or pinned — a kernel, header or kernel metapackage. Never upgrade, dist-upgrade or full-upgrade.
+   */
+  private async nodePackages(jobId: string, node: string, pkgs: string[], policy: Policy, log: LineSink): Promise<Outcome> {
+    if (!pkgs.length || pkgs.some(p => !PKG_NAME.test(p))) return { status: 'failed', reason: 'unreadable package list; nothing was installed' }
+    const pol = nodePolicy(policy, node)
+    let before: NodeFacts
+    try { before = await this.nodeFacts(node) }
+    catch (e: any) { return { status: 'failed', reason: `refusing to update packages on ${node}: ${e?.message ?? e}. Nothing was installed.` } }
+    const pre = await this.combine([Promise.resolve(holdsPinGate(node, before, pol)), Promise.resolve(freeSpaceGate(node, before, policy))])
+    if (!pre.ok) return { status: 'failed', reason: `stopped before installing: ${pre.reason}` }
+    const guarded = nodeGuarded(policy, { node, held: before.holds }) || Boolean(before.pinned)
+    // A remote has no Ceph phase: its Ceph client libraries move like any package only where Ceph does not run.
+    const cephRuns = this.remote ? await this.ceph(jobId) : true
+    const refuse = (name: string): string | null =>
+      before.holds.includes(name) ? `${name} is held`
+        : pol.requireHolds.includes(name) ? `${name} must stay held (policy)`
+        : guarded && isGuardedKernelPackage(name) ? `${name} moves the kernel, which ${node} keeps held or pinned`
+        : isCephPackage(name) && cephRuns ? `${name} is a Ceph package (Ceph moves only through the Ceph item)` : null
+    const asked = pkgs.map(refuse).filter(Boolean)
+    if (asked.length) return { status: 'failed', reason: `refusing: ${asked.join('; ')}. Nothing was installed.` }
+
+    const sim = await this.exec.nodeExec(node, nodePackagesSimulateCommand(pkgs), undefined, 10 * 60_000)
+    const parsed = sim.code === 0 ? parseAptSimulation(sim.output) : { changes: null, error: `the command exited ${sim.code}` }
+    if (!parsed.changes) return { status: 'failed', reason: `could not simulate the update on ${node}, so nothing was installed: ${this.remote ? shortReason(parsed.error) : parsed.error}`, output: tail(sim.output) }
+    const changes = parsed.changes
+    const removed = changes.filter(c => c.action === 'remove').map(c => c.name)
+    const pulled = changes.filter(c => c.action !== 'remove').map(c => refuse(c.name)).filter(Boolean)
+    const fresh = changes.filter(c => c.action === 'install').map(c => c.name)
+    if (removed.length || pulled.length || fresh.length) {
+      const why = [removed.length ? `it would remove ${removed.join(', ')}` : '', fresh.length ? `it would install new packages (${fresh.join(', ')})` : '', ...pulled.map(p => `it would also move ${p}`)].filter(Boolean)
+      return { status: 'failed', reason: `refusing: ${why.join('; ')}. Nothing was installed.`, output: tail(sim.output) }
+    }
+    log(`apt's simulation: ${changes.length} package${changes.length === 1 ? '' : 's'} move (${changes.map(c => `${c.name} ${c.from ?? ''} → ${c.to}`).join(', ')})`)
+
+    const r = await this.exec.nodeExec(node, nodePackagesCommand(pkgs), log, 60 * 60_000)
+    if (r.code !== 0) return { status: 'failed', reason: 'apt-get install --only-upgrade failed', output: tail(r.output) }
+    const svc = await this.exec.nodeExec(node, this.remote ? REMOTE_NODE_SERVICES_COMMAND : NODE_SERVICES_COMMAND, log, 60_000)
+    if (svc.code !== 0) return { status: 'failed', reason: 'Proxmox services not all active after the update', output: tail(r.output + '\n' + svc.output) }
+    let after: NodeFacts
+    try { after = await this.nodeFacts(node) }
+    catch (e: any) { return { status: 'failed', reason: `after the update: ${e?.message ?? e} — a person must look`, output: tail(r.output) } }
+    const lost = before.holds.filter(h => !after.holds.includes(h))
+    const problems = [
+      holdsPinGate(node, after, pol).ok ? '' : holdsPinGate(node, after, pol).reason,
+      lost.length ? `no longer on hold: ${lost.join(', ')}` : '',
+      before.pinned && after.pinned !== before.pinned ? `the kernel pin changed from ${before.pinned} to ${after.pinned ?? 'none'}` : '',
+    ].filter(Boolean)
+    if (problems.length) return { status: 'failed', reason: `after the update: ${problems.join('; ')} — not repaired; a person must look`, output: tail(r.output) }
+    const v = await this.exec.nodeExec(node, installedVersionsCommand(changes.map(c => c.name)), undefined, 60_000)
+    const off = readBackProblems(changes, parseInstalledVersions(v.output))
+    if (off.length) return { status: 'failed', reason: `read-back: ${off.map(p => p.words).join('; ')}`, output: tail(r.output + '\nread-back:\n' + off.map(p => p.detail).join('\n')) }
+    return { status: 'ok', output: tail(r.output) + `\nread-back: ${changes.length} package${changes.length === 1 ? '' : 's'} at the expected versions; holds and pin unchanged.` }
+  }
+
   private async guestApt(guest: GuestListing, policy: Policy, log: LineSink, snapshot: string | null): Promise<Outcome> {
     const r = await this.exec.guestExec(guest, GUEST_UPGRADE_SCRIPT, log, 60 * 60_000)
     if (r.code !== 0) return { status: 'failed', reason: `apt failed${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
@@ -674,10 +859,11 @@ export class UpdatesRunner {
     return back ? { ok: true, reason: ha ? 'through ha-manager' : 'guest agent answering again' } : { ok: false, reason: 'the guest agent did not answer after the reboot' }
   }
 
-  private async dispatch(jobId: string, step: StepRecord, policy: Policy, log: LineSink): Promise<Outcome> {
+  private async dispatch(jobId: string, step: StepRecord, policy: Policy, log: LineSink, chosen = false): Promise<Outcome> {
     switch (step.action) {
       case 'ceph':           return this.cephStep(jobId, step, policy, log)
-      case 'node-upgrade':   return this.nodeUpgrade(jobId, step.target, policy, log)
+      case 'node-upgrade':   return this.nodeUpgrade(jobId, step.target, policy, log, chosen)
+      case 'node-packages':  return this.nodePackages(jobId, step.target, packagesOf(step.detail), policy, log)
       case 'node-reboot':    return this.nodeReboot(jobId, step, policy, log)
       case 'kernel-cleanup': return this.kernelCleanup(step.target, log)
       case 'self':           return this.selfStep(jobId, step, policy, log)
@@ -883,7 +1069,7 @@ export class UpdatesRunner {
     return f
   }
 
-  private async nodeUpgrade(jobId: string, node: string, policy: Policy, log: LineSink): Promise<Outcome> {
+  private async nodeUpgrade(jobId: string, node: string, policy: Policy, log: LineSink, chosen = false): Promise<Outcome> {
     // The node's policy, read now, decides upgrade vs dist-upgrade — never the stored plan — and so does what is
     // on the node: held packages or a pinned kernel mean `upgrade` unless the policy names this node for more.
     const pol = nodePolicy(policy, node)
@@ -894,7 +1080,10 @@ export class UpdatesRunner {
     catch (e: any) { return { status: 'failed', reason: `refusing to upgrade ${node}: ${e?.message ?? e}. Nothing was installed.` } }
     const pre = await this.combine([Promise.resolve(holdsPinGate(node, before, pol)), Promise.resolve(freeSpaceGate(node, before, policy))])
     if (!pre.ok) return { status: 'failed', reason: `stopped before installing: ${pre.reason}` }
-    const choice = effectiveUpgrade(policy, node, before)
+    const picked = effectiveUpgrade(policy, node, before)
+    // A chosen node that keeps its kernel held or pinned gets apt-get upgrade, never dist-upgrade, whatever the policy.
+    const strict = chosen && (nodeGuarded(policy, { node, held: before.holds }) || Boolean(before.pinned)) && picked.verb !== 'upgrade'
+    const choice = strict ? { verb: 'upgrade' as const, note: `${node} keeps its kernel held or pinned, so a chosen update gives it apt-get upgrade, never dist-upgrade.` } : picked
     const verb = choice.verb
     if (choice.note) log(choice.note)
     const said = choice.note ? `${choice.note}\n` : ''
@@ -1350,7 +1539,7 @@ export class UpdatesRunner {
   private async buildReport(jobId: string, status: string, reason?: string): Promise<UpdatesReport> {
     const steps = await this.store.getSteps(jobId)
     const changed = new Map<string, number>()
-    for (const s of steps.filter(x => x.status === 'ok' && ['apt', 'node-upgrade', 'self', 'ceph', 'app'].includes(x.action))) {
+    for (const s of steps.filter(x => x.status === 'ok' && ['apt', 'apt-packages', 'node-upgrade', 'node-packages', 'self', 'ceph', 'app'].includes(x.action))) {
       const n = s.action === 'app' ? 1 : Number(/\((\d+) package/.exec(s.detail ?? '')?.[1] ?? 0)
       if (s.action === 'self' && detailKey(s) !== DETAIL.selfGuest) continue
       changed.set(s.target, (changed.get(s.target) ?? 0) + n)
@@ -1359,9 +1548,14 @@ export class UpdatesRunner {
     const count = (st: string) => steps.filter(s => s.status === st).length
     const pending = [...this.rebootPending].sort()
     const safety = safetySkips(steps)
-    const head = status === 'done' ? (safety.length ? 'Updates finished with steps skipped for safety' : 'Updates finished')
+    const job = await this.store.getJob(jobId)
+    const items = job ? new Items(job.plan) : null
+    const outcomes = items?.active ? items.outcomes(steps) : null
+    const bad = outcomes?.filter(o => o.status !== 'ok') ?? []
+    const head = status === 'done' ? (bad.length ? `Updates finished; ${bad.length} of ${outcomes!.length} chosen item${outcomes!.length === 1 ? '' : 's'} did not` : safety.length ? 'Updates finished with steps skipped for safety' : 'Updates finished')
       : status === 'cancelled' ? 'Updates cancelled' : 'Updates failed'
     return {
+      ...(outcomes ? { items: outcomes } : {}),
       summary: `${head}: ${count('ok')} ok, ${count('skipped')} skipped, ${count('failed')} failed.` +
         (reason && status !== 'done' ? ` ${reason}.` : '') +
         (safety.length ? ` Skipped for safety, nothing restarted: ${safety.map(s => `${withoutSafetyNote(s.detail) || s.action} on ${s.target}`).join(', ')}.` : '') +
@@ -1449,8 +1643,9 @@ export class UpdatesRunner {
   }
 
   /** How this cluster's inventory is read: home as always; a remote through apt's simulation, with backups. */
-  inventoryOptions(): { noSelf?: boolean; nodePreview?: 'apt-simulation'; backups?: boolean; noSnapshotAck?: boolean; apps?: undefined } {
-    return this.remote ? { noSelf: true, nodePreview: 'apt-simulation', backups: true, noSnapshotAck: true, apps: undefined } : {}
+  inventoryOptions(): { noSelf?: boolean; nodePreview?: 'apt-simulation'; backups?: boolean; noSnapshotAck?: boolean; apps?: undefined; discoverCompose?: boolean } {
+    return this.remote ? { noSelf: true, nodePreview: 'apt-simulation', backups: true, noSnapshotAck: true, apps: undefined }
+      : this.deps.discoverCompose ? { discoverCompose: true } : {}
   }
 
   private selfVmid(inv: InventoryResult, policy: Policy): number | null {
@@ -1485,4 +1680,57 @@ function newestKernel(f: NodeFacts): string | null {
     return 0
   }
   return versions.sort(cmp).at(-1) ?? null
+}
+
+/**
+ * The items of a run of chosen targets, mapped onto the job's steps. Empty (inactive) for a run of the whole plan,
+ * which keeps its own rules: a failed guest holds the node phase, a failed node step pauses the run.
+ */
+class Items {
+  readonly active: boolean
+  private bySeq = new Map<number, UpdatesPlanItem>()
+  constructor(private plan: UpdatesPlan) {
+    this.active = Array.isArray(plan.items)
+    const off = plan.stepOffset ?? 0
+    for (const it of plan.items ?? []) for (const q of it.seqs) this.bySeq.set(q + off, it)
+  }
+  of(step: { seq: number }): UpdatesPlanItem | undefined { return this.bySeq.get(step.seq) }
+  dependents(id: string): UpdatesPlanItem[] { return (this.plan.items ?? []).filter(i => i.dependsOn.includes(id)) }
+  /** Did this item finish without a failure? A step skipped for a routine reason (nothing left to do) counts as done. */
+  private finished(it: UpdatesPlanItem, steps: StepRecord[]): boolean {
+    const off = this.plan.stepOffset ?? 0
+    const mine = steps.filter(s => it.seqs.includes(s.seq - off))
+    return mine.every(s => s.status === 'ok' || (s.status === 'skipped' && !retryable(s.reason) && s.reason !== 'cancelled'))
+  }
+  /** True when an earlier step of `step`'s own item failed or was skipped for a reason that is not routine. */
+  brokenBefore(step: StepRecord, steps: StepRecord[]): boolean {
+    const it = this.of(step)
+    if (!it) return false
+    const off = this.plan.stepOffset ?? 0
+    return steps.some(s => s.seq < step.seq && it.seqs.includes(s.seq - off) && (s.status === 'failed' || (s.status === 'skipped' && retryable(s.reason))))
+  }
+  /** The label of the first prerequisite of `step`'s item that did not finish, or null. */
+  async unmet(step: StepRecord, steps: StepRecord[]): Promise<string | null> {
+    const it = this.of(step)
+    if (!it) return null
+    for (const d of it.dependsOn) {
+      const dep = (this.plan.items ?? []).find(i => i.id === d)
+      if (dep && !this.finished(dep, steps)) return dep.label
+    }
+    return null
+  }
+  /** Each item's outcome, for the report and the history. */
+  outcomes(steps: StepRecord[]): UpdatesItemOutcome[] {
+    const off = this.plan.stepOffset ?? 0
+    return (this.plan.items ?? []).map(it => {
+      const mine = steps.filter(s => it.seqs.includes(s.seq - off))
+      const failed = mine.find(s => s.status === 'failed')
+      const skipped = mine.find(s => s.status === 'skipped' && (retryable(s.reason) || s.reason === 'cancelled' || /^the run stopped/.test(s.reason ?? '')))
+      const status: UpdatesItemOutcome['status'] = failed ? 'failed' : skipped ? 'skipped'
+        : mine.some(s => s.status === 'running') ? 'running' : mine.some(s => s.status === 'pending') ? 'pending'
+        : mine.every(s => s.status === 'skipped') ? 'skipped' : 'ok'
+      const why = failed?.reason ?? skipped?.reason ?? (status === 'skipped' ? mine.find(s => s.reason)?.reason : null) ?? null
+      return { id: it.id, label: it.label, status, ...(why ? { reason: why } : {}) }
+    })
+  }
 }

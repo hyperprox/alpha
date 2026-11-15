@@ -33,6 +33,8 @@ export interface ClusterUpdates {
   loadPolicy: () => PolicyLoad
   /** The inventory, read once and shared by the page's inventory and plan requests; per cluster. */
   inventory(refresh: boolean): Promise<UpdatesInventory>
+  /** The last inventory read, without reading anything (null before the first read). */
+  cached(): UpdatesInventory | null
 }
 
 export interface UpdatesServicesDeps {
@@ -111,9 +113,12 @@ export class UpdatesServices {
       cluster: ref,
       remote,
       checkJob: store.checkJob,
+      // Home: the compose projects running in each guest are found too, so each can be chosen on its own.
+      discoverCompose: !remote,
     })
     const svc: ClusterUpdates = {
       ref, remote, exec, store, runner, loadPolicy,
+      cached: () => cached,
       async inventory(refresh: boolean) {
         if (cached && !refresh) return cached
         // While a job is active the runner keeps the cache current; a page refresh must not send a second round

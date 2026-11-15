@@ -6,6 +6,7 @@ import type { UpdatesJob } from '@hyperprox/types'
 import { Badge, Chevron, Empty, TH, THEAD_STYLE, fmtTime } from './ui'
 import { PlanList } from './PlanList'
 import { StepList } from './JobPanel'
+import { ItemResults } from './ItemList'
 
 const TONE: Record<string, 'accent' | 'good' | 'warn' | 'crit' | 'muted'> = {
   'planned': 'muted', 'awaiting-confirm': 'warn', 'running': 'accent', 'paused': 'warn', 'failed': 'crit', 'done': 'good', 'cancelled': 'muted',
@@ -82,6 +83,7 @@ export function History({ jobs, detail, expanded, onToggle }: {
                           {full.status === 'done' || full.status === 'failed' || full.status === 'cancelled' ? 'No report was written for this run.' : 'No report yet.'}
                         </p>
                       )}
+                      {full.plan.items && (full.steps?.length || full.report?.items?.length) ? <ItemResults job={full} /> : null}
                       {full.status === 'planned' || full.trigger === 'dry-run' || !full.steps?.length
                         ? <PlanList plan={full.plan} />
                         : (

@@ -59,7 +59,7 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
             <Btn onClick={() => onRun('dry-run')} disabled={activeJob || busy}><Icon name="dry" />Dry run</Btn>
           </span>
           <span title={why}>
-            <Btn kind="primary" onClick={() => onRun('run')} disabled={!loaded || activeJob || busy}><Icon name="play" />{scope === 'guests' ? 'Update guests' : 'Run updates'}</Btn>
+            <Btn kind="primary" onClick={() => onRun('run')} disabled={!loaded || activeJob || busy}><Icon name="play" />{scope === 'guests' ? 'Update all guests' : 'Update everything'}</Btn>
           </span>
         </div>
       </div>

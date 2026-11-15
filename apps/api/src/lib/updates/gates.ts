@@ -165,13 +165,14 @@ export async function quorumHaGates(exec: UpdatesExecutor, standalone: boolean):
 
 /** Everything before a run changes anything. All gates run, so the report lists every problem at once. */
 export async function preflight(exec: UpdatesExecutor, policy: Policy, facts: Record<string, NodeFacts | null>, cephPresent: boolean,
-                                standalone = false): Promise<GateResult> {
+                                standalone = false, only?: Set<string>): Promise<GateResult> {
   const [qa, ...rest] = await quorumHaGates(exec, standalone)
   const results: GateResult[] = [
     qa, await cephGate(exec, policy, cephPresent), ...rest,
     unknownPolicyNodes(policy, Object.keys(facts)),
   ]
-  for (const node of Object.keys(facts).sort()) {
+  // `only`: a run of chosen targets checks free space, holds and pin on the nodes it acts on (cluster gates always).
+  for (const node of Object.keys(facts).sort().filter(n => !only || only.has(n))) {
     results.push(freeSpaceGate(node, facts[node], policy))
     results.push(holdsPinGate(node, facts[node], nodePolicy(policy, node)))
   }

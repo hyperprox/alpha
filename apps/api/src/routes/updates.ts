@@ -39,6 +39,8 @@ import { setCheckSummarySource } from '../lib/updates/check-summary'
 import { currentClusterId } from '../lib/clusters/context'
 import { HOME_ID, clusterRow, listClusters, setRenameGuard } from '../lib/clusters/registry'
 import { selfVmidOf } from '../lib/updates/inventory'
+import { buildTargets, buildSelectedPlan, parseTargetId, MAX_SELECTION } from '../lib/updates/targets'
+import { setTargetsSource } from '../lib/updates/targets-summary'
 
 export interface UpdatesRouteDeps {
   store?:      UpdatesStore
@@ -120,6 +122,17 @@ const RECONFIRM = { ok: false, code: 'reconfirm_required', error: 'Re-enter your
 /** On a remote cluster a change needs a fresh re-confirmation; an API token never has one. */
 function remoteNeedsReconfirm(svc: ClusterUpdates, req: FastifyRequest): boolean {
   return svc.remote && !(req.session?.sid && isReconfirmed(req.session.sid))
+}
+
+const RECONFIRM_CHOSEN = { ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to run the chosen updates' }
+
+/** Running chosen targets needs a fresh re-confirmation, on every cluster; an API token never has one. */
+const reconfirmed = (req: FastifyRequest) => Boolean(req.session?.sid && isReconfirmed(req.session.sid))
+
+/** A selection from a request body: target ids, or null when it is not a list of them. */
+function selectionFrom(raw: unknown): string[] | null {
+  if (!Array.isArray(raw) || !raw.length || raw.length > MAX_SELECTION) return null
+  return raw.every(x => typeof x === 'string' && parseTargetId(x)) ? [...new Set(raw as string[])] : null
 }
 
 const CHECK_BUSY = 'The daily updates check is reading machines right now. Try again when it has finished (its card on this page shows it); it never takes longer than a few minutes per cluster.'
@@ -249,7 +262,53 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       } catch (e) { return sendError(reply, e) }
     })
 
-    fastify.post<{ Body: { mode?: string; scope?: string; approve?: unknown } }>('/jobs', async (req, reply) => {
+    /** What the tree is built from, for one cluster: the cached inventory, its policy and HyperProx's own guest. */
+    const treeFor = (s: ClusterUpdates, inv: UpdatesInventory) => {
+      const load = s.loadPolicy()
+      const selfVmid = s.remote ? null : selfVmidOf(inv, load.policy, deps.hostname)
+      return { load, selfVmid, targets: buildTargets(inv, load.policy, { selfVmid, remote: s.remote }) }
+    }
+    // The assistant answers "what updates does X have" from what was last read, never by reading.
+    setTargetsSource(() => {
+      const inv = home.cached()
+      return inv ? { refreshedAt: inv.refreshedAt, cluster: { ...home.ref }, targets: treeFor(home, inv).targets } : null
+    })
+
+    // Everything that can be updated, as a tree, each row with its own count, preview and whether it can be chosen.
+    // Read-only, like the inventory it is built from.
+    fastify.get<{ Querystring: { refresh?: string } }>('/targets', async (req, reply) => {
+      try {
+        const s = svc()
+        const inv = await s.inventory(req.query.refresh === '1' || req.query.refresh === 'true')
+        return { refreshedAt: inv.refreshedAt, cluster: { ...s.ref }, targets: treeFor(s, inv).targets }
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    // The ordered plan for a selection, from the inventory as last read: what would run, in what order, and what
+    // would be refused and why. Read-only (a POST only because a selection can be long).
+    fastify.post<{ Body: { select?: unknown; approve?: unknown } }>('/preview', async (req, reply) => {
+      const select = selectionFrom(req.body?.select)
+      if (!select) return reply.status(400).send({ error: `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets` })
+      const approve = req.body?.approve ?? []
+      if (!Array.isArray(approve) || approve.length > 200 || !approve.every(a => typeof a === 'string' && APPROVAL_ID.test(a))) {
+        return reply.status(400).send({ error: 'approve must be a list of approval ids from the inventory' })
+      }
+      try {
+        const s = svc()
+        const inv = await s.inventory(false)
+        const { load, selfVmid } = treeFor(s, inv)
+        const plan = buildSelectedPlan(inv, load.policy, {
+          selection: select, approvals: approve as string[], selfVmid, remote: s.remote || undefined,
+          policyNote: load.loaded ? undefined : `${load.error ?? 'No policy file'} — runs are refused until the policy file loads.`,
+        })
+        const out = { ...plan, cluster: { ...s.ref } }
+        if (s.remote || !plan.steps.some(x => x.action === 'ceph' || x.action === 'node-reboot' || x.action === 'self')) return out
+        try { return await annotatePlanSafety(s.exec, out, await s.exec.cephPresent()) }
+        catch (e: any) { return { ...out, warnings: [...out.warnings, `Ceph safety not checked: ${e?.message ?? e}`] } }
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    fastify.post<{ Body: { mode?: string; scope?: string; approve?: unknown; select?: unknown } }>('/jobs', async (req, reply) => {
       const mode = req.body?.mode
       if (mode !== 'run' && mode !== 'dry-run') return reply.status(400).send({ error: "mode must be 'run' or 'dry-run'" })
       const scope = req.body?.scope ?? 'all'
@@ -258,8 +317,20 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       if (!Array.isArray(approve) || approve.length > 200 || !approve.every(a => typeof a === 'string' && APPROVAL_ID.test(a))) {
         return reply.status(400).send({ error: 'approve must be a list of approval ids from the inventory' })
       }
+      const select = req.body?.select === undefined ? undefined : selectionFrom(req.body.select)
+      if (select === null) return reply.status(400).send({ error: `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets` })
       const s = svc()
       if (mode === 'run' && remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
+      if (select && mode === 'run' && !reconfirmed(req)) return reply.status(403).send(RECONFIRM_CHOSEN)
+      if (select) {
+        // Refused before anything starts when nothing chosen could run (a held kernel package, unknown holds...).
+        try {
+          const inv = await s.inventory(false)
+          const { load, selfVmid } = treeFor(s, inv)
+          const pv = buildSelectedPlan(inv, load.policy, { selection: select, approvals: approve as string[], selfVmid, remote: s.remote || undefined })
+          if (!pv.steps.length) return reply.status(400).send({ error: 'Nothing chosen can be updated', refused: pv.refused ?? [] })
+        } catch (e) { return sendError(reply, e) }
+      }
       if (checker.running) {
         // A person's run takes precedence: the check stops at the next machine, keeping what it read.
         checker.abort('an Updates run was started')
@@ -267,7 +338,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
         if (checker.running) return reply.status(409).send({ error: 'The daily check is finishing the machine it is reading and stops after it. Try again in a minute.' })
       }
       try {
-        const job = await s.runner.start(mode, 'manual', req.session?.email, scope, approve as string[])
+        const job = await s.runner.start(mode, 'manual', req.session?.email, scope, approve as string[], select)
         return reply.status(201).send({ job: jobView(job, await s.store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }
     })
@@ -288,6 +359,11 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       fastify.post<{ Params: { id: string } }>(`/jobs/:id/${op}`, async (req, reply) => {
         const s = svc()
         if (op !== 'cancel' && remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
+        if (op !== 'cancel' && !reconfirmed(req)) {
+          // A run of chosen targets is confirmed and resumed with the master password re-entered, like its start.
+          const j = await s.store.getJob(req.params.id).catch(() => null)
+          if (j && Array.isArray(j.plan?.items)) return reply.status(403).send(RECONFIRM_CHOSEN)
+        }
         if (op !== 'cancel' && checker.running) return reply.status(409).send({ error: CHECK_BUSY })
         try {
           const job = await s.runner[op](req.params.id, req.session?.email)

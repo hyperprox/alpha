@@ -128,6 +128,7 @@ export const REASONS: Record<string, string> = {
   // Why that matters, not only that it is so: nothing inside a stopped guest can be read or upgraded.
   'not-running': 'stopped, so it cannot be read or upgraded; start it, then Check again to include it',
   'no-apt':      'no apt (not a Debian-family guest)',
+  'ignored':     'tagged hyperprox-ignore: never looked inside',
   'no-agent':    'no guest agent',
   'windows':     'Windows guest',
 }
@@ -136,4 +137,5 @@ export const ACTION_LABEL: Record<string, string> = {
   'preflight': 'Preflight', 'refresh': 'Refresh', 'snapshot': 'Snapshot', 'apt': 'apt upgrade', 'docker': 'Docker images',
   'check': 'Health check', 'ceph': 'Ceph packages', 'node-upgrade': 'Node upgrade', 'node-reboot': 'Node reboot',
   'kernel-cleanup': 'Kernel cleanup', 'self': 'HyperProx itself', 'app': 'App update', 'app-config': 'App config change',
+  'node-packages': 'Chosen packages', 'apt-packages': 'Chosen packages',
 }

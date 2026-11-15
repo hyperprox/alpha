@@ -988,6 +988,13 @@ such as "this node only gets `apt upgrade`" or "check these package holds" go in
 `config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
 Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled.
 
+**Choose what to update.** Every node, package, guest, compose project and app is a row in a tree,
+each with its own count and preview. Tick any mix, or press **Update this** on one row. The page shows the
+order before you confirm, asks for your master password, and runs each item on its own, so one failure
+stops only what depends on it. A node reboot is never part of an update unless you tick its row. A node
+that holds or pins its kernel never gets a kernel, a header package or `dist-upgrade` this way. See
+[docs/updates.md](docs/updates.md#choosing-what-to-update).
+
 **On a remote server or cluster** (its own Updates page, amber, with its name on every card): the
 preview is apt's own simulation of the node upgrade (`dist-upgrade` by default, as Proxmox recommends),
 showing versions, removals, kernel, firmware and Proxmox VE changes, held packages (never offered) and

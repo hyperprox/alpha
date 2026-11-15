@@ -45,7 +45,11 @@ export interface CephHealth {
 }
 
 export interface GuestRef { vmid: number; type: 'lxc' | 'qemu'; node: string; name: string }
-export interface GuestListing extends GuestRef { running: boolean; template: boolean }
+export interface GuestListing extends GuestRef {
+  running: boolean; template: boolean
+  /** Proxmox tags, lower-case. `hyperprox-ignore` keeps HyperProx out of the guest. */
+  tags?: string[]
+}
 
 export type LineSink = (line: string) => void
 
@@ -228,6 +232,7 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
         .map((r: any) => ({
           vmid: Number(r.vmid), type: r.type, node: String(r.node), name: String(r.name ?? ''),
           running: r.status === 'running', template: r.template === 1,
+          tags: String(r.tags ?? '').split(/[;, ]+/).map((t: string) => t.trim().toLowerCase()).filter(Boolean),
         }))
     },
 

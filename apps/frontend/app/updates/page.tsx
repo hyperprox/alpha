@@ -3,16 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   UpdatesInventory, UpdatesJob, UpdatesNode, UpdatesPlan, UpdatesPolicyStatus, UpdatesWsPayload, UpdatesScope,
-  UpdatesCheckStatus, UpdatesRebootPreview } from '@hyperprox/types'
+  UpdatesCheckStatus, UpdatesRebootPreview, UpdatesTargetTree } from '@hyperprox/types'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { wsBase } from '@/lib/ws'
 import { useSession } from '@/lib/session'
 import { Btn, ConfirmDialog, Empty, Notice, Panel, fmtTime } from '@/components/updates/ui'
 import { PolicyStrip } from '@/components/updates/PolicyStrip'
 import { NodesTable } from '@/components/updates/NodesTable'
-import { GuestsTable } from '@/components/updates/GuestsTable'
-import { AppsTable, appRows, offeredApprovals } from '@/components/updates/AppsTable'
+import { appRows } from '@/components/updates/AppsTable'
 import { PlanList } from '@/components/updates/PlanList'
+import { TargetTree } from '@/components/updates/TargetTree'
+import { ItemOrder } from '@/components/updates/ItemList'
+import { approvalsFor, helperSelection } from '@/lib/update-targets'
 import { JobPanel, type LogLine } from '@/components/updates/JobPanel'
 import { History } from '@/components/updates/History'
 import { SelfUpdatePanel } from '@/components/updates/SelfUpdatePanel'
@@ -70,13 +72,15 @@ export default function UpdatesPage() {
   const [notice, setNotice] = useState<{ tone: 'warn' | 'crit' | 'info'; text: string } | null>(null)
   const [reboot, setReboot] = useState<UpdatesNode | null>(null)
   const [scope, setScope] = useState<UpdatesScope>('all')
-  // App updates and config changes approved for the next run. Kept on the page only: an approval is
-  // for one run, and travels with that run's start request.
-  const [approvals, setApprovals] = useState<string[]>([])
   const [rollback, setRollback] = useState<string | null>(null)
-  // Read through a ref so a tick of a box re-reads the plan without rebuilding every loader (and the socket).
-  const approvalsRef = useRef<string[]>([])
-  approvalsRef.current = approvals
+  // Everything that can be updated, as a tree, and what is ticked. A choice lives on this page only; it travels with
+  // the run's start request, and approving one (an app's update, a guest updated without a snapshot) is ticking it.
+  const [tree, setTree] = useState<UpdatesTargetTree | null>(null)
+  const [treeErr, setTreeErr] = useState<string | null>(null)
+  const [chosen, setChosen] = useState<Set<string>>(new Set())
+  // The order the ticked rows run in, read again whenever the ticks change; and the confirmation before a run.
+  const [order, setOrder] = useState<UpdatesPlan | null>(null)
+  const [confirmRun, setConfirmRun] = useState<{ ids: string[]; plan: UpdatesPlan } | null>(null)
 
   // The socket handlers outlive any one render, so they read the active job through a ref.
   const activeRef = useRef<UpdatesJob | null>(null)
@@ -97,7 +101,6 @@ export default function UpdatesPage() {
   const loadPlan = useCallback(async () => {
     const q = new URLSearchParams()
     if (scope === 'guests') q.set('scope', 'guests')
-    if (approvalsRef.current.length) q.set('approve', approvalsRef.current.join(','))
     const qs = q.toString()
     const r = await apiJson<UpdatesPlan>('/api/updates/plan' + (qs ? `?${qs}` : ''))
     if (r.ok && r.body) { setPlan(r.body); setErr('plan', undefined) } else { setPlan(null); setErr('plan', apiError(r, 'plan')) }
@@ -106,6 +109,9 @@ export default function UpdatesPage() {
   const loadInventory = useCallback(async (fresh: boolean) => {
     const r = await apiJson<UpdatesInventory>('/api/updates/inventory' + (fresh ? '?refresh=1' : ''))
     if (r.ok && r.body) { setInv(r.body); setErr('inv', undefined) } else setErr('inv', apiError(r, 'inventory'))
+    // The tree is built from the inventory just read (the API's cache): no second round of reads.
+    const t = await apiJson<UpdatesTargetTree>('/api/updates/targets')
+    if (t.ok && t.body) { setTree(t.body); setTreeErr(null) } else setTreeErr(apiError(t, 'the update targets'))
   }, [])
 
   // Fetch one job in full. Still active: it becomes the live panel. Finished: the panel clears and the
@@ -151,15 +157,26 @@ export default function UpdatesPage() {
     return () => clearInterval(t)
   }, [check?.running, loadCheck])
 
-  useEffect(() => { if (allowed) loadPlan() }, [allowed, approvals, loadPlan])
+  useEffect(() => { if (allowed) loadPlan() }, [allowed, loadPlan])
 
-  // An approval names one version of one install; once the inventory no longer offers it, it is dropped.
+  // A ticked row the tree no longer offers (its update landed, or it can no longer be chosen) is unticked.
   useEffect(() => {
-    if (!inv) return
-    const offered = offeredApprovals(inv.guests)
-    for (const g of inv.guests) if (g.noSnapshotAckId) offered.add(g.noSnapshotAckId)
-    setApprovals(a => (a.every(id => offered.has(id)) ? a : a.filter(id => offered.has(id))))
-  }, [inv])
+    if (!tree) return
+    const ok = new Set(tree.targets.filter(t => t.selectable).map(t => t.id))
+    setChosen(c => ([...c].every(id => ok.has(id)) ? c : new Set([...c].filter(id => ok.has(id)))))
+  }, [tree])
+
+  // The order the ticked rows would run in, from the inventory as last read. Read-only; shown live under the tree.
+  const previewOf = useCallback(async (ids: string[]): Promise<{ plan?: UpdatesPlan; error?: string }> => {
+    const approve = tree ? approvalsFor(tree.targets, new Set(ids)) : []
+    const r = await apiJson<UpdatesPlan>('/api/updates/preview', 'POST', { select: ids, approve })
+    return r.ok && r.body ? { plan: r.body } : { error: apiError(r, 'the order of the run') }
+  }, [tree])
+  useEffect(() => {
+    if (!allowed || !chosen.size) { setOrder(null); return }
+    const t = setTimeout(async () => { const r = await previewOf([...chosen]); setOrder(r.plan ?? null); if (r.error) setErr('plan', r.error) }, 300)
+    return () => clearTimeout(t)
+  }, [allowed, chosen, previewOf])
 
   // Live events. After any reconnect the job is re-read, since events sent while the socket was down are gone.
   useEffect(() => {
@@ -235,9 +252,41 @@ export default function UpdatesPage() {
     setRefreshing(false)
   }
 
-  const start = async (mode: 'run' | 'dry-run') => {
+  // "Update this", "Update selected", and the old "Run updates" (now: choose everything, then the same): the order
+  // first, in a confirmation, then the run with the master password re-entered.
+  const askToRun = async (ids: string[]) => {
+    if (!ids.length) { setNotice({ tone: 'info', text: 'Nothing can be updated right now.' }); return }
     setBusy(true); setNotice(null)
-    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode, scope, approve: approvals })
+    const r = await previewOf(ids)
+    setBusy(false)
+    if (r.plan) setConfirmRun({ ids, plan: r.plan }); else setNotice({ tone: 'crit', text: r.error ?? 'Could not read the order of the run' })
+  }
+
+  const runChosen = async (given?: { ids: string[]; plan: UpdatesPlan }) => {
+    const c = given ?? confirmRun
+    if (!c) return
+    setConfirmRun(null); setBusy(true); setNotice(null)
+    const approve = tree ? approvalsFor(tree.targets, new Set(c.ids)) : []
+    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode: 'run', select: c.ids, approve })
+    setBusy(false)
+    if (!r.ok || !r.body?.job) {
+      if (askedAgain(r, () => void runChosen(c))) return
+      if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'the run') })
+      return
+    }
+    setChosen(new Set())
+    setLogs([]); setActive(r.body.job)
+  }
+
+  const runEverything = () => {
+    if (!tree) return
+    void askToRun(helperSelection(tree.targets, scope === 'guests' ? 'guests' : 'everything'))
+  }
+
+  const start = async (mode: 'run' | 'dry-run') => {
+    if (mode === 'run') return runEverything()
+    setBusy(true); setNotice(null)
+    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode, scope })
     setBusy(false)
     if (!r.ok || !r.body?.job) {
       if (askedAgain(r, () => void start(mode))) return
@@ -246,8 +295,6 @@ export default function UpdatesPage() {
     }
     const job = r.body.job
     setDetail(d => ({ ...d, [job.id]: job }))
-    // A real run has taken the approvals with it; a dry run leaves them for the run after.
-    if (mode === 'run') setApprovals([])
     if (ACTIVE.includes(job.status)) { setLogs([]); setActive(job) }
     else { setExpanded(job.id); loadJobs() }
   }
@@ -305,7 +352,6 @@ export default function UpdatesPage() {
     else setNotice({ tone: 'crit', text: apiError(r, 'the check') })
   }
 
-  const approve = (id: string, on: boolean) => setApprovals(a => (on ? (a.includes(id) ? a : [...a, id]) : a.filter(x => x !== id)))
 
   const toggleHistory = (id: string) => {
     const next = expanded === id ? null : id
@@ -404,7 +450,11 @@ export default function UpdatesPage() {
           : <NodesTable nodes={inv.nodes} canReboot={canReboot} rebootWhy={rebootWhy} onReboot={n => void openReboot(n)} />}
       </Panel>
 
-      <Panel title="Guests" tag={tag} edge={edge}>
+      <Panel title="Choose what to update" tag={tag} edge={edge} right={
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Tick any node, package, guest, compose project or app. A reboot is only ever chosen on its own row.
+        </span>
+      }>
         {guestsWith.length > 0 && (
           <div className="mb-3">
             <GlowBars label="Pending packages per guest, most first" warm
@@ -412,28 +462,21 @@ export default function UpdatesPage() {
                 .map(g => ({ label: `${g.vmid} ${g.name}`, value: g.pending.length, text: String(g.pending.length), key: String(g.vmid) }))} />
           </div>
         )}
-        {errs.inv ? <Notice tone="warn">{errs.inv}</Notice>
-          : !inv ? <Empty>Reading inventory...</Empty>
-          : inv.guests.length === 0 ? <Empty>No guests reported.</Empty>
-          : <GuestsTable guests={inv.guests} acks={approvals} onAck={remote ? approve : undefined} ackDisabled={jobActive || busy} />}
+        {treeErr ? <Notice tone="warn">{treeErr}</Notice>
+          : !tree ? <Empty>Reading inventory...</Empty>
+          : <TargetTree targets={tree.targets} clusterName={cluster.name} chosen={chosen} onChange={setChosen}
+                        onUpdate={ids => void askToRun(ids)} disabled={jobActive || busy || !policy?.loaded} />}
+        {policy && !policy.loaded && <p className="mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>Updates are disabled until the policy file loads.</p>}
       </Panel>
 
-      {inv && appRows(inv.guests).length > 0 && (
-        <Panel title="Apps" tag={tag} edge={edge} right={
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            Installed outside apt and docker, found by plug-ins. {approvals.length ? `${approvals.length} approved for the next run.` : 'Manual updates run only when approved.'}
-          </span>
-        }>
-          <AppsTable guests={inv.guests} approvals={approvals} onApprove={approve} disabled={jobActive || busy} />
-        </Panel>
-      )}
-
       {!active && (
-        <Panel title="Plan preview" tag={tag} edge={edge}>
+        <Panel title={chosen.size ? 'Order of the chosen run' : 'Plan preview'} tag={tag} edge={edge}>
           <div>
-            {errs.plan ? <Notice tone="warn">{errs.plan}</Notice>
+            {chosen.size
+              ? (order ? <ItemOrder plan={order} /> : <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Working out the order...</p>)
+              : errs.plan ? <Notice tone="warn">{errs.plan}</Notice>
               : !plan ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Building plan...</p>
-              : <PlanList plan={plan} />}
+              : <><p className="mb-2 text-xs" style={{ color: 'var(--text-muted)' }}>What &quot;Update everything&quot; would run. Tick rows above to run only those.</p><PlanList plan={plan} /></>}
           </div>
         </Panel>
       )}
@@ -480,6 +523,22 @@ export default function UpdatesPage() {
           <div className="flex justify-end gap-2">
             <Btn kind="danger" onClick={() => void doReboot()} disabled={remote && (!rebootPv || !rebootPv.standalone)}>Reboot {reboot.node}</Btn>
             <Btn onClick={() => setReboot(null)}>Cancel</Btn>
+          </div>
+        </ConfirmDialog>
+      )}
+
+      {confirmRun && (
+        <ConfirmDialog title={`Run ${confirmRun.plan.items?.length ?? 0} item${confirmRun.plan.items?.length === 1 ? '' : 's'} on ${cluster.name}?`} onClose={() => setConfirmRun(null)}>
+          <div>{tag}</div>
+          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
+            They run one after another in this order: guests before their node, Ceph before the nodes, one node at a time.
+            A failure stops only that item and what waits for it. You are asked for your master password; the plan is then
+            read again after <span className="font-mono">apt update</span>, and you confirm it once more before anything changes.
+          </p>
+          <ItemOrder plan={confirmRun.plan} />
+          <div className="flex justify-end gap-2">
+            <Btn kind="primary" onClick={() => void runChosen()} disabled={!confirmRun.plan.items?.length}>Start</Btn>
+            <Btn onClick={() => setConfirmRun(null)}>Cancel</Btn>
           </div>
         </ConfirmDialog>
       )}

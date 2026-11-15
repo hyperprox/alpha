@@ -96,6 +96,49 @@ One job runs at a time, enforced in the database, across all clusters: a job on 
 home never run together. Asking for another while one is running, awaiting confirmation or paused
 answers `409` with the id of the active job, and names its cluster when it is another one.
 
+## Choosing what to update
+
+The Updates page lists everything that can be updated as a tree: Ceph, each node (its packages one by
+one, and a reboot row when a reboot is due), and under each node its guests (their packages, their
+compose projects and their apps). Every row has its own count, its exact packages, images or versions,
+and a box. Tick any mix and press **Update selected**, or press **Update this** on one row. **Update
+everything** ticks what a run of the whole plan does and goes the same way. The select buttons tick all
+guests, all compose projects, all nodes, or only the security updates.
+
+Before anything starts you see the order it runs in. Guests come before their node, Ceph before the
+nodes, and the nodes run one at a time in policy order, with HyperProx itself last. Then you enter your
+master password again. The job does its preflight and `apt update`, shows the order once more, and waits
+for **Confirm**. Starting, confirming and resuming a chosen run all need the password re-entered within
+the last five minutes, on every cluster, so an API token can never do it.
+
+What a chosen run will not do:
+
+- **Reboot a node you did not tick.** A node upgrade never brings its reboot along. The reboot row is its
+  own choice, and goes through HA maintenance (and `noout`) as a reboot always does.
+- **Move a kernel on a node that holds or pins one.** One package at a time runs
+  `apt-get install --only-upgrade`, with `--no-remove`, after apt's own simulation. It is refused, with
+  nothing installed, when the package is held, when the policy requires it held, when it is a Ceph
+  package, or when the node holds or pins its kernel and the package is a kernel, header or kernel
+  metapackage. It is also refused when the simulation would remove a package, install a new one or move
+  any of those. A whole node that holds or pins its kernel gets `apt-get upgrade`, never `dist-upgrade`,
+  whatever its policy says, and no old kernels are cleaned off it.
+- **Touch a node whose holds and pin cannot be read**, or one whose required holds or pin are missing.
+  It is refused in the plan with the reason. The rest of the selection still runs.
+- **Touch an excluded guest, or one tagged `hyperprox-ignore`.** HyperProx does not look inside it at all.
+- **Act where a backup is running.** An item whose guest or node is being backed up is skipped, and says
+  so; choose it again once the backup has finished. The Ceph item pauses the run instead, and goes on
+  when you press Resume.
+
+Each item stands on its own. If one fails, the rest of that item stops, and so does anything that waits
+for it: a node's reboot waits for its guests and its own update. Unrelated items carry on, and the gates
+(quorum, Ceph, HA) are still checked before each node step. A Ceph step or a reboot that fails still
+pauses the run, as it always has, and a node that does not come back stops it. Progress, the result and the log are shown item by item, live and in
+the history.
+
+Compose projects come from the policy's `compose_dirs` and from `docker compose ls` inside each guest.
+A project found that way is updated only when you tick it. A guest whose policy says `docker: none` by its
+VMID is never looked at. Ticking an app approves its update for that one run.
+
 ## Remote clusters
 
 A remote server or cluster (added in the Command center) is updated from its own Updates page, which is

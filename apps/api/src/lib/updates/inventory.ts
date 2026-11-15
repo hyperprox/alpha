@@ -15,6 +15,7 @@ import { type Policy, guestPolicy, nodePolicy, nodePolicyView, effectiveUpgrade 
 import {
   GUEST_PENDING_SCRIPT, NODE_FACTS_COMMAND, guestDockerImagesScript, isCephPackage, isKernelPackage,
   parseDockerImages, parseGuestPending, parseNodeFacts, nodeSimulateCommand, parseAptSimulation, summariseNodeChanges,
+  COMPOSE_LS_SCRIPT, parseComposeLs, composeImagesScript, parseComposeImages,
   type NodeFacts,
 } from './commands'
 import { type AppEnv, readGuestApps } from './apps'
@@ -52,7 +53,15 @@ export interface InventoryOptions {
    * and every one after it are reported "not checked: <reason>" and nothing more is read.
    */
   stopCheck?: () => Promise<string | null>
+  /**
+   * Also find the compose projects running in each guest (`docker compose ls`, read-only) and read their images, so
+   * each can be chosen on its own. A guest whose policy says `docker: none` by its VMID is never looked at for this.
+   */
+  discoverCompose?: boolean
 }
+
+/** The Proxmox tag that keeps HyperProx out of a guest: it is never read or updated. */
+export const IGNORE_TAG = 'hyperprox-ignore'
 
 /** The approval that says "update this guest even though it cannot be snapshotted first". */
 export const noSnapshotAckId = (vmid: number) => `nosnap:${vmid}`
@@ -169,7 +178,31 @@ async function readApps(apps: AppEnv | undefined, exec: UpdatesExecutor, policy:
   } catch (e: any) { out.error = [out.error, `apps: ${e.message}`].filter(Boolean).join('; ') }
 }
 
-async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing, haSids: Set<string>, apps?: AppEnv): Promise<UpdatesGuest> {
+/** Compose projects (the policy's, and those Docker lists) and their images. Read-only. */
+async function readCompose(exec: UpdatesExecutor, policy: Policy, g: GuestListing, out: UpdatesGuest): Promise<void> {
+  const pol = guestPolicy(policy, g.vmid)
+  const own = policy.guests[String(g.vmid)]
+  if (own?.docker === 'none') return
+  const fromPolicy = pol.docker !== 'none' ? pol.composeDirs : []
+  const dirs = new Map<string, 'policy' | 'found'>(fromPolicy.map(d => [d, 'policy']))
+  try {
+    const ls = parseComposeLs((await exec.guestExec(g, COMPOSE_LS_SCRIPT, undefined, 60_000)).output)
+    if (ls.noDocker && !dirs.size) return
+    for (const d of ls.dirs) if (!dirs.has(d)) dirs.set(d, 'found')
+    if (ls.error) out.error = [out.error, `compose: ${ls.error}`].filter(Boolean).join('; ')
+  } catch (e: any) { out.error = [out.error, `compose: ${e.message}`].filter(Boolean).join('; ') }
+  if (!dirs.size) return
+  try {
+    const r = await exec.guestExec(g, composeImagesScript([...dirs.keys()]), undefined, 180_000)
+    const read = new Map(parseComposeImages(r.output).map(x => [x.dir, x.images]))
+    out.compose = [...dirs].map(([dir, source]) => ({
+      dir, source, images: read.get(dir) ?? [], ...(read.has(dir) ? {} : { error: 'its images could not be read' }),
+    }))
+    if (fromPolicy.length) out.dockerImages = out.compose.filter(c => c.source === 'policy').flatMap(c => c.images)
+  } catch (e: any) { out.error = [out.error, `docker images: ${e.message}`].filter(Boolean).join('; ') }
+}
+
+async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing, haSids: Set<string>, apps?: AppEnv, discover = false): Promise<UpdatesGuest> {
   const pol = guestPolicy(policy, g.vmid)
   const out: UpdatesGuest = {
     vmid: g.vmid, type: g.type, name: g.name, node: g.node, running: g.running,
@@ -178,6 +211,7 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
     snapshotCapable: false, docker: pol.docker,
   }
   if (pol.excluded) { out.unmanagedReason = 'excluded'; return out }
+  if (g.tags?.includes(IGNORE_TAG)) { out.unmanagedReason = 'ignored'; return out }
   if (!g.running)   { out.unmanagedReason = 'not-running'; return out }
 
   let config: Record<string, any> = {}
@@ -207,7 +241,8 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
     return out
   }
 
-  if (pol.docker !== 'none' && pol.composeDirs.length) {
+  if (discover) await readCompose(exec, policy, g, out)
+  else if (pol.docker !== 'none' && pol.composeDirs.length) {
     try {
       const r = await exec.guestExec(g, guestDockerImagesScript(pol.composeDirs), undefined, 180_000)
       out.dockerImages = parseDockerImages(r.output)
@@ -284,10 +319,10 @@ export async function readInventory(exec: UpdatesExecutor, policy: Policy, opts:
     const why = await stop()
     if (why) return unansweredGuest(policy, g, haSet, `not checked: ${why}`)
     if (!onlineNodes.has(g.node)) {
-      const row = await readGuest(exec, policy, { ...g, running: false }, haSet, opts.apps)
+      const row = await readGuest(exec, policy, { ...g, running: false }, haSet, opts.apps, opts.discoverCompose)
       return { ...row, error: 'its node is offline' }
     }
-    return withDeadline(readGuest(exec, policy, g, haSet, opts.apps), limit, () => unansweredGuest(policy, g, haSet, lateNote))
+    return withDeadline(readGuest(exec, policy, g, haSet, opts.apps, opts.discoverCompose), limit, () => unansweredGuest(policy, g, haSet, lateNote))
   }, opts.gap)
 
   if (opts.noSnapshotAck) {

@@ -3,9 +3,9 @@
 // one of them, and keeps its own clock so a 15-minute wait takes no time.
 // Names, addresses and ids are generic on purpose: this repo is public.
 
-import type { UpdatesExecutor, ClusterStatus, HaStatus, CephHealth, GuestListing, GuestRef, ExecResult, LineSink } from '../src/lib/updates/executor'
+import type { UpdatesExecutor, ClusterStatus, HaStatus, CephHealth, GuestListing, GuestRef, ExecResult, LineSink, BackupTask } from '../src/lib/updates/executor'
 import type { UpdatesPkgChange } from '../src/lib/updates/types'
-import { NODE_FACTS_COMMAND, GUEST_PENDING_SCRIPT, GUEST_UPGRADE_SCRIPT, GUEST_REFRESH_SCRIPT, CEPH_LAYOUT_COMMAND, CEPH_STATE_COMMAND, CEPH_OSD_DUMP_COMMAND, isKernelPackage } from '../src/lib/updates/commands'
+import { NODE_FACTS_COMMAND, GUEST_PENDING_SCRIPT, GUEST_UPGRADE_SCRIPT, GUEST_REFRESH_SCRIPT, CEPH_LAYOUT_COMMAND, CEPH_STATE_COMMAND, CEPH_OSD_DUMP_COMMAND, COMPOSE_LS_SCRIPT, isKernelPackage } from '../src/lib/updates/commands'
 import { parsePolicy, type PolicyLoad } from '../src/lib/updates/policy'
 
 export interface FakeNode {
@@ -26,6 +26,8 @@ export interface FakeNode {
   /** A Ceph start fence left on the node by a killed run: our policy-rc.d, or a saved original with none. */
   fenceLeft?: 'ours' | 'saved'
   goDownAt?: number          // still up (old boot) until then, then down for good
+  /** Versions an install on this node put down (for the read-back). */
+  installed?: Record<string, string>
 }
 
 export interface FakeGuest extends GuestListing {
@@ -33,6 +35,10 @@ export interface FakeGuest extends GuestListing {
   pending: UpdatesPkgChange[]
   noApt?: boolean
   rebootAfterUpgrade?: boolean
+  /** Compose projects Docker lists in the guest, and their images. */
+  compose?: { dir: string; images: { image: string; current: string; latest: string | null }[] }[]
+  /** Packages held inside the guest (apt-mark showhold). */
+  held?: string[]
 }
 
 export interface Call { where: string; cmd: string; t: number }
@@ -113,6 +119,8 @@ export class FakeCluster implements UpdatesExecutor {
   pgReady = true
   /** Extra OSD map flags (besides noout) that appear once an OSD has been restarted. */
   flagsAfterRestart: string[] = []
+  /** vzdump tasks (set by a test to have the executor report backups; absent, none are read). */
+  declare backupTasks?: () => Promise<BackupTask[]>
 
   constructor(init?: { nodes?: FakeNode[]; guests?: FakeGuest[] }) {
     this.nodes = init?.nodes ?? []
@@ -257,7 +265,7 @@ export class FakeCluster implements UpdatesExecutor {
     const pgStates = osdsDown ? { 'active+clean': total - 8, 'active+undersized+degraded': 8 } : this.ceph.pgStates
     return { ...this.ceph, numUpOsds: this.ceph.numUpOsds - down * 2 - osdsDown, checks, pgStates }
   }
-  async listGuests() { this.failIf('listGuests'); return this.guests.map(({ vmid, type, node, name, running, template }) => ({ vmid, type, node, name, running, template })) }
+  async listGuests() { this.failIf('listGuests'); return this.guests.map(({ vmid, type, node, name, running, template, tags }) => ({ vmid, type, node, name, running, template, ...(tags ? { tags } : {}) })) }
   async guestConfig(g: GuestRef) { this.failIf('guestConfig'); return { ...(this.guests.find(x => x.vmid === g.vmid)?.config ?? {}) } }
   async nodeAptPending(name: string) { this.failIf('nodeAptPending'); return this.n(name).pending.map(p => ({ ...p })) }
   async plexStreams(): Promise<number | null> {
@@ -292,6 +300,14 @@ export class FakeCluster implements UpdatesExecutor {
         ...(n.fenceLeft === 'ours' ? ['HP_FENCE_LEFT'] : n.fenceLeft === 'saved' ? ['HP_FENCE_SAVED'] : []),
       ].join('\n'))
     }
+    const only = /apt-get -s .*--only-upgrade install (.+) 2>&1; echo "HP_SIM_END \$\?"$/.exec(cmd)
+    if (only) {
+      // Chosen packages: what is pending among them, plus anything they would pull along (simExtra).
+      if (n.simFail) return ok([...n.simFail, 'HP_SIM_END 100'].join('\n'))
+      const names = only[1].split(' ').map(x => x.replace(/^'|'$/g, ''))
+      return ok([...n.pending.filter(p => names.includes(p.name)), ...(n.simExtra ?? [])]
+        .map(p => (p.from === null ? `Inst ${p.name} (${p.to} stable [amd64])` : `Inst ${p.name} [${p.from}] (${p.to} stable [amd64])`)).concat('HP_SIM_END 0').join('\n'))
+    }
     if (/apt-get -s .*upgrade 2>&1; echo "HP_SIM_END \$\?"$/.test(cmd)) {
       // As the real shell answers: apt's lines (stderr folded in), then the marker with apt's exit status;
       // the command as a whole exits 0 because echo ran last.
@@ -300,13 +316,21 @@ export class FakeCluster implements UpdatesExecutor {
     }
     if (/apt-get .* (dist-)?upgrade$/.test(cmd) || /--only-upgrade install/.test(cmd)) {
       const ceph = /--only-upgrade install/.test(cmd)
-      for (const p of n.pending.filter(p => ceph ? cmd.includes(`${p.name}=`) : true)) {
+      const named = (p: UpdatesPkgChange) => cmd.includes(`'${p.name}='`) || cmd.includes(`'${p.name}'`)
+      for (const p of n.pending.filter(p => ceph ? named(p) : true)) {
+        (n.installed ??= {})[p.name] = p.to
         if (isKernelPackage(p.name) && p.name.startsWith('proxmox-kernel-') && /\d/.test(p.name)) {
           n.kernelPkgs.push(p.name); n.rebootRequired = true
         }
       }
-      n.pending = ceph ? n.pending.filter(p => !cmd.includes(`${p.name}=`)) : []
+      n.pending = ceph ? n.pending.filter(p => !named(p)) : []
       return ok('upgraded')
+    }
+    if (cmd.startsWith('echo HP_VERSIONS_BEGIN')) {
+      // dpkg-query for the read-back: what an install here put down, else what was there before.
+      const names = [...cmd.matchAll(/'([a-z0-9][a-z0-9+.-]*)'/g)].map(m => m[1])
+      const rows = names.map(x => [x, n.installed?.[x] ?? n.pending.find(p => p.name === x)?.from]).filter(([, v]) => v).map(([x, v]) => `${x} ${v} ii `)
+      return ok(['HP_VERSIONS_BEGIN', ...rows, 'HP_VERSIONS_END'].join('\n'))
     }
     if (cmd === 'cat /proc/sys/kernel/random/boot_id') {
       const b = this.bootIds.get(name) ?? 0
@@ -375,6 +399,8 @@ export class FakeCluster implements UpdatesExecutor {
   async guestExec(g: GuestRef, script: string, onLine?: LineSink): Promise<ExecResult> {
     const fg = this.guests.find(x => x.vmid === g.vmid)!
     const tag = script === GUEST_PENDING_SCRIPT ? 'pending' : script === GUEST_UPGRADE_SCRIPT ? 'apt' : script === GUEST_REFRESH_SCRIPT ? 'refresh'
+      : script === COMPOSE_LS_SCRIPT ? 'compose-ls' : /HP_IMAGES_END/.test(script) ? 'compose-images'
+      : /--only-upgrade install/.test(script) ? 'apt-packages'
       : /docker compose pull/.test(script) ? 'docker' : /check answered/.test(script) ? 'check' : script === 'true' ? 'ping'
       : /^# fake:(\S+)/.exec(script)?.[1] ?? 'other'
     this.calls.push({ where: String(g.vmid), cmd: `guest:${tag}`, t: this.t })
@@ -383,9 +409,27 @@ export class FakeCluster implements UpdatesExecutor {
     if (r) return r
     if (tag === 'pending') {
       if (fg.noApt) return ok('HP_NO_APT')
-      return ok(fg.pending.map(p => `${p.name}/stable ${p.to} amd64 [upgradable from: ${p.from}]`).join('\n'))
+      return ok(fg.pending.map(p => `${p.name}/${p.security ? "stable-security" : "stable"} ${p.to} amd64 [upgradable from: ${p.from}]`).join('\n'))
     }
     if (this.scripted.has(tag)) return this.scripted.get(tag)!(script)
+    if (tag === 'compose-ls') {
+      if (!fg.compose) return ok('HP_NO_DOCKER')
+      return ok(['HP_COMPOSE_BEGIN', JSON.stringify(fg.compose.map((c, i) => ({ Name: `p${i}`, Status: 'running(1)', ConfigFiles: `${c.dir}/compose.yaml` }))), 'HP_COMPOSE_END'].join('\n'))
+    }
+    if (tag === 'compose-images') {
+      const lines: string[] = []
+      for (const m of script.matchAll(/HP_DIR (\/[^']*)'/g)) {
+        lines.push(`HP_DIR ${m[1]}`)
+        for (const i of fg.compose?.find(c => c.dir === m[1])?.images ?? []) lines.push(`HP_IMG ${i.image} ${i.current} ${i.latest ?? '-'}`)
+      }
+      return ok([...lines, 'HP_IMAGES_END'].join('\n'))
+    }
+    if (tag === 'apt-packages') {
+      const held = (fg.held ?? []).find(h => script.includes(`'${h}'`))
+      if (held) return { code: 3, output: `refusing: ${held} is held`, timedOut: false }
+      fg.pending = fg.pending.filter(p => !script.includes(`'${p.name}'`))
+      return ok('done')
+    }
     if (tag === 'apt') {
       this.concurrentGuests++
       this.maxConcurrentGuests = Math.max(this.maxConcurrentGuests, this.concurrentGuests)
