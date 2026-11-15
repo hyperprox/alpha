@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { CheckCard, CheckGroups, JobView, TalkView, UpdateCheckView, VersionTrack } from '../components/plugins/nextcloud/parts'
-import { groupChecks, healthScore, hourWords, manualUpdateSteps, pushComposeSnippet, pushNginxSnippet, regionOptions, verdictOf, type Check, type Reading } from '../components/plugins/nextcloud/logic'
+import { groupChecks, healthScore, hourWords, manualUpdateSteps, pushComposeSnippet, pushNginxSnippet, regionOptions, twoFactorWords, verdictOf, type Check, type Reading } from '../components/plugins/nextcloud/logic'
 
 const noop = () => {}
 const check = (o: Partial<Check> & Pick<Check, 'id' | 'severity' | 'remedy'>): Check => ({ category: 'system', name: o.id, description: 'words', doc: null, snoozed: null, ...o })
@@ -101,6 +101,21 @@ test('a job shows each step in words, the newest output, the result, and the rol
   assert.match(html, /Dump the database[\s\S]*failed · no space/)
   assert.match(html, /Recreate[\s\S]*waiting/)
   assert.match(html, /line two/); assert.match(html, /occ upgrade failed/); assert.match(html, /How to roll back[\s\S]*docker tag/)
+  const on = renderToStaticMarkup(<JobView job={{ ...job, maintenance: 'on' }} />)
+  assert.match(on, /Maintenance mode: ON/)
+  const running = renderToStaticMarkup(<JobView job={{ ...job, state: 'running', result: null, detached: { backupDir: '/opt/nc/hyperprox-backups' } }} />)
+  assert.match(running, /keeps going if this page closes or HyperProx restarts[\s\S]*\/opt\/nc\/hyperprox-backups\/jobs\/j1\/log/)
+})
+
+test('2FA review: the enforcement as it stands, who lacks one, admins without one, and when enforcing is not offered', () => {
+  const base = { users: [{ uid: 'alice', state: 'on' as const }, { uid: 'bob', state: 'off' as const }], excluded: [], truncated: false, providers: ['twofactor_totp'],
+    enforcement: { enforced: true, groups: ['staff'], excluded: ['guests'] }, admins: [{ uid: 'bob', state: 'off' as const }] }
+  const w = twoFactorWords(base)
+  assert.match(w.state, /enforced now for the group staff, except guests\. Enforcing again keeps that/)
+  assert.deepEqual(w.lacking, ['bob']); assert.deepEqual(w.adminsLacking, ['bob']); assert.equal(w.canEnforce, true)
+  assert.equal(twoFactorWords({ ...base, excluded: ['x y'] }).canEnforce, false, 'a user that cannot be checked')
+  assert.equal(twoFactorWords({ ...base, providers: [] }).canEnforce, false)
+  assert.equal(twoFactorWords({ ...base, enforcement: null }).canEnforce, false)
 })
 
 test('Talk: the signalling version and what it lacks, and Client Push as three parts', () => {
@@ -123,6 +138,7 @@ test('logic: health ring, verdict, hours in UTC and local, regions, snippets and
   const r = regionOptions('CA')
   assert.equal(r[0].code, 'CA'); assert.ok(r.length > 240)
   assert.match(pushComposeSnippet(reading().deployment), /image: custom-nextcloud:apache[\s\S]*notify_push[\s\S]*NEXTCLOUD_URL: http:\/\/app/)
+  assert.match(pushComposeSnippet(reading().deployment), /ports: \["127\.0\.0\.1:7867:7867"\]/, 'never all interfaces')
   assert.match(pushNginxSnippet('nc.lan'), /location \^~ \/push\/[\s\S]*proxy_pass http:\/\/nc\.lan:7867\/;[\s\S]*Upgrade/)
   assert.match(manualUpdateSteps({ kind: 'bare', bareDir: '/srv/nc' }, '34.0.6').join('\n'), /php \/srv\/nc\/updater\/updater\.phar/)
 })

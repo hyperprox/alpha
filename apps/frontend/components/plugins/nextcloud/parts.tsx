@@ -150,6 +150,8 @@ export function JobView({ job }: { job: Job }) {
         ))}
       </ol>
       {job.lines.length > 0 && <pre className={n.pre} aria-label="Output">{job.lines.slice(-14).join('\n')}</pre>}
+      {job.maintenance && <p className={job.maintenance === 'on' ? n.snapNote : n.note}>Maintenance mode: {job.maintenance === 'on' ? 'ON (people see the maintenance page)' : job.maintenance === 'off' ? 'off' : 'could not be read'}</p>}
+      {job.detached && job.state === 'running' && <p className={n.note}>It runs inside the guest, so it keeps going if this page closes or HyperProx restarts. Its log: <span className={n.mono}>{job.detached.backupDir}/jobs/{job.id}/log</span></p>}
       {job.result && <p className={n.result} data-state={job.state} role="status">{job.result}</p>}
       {job.state === 'failed' && job.rollback && <details className={n.folded} open><summary>How to roll back</summary><pre className={n.pre}>{job.rollback}</pre></details>}
     </div>

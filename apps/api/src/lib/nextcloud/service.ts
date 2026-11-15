@@ -1,10 +1,11 @@
 // =============================================================================
 //  HyperProx — Nextcloud: the service
 //
-//  Reads: one reading per instance, kept 30 seconds. occ in the guest (one
-//  round trip for every read) is the source of truth; the optional OCS login
-//  adds what only the web side knows (active users, storage, PHP and database
-//  details, and the admin page's own setup checks, which know the request).
+//  Reads: one reading per instance, kept 30 seconds (a fresh read at most every
+//  10). occ in the guest (one round trip for every read) is the source of
+//  truth; the optional OCS login adds what only the web side knows (active
+//  users, storage, PHP and database details, and the admin page's own setup
+//  checks, which know the request).
 //
 //  Actions: every one is an admin's, a signed-in person's (an API token is
 //  refused by name), audited BEFORE it runs (no audit row, no action), one at a
@@ -12,24 +13,43 @@
 //  arguments or a fixed sequence of them (lib/nextcloud/update.ts). Which
 //  actions also need the master password re-entered is fixed here (ACTIONS),
 //  not chosen by the caller: a secure action on the plain route is refused.
+//  Adding, changing and removing an instance are audited before they act too.
+//
+//  Long work is kept in the database (lib/nextcloud/jobs.ts) and registered in
+//  lib/long-jobs.ts while it runs, so deploy.sh and the in-app updater do not
+//  restart the API under it. The update itself runs detached in the guest; on
+//  startup resume() watches it again.
 // =============================================================================
 
 import crypto from 'node:crypto'
 import { hasRole } from '../roles'
+import { busyJobs as realBusyJobs, endLongJob as realEndLongJob, registerLongJob as realRegisterLongJob, type LongJob } from '../long-jobs'
 import { ACTIONS, countable, isAction, remedyFor, suggestRegion, suggestServerId, suggestWindow, type ActionId } from './checks'
-import { parseDetect, DETECT_SCRIPT, type Deployment } from './detect'
-import { OccRefusal, occBatchScript, occScript, REGIONS, SMTP_KEYS, type OccId, type OccTarget, type ReadKey, parseBatch, NC_GROUP_RE, CONTAINER_RE } from './occ'
+import { DetectAmbiguous, parseDetect, DETECT_SCRIPT, type Deployment } from './detect'
+import { OccRefusal, batch, occScript, REGIONS, SMTP_KEYS, type OccId, type OccTarget, type ReadKey, NC_GROUP_RE, CONTAINER_RE } from './occ'
 import type { NcInstanceStore } from './instances'
-import { cleanAppPassword, cleanGuest, cleanName, cleanUrl, cleanUser } from './instances'
+import { cleanAppPassword, cleanGuest, cleanName, cleanUrl, cleanUser, loginChangeProblem } from './instances'
 import {
-  compareVersions, configValue, parseActiveCalls, parseSystemConfig, parseAppList, parseAuthTokens, parseExApps, parseLog, parseServerInfo, parseSetupChecks,
-  parseStatus, parseTwoFactorState, parseUpdateCheck, parseUserList, parseUserReport, type SetupCheck,
+  configValue, parseActiveCalls, parseSystemConfig, parseAppList, parseAuthTokens, parseEnforceState, parseExApps, parseGroupMembers, parseLog,
+  parseServerInfo, parseSetupChecks, parseStatus, parseTwoFactorState, parseUpdateCheck, parseUserList, parseUserReport, type EnforceState, type SetupCheck,
 } from './parse'
 import type { OcsGet } from './ocs'
-import { HPB_STEPS, UPDATE_STEPS, backupDirOf, parseRoom, preflightScript, roomProblem, rollbackWords, runComposeUpdate, runHpbUpdate, type HpbPlan, type RunIO, type UpdatePlan } from './update'
+import {
+  HPB_STEPS, JOB_ID_RE, UPDATE_STEPS, backupDirOf, launchScript, parsePoll, parseRoom, pollScript, preflightScript, roomProblem, rollbackWords, runHpbUpdate,
+  type HpbPlan, type RunIO, type UpdatePlan,
+} from './update'
+import { MemoryJobStore, type JobStore } from './jobs'
 import { NcRefusal, type Actor, type BusyHoursLike, type CheckView, type GuestRef, type Job, type JobStep, type NcMeta, type Reading } from './types'
 
 export interface GuestRow { kind: 'lxc' | 'qemu'; vmid: number; name: string; node: string; running: boolean; ignored: boolean }
+
+export interface LongJobRegistry {
+  register(j: { id: string; owner: string; label: string; detached: boolean }): void
+  end(id: string): void
+  list(owner?: string): LongJob[]
+}
+
+export const realLongJobs: LongJobRegistry = { register: realRegisterLongJob, end: realEndLongJob, list: realBusyJobs }
 
 export interface ServiceDeps {
   store: NcInstanceStore
@@ -45,32 +65,60 @@ export interface ServiceDeps {
   backupRunning: (g: GuestRef) => Promise<boolean | null>
   /** Why this guest cannot be snapshotted (bind mounts), or null when it can or it cannot be told. */
   snapshotNote: (g: GuestRef) => Promise<string | null>
+  /** Where jobs are kept (production: the database). */
+  jobs?: JobStore
+  /** Where running long work is registered for deploy.sh and the updater (production: lib/long-jobs.ts). */
+  longJobs?: LongJobRegistry
+  /** How often a detached update is read (ms). */
+  pollMs?: number
   now?: () => number
   sleep?: (ms: number) => Promise<void>
 }
 
 const CACHE_MS = 30_000
+const FRESH_MS = 10_000
 const ACTIVE_WINDOW_S = 10 * 60
 const READ_TIMEOUT = 120_000
 const MAX_LINES = 400
+/** A detached update the guest has not answered about for this long is given up on (its marker is cleared). */
+const LOST_CONTACT_MS = 3 * 60 * 60_000
 
 const READ_KEYS: ReadKey[] = ['maintenance_window_start', 'default_phone_region', 'serverid', 'default_timezone', 'default_locale', 'default_language',
   'mail_smtpmode', 'mail_smtphost', 'mail_smtpport', 'mail_smtpsecure', 'mail_from_address', 'mail_domain', 'upgrade.disable-web', 'dbname', 'dbuser', 'overwrite.cli.url']
-const TWO_FACTOR_PROVIDERS = ['twofactor_totp', 'twofactor_webauthn', 'twofactor_nextcloud_notification', 'twofactor_email', 'twofactor_u2f', 'twofactor_gateway']
+/** Second factors a user can set up by themselves at the sign-in that enforcement forces (backup codes and the rest cannot). */
+const SETUP_PROVIDERS = ['twofactor_totp', 'twofactor_webauthn']
 
 const hpbMissing = (desc: string) => (/missing features?:\s*([A-Za-z0-9_, -]{1,300})/i.exec(desc)?.[1] ?? '').split(/[,\s]+/).filter(Boolean).slice(0, 20)
+const APP_PASSWORD_OUT = /^\s*([A-Za-z0-9]{5}(?:-[A-Za-z0-9]{5}){4}|[A-Za-z0-9]{64,128})\s*$/m
+const SERVERINFO = '/ocs/v2.php/apps/serverinfo/api/v1/info?format=json' as const
+
+export interface TwoFactorView {
+  users: Array<{ uid: string; state: 'on' | 'off' | null }>
+  /** User ids HyperProx does not pass to occ (a space, a quote): unknown, so enforcing is refused while there are any. */
+  excluded: string[]
+  truncated: boolean
+  providers: string[]
+  enforcement: EnforceState | null
+  /** Members of the admin group and whether each has a second factor. */
+  admins: Array<{ uid: string; state: 'on' | 'off' | null }>
+}
 
 export class NextcloudService {
   private cache = new Map<string, { at: number; r: Reading }>()
   private jobs = new Map<string, Job>()
   private busy = new Set<string>()
   private actionTimes = new Map<string, number[]>()
+  private resumed = false
   readonly now: () => number
   private sleep: (ms: number) => Promise<void>
+  private store: JobStore
+  private long: LongJobRegistry
 
   constructor(private d: ServiceDeps) {
     this.now = d.now ?? Date.now
     this.sleep = d.sleep ?? (ms => new Promise(r => setTimeout(r, ms)))
+    this.store = d.jobs ?? new MemoryJobStore()
+    this.long = d.longJobs ?? realLongJobs
   }
 
   get instances(): NcInstanceStore { return this.d.store }
@@ -84,6 +132,13 @@ export class NextcloudService {
   private async run(g: GuestRef, script: string, timeoutMs = READ_TIMEOUT, onData?: (c: string) => void) {
     const r = await this.d.exec(g, script, { timeoutMs, onData })
     return { code: r.timedOut ? -1 : r.code, output: r.output }
+  }
+
+  /** Run `fn` holding the per-instance (or per-guest) lock; refused while something else holds it. */
+  private async locked<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    if (this.busy.has(key)) throw new NcRefusal('busy', 'Another Nextcloud action is still running here; wait for it to finish.', 409)
+    this.busy.add(key)
+    try { return await fn() } finally { this.busy.delete(key) }
   }
 
   // ── finding it ─────────────────────────────────────────────────────────────
@@ -101,74 +156,140 @@ export class NextcloudService {
     if (!row) throw new NcRefusal('no_guest', `There is no ${g.kind === 'lxc' ? 'container' : 'VM'} ${g.vmid}.`, 404)
     if (row.ignored) throw new NcRefusal('ignored', `${row.name} has the Proxmox tag hyperprox-ignore, so HyperProx never looks inside it.`, 403)
     if (!row.running) throw new NcRefusal('not_running', `${row.name} is not running.`, 409)
+    return this.detectIn(g, row.name)
+  }
+
+  private async detectIn(g: GuestRef, name = 'the guest'): Promise<Deployment> {
     const r = await this.run(g, DETECT_SCRIPT, 90_000)
     let dep: Deployment | null
-    try { dep = parseDetect(r.output) } catch (e: any) { throw new NcRefusal('detect_failed', e?.message ?? 'The detection did not finish.', 502) }
-    if (!dep) throw new NcRefusal('not_found', `No Nextcloud was found in ${row.name}: no running container with occ, and no occ in the usual places.`, 404)
+    try { dep = parseDetect(r.output) } catch (e: any) {
+      if (e instanceof DetectAmbiguous) throw new NcRefusal('ambiguous', e.message, 409, { containers: e.names })
+      throw new NcRefusal('detect_failed', e?.message ?? 'The detection did not finish.', 502)
+    }
+    if (!dep) throw new NcRefusal('not_found', `No Nextcloud was found in ${name}: no running container with occ, and no occ in the usual places.`, 404)
     return dep
   }
 
   // ── instances ──────────────────────────────────────────────────────────────
 
+  private async testLogin(url: string, user: string, appPassword: string): Promise<void> {
+    try { if (!parseServerInfo(await this.d.ocs({ url, user, appPassword })(SERVERINFO))) throw new Error('Nextcloud answered, but not with server info (is the serverinfo app on?).') }
+    catch (e: any) { throw new NcRefusal('ocs_failed', `The web login did not work: ${e?.message ?? 'no answer'}`, 400) }
+  }
+
+  /** The id of the permanent token `user` used at or after `since` (the read just made with it), when exactly one did. */
+  private async tokenIdFor(g: GuestRef, occ: OccTarget, user: string, since: number, known: number[] = []): Promise<number | null> {
+    const b = batch(occ, [{ key: 't', id: 'auth-tokens', params: { uid: user } }])
+    const t = b.parse((await this.run(g, b.script)).output).t
+    const list = t ? parseAuthTokens(t.output).filter(k => k.type === 1 && k.id > 0) : []
+    const fresh = known.length ? list.filter(k => !known.includes(k.id)) : list.filter(k => k.lastActivity >= Math.floor(since / 1000) - 5)
+    return fresh.length === 1 ? fresh[0].id : null
+  }
+
   /**
-   * Add: the guest is checked and Nextcloud detected in it before anything is saved; an OCS login, when given, is
-   * tested with a real read first. `createAppPassword` makes HyperProx's own app password (named HyperProx) for
-   * `user` through occ instead of one being pasted.
+   * Add. Everything is checked before anything is made or saved: the name, the guest and Nextcloud in it, that it is
+   * not added already, the address and the login. Only then, with `createAppPassword`, is HyperProx's own app password
+   * made; it is revoked again if anything after that fails. The audit row is written before the instance is saved.
    */
   async add(body: Record<string, unknown>, actor: Actor): Promise<NcMeta> {
     this.mustPerson(actor)
     const name = cleanName(body.name)
     const guest = cleanGuest(body.guest)
-    const dep = await this.detect(guest, actor)
+    const create = body.createAppPassword === true
     let url: string | null = body.url ? cleanUrl(body.url) : null
     const user = body.user ? cleanUser(body.user) : null
-    let appPassword: string | null = body.appPassword ? cleanAppPassword(body.appPassword) : null
-    if (body.createAppPassword === true) {
-      if (!user) throw new NcRefusal('bad_input', 'Name the admin user HyperProx should make its app password for.')
-      await this.d.audit('nextcloud.app_password.create', `guest:${guest.kind}-${guest.vmid}`, { by: actor.email, user })
-      const r = await this.run(guest, occScript(dep.occ, 'add-app-password', { uid: user }), 60_000)
-      appPassword = (/^\s*([A-Za-z0-9]{5}(?:-[A-Za-z0-9]{5}){4}|[A-Za-z0-9]{64,128})\s*$/m.exec(r.output)?.[1]) ?? null
-      if (r.code !== 0 || !appPassword) throw new NcRefusal('app_password_failed', 'Nextcloud did not make the app password (is that user an admin?).', 502)
-      if (!url) {
-        const c = parseBatch((await this.run(guest, occBatchScript(dep.occ, [{ key: 'u', id: 'config-get', params: { key: 'overwrite.cli.url' } }]))).output)
-        const cli = configValue(c.u)
+    const pasted: string | null = body.appPassword ? cleanAppPassword(body.appPassword) : null
+    if (create && pasted) throw new NcRefusal('bad_input', 'Paste an app password or let HyperProx make one, not both.')
+    if (create && !user) throw new NcRefusal('bad_input', 'Name the admin user HyperProx should make its app password for.')
+    return this.locked(`guest:${guest.kind}-${guest.vmid}`, async () => {
+      const dep = await this.detect(guest, actor)
+      if ((await this.d.store.list()).some(m => m.guest.kind === guest.kind && m.guest.vmid === guest.vmid)) throw new NcRefusal('duplicate', 'That guest is already added.', 409)
+      if (create && !url) {
+        const b = batch(dep.occ, [{ key: 'u', id: 'config-get', params: { key: 'overwrite.cli.url' } }])
+        const cli = configValue(b.parse((await this.run(guest, b.script)).output).u)
         if (cli) { try { url = cleanUrl(cli) } catch { /* not usable */ } }
+        if (!url) throw new NcRefusal('bad_input', 'Enter the address people use for Nextcloud: HyperProx tests the app password there.')
       }
-    }
-    if ((url || user || appPassword) && !(url && user && appPassword)) throw new NcRefusal('bad_input', 'The optional web login needs all three: the address, the admin user and an app password.')
-    if (url && user && appPassword) {
-      try { if (!parseServerInfo(await this.d.ocs({ url, user, appPassword })('/ocs/v2.php/apps/serverinfo/api/v1/info?format=json'))) throw new Error('Nextcloud answered, but not with server info (is the serverinfo app on?).') }
-      catch (e: any) { throw new NcRefusal('ocs_failed', `The web login did not work: ${e?.message ?? 'no answer'}`, 400) }
-    }
-    const meta = await this.d.store.create({ name, guest, deployment: dep, url, user, appPassword })
-    await this.d.audit('nextcloud.instance.create', `nextcloud:${meta.id}`, { by: actor.email, name, guest: `${guest.kind}-${guest.vmid}`, deployment: dep.kind, ocs: !!appPassword })
-    return meta
+      if (!create && (url || user || pasted) && !(url && user && pasted)) throw new NcRefusal('bad_input', 'The optional web login needs all three: the address, the admin user and an app password.')
+
+      let appPassword = pasted
+      let tokenId: number | null = null
+      let made: { uid: string; id: number | null } | null = null
+      const revoke = async (why: string) => {
+        if (!made) return
+        if (made.id) {
+          await this.d.audit('nextcloud.app_password.revoke', `guest:${guest.kind}-${guest.vmid}`, { by: actor.email, user: made.uid, token: made.id, why }).catch(() => {})
+          await this.run(guest, occScript(dep.occ, 'delete-app-password', { uid: made.uid, id: made.id }), 60_000).catch(() => {})
+        }
+      }
+      try {
+        if (create) {
+          const b = batch(dep.occ, [{ key: 't', id: 'auth-tokens', params: { uid: user } }])
+          const t0 = b.parse((await this.run(guest, b.script)).output).t
+          const known = t0 ? parseAuthTokens(t0.output).map(k => k.id) : []
+          await this.d.audit('nextcloud.app_password.create', `guest:${guest.kind}-${guest.vmid}`, { by: actor.email, user })
+          const r = await this.run(guest, occScript(dep.occ, 'add-app-password', { uid: user }), 60_000)
+          appPassword = APP_PASSWORD_OUT.exec(r.output)?.[1] ?? null
+          if (r.code !== 0 || !appPassword) throw new NcRefusal('app_password_failed', 'Nextcloud did not make the app password (is that user an admin?).', 502)
+          made = { uid: user!, id: null }
+          made.id = tokenId = await this.tokenIdFor(guest, dep.occ, user!, this.now(), known.length ? known : [-1])
+          if (!made.id) {
+            // Without its id HyperProx could neither revoke it nor tell its activity from a person's: undo by name is not safe.
+            throw new NcRefusal('app_password_failed', 'Nextcloud made the app password, but HyperProx could not tell which token it is. Delete the "HyperProx" app password under that user\'s Security settings and try again.', 502)
+          }
+        }
+        if (url && user && appPassword) {
+          const since = this.now()
+          await this.testLogin(url, user, appPassword)
+          if (!create) tokenId = await this.tokenIdFor(guest, dep.occ, user, since).catch(() => null)
+        }
+        await this.d.audit('nextcloud.instance.create', `guest:${guest.kind}-${guest.vmid}`, { by: actor.email, name, guest: `${guest.kind}-${guest.vmid}`, deployment: dep.kind, ocs: !!appPassword })
+        return await this.d.store.create({ name, guest, deployment: dep, url, user, appPassword, tokenId })
+      } catch (e: any) {
+        await revoke(String(e?.message ?? 'the add failed').slice(0, 200))
+        throw e
+      }
+    })
   }
 
+  /**
+   * Change the name or the web login. The guard (a stored app password goes only to the origin and user it was
+   * entered for) runs before anything is sent; a test read is made only with a password given in this same request.
+   */
   async update(id: string, body: Record<string, unknown>, actor: Actor): Promise<NcMeta> {
     this.mustPerson(actor)
     const prev = await this.meta(id)
     const login = await this.d.store.login(id)
+    if (body.name !== undefined) cleanName(body.name)
     const url = body.url === undefined ? login.url : body.url === '' ? null : cleanUrl(body.url)
     const user = body.user === undefined || body.user === '' ? login.user : cleanUser(body.user)
-    const pw = body.appPassword === undefined || body.appPassword === '' ? login.appPassword : cleanAppPassword(body.appPassword)
-    // A changed login is tested before it is saved.
-    if (url && user && pw && (url !== login.url || user !== login.user || pw !== login.appPassword)) {
-      try { if (!parseServerInfo(await this.d.ocs({ url, user, appPassword: pw })('/ocs/v2.php/apps/serverinfo/api/v1/info?format=json'))) throw new Error('no server info') }
-      catch (e: any) { throw new NcRefusal('ocs_failed', `The web login did not work: ${e?.message ?? 'no answer'}`, 400) }
+    const newPw = body.appPassword === undefined || body.appPassword === '' ? null : cleanAppPassword(body.appPassword)
+    const problem = loginChangeProblem(login, { url, user, appPassword: newPw })
+    if (problem) throw new NcRefusal('bad_input', problem)
+    const work = async () => {
+      let tokenId: number | null | undefined
+      if (newPw && url && user) {
+        const since = this.now()
+        await this.testLogin(url, user, newPw)
+        tokenId = prev.deployment ? await this.tokenIdFor(prev.guest, prev.deployment.occ, user, since).catch(() => null) : null
+      }
+      const dep = body.redetect === true ? await this.detectIn(prev.guest) : undefined
+      await this.d.audit('nextcloud.instance.update', `nextcloud:${id}`, { by: actor.email, changed: Object.keys(body).filter(k => ['name', 'url', 'user', 'appPassword', 'redetect'].includes(k)).map(k => (k === 'appPassword' ? 'credential' : k)) })
+      const meta = await this.d.store.update(id, { ...body, ...(tokenId !== undefined ? { tokenId } : {}) })
+      if (dep) await this.d.store.setDeployment(id, dep)
+      this.cache.delete(id)
+      return (await this.d.store.get(id)) ?? meta
     }
-    const meta = await this.d.store.update(id, body)
-    if (body.redetect === true) await this.d.store.setDeployment(id, await this.detect(prev.guest, actor))
-    this.cache.delete(id)
-    await this.d.audit('nextcloud.instance.update', `nextcloud:${id}`, { by: actor.email, changed: Object.keys(body).filter(k => ['name', 'url', 'user', 'appPassword', 'redetect'].includes(k)).map(k => (k === 'appPassword' ? 'credential' : k)) })
-    return (await this.d.store.get(id)) ?? meta
+    return body.redetect === true ? this.locked(id, work) : work()
   }
 
   async remove(id: string, actor: Actor): Promise<void> {
     this.mustPerson(actor)
+    await this.meta(id)
+    if (this.busy.has(id)) throw new NcRefusal('busy', 'A Nextcloud action is still running here; remove it when that has finished.', 409)
+    await this.d.audit('nextcloud.instance.remove', `nextcloud:${id}`, { by: actor.email })
     await this.d.store.remove(id)
     this.cache.delete(id)
-    await this.d.audit('nextcloud.instance.remove', `nextcloud:${id}`, { by: actor.email })
   }
 
   async snooze(id: string, check: unknown, days: unknown, actor: Actor): Promise<NcMeta> {
@@ -184,19 +305,17 @@ export class NextcloudService {
 
   // ── reading ────────────────────────────────────────────────────────────────
 
-  private extraReads(dep: Deployment | null): string {
-    if (!dep || dep.occ.mode !== 'docker') return ''
-    const lines: string[] = []
-    const add = (key: string, line: string) => lines.push(`echo '@@HPX-BEGIN ${key}@@'`, `${line} 2>&1 | head -c 2000; _rc=\${PIPESTATUS[0]}`, `echo ''`, `echo "@@HPX-END ${key} $_rc@@"`)
-    if (!CONTAINER_RE.test(dep.occ.container)) return ''
-    add('php', `docker exec -u www-data '${dep.occ.container}' php -r 'echo PHP_VERSION;'`)
-    if (dep.db && CONTAINER_RE.test(dep.db.container)) add('dbv', `docker exec '${dep.db.container}' sh -c 'postgres --version 2>/dev/null || mariadbd --version 2>/dev/null || mysqld --version'`)
-    return lines.join('\n') + '\n'
+  private extraReads(dep: Deployment | null): Array<[string, string]> {
+    if (!dep || dep.occ.mode !== 'docker' || !CONTAINER_RE.test(dep.occ.container)) return []
+    const out: Array<[string, string]> = [['php', `docker exec -u www-data '${dep.occ.container}' php -r 'echo PHP_VERSION;'`]]
+    if (dep.db && CONTAINER_RE.test(dep.db.container)) out.push(['dbv', `docker exec '${dep.db.container}' sh -c 'postgres --version 2>/dev/null || mariadbd --version 2>/dev/null || mysqld --version'`])
+    return out
   }
 
   async reading(id: string, o: { fresh?: boolean } = {}): Promise<Reading> {
     const hit = this.cache.get(id)
-    if (hit && !o.fresh && this.now() - hit.at < CACHE_MS) return hit.r
+    // A fresh read is honoured at most every FRESH_MS: a page (or a person) asking again and again cannot keep the guest busy.
+    if (hit && this.now() - hit.at < (o.fresh ? FRESH_MS : CACHE_MS)) return hit.r
     const m = await this.meta(id)
     let dep = m.deployment
     const missing: string[] = []
@@ -216,13 +335,14 @@ export class NextcloudService {
       ...(login.user ? [{ key: 'adminlocale', id: 'user-locale' as const, params: { uid: login.user } }] : []),
     ]
     const ocs = login.url && login.user && login.appPassword ? this.d.ocs({ url: login.url, user: login.user, appPassword: login.appPassword }) : null
-    const [batch, info, web, quiet] = await Promise.all([
-      this.run(m.guest, occBatchScript(dep.occ, items) + this.extraReads(dep), READ_TIMEOUT),
+    const b = batch(dep.occ, items, this.extraReads(dep))
+    const [res, info, web, quiet] = await Promise.all([
+      this.run(m.guest, b.script, READ_TIMEOUT),
       ocs ? ocs('/ocs/v2.php/apps/serverinfo/api/v1/info?format=json').then(parseServerInfo, (e: any) => { missing.push(`server info (${e?.message ?? 'no answer'})`); return null }) : Promise.resolve(null),
       ocs ? ocs('/index.php/settings/setupcheck').then(parseSetupChecks, () => null) : Promise.resolve(null),
       this.d.quietHours().catch(() => null),
     ])
-    const p = parseBatch(batch.output)
+    const p = b.parse(res.output)
     const sys = p.config?.code === 0 ? parseSystemConfig(p.config.output, READ_KEYS) : {}
     const cfg = (k: ReadKey): string | null => sys[k] ?? null
     const status = p.status ? parseStatus(p.status.output) : null
@@ -292,7 +412,7 @@ export class NextcloudService {
       twoFactor: {
         enforced: twoFactorCheck ? (twoFactorCheck.severity === 'success' ? (/enforced/i.test(twoFactorCheck.description) ? true : null) : false) : null,
         checked: 0, without: null,
-        providers: TWO_FACTOR_PROVIDERS.filter(a => apps.enabled[a]),
+        providers: SETUP_PROVIDERS.filter(a => apps.enabled[a]),
       },
       log,
       server: info, serverError: null,
@@ -312,29 +432,43 @@ export class NextcloudService {
       dbVersion: info?.db.version ?? (p.dbv?.code === 0 ? (/(\d+\.\d+(?:\.\d+)?)/.exec(p.dbv.output)?.[1] ?? null) : null),
       missing,
     }
-    if (batch.code !== 0 && !status) throw new NcRefusal('unreachable', 'HyperProx could not run occ in the guest. Check that it is running and that its node has a login saved (Settings → Setup checklist).', 502)
+    if (res.code !== 0 && !status) throw new NcRefusal('unreachable', 'HyperProx could not run occ in the guest. Check that it is running and that its node has a login saved (Settings → Setup checklist).', 502)
     this.cache.set(id, { at: this.now(), r })
     return r
   }
 
-  /** Who has no second factor yet (admin; read-only, one occ call per user, up to 100 users). */
-  async twoFactorUsers(id: string, actor: Actor): Promise<{ users: Array<{ uid: string; state: 'on' | 'off' | null }>; truncated: boolean; providers: string[] }> {
+  /**
+   * Who has no second factor yet (admin; read-only, one occ call per user, up to 100 users), the enforcement as it
+   * stands, the second factors a user can set up at sign-in, and the members of the admin group.
+   */
+  async twoFactorUsers(id: string, actor: Actor): Promise<TwoFactorView> {
     this.mustAdmin(actor)
     const m = await this.meta(id)
-    const dep = await this.dep(m)
-    const lr = parseBatch((await this.run(m.guest, occBatchScript(dep.occ, [{ key: 'users', id: 'user-list' }, { key: 'apps', id: 'app-list' }]))).output)
-    const uids = lr.users ? parseUserList(lr.users.output) : []
-    const list = uids.slice(0, 100)
-    const states = list.length ? parseBatch((await this.run(m.guest, occBatchScript(dep.occ, list.map((u, i) => ({ key: `u${i}`, id: 'twofactor-state' as const, params: { uid: u } }))), 5 * 60_000)).output) : {}
+    return this.twoFactorOf(m, await this.dep(m))
+  }
+
+  private async twoFactorOf(m: NcMeta, dep: Deployment): Promise<TwoFactorView> {
+    const b = batch(dep.occ, [{ key: 'users', id: 'user-list' }, { key: 'apps', id: 'app-list' }, { key: 'state', id: 'twofactor-enforce-state' }, { key: 'groups', id: 'group-list' }])
+    const lr = b.parse((await this.run(m.guest, b.script)).output)
+    const ul = lr.users ? parseUserList(lr.users.output) : { uids: [], excluded: [], ok: false }
+    if (!ul.ok) throw new NcRefusal('unreadable', 'Nextcloud\'s user list could not be read.', 502)
+    const list = ul.uids.slice(0, 100)
+    const sb = batch(dep.occ, list.map((u, i) => ({ key: `u${i}`, id: 'twofactor-state' as const, params: { uid: u } })))
+    const states = list.length ? sb.parse((await this.run(m.guest, sb.script, 5 * 60_000)).output) : {}
     const apps = lr.apps ? parseAppList(lr.apps.output) : { enabled: {}, disabled: [] }
-    return { users: list.map((uid, i) => ({ uid, state: states[`u${i}`] ? parseTwoFactorState(states[`u${i}`].output) : null })), truncated: uids.length > list.length, providers: TWO_FACTOR_PROVIDERS.filter(a => apps.enabled[a]) }
+    const users = list.map((uid, i) => ({ uid, state: states[`u${i}`] ? parseTwoFactorState(states[`u${i}`].output) : null }))
+    const adminIds = (lr.groups ? parseGroupMembers(lr.groups.output, 'admin') : null) ?? []
+    return {
+      users, excluded: ul.excluded, truncated: ul.uids.length > list.length,
+      providers: SETUP_PROVIDERS.filter(a => apps.enabled[a]),
+      enforcement: lr.state ? parseEnforceState(lr.state.output) : null,
+      admins: adminIds.map(uid => users.find(u => u.uid === uid) ?? { uid, state: null }),
+    }
   }
 
   private async dep(m: NcMeta): Promise<Deployment> {
     if (m.deployment) return m.deployment
-    const r = await this.run(m.guest, DETECT_SCRIPT, 90_000)
-    const d = parseDetect(r.output)
-    if (!d) throw new NcRefusal('not_found', 'Nextcloud was not found in its guest.', 502)
+    const d = await this.detectIn(m.guest)
     await this.d.store.setDeployment(m.id, d)
     return d
   }
@@ -382,13 +516,36 @@ export class NextcloudService {
         handedToJob = true
         return r
       }
-      // Audit first: no row, no action.
+      // Checks that read the instance first (2FA), then the audit: no row, no action.
+      if (action === 'enforce-2fa') params.values = { ...params.values, ...(await this.enforcePlan(m, dep, body, params.values.exclude as string[])) }
       await this.d.audit(`nextcloud.action.${action}`, `nextcloud:${id}`, { by: actor.email, via: 'session', params: params.audit })
-      if (spec.long) { handedToJob = true; return this.startJob(m, action, actor, params.audit, async (io) => this.runLong(m, dep, action, io)) }
+      if (spec.long) { handedToJob = true; return await this.startJob(m, action, actor, params.audit, async (io) => this.runLong(m, dep, action, io)) }
       const msg = await this.runShort(m, dep, action, params, actor)
       this.cache.delete(id)
       return { message: msg }
     } finally { if (!handedToJob) this.busy.delete(id) }
+  }
+
+  /**
+   * Enforcing 2FA, read first: the groups it is already enforced for and left out of are kept, only second factors a
+   * user can set up at sign-in count, every user must have been read, and an admin with no second factor must be
+   * acknowledged separately (they would be asked for one at their next sign-in, like everyone else).
+   */
+  private async enforcePlan(m: NcMeta, dep: Deployment, body: Record<string, unknown>, exclude: string[]): Promise<{ groups: string[]; exclude: string[] }> {
+    const v = await this.twoFactorOf(m, dep)
+    if (!v.providers.length) throw new NcRefusal('no_provider', 'No second factor a user can set up at sign-in (TOTP or WebAuthn) is enabled, so nobody could set one up. Enable one under Apps first.', 409)
+    if (!v.enforcement) throw new NcRefusal('unreadable', 'The current two-factor enforcement could not be read, so it was not changed.', 502)
+    const unknown = [...v.excluded, ...v.users.filter(u => u.state === null).map(u => u.uid)]
+    if (unknown.length) throw new NcRefusal('unknown_users', `HyperProx could not check ${unknown.length} user${unknown.length === 1 ? '' : 's'} (${unknown.slice(0, 5).join(', ')}), so it does not enforce two-factor authentication from here.`, 409)
+    if (v.truncated) throw new NcRefusal('unknown_users', 'There are more than 100 users; HyperProx checks at most 100, so it does not enforce two-factor authentication from here.', 409)
+    const lacking = v.admins.filter(a => a.state !== 'on').map(a => a.uid)
+    if (lacking.length && body.adminWithout2fa !== true) {
+      throw new NcRefusal('admin_without_2fa', `Admin${lacking.length === 1 ? '' : 's'} ${lacking.join(', ')} ha${lacking.length === 1 ? 's' : 've'} no second factor. Set one up first, or confirm that they will be made to set one up at their next sign-in.`, 409, { admins: lacking })
+    }
+    for (const g of [...v.enforcement.groups, ...v.enforcement.excluded]) {
+      if (!NC_GROUP_RE.test(g) || /\s/.test(g)) throw new NcRefusal('bad_group', `The current enforcement names group "${g.slice(0, 40)}", which HyperProx cannot pass on; change it with occ by hand.`, 409)
+    }
+    return { groups: v.enforcement.groups, exclude: [...new Set([...v.enforcement.excluded, ...exclude])] }
   }
 
   /** Checked parameters for an action, and what of them may be audited (never a password). */
@@ -414,7 +571,7 @@ export class NextcloudService {
         if (b.acknowledged !== true) throw bad('Confirm that you read who has no second factor yet.')
         const exclude = Array.isArray(b.exclude) ? b.exclude.map(String).filter(Boolean).slice(0, 10) : []
         for (const g of exclude) if (!NC_GROUP_RE.test(g) || /\s/.test(g)) throw bad(`"${g.slice(0, 40)}" is not a group name HyperProx passes on (no spaces).`)
-        return { values: { exclude }, audit: { exclude } }
+        return { values: { exclude }, audit: { exclude, adminWithout2fa: b.adminWithout2fa === true } }
       }
       case 'notify-push-setup': {
         const url = String(b.url ?? '')
@@ -437,6 +594,7 @@ export class NextcloudService {
   }
 
   private async runShort(m: NcMeta, dep: Deployment, action: ActionId, p: { values: Record<string, unknown> }, actor: Actor): Promise<string> {
+    void actor
     const must = async (r: { code: number; output: string }, what: string) => {
       if (r.code !== 0) throw new NcRefusal('occ_failed', `${what} failed: ${r.output.trim().split('\n').slice(-3).join(' ').slice(0, 300) || 'no output'}`, 502)
       return r
@@ -465,32 +623,47 @@ export class NextcloudService {
       }
       case 'notify-push-setup': {
         const login = await this.d.store.login(m.id)
-        const own = login.url ?? configValue(parseBatch((await this.run(m.guest, occBatchScript(dep.occ, [{ key: 'u', id: 'config-get', params: { key: 'overwrite.cli.url' } }]))).output).u)
+        let own = login.url
+        if (!own) {
+          const b = batch(dep.occ, [{ key: 'u', id: 'config-get', params: { key: 'overwrite.cli.url' } }])
+          own = configValue(b.parse((await this.run(m.guest, b.script)).output).u)
+        }
+        let ownOrigin: string | null = null
+        try { ownOrigin = own ? new URL(own).origin : null } catch { ownOrigin = null }
+        if (!ownOrigin) throw new NcRefusal('bad_input', 'Nextcloud\'s own address is not set (or not a full address): add it in Settings first.', 400)
         let want: URL
-        try { want = new URL(String(p.values.url || `${own}/push`)) } catch { throw new NcRefusal('bad_input', 'The push address is not a full address.') }
-        if (!own || new URL(own).origin !== want.origin) throw new NcRefusal('bad_input', 'Client Push must be served from Nextcloud\'s own address (the same https:// host, at /push).')
+        try { want = new URL(String(p.values.url || `${own}/push`)) } catch { throw new NcRefusal('bad_input', 'The push address is not a full address.', 400) }
+        if (ownOrigin !== want.origin) throw new NcRefusal('bad_input', 'Client Push must be served from Nextcloud\'s own address (the same https:// host, at /push).', 400)
         const r = await this.occ(m, dep, 'notify-push-setup', { url: want.toString() }, 2 * 60_000)
         if (r.code !== 0) throw new NcRefusal('push_test_failed', `Nextcloud tested ${want.toString()} and it did not work yet: ${r.output.trim().split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 300)}`, 502)
         return `Client Push is set up at ${want.toString()}.`
       }
-      case 'enforce-2fa': {
-        const apps = parseAppList((await this.occ(m, dep, 'app-list')).output)
-        if (!TWO_FACTOR_PROVIDERS.some(a => apps.enabled[a])) throw new NcRefusal('no_provider', 'No second-factor app is enabled (such as TOTP), so nobody could set one up. Enable one under Apps first.', 409)
-        await must(await this.occ(m, dep, 'enforce-2fa', p.values), 'Enforcing two-factor authentication')
-        return 'Two-factor authentication is enforced. Users without one are asked to set it up at their next sign-in.'
-      }
+      case 'enforce-2fa':
+        await must(await this.occ(m, dep, 'enforce-2fa', { groups: p.values.groups, exclude: p.values.exclude }), 'Enforcing two-factor authentication')
+        return `Two-factor authentication is enforced${(p.values.groups as string[]).length ? ` for ${(p.values.groups as string[]).join(', ')}` : ''}${(p.values.exclude as string[]).length ? `, except ${(p.values.exclude as string[]).join(', ')}` : ''}. Users without one are asked to set it up at their next sign-in. Undo: Stop enforcing.`
+      case 'unenforce-2fa':
+        await must(await this.occ(m, dep, 'unenforce-2fa'), 'Turning two-factor enforcement off')
+        return 'Two-factor authentication is no longer enforced. Second factors people already set up keep working.'
       case 'smtp': {
         const v = p.values as unknown as Smtp
         let password = v.password
-        if (v.auth && password) await this.d.store.saveSmtpPassword(m.id, password)
-        if (v.auth && !password) password = await this.d.store.smtpPassword(m.id)
+        if (v.auth && !password) {
+          // A saved password is only reused for the server, port and login it was saved with.
+          const saved = await this.d.store.smtp(m.id)
+          if (saved.password && (saved.host !== v.host.toLowerCase() || saved.port !== v.port || saved.user !== v.user)) {
+            throw new NcRefusal('bad_input', 'The mail server, port or login changed, so enter the password again in the same save.')
+          }
+          password = saved.password
+        }
         if (v.auth && !password) throw new NcRefusal('bad_input', 'Enter the mail server password (it is kept in the vault).')
+        if (v.auth && v.password) await this.d.store.saveSmtp(m.id, { host: v.host, port: v.port, user: v.user, password: v.password })
         const system: Record<string, unknown> = {
           mail_smtpmode: v.mode, mail_from_address: v.fromUser, mail_domain: v.domain,
           ...(v.mode === 'smtp' ? { mail_smtphost: v.host, mail_smtpport: v.port, mail_smtpsecure: v.secure === 'ssl' ? 'ssl' : '', mail_smtpauth: v.auth, ...(v.auth ? { mail_smtpname: v.user, mail_smtppassword: password } : {}) } : {}),
         }
         for (const k of Object.keys(system)) if (!(k in SMTP_KEYS)) throw new NcRefusal('bad_input', 'Not a mail setting.')
-        // The JSON (with the password) goes to occ on stdin, inside the script's quoted heredoc: never a command line, never a log.
+        // The JSON (with the password) goes to occ on stdin (config:import /dev/stdin, inside the script's quoted
+        // heredoc): never a command line, never a log.
         const r = await this.run(m.guest, occScript(dep.occ, 'import-smtp', undefined, JSON.stringify({ system })), 60_000)
         if (r.code !== 0) throw new NcRefusal('occ_failed', 'Nextcloud did not take the mail settings.', 502)
         return `Mail goes through ${v.mode === 'smtp' ? `${v.host}:${v.port}` : 'sendmail'} as ${v.fromUser}@${v.domain}. Now send a test mail from Nextcloud (Administration → Basic settings → Send email): that clears the warning.`
@@ -524,6 +697,8 @@ export class NextcloudService {
     throw new Error('Not a background action.')
   }
 
+  // ── jobs ───────────────────────────────────────────────────────────────────
+
   private stepsFor(action: ActionId): JobStep[] {
     const s = (key: string, label: string): JobStep => ({ key, label, state: 'pending' })
     if (action === 'add-indices') return [s('indices', 'Add missing indices'), s('columns', 'Add missing columns'), s('keys', 'Add missing primary keys')]
@@ -534,16 +709,54 @@ export class NextcloudService {
     return []
   }
 
-  private startJob(m: NcMeta, action: ActionId, actor: Actor, audit: Record<string, unknown>, work: (io: RunIO) => Promise<{ message: string; rollback?: string }>, rollback: string | null = null): { message: string; jobId: string } {
-    const job: Job = {
+  private newJob(m: NcMeta, action: ActionId, actor: Actor, rollback: string | null, detached: Job['detached']): Job {
+    return {
       id: `j${crypto.randomBytes(6).toString('hex')}`, instanceId: m.id, action, by: actor.email, state: 'running',
       steps: this.stepsFor(action), lines: [], startedAt: new Date(this.now()).toISOString(), endedAt: null, result: null, rollback,
+      detached, maintenance: null,
     }
+  }
+
+  private async persist(j: Job): Promise<void> {
+    try { await this.store.save(j) } catch { /* the page still has it in memory; the next save tries again */ }
+  }
+
+  /** Keep running jobs, and per instance the 5 newest finished ones of the last day. */
+  private prune(): void {
+    const cut = this.now() - 86_400_000
+    const byInst = new Map<string, Job[]>()
+    for (const j of this.jobs.values()) if (j.state !== 'running') byInst.set(j.instanceId, [...(byInst.get(j.instanceId) ?? []), j])
+    for (const list of byInst.values()) {
+      list.sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      list.forEach((j, i) => { if (i >= 5 || Date.parse(j.endedAt ?? j.startedAt) < cut) this.jobs.delete(j.id) })
+    }
+  }
+
+  private async finishJob(j: Job, audit: Record<string, unknown>): Promise<void> {
+    j.endedAt = new Date(this.now()).toISOString()
+    for (const st of j.steps) if (st.state === 'running') st.state = 'failed'
+    // A rollback is only worth reading when the container was recreated; before that nothing changed for good.
+    const recreate = j.steps.find(st => st.key === 'recreate')
+    if (j.state === 'failed' && recreate && recreate.state === 'pending') j.rollback = null
+    if (j.state === 'done') j.rollback = j.action === 'update' ? j.rollback : null
+    await this.persist(j)
+    this.long.end(j.id)
+    this.busy.delete(j.instanceId)
+    this.cache.delete(j.instanceId)
+    await this.d.audit(`nextcloud.action.${j.action}.${j.state}`, `nextcloud:${j.instanceId}`, { by: j.by, job: j.id, ...(j.state === 'failed' ? { error: (j.result ?? '').slice(0, 200) } : {}), ...audit }).catch(() => {})
+    this.prune()
+  }
+
+  /** Work run from HyperProx itself (it ends with this process; deploy.sh waits for it while it runs). */
+  private async startJob(m: NcMeta, action: ActionId, actor: Actor, audit: Record<string, unknown>, work: (io: RunIO) => Promise<{ message: string; rollback?: string }>, rollback: string | null = null): Promise<{ message: string; jobId: string }> {
+    const job = this.newJob(m, action, actor, rollback, null)
+    this.long.register({ id: job.id, owner: 'nextcloud', label: `Nextcloud ${m.name}: ${ACTIONS[action].label.toLowerCase()}`, detached: false })
     this.jobs.set(job.id, job)
     this.busy.add(m.id)
+    await this.persist(job)
     const io: RunIO = {
       run: (script, timeoutMs) => this.run(m.guest, script, timeoutMs),
-      step: (key, state, detail) => { const st = job.steps.find(x => x.key === key); if (st) { st.state = state; if (detail !== undefined) st.detail = detail.slice(0, 300) } },
+      step: (key, state, detail) => { const st = job.steps.find(x => x.key === key); if (st) { st.state = state; if (detail !== undefined) st.detail = detail.slice(0, 300) } void this.persist(job) },
       log: line => { job.lines.push(line.slice(0, 400)); if (job.lines.length > MAX_LINES) job.lines.splice(0, job.lines.length - MAX_LINES) },
       sleep: ms => this.sleep(ms),
       now: () => this.now(),
@@ -552,34 +765,100 @@ export class NextcloudService {
       try {
         const r = await work(io)
         job.state = 'done'; job.result = r.message; if (r.rollback) job.rollback = r.rollback
-        await this.d.audit(`nextcloud.action.${action}.done`, `nextcloud:${m.id}`, { by: actor.email, job: job.id, ...audit }).catch(() => {})
       } catch (e: any) {
         job.state = 'failed'; job.result = String(e?.message ?? 'It failed.').slice(0, 600)
-        for (const st of job.steps) if (st.state === 'running') st.state = 'failed'
-        // A rollback is only worth reading when the container was recreated; before that nothing changed for good.
-        const recreate = job.steps.find(st => st.key === 'recreate')
-        if (recreate && recreate.state === 'pending') job.rollback = null
-        await this.d.audit(`nextcloud.action.${action}.failed`, `nextcloud:${m.id}`, { by: actor.email, job: job.id, error: job.result.slice(0, 200) }).catch(() => {})
-      } finally {
-        job.endedAt = new Date(this.now()).toISOString()
-        this.busy.delete(m.id)
-        this.cache.delete(m.id)
       }
+      await this.finishJob(job, audit)
     })()
     return { message: `${ACTIONS[action].label}: started.`, jobId: job.id }
   }
 
-  job(id: string, jobId: string): Job {
-    const j = this.jobs.get(jobId)
+  async job(id: string, jobId: string): Promise<Job> {
+    const j = this.jobs.get(jobId) ?? (JOB_ID_RE.test(jobId) ? await this.store.get(jobId).catch(() => null) : null)
     if (!j || j.instanceId !== id) throw new NcRefusal('no_job', 'No such job.', 404)
     return j
   }
 
-  /** The newest job of an instance, so a page that was reloaded finds a running update again. */
-  latestJob(id: string): Job | null {
+  /** The newest job of an instance, so a page that was reloaded (or an API that restarted) finds a running update again. */
+  async latestJob(id: string): Promise<Job | null> {
     let best: Job | null = null
     for (const j of this.jobs.values()) if (j.instanceId === id && (!best || j.startedAt > best.startedAt)) best = j
-    return best
+    if (best) return best
+    return this.store.latest(id).catch(() => null)
+  }
+
+  /**
+   * On startup: a detached update is watched again (and stays registered, so no deploy restarts the API under it);
+   * work that ran inside the old process is marked failed (it was cut short), and stale markers are cleared.
+   */
+  async resume(): Promise<void> {
+    if (this.resumed) return
+    this.resumed = true
+    const running = await this.store.running()
+    for (const j of running) {
+      if (j.detached) {
+        this.jobs.set(j.id, j)
+        this.busy.add(j.instanceId)
+        try { this.long.register({ id: j.id, owner: 'nextcloud', label: `Nextcloud update (${j.instanceId})`, detached: true }) } catch { /* the marker dir is gone; the watch still runs */ }
+        void this.watch(j)
+      } else {
+        j.state = 'failed'
+        j.result = 'HyperProx restarted while this ran, so it may have been cut short. Check Nextcloud, then run it again if it is still needed.'
+        j.endedAt = new Date(this.now()).toISOString()
+        await this.persist(j)
+        this.long.end(j.id)
+      }
+    }
+    for (const mk of this.long.list('nextcloud')) if (!running.some(j => j.id === mk.id && j.detached) && !this.jobs.has(mk.id)) this.long.end(mk.id)
+  }
+
+  /** Read a detached job's state file until it says it finished (or its process is gone without saying so). */
+  private async watch(j: Job): Promise<void> {
+    const d = j.detached!
+    let lastContact = this.now()
+    let noted = false
+    for (;;) {
+      await this.sleep(this.d.pollMs ?? 5_000)
+      let out: string
+      try {
+        const r = await this.run(d.guest, pollScript(d.backupDir, j.id), 60_000)
+        out = r.output
+        lastContact = this.now()
+        noted = false
+      } catch (e: any) {
+        if (!noted) { j.lines.push(`HyperProx cannot reach the guest right now (${String(e?.message ?? e).slice(0, 120)}); the update keeps running there, and HyperProx keeps trying.`); noted = true; await this.persist(j) }
+        if (this.now() - lastContact > LOST_CONTACT_MS) {
+          j.state = 'failed'
+          j.result = `HyperProx has not reached the guest for 3 hours, so it stopped watching. Check the update there: ${d.backupDir}/jobs/${j.id}/state and log. Maintenance mode was last ${j.maintenance ?? 'unknown'}.`
+          await this.finishJob(j, {})
+          return
+        }
+        continue
+      }
+      const p = parsePoll(out)
+      let changed = false
+      for (const st of j.steps) {
+        const s = p.steps[st.key]
+        if (s && (s.state !== st.state || s.detail !== (st.detail ?? ''))) { st.state = s.state; st.detail = s.detail || undefined; changed = true }
+      }
+      if (p.maint && p.maint !== j.maintenance) { j.maintenance = p.maint; changed = true }
+      if (p.lines.join('\n') !== j.lines.slice(-40).join('\n')) { j.lines = p.lines; changed = true }
+      if (p.result) {
+        j.state = p.result.state
+        j.result = p.result.message
+        if (p.dump && j.rollback) j.rollback = j.rollback.replace(/\S*nextcloud-db-\d{8}T\d{6}Z\.(?:dump|sql\.gz)/, p.dump)
+        await this.finishJob(j, {})
+        return
+      }
+      const age = this.now() - Date.parse(j.startedAt)
+      if (!p.alive && (p.started || age > 120_000)) {
+        j.state = 'failed'
+        j.result = `The update stopped without finishing (the guest restarted, or it was killed). Maintenance mode is ${p.maint === 'on' ? 'still ON: turn it off with occ maintenance:mode --off once Nextcloud is checked' : p.maint === 'off' ? 'off' : 'unknown'}. Its log: ${d.backupDir}/jobs/${j.id}/log.`
+        await this.finishJob(j, {})
+        return
+      }
+      if (changed) await this.persist(j)
+    }
   }
 
   // ── the update ─────────────────────────────────────────────────────────────
@@ -590,8 +869,7 @@ export class NextcloudService {
     backupDir: string | null; steps: string[]; snapshotNote: string | null; rollback: string | null; deployment: Deployment | null; activeUsers: number | null; activeCalls: number | null
   }> {
     this.mustAdmin(actor)
-    const m = await this.meta(id)
-    const res = await this.preflight(m)
+    const res = await this.locked(id, async () => this.preflight(await this.meta(id)))
     return {
       ok: res.problems.length === 0, problems: res.problems, warnings: res.warnings, from: res.plan?.from ?? null, to: res.plan?.offered ?? null, source: res.plan?.source ?? null,
       backupDir: res.plan?.backupDir ?? null, steps: UPDATE_STEPS.map(s => s.label), snapshotNote: res.snapshotNote, rollback: res.plan ? rollbackWords(res.plan, null) : null,
@@ -599,17 +877,25 @@ export class NextcloudService {
     }
   }
 
-  /** Users with any session or app password active in the last ten minutes, HyperProx's own app password left out. */
+  /**
+   * Users with any session or app password active in the last ten minutes. HyperProx's own app password is left out
+   * by its token id (never by its name: anyone can name a token HyperProx). Null (unknown, which blocks the update)
+   * when the list cannot be read, has a user HyperProx cannot pass to occ, or has more than 200 users.
+   */
   private async activeUsers(m: NcMeta, dep: Deployment): Promise<number | null> {
-    const lr = parseBatch((await this.run(m.guest, occBatchScript(dep.occ, [{ key: 'users', id: 'user-list' }]))).output)
-    const uids = lr.users ? parseUserList(lr.users.output) : []
-    if (!uids.length || uids.length > 200) return null
-    const t = parseBatch((await this.run(m.guest, occBatchScript(dep.occ, uids.map((u, i) => ({ key: `t${i}`, id: 'auth-tokens' as const, params: { uid: u } }))), 5 * 60_000)).output)
+    const b = batch(dep.occ, [{ key: 'users', id: 'user-list' }])
+    const lr = b.parse((await this.run(m.guest, b.script)).output)
+    const ul = lr.users ? parseUserList(lr.users.output) : { uids: [], excluded: [], ok: false }
+    if (!ul.ok || ul.excluded.length || !ul.uids.length || ul.uids.length > 200) return null
+    const own = await this.d.store.login(m.id)
+    const tb = batch(dep.occ, ul.uids.map((u, i) => ({ key: `t${i}`, id: 'auth-tokens' as const, params: { uid: u } })))
+    const t = tb.parse((await this.run(m.guest, tb.script, 5 * 60_000)).output)
     const since = Math.floor(this.now() / 1000) - ACTIVE_WINDOW_S
     let n = 0
-    for (let i = 0; i < uids.length; i++) {
+    for (let i = 0; i < ul.uids.length; i++) {
       if (!t[`t${i}`]) return null
-      if (parseAuthTokens(t[`t${i}`].output).some(k => k.lastActivity >= since && !/^HyperProx\b/i.test(k.name))) n++
+      const mine = (k: { id: number }) => own.tokenId !== null && own.user === ul.uids[i] && k.id === own.tokenId
+      if (parseAuthTokens(t[`t${i}`].output).some(k => k.lastActivity >= since && !mine(k))) n++
     }
     return n
   }
@@ -618,20 +904,20 @@ export class NextcloudService {
     const problems: string[] = []
     const warnings: string[] = []
     // Detected again: the container may have been recreated since it was added.
-    const r0 = await this.run(m.guest, DETECT_SCRIPT, 90_000)
     let dep: Deployment | null = null
-    try { dep = parseDetect(r0.output) } catch { dep = null }
-    if (!dep) return { problems: ['Nextcloud was not found in its guest.'], warnings, plan: null, dep: null, snapshotNote: null, activeUsers: null, activeCalls: null }
+    try { dep = await this.detectIn(m.guest) } catch (e: any) {
+      return { problems: [e instanceof NcRefusal ? e.message : 'Nextcloud was not found in its guest.'], warnings, plan: null, dep: null, snapshotNote: null, activeUsers: null, activeCalls: null }
+    }
     await this.d.store.setDeployment(m.id, dep)
     if (dep.kind !== 'compose' || !dep.app) {
       problems.push(dep.kind === 'bare' ? 'This is a plain install; it updates with its command-line updater (the steps are on the page).' : 'This container is not managed by Docker Compose, so HyperProx cannot recreate it safely.')
       return { problems, warnings, plan: null, dep, snapshotNote: null, activeUsers: null, activeCalls: null }
     }
-    const items: Array<{ key: string; id: OccId; params?: unknown }> = [
+    const b = batch(dep.occ, [
       { key: 'status', id: 'status' }, { key: 'update', id: 'update-check' }, { key: 'calls', id: 'active-calls' }, { key: 'apps', id: 'app-list' },
       { key: 'dbname', id: 'config-get', params: { key: 'dbname' } }, { key: 'dbuser', id: 'config-get', params: { key: 'dbuser' } },
-    ]
-    const p = parseBatch((await this.run(m.guest, occBatchScript(dep.occ, items))).output)
+    ])
+    const p = b.parse((await this.run(m.guest, b.script)).output)
     const st = p.status ? parseStatus(p.status.output) : null
     const up = p.update ? parseUpdateCheck(p.update.output) : { core: null, apps: [] }
     if (!st) problems.push('occ status did not answer.')
@@ -648,7 +934,7 @@ export class NextcloudService {
       else if (activeCalls > 0) problems.push(`${activeCalls} Talk call${activeCalls === 1 ? ' is' : 's are'} running. Update when nobody is in a call.`)
     }
     const activeUsers = await this.activeUsers(m, dep).catch(() => null)
-    if (activeUsers === null) problems.push('HyperProx could not tell who is using Nextcloud right now (it checks each user\'s sessions; with more than 200 users it cannot).')
+    if (activeUsers === null) problems.push('HyperProx could not tell who is using Nextcloud right now (it checks each user\'s sessions; it cannot with more than 200 users, or with a user id it does not pass to occ).')
     else if (activeUsers > 0) problems.push(`${activeUsers} user${activeUsers === 1 ? ' was' : 's were'} active in the last 10 minutes. Update when nobody is using it (HyperProx's own app password is not counted).`)
     const backup = await this.d.backupRunning(m.guest).catch(() => null)
     if (backup === true) problems.push('A backup of this guest is running. Update after it finishes.')
@@ -674,35 +960,50 @@ export class NextcloudService {
         } catch (e: any) { problems.push(e?.message ?? 'The preflight could not run.') }
       }
       if (plan.source === 'build') warnings.push('The image is built from a Dockerfile here, so HyperProx rebuilds it with --pull (a plain pull would change nothing).')
-      if (!/^[a-z0-9]/.test(plan.app.image) || plan.app.image.includes('@')) warnings.push('The image is referenced by digest; HyperProx cannot keep a rollback tag of it.')
+      if (plan.app.image.includes('@')) warnings.push('The image is referenced by digest; HyperProx cannot keep a rollback tag of it.')
     }
     const snapshotNote = await this.d.snapshotNote(m.guest).catch(() => null)
     return { problems, warnings, plan, dep, snapshotNote, activeUsers, activeCalls }
   }
 
+  /** The update: checked again, audited, then started detached in the guest and watched from here. */
   private async startUpdate(m: NcMeta, actor: Actor, body: Record<string, unknown>): Promise<{ message: string; jobId: string }> {
     const pre = await this.preflight(m)
     if (pre.problems.length || !pre.plan) throw new NcRefusal('preflight', pre.problems[0] ?? 'The update cannot run now.', 409, { problems: pre.problems })
     if (body.confirmBackupDir !== pre.plan.backupDir) throw new NcRefusal('confirm', 'Confirm the update from its check screen (it shows where the database dump goes).', 400)
     const plan = pre.plan
     await this.d.audit('nextcloud.action.update', `nextcloud:${m.id}`, { by: actor.email, via: 'session', from: plan.from, offered: plan.offered, source: plan.source, backupDir: plan.backupDir })
-    const rollback = rollbackWords(plan, null)
-    return this.startJob(m, 'update', actor, { from: plan.from }, async io => {
-      io.step('preflight', 'done', 'nobody active, no call, no backup running')
-      const r = await runComposeUpdate(plan, io)
-      return { message: `Nextcloud is on ${r.version}. The database dump is at ${r.dump}.${r.warnings.length ? ` ${r.warnings.join(' ')}` : ''}`, rollback: rollbackWords(plan, r.dump) }
-    }, rollback)
+    const job = this.newJob(m, 'update', actor, rollbackWords(plan, null), { guest: m.guest, backupDir: plan.backupDir })
+    // Registered before it starts: from here until it is seen to finish, no deploy restarts the API.
+    this.long.register({ id: job.id, owner: 'nextcloud', label: `Nextcloud ${m.name}: update ${plan.from} to ${plan.offered}`, detached: true })
+    this.jobs.set(job.id, job)
+    this.busy.add(m.id)
+    job.steps.find(s => s.key === 'preflight')!.state = 'done'
+    job.steps.find(s => s.key === 'preflight')!.detail = 'nobody active, no call, no backup running, room for the dump'
+    await this.persist(job)
+    let launched = false
+    try {
+      const r = await this.run(m.guest, launchScript(plan, job.id), 120_000)
+      launched = r.code === 0 && /^LAUNCHED\|(systemd|setsid)$/m.test(r.output)
+      if (!launched) job.result = `The update could not be started in the guest: ${r.output.trim().split('\n').slice(-2).join(' ').slice(0, 300)}. Nothing was changed; maintenance mode is off.`
+    } catch (e: any) {
+      job.result = `The update could not be started in the guest (${String(e?.message ?? e).slice(0, 200)}). If it did start, its state is in ${plan.backupDir}/jobs/${job.id}.`
+      // It may have started: watch it anyway rather than drop it.
+      launched = true
+    }
+    if (!launched) { job.state = 'failed'; await this.finishJob(job, {}); throw new NcRefusal('launch_failed', job.result!, 502) }
+    void this.watch(job)
+    return { message: 'Update to Nextcloud ' + plan.offered + ': started in the guest. It keeps running there if HyperProx restarts.', jobId: job.id }
   }
 
   private async startHpbUpdate(m: NcMeta, actor: Actor): Promise<{ message: string; jobId: string }> {
-    const r0 = await this.run(m.guest, DETECT_SCRIPT, 90_000)
-    let dep: Deployment | null = null
-    try { dep = parseDetect(r0.output) } catch { dep = null }
-    const s = dep?.signaling
-    if (!dep || !s) throw new NcRefusal('no_hpb', 'The Talk signalling server was not found in this guest.', 404)
+    const dep = await this.detectIn(m.guest)
+    const s = dep.signaling
+    if (!s) throw new NcRefusal('no_hpb', 'The Talk signalling server was not found in this guest.', 404)
     await this.d.store.setDeployment(m.id, dep)
     if (!s.service || !s.workdir || !s.configFile || !s.project) throw new NcRefusal('not_compose', 'The signalling server is not managed by Docker Compose, so HyperProx cannot recreate it safely.', 409)
-    const calls = parseBatch((await this.run(m.guest, occBatchScript(dep.occ, [{ key: 'calls', id: 'active-calls' }]))).output).calls
+    const b = batch(dep.occ, [{ key: 'calls', id: 'active-calls' }])
+    const calls = b.parse((await this.run(m.guest, b.script)).output).calls
     const n = calls && calls.code === 0 ? parseActiveCalls(calls.output) : null
     if (n === null) throw new NcRefusal('preflight', 'HyperProx could not tell whether a Talk call is running, so it did not touch the signalling server.', 409)
     if (n > 0) throw new NcRefusal('preflight', `${n} Talk call${n === 1 ? ' is' : 's are'} running. Update the signalling server when nobody is in a call.`, 409)

@@ -34,13 +34,27 @@ function fail(reply: FastifyReply, e: any) {
   throw e
 }
 
-/** Below admin: the health, without log text, user names, paths or container names. */
+/** Paths, container names and image names out of a text a viewer reads. */
+export function redactFor(text: string, r: Reading): string {
+  const d = r.deployment
+  const known = [d?.app?.container, d?.app?.image, d?.app?.workdir, d?.app?.configFile, d?.db?.container, d?.db?.image, d?.signaling?.container, d?.signaling?.image, d?.notifyPush?.container, d?.bareDir]
+    .filter((x): x is string => !!x && x.length > 2).sort((a, b) => b.length - a.length)
+  let out = text
+  for (const k of known) out = out.split(k).join('[hidden]')
+  return out.replace(/(?:\/[A-Za-z0-9._@+-]+){2,}\/?/g, '[path]')
+}
+
+/** Below admin: the health, without log text, user names, paths, container or image names, or the confirm texts. */
 export function viewerReading(r: Reading): Partial<Reading> {
   return {
     fetchedAt: r.fetchedAt, status: r.status, update: r.update, checksFrom: r.checksFrom, counts: r.counts, background: r.background,
-    checks: r.checks.map(c => ({ ...c, remedy: c.remedy.kind === 'fix' ? { ...c.remedy, params: undefined } : c.remedy })),
+    checks: r.checks.map(c => ({
+      ...c, description: redactFor(c.description, r),
+      remedy: c.remedy.kind === 'fix' ? { ...c.remedy, params: undefined, confirm: '', note: c.remedy.note ? redactFor(c.remedy.note, r) : undefined }
+        : c.remedy.kind === 'guided' ? { ...c.remedy, why: redactFor(c.remedy.why, r) } : c.remedy,
+    })),
     users: r.users, apps: r.apps, php: r.php, dbVersion: r.dbVersion, missing: r.missing, suggest: r.suggest, config: { ...r.config, mail: { ...r.config.mail, host: null, from: null } },
-    talk: { ...r.talk, hpb: r.talk.hpb ? { ...r.talk.hpb, container: null } : null },
+    talk: { ...r.talk, hpb: r.talk.hpb ? { ...r.talk.hpb, container: null, image: null } : null, push: { ...r.talk.push, endpoint: r.talk.push.endpoint ? '[set]' : null } },
     server: r.server ? { ...r.server, activeUsers: r.server.activeUsers } : null,
     twoFactor: { ...r.twoFactor, without: null },
     log: null, deployment: r.deployment ? ({ kind: r.deployment.kind } as any) : null,
@@ -51,6 +65,8 @@ type P = { Params: { iid: string } }
 
 export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
   const svc = () => nextcloudService((fastify as any).prisma)
+  // Created now (not at the first request), so a detached update from before a restart is watched again at once.
+  if ((fastify as any).prisma) svc()
 
   // Refusals the gate makes (role, re-confirmation, token) never reach a handler: record those too.
   fastify.addHook('onResponse', async (req, reply) => {
@@ -94,8 +110,9 @@ export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
   // The whole reading. One that cannot be read is a normal state: 200 with ok:false and the reason.
   fastify.get<P & { Querystring: { fresh?: string } }>('/instances/:iid/reading', async (req, reply) => {
     try {
-      const r = await svc().reading(req.params.iid, { fresh: req.query.fresh === '1' })
-      return { success: true, data: { ok: true, reading: isAdmin(req) ? r : viewerReading(r), job: isAdmin(req) ? svc().latestJob(req.params.iid) : null } }
+      // A fresh read (it runs occ in the guest again) is an admin's, and throttled by the service.
+      const r = await svc().reading(req.params.iid, { fresh: req.query.fresh === '1' && isAdmin(req) })
+      return { success: true, data: { ok: true, reading: isAdmin(req) ? r : viewerReading(r), job: isAdmin(req) ? await svc().latestJob(req.params.iid) : null } }
     } catch (e: any) {
       if (e instanceof NcRefusal && e.status === 404 && e.code === 'no_instance') return fail(reply, e)
       return { success: true, data: { ok: false, code: e?.code ?? null, error: e instanceof NcRefusal || e?.name === 'TransportError' ? e.message : 'Nextcloud could not be read.' } }
@@ -123,6 +140,6 @@ export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   fastify.get<P & { Params: { jobId: string } }>('/instances/:iid/jobs/:jobId', async (req, reply) => {
-    try { return { success: true, data: svc().job(req.params.iid, req.params.jobId) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().job(req.params.iid, req.params.jobId) } } catch (e) { return fail(reply, e) }
   })
 }

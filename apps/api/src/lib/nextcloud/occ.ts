@@ -69,7 +69,8 @@ export const SMTP_KEYS = {
 
 /**
  * The allow-list. `args` builds the occ arguments from checked values; `writes` marks a command that changes the
- * instance (the service audits it before it runs and refuses it to anyone below admin).
+ * instance (the service audits it before it runs and refuses it to anyone below admin). Options come first, then
+ * `--`, then the positional values, so no value can ever be read as an option.
  */
 export const OCC = {
   // ── reads ──
@@ -79,22 +80,25 @@ export const OCC = {
   'app-list':          { writes: false, args: () => ['app:list', '--output=json'] },
   'user-report':       { writes: false, args: () => ['user:report'] },
   'user-list':         { writes: false, args: () => ['user:list', '--output=json', '--limit=500'] },
-  'log-tail':          { writes: false, args: () => ['log:tail', '--raw', '25'] },
+  'group-list':        { writes: false, args: () => ['group:list', '--output=json'] },
+  'log-tail':          { writes: false, args: () => ['log:tail', '--raw', '--', '25'] },
   /** Nextcloud redacts every sensitive value itself (passwords, secrets, salts); the service keeps only READ_KEYS. */
-  'config-list':       { writes: false, args: () => ['config:list', 'system', '--output=json'] },
+  'config-list':       { writes: false, args: () => ['config:list', '--output=json', '--', 'system'] },
   'active-calls':      { writes: false, args: () => ['talk:active-calls', '--output=json'] },
   'appapi-list':       { writes: false, args: () => ['app_api:app:list'] },
-  'twofactor-state':   { writes: false, args: (p: { uid: string }) => ['twofactorauth:state', uid(p.uid)] },
-  'auth-tokens':       { writes: false, args: (p: { uid: string }) => ['user:auth-tokens:list', '--output=json', uid(p.uid)] },
-  'user-locale':       { writes: false, args: (p: { uid: string }) => ['user:setting', uid(p.uid), 'core', 'locale'] },
-  'config-get':        { writes: false, args: (p: { key: ReadKey }) => ['config:system:get', readKey(p.key)] },
-  'bg-mode':           { writes: false, args: () => ['config:app:get', 'core', 'backgroundjobs_mode'] },
-  'bg-lastcron':       { writes: false, args: () => ['config:app:get', 'core', 'lastcron'] },
-  'push-endpoint':     { writes: false, args: () => ['config:app:get', 'notify_push', 'base_endpoint'] },
+  /** Without --on or --off, twofactorauth:enforce only prints the current state. */
+  'twofactor-enforce-state': { writes: false, args: () => ['twofactorauth:enforce'] },
+  'twofactor-state':   { writes: false, args: (p: { uid: string }) => ['twofactorauth:state', '--', uid(p.uid)] },
+  'auth-tokens':       { writes: false, args: (p: { uid: string }) => ['user:auth-tokens:list', '--output=json', '--', uid(p.uid)] },
+  'user-locale':       { writes: false, args: (p: { uid: string }) => ['user:setting', '--', uid(p.uid), 'core', 'locale'] },
+  'config-get':        { writes: false, args: (p: { key: ReadKey }) => ['config:system:get', '--', readKey(p.key)] },
+  'bg-mode':           { writes: false, args: () => ['config:app:get', '--', 'core', 'backgroundjobs_mode'] },
+  'bg-lastcron':       { writes: false, args: () => ['config:app:get', '--', 'core', 'lastcron'] },
+  'push-endpoint':     { writes: false, args: () => ['config:app:get', '--', 'notify_push', 'base_endpoint'] },
   // ── fixes ──
-  'set-maintenance-window': { writes: true, args: (p: { hour: number }) => ['config:system:set', 'maintenance_window_start', '--type=integer', `--value=${intIn(p.hour, 0, 23, 'The hour')}`] },
-  'set-phone-region':  { writes: true, args: (p: { region: string }) => ['config:system:set', 'default_phone_region', `--value=${region(p.region)}`] },
-  'set-server-id':     { writes: true, args: (p: { id: number }) => ['config:system:set', 'serverid', '--type=integer', `--value=${intIn(p.id, 0, 1023, 'The server id')}`] },
+  'set-maintenance-window': { writes: true, args: (p: { hour: number }) => ['config:system:set', '--type=integer', `--value=${intIn(p.hour, 0, 23, 'The hour')}`, '--', 'maintenance_window_start'] },
+  'set-phone-region':  { writes: true, args: (p: { region: string }) => ['config:system:set', `--value=${region(p.region)}`, '--', 'default_phone_region'] },
+  'set-server-id':     { writes: true, args: (p: { id: number }) => ['config:system:set', '--type=integer', `--value=${intIn(p.id, 0, 1023, 'The server id')}`, '--', 'serverid'] },
   'add-indices':       { writes: true, args: () => ['db:add-missing-indices'] },
   'add-columns':       { writes: true, args: () => ['db:add-missing-columns'] },
   'add-primary-keys':  { writes: true, args: () => ['db:add-missing-primary-keys'] },
@@ -102,16 +106,21 @@ export const OCC = {
   'maintenance-on':    { writes: true, args: () => ['maintenance:mode', '--on'] },
   'maintenance-off':   { writes: true, args: () => ['maintenance:mode', '--off'] },
   'upgrade':           { writes: true, args: () => ['upgrade'] },
-  'disable-app-api':   { writes: true, args: () => ['app:disable', 'app_api'] },
-  'install-notify-push': { writes: true, args: () => ['app:install', 'notify_push'] },
-  'enable-notify-push':  { writes: true, args: () => ['app:enable', 'notify_push'] },
-  'notify-push-setup': { writes: true, args: (p: { url: string }) => ['notify_push:setup', pushUrl(p.url)] },
-  'enforce-2fa':       { writes: true, args: (p: { exclude?: string[] }) => ['twofactorauth:enforce', '--on', ...(p.exclude ?? []).map(g => `--exclude=${group(g)}`)] },
+  'disable-app-api':   { writes: true, args: () => ['app:disable', '--', 'app_api'] },
+  'install-notify-push': { writes: true, args: () => ['app:install', '--', 'notify_push'] },
+  'enable-notify-push':  { writes: true, args: () => ['app:enable', '--', 'notify_push'] },
+  'notify-push-setup': { writes: true, args: (p: { url: string }) => ['notify_push:setup', '--', pushUrl(p.url)] },
+  /** The groups it is enforced for and the groups left out are passed as they are: enforcing again replaces both. */
+  'enforce-2fa':       { writes: true, args: (p: { groups?: string[]; exclude?: string[] }) => ['twofactorauth:enforce', '--on', ...(p.groups ?? []).map(g => `--group=${group(g)}`), ...(p.exclude ?? []).map(g => `--exclude=${group(g)}`)] },
+  /** The undo of enforce-2fa. */
+  'unenforce-2fa':     { writes: true, args: () => ['twofactorauth:enforce', '--off'] },
   'update-apps':       { writes: true, args: () => ['app:update', '--all'] },
-  /** Setup only: HyperProx's own app password for this admin, named HyperProx so its activity is not counted as a person's. */
-  'add-app-password':  { writes: true, args: (p: { uid: string }) => ['user:auth-tokens:add', '--name=HyperProx', uid(p.uid)] },
+  /** Setup only: HyperProx's own app password for this admin, named HyperProx. */
+  'add-app-password':  { writes: true, args: (p: { uid: string }) => ['user:auth-tokens:add', '--name=HyperProx', '--', uid(p.uid)] },
+  /** Setup only: revoke the app password HyperProx just made, when the add failed after it. */
+  'delete-app-password': { writes: true, args: (p: { uid: string; id: number }) => ['user:auth-tokens:delete', '--', uid(p.uid), String(intIn(p.id, 1, 2 ** 53, 'The token id'))] },
   /** Reads JSON from stdin (the script's heredoc); the service builds that JSON from SMTP_KEYS only. */
-  'import-smtp':       { writes: true, args: () => ['config:import'] },
+  'import-smtp':       { writes: true, args: () => ['config:import', '--', '/dev/stdin'] },
 } as const
 
 export type OccId = keyof typeof OCC
@@ -166,10 +175,13 @@ export function occArgs<K extends OccId>(id: K, params?: unknown): string[] {
   return argv
 }
 
-/** The shell line that runs occ with these (already checked) arguments. `stdin` adds -i (docker) for a heredoc. */
+/**
+ * The shell line that runs occ with these (already checked) arguments. --no-interaction goes right after the command
+ * name, before any `--`. `stdin` adds -i (docker) for a heredoc.
+ */
 export function occLine(target: OccTarget, argv: string[], stdin = false): string {
   const t = checkTarget(target)
-  const args = [...argv, '--no-interaction'].map(q).join(' ')
+  const args = [argv[0], '--no-interaction', ...argv.slice(1)].map(q).join(' ')
   if (t.mode === 'docker') return `docker exec${stdin ? ' -i' : ''} -u www-data ${q(t.container)} php occ ${args}`
   const user = q(t.user)
   const path = q(t.occPath)
@@ -193,25 +205,50 @@ export function occScript<K extends OccId>(target: OccTarget, id: K, params?: un
   return `set -o pipefail\n${occLine(target, argv, true)} <<'${d}'\n${stdin}\n${d}\n`
 }
 
-/** Several reads in one round trip, each wrapped in markers that parseBatch() splits again. Reads only. */
-export function occBatchScript(target: OccTarget, items: Array<{ key: string; id: OccId; params?: unknown }>): string {
+export const NONCE_RE = /^[a-z0-9]{12,32}$/
+
+/** A fresh batch marker: an answer cannot forge one it never saw. */
+export function newNonce(): string {
+  return Array.from({ length: 16 }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]).join('')
+}
+
+/** One part of a batch around any shell line (the line is the caller's, fixed and already checked). */
+export function batchPart(nonce: string, key: string, line: string): string[] {
+  if (!NONCE_RE.test(nonce)) throw new OccRefusal('Bad batch marker.')
+  if (!/^[a-z0-9:_-]{1,60}$/.test(key)) throw new OccRefusal('Bad batch key.')
+  return [`echo '@@HPX-${nonce}-BEGIN ${key}@@'`, `${line} 2>&1 | head -c 2000000; _rc=\${PIPESTATUS[0]}`, `echo ''`, `echo "@@HPX-${nonce}-END ${key} $_rc@@"`]
+}
+
+/** Several reads in one round trip, each wrapped in this batch's own markers, which parseBatch() splits again. Reads only. */
+export function occBatchScript(target: OccTarget, items: Array<{ key: string; id: OccId; params?: unknown }>, nonce: string): string {
   const lines = ['set +e']
   for (const it of items) {
     const spec = (OCC as any)[it.id]
     if (!spec || spec.writes) throw new OccRefusal('Only reads may be batched.')
-    if (!/^[a-z0-9:_-]{1,60}$/.test(it.key)) throw new OccRefusal('Bad batch key.')
-    lines.push(`echo '@@HPX-BEGIN ${it.key}@@'`, `${occLine(target, occArgs(it.id, it.params))} 2>&1 | head -c 2000000; _rc=\${PIPESTATUS[0]}`, `echo ''`, `echo "@@HPX-END ${it.key} $_rc@@"`)
+    lines.push(...batchPart(nonce, it.key, occLine(target, occArgs(it.id, it.params))))
   }
   return lines.join('\n') + '\n'
 }
 
 export interface BatchPart { output: string; code: number }
 
-/** Split a batch's output back into its parts. A part whose end marker is missing is left out. */
-export function parseBatch(out: string): Record<string, BatchPart> {
+/**
+ * Split a batch's output back into its parts. Markers count only at the start of a line and with this batch's
+ * nonce, so output that merely contains a marker-like line cannot end a part early or forge one. A part whose
+ * end marker is missing is left out.
+ */
+export function parseBatch(out: string, nonce: string): Record<string, BatchPart> {
   const res: Record<string, BatchPart> = {}
-  const re = /@@HPX-BEGIN ([a-z0-9:_-]+)@@\n([\s\S]*?)\n?@@HPX-END \1 (-?\d+)@@/g
+  if (!NONCE_RE.test(nonce)) return res
+  const re = new RegExp(`^@@HPX-${nonce}-BEGIN ([a-z0-9:_-]+)@@\\n([\\s\\S]*?)\\n?^@@HPX-${nonce}-END \\1 (-?\\d+)@@$`, 'gm')
   let m: RegExpExecArray | null
   while ((m = re.exec(out))) res[m[1]] = { output: m[2].replace(/\n$/, ''), code: Number(m[3]) }
   return res
+}
+
+/** A batch with its own fresh marker: the script, and the parser for its answer. */
+export function batch(target: OccTarget, items: Array<{ key: string; id: OccId; params?: unknown }>, extra: Array<[string, string]> = []): { script: string; parse: (out: string) => Record<string, BatchPart> } {
+  const nonce = newNonce()
+  const lines = extra.flatMap(([k, l]) => batchPart(nonce, k, l))
+  return { script: occBatchScript(target, items, nonce) + (lines.length ? lines.join('\n') + '\n' : ''), parse: out => parseBatch(out, nonce) }
 }

@@ -9,7 +9,7 @@ export type Severity = 'error' | 'warning' | 'info' | 'success'
 
 export type ActionId =
   | 'maintenance-window' | 'phone-region' | 'server-id' | 'disable-app-api' | 'install-notify-push' | 'notify-push-setup'
-  | 'add-indices' | 'mimetype-repair' | 'enforce-2fa' | 'smtp' | 'update-apps' | 'update' | 'hpb-update'
+  | 'add-indices' | 'mimetype-repair' | 'enforce-2fa' | 'unenforce-2fa' | 'smtp' | 'update-apps' | 'update' | 'hpb-update'
 export type FlowId = 'smtp' | 'enforce-2fa' | 'client-push' | 'log' | 'cron' | 'app-api-daemon' | 'hpb-manual' | 'update-manual'
 
 export type Remedy =
@@ -57,7 +57,14 @@ export interface Reading {
 }
 
 export interface JobStep { key: string; label: string; state: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; detail?: string }
-export interface Job { id: string; action: ActionId; state: 'running' | 'done' | 'failed'; steps: JobStep[]; lines: string[]; startedAt: string; endedAt: string | null; result: string | null; rollback: string | null; by: string }
+export interface Job { id: string; action: ActionId; state: 'running' | 'done' | 'failed'; steps: JobStep[]; lines: string[]; startedAt: string; endedAt: string | null; result: string | null; rollback: string | null; by: string
+  detached?: { backupDir: string } | null; maintenance?: 'on' | 'off' | 'unknown' | null }
+
+export interface TwoFactorView {
+  users: Array<{ uid: string; state: 'on' | 'off' | null }>; excluded: string[]; truncated: boolean; providers: string[]
+  enforcement: { enforced: boolean; groups: string[]; excluded: string[] } | null
+  admins: Array<{ uid: string; state: 'on' | 'off' | null }>
+}
 
 export interface UpdatePreview {
   ok: boolean; problems: string[]; warnings: string[]; from: string | null; to: string | null; source: 'build' | 'pull' | null
@@ -149,7 +156,9 @@ export function pushComposeSnippet(d: Deployment | null): string {
     `      NEXTCLOUD_URL: http://${app}`,
     '    volumes:',
     '      - nextcloud:/var/www/html:ro   # the same volume the app service mounts at /var/www/html',
-    '    ports: ["7867:7867"]',
+    '    # Only this machine reaches it: point the /push location at 127.0.0.1:7867. If the reverse proxy runs on',
+    '    # another machine, put this guest\'s address on the proxy\'s network in place of 127.0.0.1 (never all interfaces).',
+    '    ports: ["127.0.0.1:7867:7867"]',
   ].join('\n')
 }
 
@@ -219,3 +228,18 @@ export function bytesWords(b: number | null): string {
 }
 
 export const jobDone = (j: Job | null) => !!j && j.state !== 'running'
+
+/** The 2FA review in words: who lacks one, who could not be checked, which admins lack one, and whether enforcing is allowed. */
+export function twoFactorWords(v: TwoFactorView | null): { state: string; without: string; lacking: string[]; unknown: string[]; adminsLacking: string[]; canEnforce: boolean } {
+  if (!v) return { state: '', without: '', lacking: [], unknown: [], adminsLacking: [], canEnforce: false }
+  const e = v.enforcement
+  const state = !e ? 'The current enforcement could not be read.'
+    : !e.enforced ? 'Two-factor authentication is not enforced now.'
+    : `It is enforced now for ${e.groups.length ? `the group${e.groups.length === 1 ? '' : 's'} ${e.groups.join(', ')}` : 'everyone'}${e.excluded.length ? `, except ${e.excluded.join(', ')}` : ''}. Enforcing again keeps that.`
+  const lacking = v.users.filter(u => u.state === 'off').map(u => u.uid)
+  const unknown = [...v.excluded, ...v.users.filter(u => u.state === null).map(u => u.uid)]
+  const adminsLacking = v.admins.filter(a => a.state !== 'on').map(a => a.uid)
+  const without = lacking.length === 0 ? 'Everyone checked already has a second factor.'
+    : `${lacking.length} of ${v.users.length} user${v.users.length === 1 ? ' has' : 's have'} no second factor yet. Once enforced, they must set one up at their next sign-in before they can use anything (apps and sync clients with an app password keep working).`
+  return { state, without, lacking, unknown, adminsLacking, canEnforce: !!e && v.providers.length > 0 && !unknown.length && !v.truncated }
+}

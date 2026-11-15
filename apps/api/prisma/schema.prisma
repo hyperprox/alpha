@@ -694,3 +694,20 @@ model PlacementMove {
   // One move in flight at a time: a partial unique index in the migration (status running or stuck), which Prisma
   // cannot express here.
 }
+
+/// A long plug-in job (a Nextcloud update, a database repair): kept so a page finds it again after the API
+/// restarts, and so detached work in a guest is watched again on startup (lib/nextcloud/jobs.ts).
+model PluginJob {
+  id         String    @id
+  plugin     String
+  instanceId String
+  action     String
+  state      String
+  data       Json      @default("{}")
+  startedAt  DateTime  @default(now())
+  endedAt    DateTime?
+  updatedAt  DateTime  @updatedAt
+
+  @@index([plugin, instanceId])
+  @@index([state])
+}

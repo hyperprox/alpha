@@ -111,12 +111,40 @@ export function parseUserReport(raw: string): UserReport {
   return { total: n('total users'), active: n('active users'), disabled: n('disabled users') }
 }
 
-/** occ user:list --output=json: { uid: display name }. The ids HyperProx may pass back to occ. */
-export function parseUserList(raw: string): string[] {
+/**
+ * occ user:list --output=json: { uid: display name }. `uids` are the ids HyperProx may pass back to occ; `excluded`
+ * are the ones it will not (a space, a quote): they are shown, and count as unknown wherever every user must be
+ * checked (who is online before an update, who has a second factor before enforcing one).
+ */
+export function parseUserList(raw: string): { uids: string[]; excluded: string[]; ok: boolean } {
   try {
     const j = JSON.parse(/\{[\s\S]*\}/.exec(raw)?.[0] ?? '')
-    return Object.keys(j ?? {}).filter(u => /^[A-Za-z0-9_.@-]{1,64}$/.test(u) && !u.includes('..')).slice(0, 500)
-  } catch { return [] }
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return { uids: [], excluded: [], ok: false }
+    const all = Object.keys(j).slice(0, 1000)
+    const good = (u: string) => /^[A-Za-z0-9_.@-]{1,64}$/.test(u) && !u.includes('..')
+    return { uids: all.filter(good), excluded: all.filter(u => !good(u)).map(u => str(u, 80)), ok: true }
+  } catch { return { uids: [], excluded: [], ok: false } }
+}
+
+/** occ group:list --output=json: { group: [members] }. Only the members of one group. */
+export function parseGroupMembers(raw: string, group: string): string[] | null {
+  try {
+    const j = JSON.parse(/\{[\s\S]*\}/.exec(raw)?.[0] ?? '')
+    const m = j?.[group]
+    return Array.isArray(m) ? m.filter((u: unknown): u is string => typeof u === 'string').map(u => str(u, 80)).slice(0, 500) : null
+  } catch { return null }
+}
+
+export interface EnforceState { enforced: boolean; groups: string[]; excluded: string[] }
+
+/** twofactorauth:enforce (no options): "...enforced for all users", "...for members of the group(s) a, b, except members of c". */
+export function parseEnforceState(raw: string): EnforceState | null {
+  const line = raw.split('\n').find(l => /Two-factor authentication is/.test(l))?.trim() ?? ''
+  if (/is not enforced/.test(line)) return { enforced: false, groups: [], excluded: [] }
+  const m = /is enforced for (all users|members of the group\(s\) (.+?))(?:, except members of (.+))?$/.exec(line)
+  if (!m) return null
+  const list = (v?: string) => (v ? v.split(', ').map(x => x.trim()).filter(Boolean) : [])
+  return { enforced: true, groups: m[1] === 'all users' ? [] : list(m[2]), excluded: list(m[3]) }
 }
 
 /** occ twofactorauth:state <uid>: enabled, not enabled, or unknown. */
@@ -126,14 +154,14 @@ export function parseTwoFactorState(raw: string): 'on' | 'off' | null {
   return null
 }
 
-export interface AuthToken { name: string; lastActivity: number; type: number }
+export interface AuthToken { id: number; name: string; lastActivity: number; type: number }
 
 /** occ user:auth-tokens:list --output=json <uid>. */
 export function parseAuthTokens(raw: string): AuthToken[] {
   try {
     const j = JSON.parse(/\[[\s\S]*\]/.exec(raw)?.[0] ?? '')
     if (!Array.isArray(j)) return []
-    return j.slice(0, 500).map((t: any) => ({ name: str(t?.name, 120), lastActivity: Number(t?.lastActivity) || 0, type: Number(t?.type) || 0 }))
+    return j.slice(0, 500).map((t: any) => ({ id: Number(t?.id) || 0, name: str(t?.name, 120), lastActivity: Number(t?.lastActivity) || 0, type: Number(t?.type) || 0 }))
   } catch { return [] }
 }
 

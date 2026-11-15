@@ -88,4 +88,8 @@ export interface Job {
   result: string | null
   /** Rollback in words, when the job changed something that a person may need to undo. */
   rollback: string | null
+  /** Set for work that runs detached in the guest (the update): where its state file and log are, and the guest. */
+  detached: { guest: GuestRef; backupDir: string } | null
+  /** Maintenance mode as the job last knew it. */
+  maintenance: 'on' | 'off' | 'unknown' | null
 }

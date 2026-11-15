@@ -98,6 +98,18 @@ function parseIndex(raw: string | null): NcMeta[] {
   } catch { return [] }
 }
 
+/**
+ * Why a login change must be refused before anything is sent, or null. A stored app password only ever goes to the
+ * origin and user it was entered for: a new origin or a new user needs a password in the same save.
+ */
+export function loginChangeProblem(prev: { url: string | null; user: string | null; appPassword: string | null }, next: { url: string | null; user: string | null; appPassword: string | null }): string | null {
+  if (!prev.appPassword || next.appPassword) return null
+  if (next.url && prev.url && originOf(next.url) !== originOf(prev.url)) return 'The address now points somewhere else, so enter the app password again in the same save.'
+  if (next.url && !prev.url) return 'A new address needs the app password again in the same save.'
+  if (next.user && prev.user && next.user !== prev.user) return 'A different user needs its own app password: enter it in the same save.'
+  return null
+}
+
 export interface NcInput { name?: unknown; guest?: unknown; url?: unknown; user?: unknown; appPassword?: unknown }
 
 export class NcInstanceStore {
@@ -115,10 +127,11 @@ export class NcInstanceStore {
   private async write(list: NcMeta[]): Promise<void> { await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list), false) }
 
   /** The OCS login; null parts when none is set. The password never leaves the service. */
-  async login(id: string): Promise<{ url: string | null; user: string | null; appPassword: string | null }> {
+  async login(id: string): Promise<{ url: string | null; user: string | null; appPassword: string | null; tokenId: number | null }> {
     const p = providerFor(id)
-    const [url, user, appPassword] = await Promise.all([this.io.get(CATEGORY, p, 'url'), this.io.get(CATEGORY, p, 'user'), this.io.get(CATEGORY, p, 'app_password')])
-    return { url, user, appPassword }
+    const [url, user, appPassword, tid] = await Promise.all([this.io.get(CATEGORY, p, 'url'), this.io.get(CATEGORY, p, 'user'), this.io.get(CATEGORY, p, 'app_password'), this.io.get(CATEGORY, p, 'token_id')])
+    const tokenId = tid && /^\d{1,15}$/.test(tid) ? Number(tid) : null
+    return { url, user, appPassword, tokenId }
   }
 
   async view(m: NcMeta): Promise<NcView> {
@@ -128,7 +141,7 @@ export class NcInstanceStore {
 
   async views(): Promise<NcView[]> { return Promise.all((await this.list()).map(m => this.view(m))) }
 
-  async create(input: { name: string; guest: GuestRef; deployment: Deployment | null; url: string | null; user: string | null; appPassword: string | null }): Promise<NcMeta> {
+  async create(input: { name: string; guest: GuestRef; deployment: Deployment | null; url: string | null; user: string | null; appPassword: string | null; tokenId?: number | null }): Promise<NcMeta> {
     return this.serial(async () => {
       const list = await this.list()
       if (list.length >= MAX_INSTANCES) throw bad(`HyperProx looks after up to ${MAX_INSTANCES} Nextcloud instances.`)
@@ -140,18 +153,22 @@ export class NcInstanceStore {
     })
   }
 
-  private async writeLogin(id: string, l: { url: string | null; user: string | null; appPassword: string | null }): Promise<void> {
+  private async writeLogin(id: string, l: { url: string | null; user: string | null; appPassword: string | null; tokenId?: number | null }): Promise<void> {
     const p = providerFor(id)
     if (l.url !== null) await this.io.set(CATEGORY, p, 'url', l.url, false)
     if (l.user !== null) await this.io.set(CATEGORY, p, 'user', l.user, false)
-    if (l.appPassword !== null) await this.io.set(CATEGORY, p, 'app_password', l.appPassword, true)
+    if (l.appPassword !== null) {
+      await this.io.set(CATEGORY, p, 'app_password', l.appPassword, true)
+      // Which Nextcloud token that password is (so its own activity is never counted as a person's); '' when unknown.
+      await this.io.set(CATEGORY, p, 'token_id', l.tokenId ? String(l.tokenId) : '', false)
+    }
   }
 
   /**
    * Change the name or the OCS login. A new address (another origin) needs the app password again in the same save,
    * so a stored password is never sent to an address it was not entered for.
    */
-  async update(id: string, input: NcInput): Promise<NcMeta> {
+  async update(id: string, input: NcInput & { tokenId?: number | null }): Promise<NcMeta> {
     return this.serial(async () => {
       const list = await this.list()
       const i = list.findIndex(m => m.id === id)
@@ -160,13 +177,13 @@ export class NcInstanceStore {
       const url = input.url === undefined ? null : input.url === '' ? '' : cleanUrl(input.url)
       const user = input.user === undefined || input.user === '' ? null : cleanUser(input.user)
       const pw = input.appPassword === undefined || input.appPassword === '' ? null : cleanAppPassword(input.appPassword)
-      if (url && prev.url && originOf(url) !== originOf(prev.url) && !pw && prev.appPassword) throw bad('The address now points somewhere else, so enter the app password again in the same save.')
-      if (user && prev.user && user !== prev.user && !pw && prev.appPassword) throw bad('A different user needs its own app password: enter it in the same save.')
+      const problem = loginChangeProblem(prev, { url: url === '' ? null : url, user, appPassword: pw })
+      if (problem) throw bad(problem)
       const name = input.name === undefined ? list[i].name : cleanName(input.name)
       if (url === '') {
         // Removing the address removes the OCS login with it.
         await this.io.remove(CATEGORY, providerFor(id))
-      } else await this.writeLogin(id, { url, user, appPassword: pw })
+      } else await this.writeLogin(id, { url, user, appPassword: pw, tokenId: input.tokenId ?? null })
       list[i] = { ...list[i], name }
       await this.write(list)
       return list[i]
@@ -206,8 +223,17 @@ export class NcInstanceStore {
     })
   }
 
-  async saveSmtpPassword(id: string, password: string): Promise<void> {
-    await this.io.set(CATEGORY, smtpProviderFor(id), 'password', password, true)
+  /** The mail login: the password masked, and the server and login it belongs to (it is only ever reused for those). */
+  async saveSmtp(id: string, s: { host: string; port: number; user: string; password: string }): Promise<void> {
+    const p = smtpProviderFor(id)
+    await this.io.set(CATEGORY, p, 'password', s.password, true)
+    await this.io.set(CATEGORY, p, 'for', JSON.stringify({ host: s.host.toLowerCase(), port: s.port, user: s.user }), false)
   }
-  async smtpPassword(id: string): Promise<string | null> { return this.io.get(CATEGORY, smtpProviderFor(id), 'password') }
+  async smtp(id: string): Promise<{ password: string | null; host: string | null; port: number | null; user: string | null }> {
+    const p = smtpProviderFor(id)
+    const [password, raw] = await Promise.all([this.io.get(CATEGORY, p, 'password'), this.io.get(CATEGORY, p, 'for')])
+    let f: any = null
+    try { f = raw ? JSON.parse(raw) : null } catch { f = null }
+    return { password, host: typeof f?.host === 'string' ? f.host : null, port: Number.isInteger(f?.port) ? f.port : null, user: typeof f?.user === 'string' ? f.user : null }
+  }
 }

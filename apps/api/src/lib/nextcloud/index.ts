@@ -21,6 +21,7 @@ import { prismaPlacementStore } from '../placement/store'
 import { NcInstanceStore } from './instances'
 import { NextcloudService, type GuestRow } from './service'
 import { ocsClient } from './ocs'
+import { prismaJobStore } from './jobs'
 import type { GuestRef } from './types'
 
 async function guestRows(): Promise<GuestRow[]> {
@@ -77,6 +78,7 @@ export function productionNextcloud(prisma?: unknown): NextcloudService {
     },
     backupRunning,
     snapshotNote,
+    ...(prisma ? { jobs: prismaJobStore(prisma) } : {}),
   })
 }
 
@@ -84,7 +86,13 @@ let service: NextcloudService | null = null
 let prismaRef: unknown
 export function nextcloudService(prisma?: unknown): NextcloudService {
   if (prisma) prismaRef = prisma
-  return service ?? (service = productionNextcloud(prismaRef))
+  if (!service) {
+    service = productionNextcloud(prismaRef)
+    // A detached update that was running when the API last stopped is watched again; work that ran in the old
+    // process is marked failed. Only with the database: without it there is nothing to resume.
+    if (prismaRef) void service.resume().catch(() => {})
+  }
+  return service
 }
 /** For tests. */
 export function setNextcloudService(s: NextcloudService | null): void { service = s }

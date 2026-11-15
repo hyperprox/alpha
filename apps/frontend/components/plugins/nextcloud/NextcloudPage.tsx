@@ -25,8 +25,8 @@ import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import n from './nextcloud.module.css'
 import { CheckGroups, JobView, LogView, Steps, SystemView, TalkView, UpdateCheckView, VersionTrack } from './parts'
 import {
-  ago, cronSnippet, healthScore, hourWords, manualUpdateSteps, pushComposeSnippet, pushNginxSnippet, regionOptions, verdictOf,
-  type ActionId, type Check, type Job, type Reading, type UpdatePreview,
+  ago, cronSnippet, healthScore, hourWords, manualUpdateSteps, pushComposeSnippet, pushNginxSnippet, regionOptions, twoFactorWords, verdictOf,
+  type ActionId, type Check, type Job, type Reading, type TwoFactorView, type UpdatePreview,
 } from './logic'
 
 const API = '/api/plugins/nextcloud'
@@ -124,30 +124,39 @@ function SmtpForm({ r, onRun, onClose }: { r: Reading; onRun: (body: Record<stri
   )
 }
 
-function TwoFactorFlow({ inst, onRun, onClose }: { inst: Instance; onRun: (body: Record<string, unknown>) => void; onClose: () => void }) {
-  const [data, setData] = useState<{ users: Array<{ uid: string; state: 'on' | 'off' | null }>; truncated: boolean; providers: string[] } | null>(null)
+function TwoFactorFlow({ inst, onRun, onUndo, onClose }: { inst: Instance; onRun: (body: Record<string, unknown>) => void; onUndo: () => void; onClose: () => void }) {
+  const [data, setData] = useState<TwoFactorView | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [exclude, setExclude] = useState('')
   const [ack, setAck] = useState(false)
-  useEffect(() => { void apiJson<{ data: any }>(`${API}/instances/${inst.id}/two-factor`).then(r => (r.ok ? setData(r.body!.data) : setErr(r.error ?? 'Could not read the users.'))) }, [inst.id])
-  const without = data?.users.filter(u => u.state !== 'on') ?? []
+  const [adminAck, setAdminAck] = useState(false)
+  useEffect(() => { void apiJson<{ data: TwoFactorView }>(`${API}/instances/${inst.id}/two-factor`).then(r => (r.ok ? setData(r.body!.data) : setErr(r.error ?? 'Could not read the users.'))) }, [inst.id])
+  const v = twoFactorWords(data)
   return (
     <div className={n.form}>
       {!data && !err && <BusyNote>Reading who has a second factor…</BusyNote>}
       {err && <Notice kind="error">{err}</Notice>}
       {data && (
         <>
-          {!data.providers.length && <Notice kind="warn">No second-factor app (such as TOTP) is enabled, so nobody could set one up. Enable one under Apps first.</Notice>}
-          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>{without.length === 0 ? 'Everyone already has a second factor.' : `${without.length} of ${data.users.length} user${data.users.length === 1 ? ' has' : 's have'} no second factor yet. Once enforced, they must set one up at their next sign-in before they can use anything (apps and sync clients with an app password keep working).`}</p>
-          {without.length > 0 && <ul className={n.userList} aria-label="Users without a second factor">{without.map(u => <li key={u.uid}><Pill tone="warn">{u.uid}{u.state === null ? ' ?' : ''}</Pill></li>)}</ul>}
-          {data.truncated && <small style={{ color: 'var(--text-muted)' }}>Only the first 100 users were checked.</small>}
-          <label><span style={LABEL}>Groups that may skip it (optional, comma-separated, no spaces in names)</span><input style={INPUT} autoCapitalize="none" value={exclude} onChange={e => setExclude(e.target.value)} placeholder="guests" /></label>
+          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>{v.state}</p>
+          {!data.providers.length && <Notice kind="warn">No second factor a user can set up at sign-in (TOTP or WebAuthn) is enabled, so nobody could set one up. Enable one under Apps first.</Notice>}
+          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>{v.without}</p>
+          {v.lacking.length > 0 && <ul className={n.userList} aria-label="Users without a second factor">{v.lacking.map(u => <li key={u}><Pill tone="warn">{u}</Pill></li>)}</ul>}
+          {v.unknown.length > 0 && <Notice kind="error">HyperProx could not check {v.unknown.join(', ')}. It does not enforce two-factor authentication while any user is unknown.</Notice>}
+          {data.truncated && <Notice kind="error">Only the first 100 users were checked, so HyperProx does not enforce it from here.</Notice>}
+          {v.adminsLacking.length > 0 && (
+            <Notice kind="warn"><b>Admin{v.adminsLacking.length === 1 ? '' : 's'} without a second factor: {v.adminsLacking.join(', ')}.</b> Once enforced, {v.adminsLacking.length === 1 ? 'that admin is' : 'those admins are'} made to set one up at the next sign-in, like everyone else. If that sign-in fails, nobody with admin rights may be able to get in: set one up first if you can.</Notice>
+          )}
+          <label><span style={LABEL}>Groups that may skip it (optional, comma-separated, no spaces in names; groups already left out stay left out)</span><input style={INPUT} autoCapitalize="none" value={exclude} onChange={e => setExclude(e.target.value)} placeholder="guests" /></label>
           <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text)' }}><input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} /><span>I have read the list and the people on it know.</span></label>
+          {v.adminsLacking.length > 0 && <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--warn-2)' }}><input type="checkbox" checked={adminAck} onChange={e => setAdminAck(e.target.checked)} /><span>Enforce it although an admin has no second factor yet.</span></label>}
         </>
       )}
       <div className="flex flex-wrap justify-end gap-2">
+        {data?.enforcement?.enforced && <GhostButton type="button" onClick={onUndo} style={{ color: 'var(--crit-soft)' }}>Stop enforcing (master password)</GhostButton>}
         <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
-        <PrimaryButton type="button" disabled={!data || !ack || !data.providers.length} onClick={() => onRun({ acknowledged: true, exclude: exclude.split(',').map(s => s.trim()).filter(Boolean) })}>Enforce (master password)</PrimaryButton>
+        <PrimaryButton type="button" disabled={!data || !ack || !v.canEnforce || (v.adminsLacking.length > 0 && !adminAck)}
+          onClick={() => onRun({ acknowledged: true, adminWithout2fa: adminAck, exclude: exclude.split(',').map(s => s.trim()).filter(Boolean) })}>Enforce (master password)</PrimaryButton>
       </div>
     </div>
   )
@@ -216,7 +225,7 @@ function GuideModal({ c, r, inst, busy, onClose, onAct, onSecure }: {
   return (
     <Modal title={title} onClose={onClose}>
       {flow === 'smtp' && <SmtpForm r={r} onClose={onClose} onRun={b => onSecure('smtp', b)} />}
-      {flow === 'enforce-2fa' && <TwoFactorFlow inst={inst} onClose={onClose} onRun={b => onSecure('enforce-2fa', b)} />}
+      {flow === 'enforce-2fa' && <TwoFactorFlow inst={inst} onClose={onClose} onRun={b => onSecure('enforce-2fa', b)} onUndo={() => onSecure('unenforce-2fa', {})} />}
       {flow === 'client-push' && <ClientPushFlow inst={inst} r={r} busy={busy} onAct={onAct} />}
       {flow === 'log' && <LogView entries={r.log} />}
       {flow === 'cron' && (

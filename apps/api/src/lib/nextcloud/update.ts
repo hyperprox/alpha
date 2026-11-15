@@ -7,32 +7,41 @@
 //
 //    0  preflight, again, at the moment it starts: nobody active (other than
 //       HyperProx's own app password), no Talk call running, no backup of the
-//       guest running, room for the dump, nothing half-done (maintenance mode,
-//       a pending database upgrade);
-//    1  maintenance mode on, so nobody writes while the database is copied;
-//    2  the database dumped inside the Compose project (pg_dump -Fc, or
-//       mysqldump), read back to prove it is whole, and config.php copied
-//       beside it. With bind mounts a container cannot be snapshotted, so this
-//       dump is the rollback, and the page says so;
-//    3  the image in use tagged hyperprox-pre-<version>, so the old code stays
+//       guest running, room for the dump and the new image, nothing half-done
+//       (maintenance mode, a pending database upgrade);
+//    1  config.php copied into the backup directory, BEFORE maintenance mode,
+//       so the copy does not carry 'maintenance' => true back on a restore;
+//    2  maintenance mode on, so nobody writes while the database is copied;
+//    3  the database dumped inside the Compose project (pg_dump -Fc, or
+//       mysqldump), read back to prove it is whole. With bind mounts a
+//       container cannot be snapshotted, so this dump is the rollback, and the
+//       page says so;
+//    4  the image in use tagged hyperprox-pre-<version>, so the old code stays
 //       on disk for a rollback;
-//    4  the new image: `compose build --pull` when the service is built from a
+//    5  the new image: `compose build --pull` when the service is built from a
 //       Dockerfile (a plain pull would change nothing), else `compose pull`.
 //       Its NEXTCLOUD_VERSION is read: newer, at most one major ahead, or the
 //       job stops here and turns maintenance mode back off;
-//    5  `compose up -d --no-deps <service>`: the container is recreated and the
+//    6  `compose up -d --no-deps <service>`: the container is recreated and the
 //       image's entrypoint runs occ upgrade;
-//    6  occ status until it reports the new version with no pending upgrade
-//       (occ upgrade itself if the entrypoint did not; maintenance mode off if
-//       it was left on);
-//    7  the post-upgrade steps: missing indices, columns and primary keys.
+//    7  occ status until it reports the new version with no pending upgrade
+//       (occ upgrade itself, once, only if the image's entrypoint is not
+//       upgrading: no `occ upgrade` process, and its flock on
+//       nextcloud-init-sync.lock is free (the file itself always stays);
+//       maintenance mode off if it was left on);
+//    8  the post-upgrade steps: missing indices, columns and primary keys.
+//
+//  Steps 1-8 run as ONE script started detached inside the guest (systemd-run,
+//  else nohup setsid), so neither a closed connection nor an API restart stops
+//  it halfway. It writes its progress to a state file and its output to a log
+//  under <backup dir>/jobs/<job id>; HyperProx polls those. Every failure says
+//  whether maintenance mode is still on.
 //
 //  Nothing is deleted at any step: old dumps and the old image stay until a
 //  person removes them.
 // =============================================================================
 
-import { occLine, occArgs, type OccTarget, type OccId } from './occ'
-import { compareVersions, majorOf, parseStatus } from './parse'
+import { compareVersions, majorOf } from './parse'
 import type { Deployment } from './detect'
 import type { JobStep } from './types'
 
@@ -82,6 +91,7 @@ export interface UpdatePlan {
 
 export const UPDATE_STEPS: Array<{ key: string; label: string }> = [
   { key: 'preflight',   label: 'Check nobody is using it' },
+  { key: 'config',      label: 'Copy config.php' },
   { key: 'maintenance', label: 'Maintenance mode on' },
   { key: 'backup',      label: 'Dump the database' },
   { key: 'keep',        label: 'Keep the current image' },
@@ -99,50 +109,23 @@ export const HPB_STEPS: Array<{ key: string; label: string }> = [
   { key: 'verify',    label: 'Check its version' },
 ]
 
-/** The dump: written to a .part file, renamed when complete, read back, and config.php copied beside it. */
-export function backupScript(p: UpdatePlan): string {
-  const dir = sq(p.backupDir, PATH_RE, 'backup directory')
-  const db = sq(p.db.container, NAME_RE, 'database container')
-  const app = sq(p.app.container, NAME_RE, 'app container')
-  if (!/^\d{8}T\d{6}Z$/.test(p.stamp)) throw new UpdateRefusal('Bad timestamp.')
-  const lines = ['set -e', 'set -o pipefail', `install -d -m 700 ${dir}`]
-  if (p.db.engine === 'postgres') {
-    const user = sq(p.db.user, DB_IDENT_RE, 'database user'), name = sq(p.db.name, DB_IDENT_RE, 'database name')
-    const f = `${p.backupDir}/nextcloud-db-${p.stamp}.dump`
-    lines.push(
-      `docker exec ${db} pg_dump -U ${user} -d ${name} -Fc > '${f}.part'`,
-      `mv '${f}.part' '${f}'`, `chmod 600 '${f}'`,
-      // Read back: pg_restore must be able to list every object in it.
-      `docker exec -i ${db} pg_restore --list < '${f}' > /dev/null`,
-      `echo "DUMP|${f}|$(stat -c %s '${f}')"`,
-    )
-  } else {
-    const f = `${p.backupDir}/nextcloud-db-${p.stamp}.sql.gz`
-    // The password comes from the database container's own environment and goes in MYSQL_PWD, never on a command line.
-    lines.push(
-      `docker exec ${db} sh -c 'MYSQL_PWD="\${MYSQL_PASSWORD:-\$MARIADB_PASSWORD}"; export MYSQL_PWD; D=$(command -v mariadb-dump || command -v mysqldump); exec "$D" --single-transaction --routines -u"\${MYSQL_USER:-\$MARIADB_USER}" "\${MYSQL_DATABASE:-\$MARIADB_DATABASE}"' | gzip > '${f}.part'`,
-      `mv '${f}.part' '${f}'`, `chmod 600 '${f}'`, `gzip -t '${f}'`,
-      `echo "DUMP|${f}|$(stat -c %s '${f}')"`,
-    )
-  }
-  lines.push(
-    `docker exec ${app} cat /var/www/html/config/config.php > '${p.backupDir}/config-${p.stamp}.php'`,
-    `chmod 600 '${p.backupDir}/config-${p.stamp}.php'`,
-    `echo "CONFIG|${p.backupDir}/config-${p.stamp}.php"`,
-  )
-  return lines.join('\n') + '\n'
-}
+const MYSQL_ENV = `MYSQL_PWD="\${MYSQL_PASSWORD:-\$MARIADB_PASSWORD}"; export MYSQL_PWD`
+const MYSQL_USER = `"\${MYSQL_USER:-\$MARIADB_USER}"`
+const MYSQL_DB = `"\${MYSQL_DATABASE:-\$MARIADB_DATABASE}"`
 
-/** Room for the dump: free KiB in the Compose directory and the database's size in bytes. Read-only. */
+/** Room for the dump and the new image: free KiB by filesystem and the database's size in bytes. Read-only. */
 export function preflightScript(p: UpdatePlan): string {
   const db = sq(p.db.container, NAME_RE, 'database container')
   const wd = sq(p.app.workdir, PATH_RE, 'directory')
   const size = p.db.engine === 'postgres'
     ? `docker exec ${db} psql -U ${sq(p.db.user, DB_IDENT_RE, 'database user')} -d ${sq(p.db.name, DB_IDENT_RE, 'database name')} -Atc 'select pg_database_size(current_database())'`
-    : `docker exec ${db} sh -c 'MYSQL_PWD="\${MYSQL_PASSWORD:-\$MARIADB_PASSWORD}"; export MYSQL_PWD; M=$(command -v mariadb || command -v mysql); exec "$M" -N -u"\${MYSQL_USER:-\$MARIADB_USER}" -e "select coalesce(sum(data_length+index_length),0) from information_schema.tables where table_schema=database()" "\${MYSQL_DATABASE:-\$MARIADB_DATABASE}"'`
+    : `docker exec ${db} sh -c '${MYSQL_ENV}; M=$(command -v mariadb || command -v mysql); exec "$M" -N -u${MYSQL_USER} -e "select coalesce(sum(data_length+index_length),0) from information_schema.tables where table_schema=database()" ${MYSQL_DB}'`
   return [
     'set +e',
+    `R="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"; [ -d "$R" ] || R=/var/lib/docker`,
     `echo "DF|$(df -Pk ${wd} | awk 'NR==2 {print $4}')"`,
+    `echo "DFIMG|$(df -Pk "$R" | awk 'NR==2 {print $4}')"`,
+    `[ "$(stat -c %d ${wd} 2>/dev/null)" = "$(stat -c %d "$R" 2>/dev/null)" ] && echo "SAMEFS|1" || echo "SAMEFS|0"`,
     `echo "DBSIZE|$(${size} 2>/dev/null | tr -dc 0-9)"`,
     `docker compose version >/dev/null 2>&1 && echo "COMPOSE|1" || echo "COMPOSE|0"`,
     `[ -f ${sq(p.app.configFile, PATH_RE, 'Compose file')} ] && echo "CFG|1" || echo "CFG|0"`,
@@ -150,23 +133,37 @@ export function preflightScript(p: UpdatePlan): string {
   ].join('\n') + '\n'
 }
 
-export interface Room { freeBytes: number | null; dbBytes: number | null; compose: boolean; configFile: boolean; imageId: string | null }
+export interface Room { freeBytes: number | null; imageFreeBytes: number | null; sameFs: boolean; dbBytes: number | null; compose: boolean; configFile: boolean; imageId: string | null }
 export function parseRoom(out: string): Room {
   const get = (k: string) => new RegExp(`^${k}\\|(.*)$`, 'm').exec(out)?.[1]?.trim() ?? ''
-  const free = get('DF'), size = get('DBSIZE'), img = get('IMG')
-  return { freeBytes: /^\d+$/.test(free) ? Number(free) * 1024 : null, dbBytes: /^\d+$/.test(size) ? Number(size) : null, compose: get('COMPOSE') === '1', configFile: get('CFG') === '1', imageId: IMAGE_ID_RE.test(img) ? img : null }
+  const free = get('DF'), ifree = get('DFIMG'), size = get('DBSIZE'), img = get('IMG')
+  return {
+    freeBytes: /^\d+$/.test(free) ? Number(free) * 1024 : null, imageFreeBytes: /^\d+$/.test(ifree) ? Number(ifree) * 1024 : null, sameFs: get('SAMEFS') === '1',
+    dbBytes: /^\d+$/.test(size) ? Number(size) : null, compose: get('COMPOSE') === '1', configFile: get('CFG') === '1', imageId: IMAGE_ID_RE.test(img) ? img : null,
+  }
 }
 
-/** Free space needed for the dump: the database's size (dumps are smaller, but not always) plus 200 MiB. */
+/** A pull or a build of the Nextcloud image, with its layers unpacked: a fixed margin, generous on purpose. */
+export const IMAGE_MARGIN = 3 * 1024 ** 3
+const DUMP_MARGIN = 200 * 1024 ** 2
+const mib = (b: number) => Math.round(b / 1048576)
+
+/** Free space for the dump (the database's size plus 200 MiB) and for the new image (3 GiB), on their filesystems. */
 export function roomProblem(r: Room): string | null {
   if (r.freeBytes === null) return 'HyperProx could not read the free space in the Compose directory.'
   if (r.dbBytes === null) return 'HyperProx could not read the database size, so it cannot be sure the dump fits.'
-  const need = r.dbBytes + 200 * 1024 * 1024
-  if (r.freeBytes < need) return `The Compose directory has ${Math.round(r.freeBytes / 1048576)} MiB free; the dump needs about ${Math.round(need / 1048576)} MiB.`
+  const dump = r.dbBytes + DUMP_MARGIN
+  if (r.sameFs || r.imageFreeBytes === null) {
+    const need = dump + IMAGE_MARGIN
+    if (r.freeBytes < need) return `The Compose directory has ${mib(r.freeBytes)} MiB free; the dump and the new image need about ${mib(need)} MiB.`
+    return null
+  }
+  if (r.freeBytes < dump) return `The Compose directory has ${mib(r.freeBytes)} MiB free; the dump needs about ${mib(dump)} MiB.`
+  if (r.imageFreeBytes < IMAGE_MARGIN) return `Docker's storage has ${mib(r.imageFreeBytes)} MiB free; the new image needs about ${mib(IMAGE_MARGIN)} MiB.`
   return null
 }
 
-/** Is `next` an acceptable target from `from`? */
+/** Is `next` an acceptable target from `from`? (The job script applies the same rule in the guest.) */
 export function targetProblem(from: string, next: string | null): string | null {
   if (!next) return 'The new image does not say which Nextcloud it holds (no NEXTCLOUD_VERSION), so HyperProx will not recreate the container with it.'
   const c = compareVersions(next, from)
@@ -180,20 +177,223 @@ export function rollbackWords(p: UpdatePlan, dump: string | null): string {
   const repo = imageRepo(p.app.image)
   const tag = repo ? `${repo}:hyperprox-pre-${safeTag(p.from)}` : null
   const compose = `cd ${p.app.workdir} && docker compose -p ${p.app.project}`
+  const occ = `docker exec -u www-data ${p.app.container} php occ`
   return [
     `To go back to Nextcloud ${p.from}:`,
     tag ? `1. Point the image back: docker tag ${tag} ${p.app.image}` : `1. Re-create the old image (it was referenced by digest, so HyperProx could not tag it).`,
     `2. Stop the app: ${compose} stop ${p.app.service}`,
     p.db.engine === 'postgres'
       ? `3. Restore the database: docker exec -i ${p.db.container} pg_restore --clean --if-exists -U ${p.db.user} -d ${p.db.name} < ${dump ?? `${p.backupDir}/nextcloud-db-${p.stamp}.dump`}`
-      : `3. Restore the database: gunzip -c ${dump ?? `${p.backupDir}/nextcloud-db-${p.stamp}.sql.gz`} | docker exec -i ${p.db.container} sh -c 'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"'`,
-    `4. Put the old config back: docker cp ${p.backupDir}/config-${p.stamp}.php ${p.app.container}:/var/www/html/config/config.php (then chown www-data inside the container)`,
+      : `3. Restore the database: gunzip -c ${dump ?? `${p.backupDir}/nextcloud-db-${p.stamp}.sql.gz`} | docker exec -i ${p.db.container} sh -c 'MYSQL_PWD="\${MYSQL_PASSWORD:-\$MARIADB_PASSWORD}" exec mysql -u"\${MYSQL_USER:-\$MARIADB_USER}" "\${MYSQL_DATABASE:-\$MARIADB_DATABASE}"'`,
+    `4. Put the old config back (it was copied before maintenance mode was turned on): docker cp ${p.backupDir}/config-${p.stamp}.php ${p.app.container}:/var/www/html/config/config.php, then docker exec ${p.app.container} chown www-data:www-data /var/www/html/config/config.php`,
     `5. Start it: ${compose} up -d --no-deps ${p.app.service}`,
+    `6. Turn maintenance mode off: ${occ} maintenance:mode --off`,
     'Files in the data directory are not touched by an upgrade, so they need no restore.',
   ].join('\n')
 }
 
-// ── the run ──────────────────────────────────────────────────────────────────
+// ── the job, detached in the guest ───────────────────────────────────────────
+
+export const JOB_ID_RE = /^j[0-9a-f]{12}$/
+export const jobDirOf = (backupDir: string, jobId: string) => `${backupDir.replace(/\/+$/, '')}/jobs/${jobId}`
+
+/**
+ * The update as one bash script, every name in it checked and quoted. It appends to `state`:
+ *   PID|<pid>   STEP|<key>|<state>|<detail>   MAINT|on|off|unknown   DUMP|<file>   RESULT|done|failed|<message>
+ * and writes all its output to `log`.
+ */
+export function updateJobScript(p: UpdatePlan, jobId: string): string {
+  if (!JOB_ID_RE.test(jobId)) throw new UpdateRefusal('Bad job id.')
+  if (!/^\d{8}T\d{6}Z$/.test(p.stamp)) throw new UpdateRefusal('Bad timestamp.')
+  if (!/^\d{1,3}(\.\d{1,3}){1,3}$/.test(p.from)) throw new UpdateRefusal('Bad version.')
+  const J = sq(jobDirOf(p.backupDir, jobId), PATH_RE, 'job directory')
+  const BK = sq(p.backupDir, PATH_RE, 'backup directory')
+  const APP = sq(p.app.container, NAME_RE, 'app container')
+  const DB = sq(p.db.container, NAME_RE, 'database container')
+  const IMG = sq(p.app.image, IMAGE_RE, 'image')
+  const SVC = sq(p.app.service, /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/, 'service')
+  const repo = imageRepo(p.app.image)
+  const TAG = repo && IMAGE_ID_RE.test(p.app.imageId) ? sq(`${repo}:hyperprox-pre-${safeTag(p.from)}`, IMAGE_RE, 'tag') : "''"
+  const IMGID = IMAGE_ID_RE.test(p.app.imageId) ? `'${p.app.imageId}'` : "''"
+  const dumpFile = p.db.engine === 'postgres' ? `${p.backupDir}/nextcloud-db-${p.stamp}.dump` : `${p.backupDir}/nextcloud-db-${p.stamp}.sql.gz`
+  const dump = p.db.engine === 'postgres'
+    ? [
+        `docker exec ${DB} pg_dump -U ${sq(p.db.user, DB_IDENT_RE, 'database user')} -d ${sq(p.db.name, DB_IDENT_RE, 'database name')} -Fc > "$F.part" \\`,
+        `  && mv "$F.part" "$F" && chmod 600 "$F" \\`,
+        // Read back: pg_restore must be able to list every object in it.
+        `  && docker exec -i ${DB} pg_restore --list < "$F" > /dev/null`,
+      ]
+    : [
+        // The password comes from the database container's own environment, in MYSQL_PWD, never on a command line.
+        `docker exec ${DB} sh -c '${MYSQL_ENV}; D=$(command -v mariadb-dump || command -v mysqldump); exec "$D" --single-transaction --routines -u${MYSQL_USER} ${MYSQL_DB}' | gzip > "$F.part" \\`,
+        `  && [ "\${PIPESTATUS[0]}" = 0 ] && mv "$F.part" "$F" && chmod 600 "$F" && gzip -t "$F"`,
+      ]
+  return [
+    '#!/bin/bash',
+    '# Written by HyperProx: a Nextcloud update, run detached. Progress in ./state, output in ./log.',
+    'set -u',
+    `J=${J}; S="$J/state"; L="$J/log"`,
+    'exec >>"$L" 2>&1 </dev/null',
+    `BK=${BK}; APP=${APP}; IMG=${IMG}; SVC=${SVC}; TAG=${TAG}; IMGID=${IMGID}`,
+    `FROM='${p.from}'; STAMP='${p.stamp}'; F='${dumpFile}'; C="$BK/config-$STAMP.php"`,
+    `compose() { ${composeCmd({ workdir: p.app.workdir, configFile: p.app.configFile, project: p.app.project })} "$@"; }`,
+    'occ() { docker exec -u www-data "$APP" php occ "$@"; }',
+    'MAINT=off; RECREATED=0; CUR=start; NEXT=""',
+    `step() { printf 'STEP|%s|%s|%s\\n' "$1" "$2" "$(printf %s "\${3:-}" | tr '|\\n' '  ' | cut -c1-300)" >> "$S"; }`,
+    'setmaint() { MAINT="$1"; echo "MAINT|$1" >> "$S"; }',
+    `finish() { printf 'RESULT|%s|%s\\n' "$1" "$(printf %s "$2" | tr '|\\n' '  ')" >> "$S"; exit 0; }`,
+    '# Every failure says whether maintenance mode is on. Before the container was recreated nothing else changed,',
+    '# so maintenance mode is turned off again; after, Nextcloud itself is asked.',
+    'fail() {',
+    '  step "$1" failed "$2"',
+    '  if [ "$RECREATED" = 0 ] && [ "$MAINT" = on ]; then occ maintenance:mode --no-interaction --off && setmaint off; fi',
+    '  if [ "$RECREATED" = 1 ]; then',
+    '    st="$(occ status --no-interaction --output=json 2>/dev/null)"',
+    '    case "$st" in *\'"maintenance":true\'*) setmaint on;; *\'"maintenance":false\'*) setmaint off;; *) setmaint unknown;; esac',
+    '  fi',
+    '  case "$MAINT" in',
+    '    on) finish failed "$2 Maintenance mode is still ON: Nextcloud shows its maintenance page until it is turned off (occ maintenance:mode --off), after a fix or a rollback.";;',
+    '    off) finish failed "$2 Maintenance mode is off.";;',
+    '    *) finish failed "$2 Whether maintenance mode is on could not be read (occ status did not answer).";;',
+    '  esac',
+    '}',
+    'trap \'fail "$CUR" "The update was stopped."\' TERM INT HUP',
+    'echo "PID|$$" >> "$S"',
+    '',
+    'CUR=config; step config running',
+    'docker exec "$APP" cat /var/www/html/config/config.php > "$C.part" && mv "$C.part" "$C" && chmod 600 "$C" \\',
+    '  || fail config "config.php could not be copied, so nothing was changed."',
+    'step config done "$C"',
+    '',
+    'CUR=maintenance; step maintenance running',
+    'occ maintenance:mode --no-interaction --on || fail maintenance "Maintenance mode could not be turned on, so nothing was changed."',
+    'setmaint on; step maintenance done',
+    '',
+    'CUR=backup; step backup running "$BK"',
+    ...dump,
+    'if [ ! -s "$F" ]; then fail backup "The database dump did not complete, so nothing else was changed."; fi',
+    'echo "DUMP|$F" >> "$S"; step backup done "$F ($(du -h "$F" | cut -f1))"',
+    '',
+    'CUR=keep; step keep running',
+    'if [ -n "$TAG" ] && [ -n "$IMGID" ] && docker image tag "$IMGID" "$TAG"; then step keep done "$TAG"; else step keep skipped "the current image could not be tagged"; fi',
+    '',
+    `CUR=image; step image running '${p.source === 'build' ? 'compose build --pull' : 'compose pull'}'`,
+    p.source === 'build'
+      ? 'compose build --pull "$SVC" || fail image "The new image could not be built; the running container was not touched."'
+      : 'compose pull "$SVC" || fail image "The new image could not be pulled; the running container was not touched."',
+    `NEXT="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMG" | sed -n 's/^NEXTCLOUD_VERSION=//p' | head -1)"`,
+    'printf %s "$NEXT" | grep -Eq \'^[0-9]{1,3}(\\.[0-9]{1,3}){1,3}$\' || fail image "The new image does not say which Nextcloud it holds (no NEXTCLOUD_VERSION); the running container was not touched."',
+    '[ "$NEXT" = "$FROM" ] && fail image "The new image is still Nextcloud $FROM: there is nothing newer under this tag yet; the running container was not touched."',
+    '[ "$(printf \'%s\\n%s\\n\' "$FROM" "$NEXT" | sort -V | tail -1)" = "$FROM" ] && fail image "The new image holds Nextcloud $NEXT, older than $FROM; the running container was not touched."',
+    '[ "${NEXT%%.*}" -gt $(( ${FROM%%.*} + 1 )) ] && fail image "The new image holds Nextcloud $NEXT, more than one major version ahead of $FROM; the running container was not touched."',
+    'step image done "Nextcloud $NEXT"',
+    '',
+    'CUR=recreate; step recreate running; RECREATED=1',
+    'compose up -d --no-deps "$SVC" || fail recreate "The container could not be recreated. See the rollback steps."',
+    'step recreate done',
+    '',
+    '# The image upgrades Nextcloud when it starts. occ upgrade is run once, by HyperProx, only after 10 minutes and',
+    '# only when the entrypoint is not upgrading (no occ upgrade process, its nextcloud-init-sync.lock not held).',
+    'CUR=upgrade; step upgrade running "waiting for $NEXT"',
+    'start=$(date +%s); ran=0',
+    'while :; do',
+    '  sleep 10; now=$(date +%s)',
+    '  st="$(occ status --no-interaction --output=json 2>/dev/null)"',
+    '  v="$(printf %s "$st" | sed -n \'s/.*"versionstring":"\\([0-9.]*\\)".*/\\1/p\')"',
+    '  case "$st" in *\'"needsDbUpgrade":true\'*) nu=1;; *) nu=0;; esac',
+    '  case "$st" in *\'"maintenance":true\'*) m=1;; *) m=0;; esac',
+    '  if [ -n "$st" ] && [ "$v" = "$NEXT" ] && [ "$nu" = 0 ]; then',
+    '    if [ "$m" = 1 ]; then occ maintenance:mode --no-interaction --off; continue; fi',
+    '    setmaint off; break',
+    '  fi',
+    '  if [ -n "$st" ] && [ "$nu" = 1 ] && [ "$ran" = 0 ] && [ $((now - start)) -gt 600 ]; then',
+    // The entrypoint holds a flock on nextcloud-init-sync.lock while it installs or upgrades (the file itself stays):
+    // a lock that cannot be taken now means it is still at work.
+    '    if docker top "$APP" -eo pid,args 2>/dev/null | grep -q "occ upgrade" \\',
+    '      || ! docker exec "$APP" sh -c \'L=/var/www/html/nextcloud-init-sync.lock; command -v flock >/dev/null || exit 0; [ -e "$L" ] || exit 0; flock -n "$L" true\'; then',
+    '      echo "The image is still upgrading; waiting."',
+    '    else',
+    '      ran=1; echo "Running occ upgrade"',
+    '      occ upgrade --no-interaction || fail upgrade "occ upgrade failed. See the rollback steps."',
+    '    fi',
+    '  fi',
+    '  [ $((now - start)) -gt 2400 ] && fail upgrade "Nextcloud did not report $NEXT within 40 minutes. Check docker logs $APP."',
+    'done',
+    'step upgrade done "Nextcloud $NEXT, maintenance mode off"',
+    '',
+    'CUR=post; step post running; w=0',
+    'for c in db:add-missing-indices db:add-missing-columns db:add-missing-primary-keys; do occ "$c" --no-interaction || w=$((w + 1)); done',
+    'if [ "$w" = 0 ]; then step post done; else step post done "$w of the post-upgrade commands failed; run them by hand"; fi',
+    'finish done "Nextcloud is on $NEXT. The database dump is at $F."',
+    '',
+  ].join('\n')
+}
+
+/** Writes the job script into its directory and starts it detached: systemd-run when the guest has systemd, else setsid. */
+export function launchScript(p: UpdatePlan, jobId: string): string {
+  const body = updateJobScript(p, jobId)
+  const d = `HPX_RUN_EOF_${jobId}`
+  if (body.includes(d)) throw new UpdateRefusal('Bad job script.')
+  const J = sq(jobDirOf(p.backupDir, jobId), PATH_RE, 'job directory')
+  return [
+    'set -e',
+    `install -d -m 700 ${sq(p.backupDir, PATH_RE, 'backup directory')} ${sq(`${p.backupDir}/jobs`, PATH_RE, 'job directory')} ${J}`,
+    `cat > ${J}/run.sh <<'${d}'`, body, d,
+    `chmod 700 ${J}/run.sh; : > ${J}/state; : > ${J}/log; chmod 600 ${J}/state ${J}/log`,
+    'if [ -d /run/systemd/system ] && command -v systemd-run >/dev/null 2>&1 \\',
+    `  && systemd-run --quiet --collect --unit='hyperprox-nc-${jobId}' /bin/bash ${J}/run.sh; then echo "LAUNCHED|systemd"; exit 0; fi`,
+    `nohup setsid /bin/bash ${J}/run.sh >/dev/null 2>&1 </dev/null &`,
+    'echo "LAUNCHED|setsid"',
+    '',
+  ].join('\n')
+}
+
+/** Read-only: the job's state file, the end of its log, and whether its process still runs. */
+export function pollScript(backupDir: string, jobId: string): string {
+  if (!JOB_ID_RE.test(jobId)) throw new UpdateRefusal('Bad job id.')
+  const J = sq(jobDirOf(backupDir, jobId), PATH_RE, 'job directory')
+  return [
+    'set +e',
+    `cat ${J}/state 2>/dev/null`,
+    'echo "@@HPX-LOG@@"',
+    `tail -n 40 ${J}/log 2>/dev/null | cut -c1-400`,
+    'echo "@@HPX-LOG-END@@"',
+    `pid="$(sed -n 's/^PID|//p' ${J}/state 2>/dev/null | tail -1)"`,
+    'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "ALIVE|1"; else echo "ALIVE|0"; fi',
+    `[ -e ${J}/state ] && echo "EXISTS|1" || echo "EXISTS|0"`,
+    '',
+  ].join('\n')
+}
+
+export interface PolledJob {
+  exists: boolean
+  started: boolean
+  alive: boolean
+  steps: Record<string, { state: JobStep['state']; detail: string }>
+  maint: 'on' | 'off' | 'unknown' | null
+  dump: string | null
+  result: { state: 'done' | 'failed'; message: string } | null
+  lines: string[]
+}
+
+const STEP_STATES = ['pending', 'running', 'done', 'failed', 'skipped']
+
+export function parsePoll(out: string): PolledJob {
+  const r: PolledJob = { exists: /^EXISTS\|1$/m.test(out), started: false, alive: /^ALIVE\|1$/m.test(out), steps: {}, maint: null, dump: null, result: null, lines: [] }
+  const [state, rest = ''] = out.split('@@HPX-LOG@@')
+  for (const line of state.split('\n')) {
+    const f = line.split('|')
+    if (f[0] === 'PID' && /^\d+$/.test(f[1] ?? '')) r.started = true
+    else if (f[0] === 'STEP' && /^[a-z]{1,20}$/.test(f[1] ?? '') && STEP_STATES.includes(f[2])) r.steps[f[1]] = { state: f[2] as JobStep['state'], detail: (f.slice(3).join(' ')).slice(0, 300) }
+    else if (f[0] === 'MAINT' && ['on', 'off', 'unknown'].includes(f[1])) r.maint = f[1] as PolledJob['maint']
+    else if (f[0] === 'DUMP' && PATH_RE.test(f[1] ?? '')) r.dump = f[1]
+    else if (f[0] === 'RESULT' && (f[1] === 'done' || f[1] === 'failed')) r.result = { state: f[1], message: f.slice(2).join(' ').slice(0, 800) }
+  }
+  r.lines = (rest.split('@@HPX-LOG-END@@')[0] ?? '').split('\n').filter(l => l.trim()).slice(-40)
+  return r
+}
+
+// ── the Talk signalling update (short: it runs from HyperProx) ───────────────
 
 export interface RunIO {
   /** A script in the guest, as root. */
@@ -204,98 +404,7 @@ export interface RunIO {
   now(): number
 }
 
-const occ = (t: OccTarget, id: OccId, params?: unknown) => `set -o pipefail\n${occLine(t, occArgs(id, params))}\n`
 const tail = (s: string, n = 600) => s.trim().slice(-n)
-
-/** Steps 1-7. Step 0 (preflight) is the service's; it calls this only once that passed. Throws with the reason. */
-export async function runComposeUpdate(p: UpdatePlan, io: RunIO): Promise<{ version: string; dump: string; warnings: string[] }> {
-  const t: OccTarget = { mode: 'docker', container: p.app.container }
-  const compose = composeCmd({ workdir: p.app.workdir, configFile: p.app.configFile, project: p.app.project })
-  const svc = sq(p.app.service, /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/, 'service')
-  const warnings: string[] = []
-  let maintenance = false
-  const maintenanceOff = async () => {
-    if (!maintenance) return
-    const r = await io.run(occ(t, 'maintenance-off'), 120_000)
-    io.log(tail(r.output, 300))
-    if (r.code === 0) maintenance = false
-  }
-
-  io.step('maintenance', 'running')
-  const on = await io.run(occ(t, 'maintenance-on'), 120_000)
-  if (on.code !== 0) { io.step('maintenance', 'failed', tail(on.output, 200)); throw new Error('Maintenance mode could not be turned on, so nothing was changed.') }
-  maintenance = true
-  io.step('maintenance', 'done')
-
-  io.step('backup', 'running', p.backupDir)
-  const b = await io.run(backupScript(p), 60 * 60_000)
-  io.log(tail(b.output))
-  const dump = /^DUMP\|(\S+)\|(\d+)$/m.exec(b.output)
-  if (b.code !== 0 || !dump || Number(dump[2]) <= 0) {
-    io.step('backup', 'failed', tail(b.output, 200))
-    await maintenanceOff()
-    throw new Error(`The database dump did not complete, so nothing else was changed${maintenance ? ' (maintenance mode is still on: turn it off with occ maintenance:mode --off)' : ''}.`)
-  }
-  io.step('backup', 'done', `${dump[1]} (${Math.round(Number(dump[2]) / 1048576)} MiB), config.php beside it`)
-
-  io.step('keep', 'running')
-  const repo = imageRepo(p.app.image)
-  if (repo && IMAGE_ID_RE.test(p.app.imageId)) {
-    const tag = `${repo}:hyperprox-pre-${safeTag(p.from)}`
-    const k = await io.run(`docker image tag ${sq(p.app.imageId, IMAGE_ID_RE, 'image id')} ${sq(tag, IMAGE_RE, 'tag')}\n`, 60_000)
-    if (k.code !== 0) { warnings.push('The current image could not be tagged for a rollback.'); io.step('keep', 'skipped', tail(k.output, 200)) }
-    else io.step('keep', 'done', tag)
-  } else { warnings.push('The current image is referenced by digest and was not tagged.'); io.step('keep', 'skipped', 'referenced by digest') }
-
-  io.step('image', 'running', p.source === 'build' ? 'compose build --pull' : 'compose pull')
-  const img = await io.run(`set -o pipefail\n${compose} ${p.source === 'build' ? 'build --pull' : 'pull'} ${svc} 2>&1 | tail -n 40\n`, 60 * 60_000)
-  io.log(tail(img.output, 2000))
-  if (img.code !== 0) { io.step('image', 'failed', tail(img.output, 200)); await maintenanceOff(); throw new Error(`The new image could not be ${p.source === 'build' ? 'built' : 'pulled'}; the running container was not touched${maintenance ? '' : ' and maintenance mode is off again'}.`) }
-  const v = await io.run(`docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' ${sq(p.app.image, IMAGE_RE, 'image')} | sed -n 's/^NEXTCLOUD_VERSION=//p'\n`, 60_000)
-  const next = /^(\d{1,3}(?:\.\d{1,3}){1,3})$/m.exec(v.output.trim())?.[1] ?? null
-  const bad = targetProblem(p.from, next)
-  if (bad) { io.step('image', 'failed', bad); await maintenanceOff(); throw new Error(`${bad} The running container was not touched${maintenance ? '' : ' and maintenance mode is off again'}.`) }
-  io.step('image', 'done', `Nextcloud ${next}`)
-
-  io.step('recreate', 'running')
-  const up = await io.run(`set -o pipefail\n${compose} up -d --no-deps ${svc} 2>&1 | tail -n 20\n`, 15 * 60_000)
-  io.log(tail(up.output, 1000))
-  if (up.code !== 0) { io.step('recreate', 'failed', tail(up.output, 200)); throw new Error('The container could not be recreated. See the rollback steps.') }
-  io.step('recreate', 'done')
-
-  io.step('upgrade', 'running', `waiting for ${next}`)
-  const deadline = io.now() + 40 * 60_000
-  let ran = false
-  for (;;) {
-    await io.sleep(10_000)
-    const s = await io.run(occ(t, 'status'), 60_000)
-    const st = s.code === 0 ? parseStatus(s.output) : null
-    if (st && st.versionString === next && !st.needsDbUpgrade) {
-      // The image's upgrade turns maintenance mode off at its end; if it was left on, HyperProx turns it off.
-      maintenance = st.maintenance
-      if (maintenance) await maintenanceOff()
-      if (!maintenance) break
-    } else if (st && st.needsDbUpgrade && !ran && io.now() > deadline - 30 * 60_000) {
-      // The entrypoint did not run the upgrade itself (a custom entrypoint, say): run it once.
-      ran = true
-      io.log('Running occ upgrade')
-      const u = await io.run(occ(t, 'upgrade'), 60 * 60_000)
-      io.log(tail(u.output, 2000))
-      if (u.code !== 0) { io.step('upgrade', 'failed', tail(u.output, 200)); throw new Error('occ upgrade failed. See the rollback steps.') }
-    }
-    if (io.now() > deadline) { io.step('upgrade', 'failed', 'timed out'); throw new Error(`Nextcloud did not report ${next} within 40 minutes. Check the container's log (docker logs ${p.app.container}).`) }
-  }
-  io.step('upgrade', 'done', `Nextcloud ${next}, maintenance mode off`)
-
-  io.step('post', 'running')
-  for (const id of ['add-indices', 'add-columns', 'add-primary-keys'] as const) {
-    const r = await io.run(occ(t, id), 60 * 60_000)
-    io.log(tail(r.output, 1000))
-    if (r.code !== 0) warnings.push(`occ ${occArgs(id).join(' ')} failed; run it by hand.`)
-  }
-  io.step('post', 'done', warnings.length ? `${warnings.length} warning(s)` : undefined)
-  return { version: next!, dump: dump[1], warnings }
-}
 
 export interface HpbPlan {
   container: string; service: string; image: string; imageId: string

@@ -20,7 +20,7 @@ import type { BusyHoursLike } from './types'
 
 export type ActionId =
   | 'maintenance-window' | 'phone-region' | 'server-id' | 'disable-app-api' | 'install-notify-push' | 'notify-push-setup'
-  | 'add-indices' | 'mimetype-repair' | 'enforce-2fa' | 'smtp' | 'update-apps' | 'update' | 'hpb-update'
+  | 'add-indices' | 'mimetype-repair' | 'enforce-2fa' | 'unenforce-2fa' | 'smtp' | 'update-apps' | 'update' | 'hpb-update'
 
 export type FlowId = 'smtp' | 'enforce-2fa' | 'client-push' | 'log' | 'cron' | 'app-api-daemon' | 'hpb-manual' | 'update-manual'
 
@@ -35,6 +35,7 @@ export const ACTIONS: Record<ActionId, { secure: boolean; long: boolean; label: 
   'add-indices':         { secure: true,  long: true,  label: 'Add the missing database indices' },
   'mimetype-repair':     { secure: true,  long: true,  label: 'Run the mimetype migrations' },
   'enforce-2fa':         { secure: true,  long: false, label: 'Enforce two-factor authentication' },
+  'unenforce-2fa':       { secure: true,  long: false, label: 'Stop enforcing two-factor authentication' },
   'smtp':                { secure: true,  long: false, label: 'Save the mail server' },
   'update-apps':         { secure: true,  long: true,  label: 'Update the apps' },
   'update':              { secure: true,  long: true,  label: 'Update Nextcloud' },

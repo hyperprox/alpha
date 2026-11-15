@@ -22,8 +22,8 @@ export const DETECT_SCRIPT = String.raw`set +e
 if command -v docker >/dev/null 2>&1; then
   echo "DOCKER|$(docker version --format '{{.Server.Version}}' 2>/dev/null)"
   echo "COMPOSE|$(docker compose version --short 2>/dev/null)"
-  docker ps -a --no-trunc --format '{{.Names}}|{{.Image}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Label "com.docker.compose.project.config_files"}}|{{.State}}' 2>/dev/null | head -60 |
-  while IFS='|' read -r name image proj svc wd cfg state; do
+  docker ps -a --no-trunc --format '{{.Names}}|{{.Image}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Label "com.docker.compose.project.config_files"}}|{{.State}}|{{.Label "com.docker.compose.depends_on"}}' 2>/dev/null | head -60 |
+  while IFS='|' read -r name image proj svc wd cfg state deps; do
     occ=0; ver=""; sig=""; df=0
     if [ "$state" = running ]; then
       docker exec "$name" test -f /var/www/html/occ </dev/null 2>/dev/null && occ=1
@@ -32,7 +32,11 @@ if command -v docker >/dev/null 2>&1; then
     fi
     iid=$(docker inspect --format '{{.Image}}' "$name" 2>/dev/null)
     digests=$(docker image inspect --format '{{len .RepoDigests}}' "$iid" 2>/dev/null)
-    np=0; docker inspect --format '{{.Path}} {{join .Args " "}}' "$name" 2>/dev/null | grep -q notify_push && np=1
+    # What the container runs: a sidecar built from the app's image (cron, Client Push) has occ too.
+    cmd=$(docker inspect --format '{{.Path}} {{join .Args " "}}' "$name" 2>/dev/null | tr '|\n' '  ')
+    np=0; case "$cmd" in *notify_push*) np=1;; esac
+    cr=0; case "$cmd" in */cron.sh*|*crond*|*"cron -f"*|*supercronic*) cr=1;; esac
+    web=0; case "$cmd" in *apache2*|*php-fpm*|*httpd*|*frankenphp*|*nginx*) web=1;; esac
     [ -n "$wd" ] && [ -f "$wd/Dockerfile" ] && df=1
     # Does the Compose file give this service a build: key? Only that one bit is printed, never the file
     # (it usually holds the database password).
@@ -49,7 +53,7 @@ if command -v docker >/dev/null 2>&1; then
         ins && i == ci && l ~ /^build:/ { found = 1 }
         END { print found ? 1 : 0 }' "$f1" 2>/dev/null)
     fi
-    echo "CTR|$name|$image|$iid|$proj|$svc|$wd|$cfg|$state|$occ|$digests|$np|$ver|$sig|$df|$bk"
+    echo "CTR|$name|$image|$iid|$proj|$svc|$wd|$cfg|$state|$occ|$digests|$np|$ver|$sig|$df|$bk|$cr|$web|$(printf %s "$deps" | tr -cd 'A-Za-z0-9_.:,-')"
   done
 fi
 for p in /var/www/nextcloud/occ /var/www/html/occ /var/www/html/nextcloud/occ /srv/nextcloud/occ /usr/share/nextcloud/occ /var/www/nextcloud/html/occ; do
@@ -63,6 +67,37 @@ export interface ContainerFact {
   state: string; hasOcc: boolean; repoDigests: number; notifyPush: boolean; imageVersion: string | null; signalingVersion: string | null; dockerfile: boolean
   /** The Compose file gives this service a build: key. */
   buildKey: boolean
+  /** It runs cron (the image's /cron.sh, crond): a sidecar, never the app. */
+  cron: boolean
+  /** It runs a web server or PHP-FPM: the app itself. */
+  web: boolean
+  /** The Compose services it depends on. */
+  dependsOn: string[]
+}
+
+/** The guest has more than one container that could be Nextcloud, and nothing says which: HyperProx does not guess. */
+export class DetectAmbiguous extends Error {
+  constructor(readonly names: string[]) {
+    super(`More than one container could be Nextcloud (${names.join(', ')}), and nothing tells them apart. HyperProx does not guess which one to run occ in or to update.`)
+    this.name = 'DetectAmbiguous'
+  }
+}
+
+/**
+ * The app container: running, with occ, and not a sidecar (cron, Client Push) built from the same image. Among
+ * several, the one running a web server or PHP-FPM; then the one the others depend on; more than one left: refused.
+ */
+export function pickApp(cs: ContainerFact[]): ContainerFact | null {
+  let c = cs.filter(x => x.hasOcc && x.state === 'running' && !x.cron && !x.notifyPush)
+  if (c.length <= 1) return c[0] ?? null
+  const web = c.filter(x => x.web)
+  if (web.length) c = web
+  if (c.length > 1) {
+    const dependedOn = c.filter(x => x.service && cs.some(o => o !== x && o.project === x.project && o.dependsOn.includes(x.service)))
+    if (dependedOn.length) c = dependedOn
+  }
+  if (c.length > 1) throw new DetectAmbiguous(c.map(x => x.name))
+  return c[0]
 }
 
 export interface AppFacts {
@@ -104,7 +139,7 @@ export function parseContainers(out: string): ContainerFact[] {
     if (!line.startsWith('CTR|')) continue
     const f = line.split('|')
     if (f.length < 16) continue
-    const [, name, image, imageId, project, service, workdir, configFile, state, occ, digests, np, ver, sig, df, bk] = f
+    const [, name, image, imageId, project, service, workdir, configFile, state, occ, digests, np, ver, sig, df, bk, cr, web, deps] = f
     if (!CONTAINER_RE.test(name)) continue
     list.push({
       name, image: IMAGE_RE.test(image) ? image : '', imageId: IMAGE_ID_RE.test(imageId) ? imageId : '',
@@ -113,7 +148,9 @@ export function parseContainers(out: string): ContainerFact[] {
       state: /^[a-z]{1,20}$/.test(state) ? state : 'unknown', hasOcc: occ === '1', repoDigests: Number(digests) || 0, notifyPush: np === '1',
       imageVersion: VERSION_RE.test(ver) ? ver : null,
       signalingVersion: /version\s+([^\s/]{1,60})/.exec(sig)?.[1] ?? null,
-      dockerfile: df === '1', buildKey: bk === '1',
+      dockerfile: df === '1', buildKey: bk === '1', cron: cr === '1', web: web === '1',
+      // "db:service_healthy:false,redis:service_started:false" -> ['db', 'redis']
+      dependsOn: (deps ?? '').split(',').map(d => d.split(':')[0]).filter(d => SERVICE_RE.test(d)).slice(0, 30),
     })
   }
   return list
@@ -125,7 +162,7 @@ export function parseDetect(out: string): Deployment | null {
   const docker = /^DOCKER\|(\S{1,40})$/m.exec(out)?.[1] ?? null
   const compose = /^COMPOSE\|v?(\S{1,40})$/m.exec(out)?.[1] ?? null
   const cs = parseContainers(out)
-  const app = cs.find(c => c.hasOcc && c.state === 'running') ?? null
+  const app = pickApp(cs)
   if (app) {
     const same = (c: ContainerFact) => !!app.project && c.project === app.project
     const db = cs.find(c => same(c) && /(^|\/)(postgres|postgis)/i.test(c.image)) ?? cs.find(c => same(c) && /(^|\/)(mariadb|mysql)/i.test(c.image))

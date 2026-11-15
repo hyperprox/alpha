@@ -2373,12 +2373,16 @@ password); only whether its service has a `build:` key.
 HyperProx reaches Nextcloud the way the VPN page reaches a guest: the node's login, then `pct exec` (a
 container) or the guest agent (a VM), the script on standard input. It runs `occ` there
 (`docker exec -u www-data <container> php occ ...`, or `sudo -u www-data php <path>/occ ...` for a plain
-install) from a fixed list of commands, each with checked arguments; nothing you type reaches a shell as
-anything but one quoted, checked word. A guest with the Proxmox tag `hyperprox-ignore` is never entered.
+install) from a fixed list of commands, each with checked arguments, options first and values after `--`;
+nothing you type reaches a shell as anything but one quoted, checked word. A guest with the Proxmox tag
+`hyperprox-ignore` is never entered. A cron or Client Push container built from the same image is never taken
+for Nextcloud itself; when two containers could be it and nothing tells them apart, HyperProx says so and
+does not guess.
 
 **The web login (optional).** An admin user and an app password (Personal settings → Security → Create
 new app password), or tick **Make the app password for me** and HyperProx makes one named `HyperProx` with
-`occ user:auth-tokens:add`. It is tested with a real read before it is saved, kept in the vault, and used
+`occ user:auth-tokens:add`, only after every other check passed, and revokes it again if the add fails after that. It is tested with a real read before it is saved (a new address or user needs the password again in the same
+save, so a stored one is never sent anywhere else), kept in the vault, and used
 only for two read-only GETs: the serverinfo API (PHP limits, database size, storage, active users) and the
 admin page's own setup checks, which know the browser's request. Without it the checks come from
 `occ setupchecks`, and the two that only fire on the command line (no visitor address there:
@@ -2396,9 +2400,12 @@ The page opens with a health ring and counts of errors, warnings and notes, then
     when no External Apps are installed, app updates (`occ app:update --all`), and updating Talk's signalling
     server;
   - *guided steps*: mail (a form; the password goes to the vault and to `occ config:import` on standard
-    input, never a command line; send a test mail from Nextcloud afterwards to clear the check), enforcing
-    two-factor authentication (it lists who has no second factor yet, takes groups to leave out, and wants
-    you to confirm you read the list), Client Push, the log entries, and switching background jobs to cron;
+    input, never a command line, and a saved password is only reused for the same server, port and login;
+    send a test mail from Nextcloud afterwards to clear the check), enforcing two-factor authentication (it
+    shows the enforcement as it stands and keeps its groups, lists who has no second factor yet and which
+    admins have none, takes groups to leave out, only counts TOTP and WebAuthn as something a user can set up
+    at sign-in, refuses while any user could not be checked, and has **Stop enforcing** to undo it), Client
+    Push, the log entries, and switching background jobs to cron;
   - *optional*: what the recording backend, SIP and the AppAPI deploy daemon would give you and what they
     need, with **Dismiss**.
   Every card can be snoozed for 7 or 30 days; snoozed ones are folded away and can be brought back.
@@ -2416,26 +2423,37 @@ block); then **Test and save**, which runs `occ notify_push:setup` against your 
 
 **Updating Nextcloud** (Docker Compose only; a plain install or a container without Compose gets the exact
 steps instead). **Check and update** first shows the check: who has been active in the last 10 minutes
-(every user's sessions; HyperProx's own `HyperProx` app password is not counted), Talk calls running, a
-backup of the guest running, room for the dump, and a pending upgrade or maintenance mode left on. Any of
+(every user's sessions; HyperProx's own app password, known by its token id, is not counted), Talk calls running, a
+backup of the guest running, room for the dump and the new image (the database's size plus a 3 GiB margin),
+and a pending upgrade or maintenance mode left on. A user id HyperProx cannot check counts as someone online. Any of
 them stops it, with the reason. It shows where the database dump goes (`hyperprox-backups` in the Compose
 directory), every step, how to roll back, and whether Proxmox can snapshot the guest: a container with bind
 mounts cannot be snapshotted, so the dump and the kept image are the rollback. **Back up and update** needs
-the master password. Then, in the background, with each step on the page:
+the master password. The update then runs as one script started inside the guest (`systemd-run`, or
+`nohup setsid` where the guest has no systemd), so a closed page or a restart of HyperProx does not stop it:
+it writes its progress and log under `hyperprox-backups/jobs/<job>` and HyperProx reads them, again after a
+restart too. Each step is on the page:
 
-1. maintenance mode on;
-2. the database dumped inside the Compose project (`pg_dump -Fc`, read back with `pg_restore --list`; or
-   `mysqldump`, checked with `gzip -t`), and `config.php` copied beside it;
-3. the image in use tagged `<image>:hyperprox-pre-<version>`, so the old code stays on disk;
-4. the new image: `docker compose build --pull` when the service is built from a Dockerfile (a plain pull
+1. `config.php` copied into the backup directory, before maintenance mode, so the copy does not carry it back;
+2. maintenance mode on;
+3. the database dumped inside the Compose project (`pg_dump -Fc`, read back with `pg_restore --list`; or
+   `mysqldump`, checked with `gzip -t`);
+4. the image in use tagged `<image>:hyperprox-pre-<version>`, so the old code stays on disk;
+5. the new image: `docker compose build --pull` when the service is built from a Dockerfile (a plain pull
    would change nothing), else `docker compose pull`. The image's own `NEXTCLOUD_VERSION` must be newer and
    at most one major version ahead, or it stops here and turns maintenance mode off again;
-5. `docker compose up -d --no-deps <service>`: the image upgrades Nextcloud when it starts;
-6. `occ status` until it reports the new version (`occ upgrade` once if the image did not run it; maintenance
-   mode off if it was left on);
-7. `occ db:add-missing-indices`, `db:add-missing-columns` and `db:add-missing-primary-keys`.
+6. `docker compose up -d --no-deps <service>`: the image upgrades Nextcloud when it starts;
+7. `occ status` until it reports the new version (`occ upgrade` once, after 10 minutes, only when the image is
+   not still upgrading: no `occ upgrade` running and its lock on `nextcloud-init-sync.lock` free; maintenance mode off if it
+   was left on);
+8. `occ db:add-missing-indices`, `db:add-missing-columns` and `db:add-missing-primary-keys`.
 
+Every failure says whether maintenance mode is still on, and the rollback steps end by turning it off.
 Nothing is deleted at any step: old dumps and old images stay until you remove them.
+
+While an update (or any other long Nextcloud job) runs, `deploy.sh` and the in-app updater refuse to restart
+HyperProx, and name the job. This works for any plug-in: long work registers in `/run/hyperprox-busy` while
+it runs. `HYPERPROX_IGNORE_BUSY=1 deploy.sh` overrides it for a job that can no longer be reached.
 
 **Updating Talk's signalling server** pulls its image and recreates only that container when the image
 changed (the previous one is tagged `hyperprox-pre-<version>`), refused while a call is running.
@@ -2443,8 +2461,8 @@ changed (the previous one is tagged `hyperprox-pre-<version>`), refused while a 
 Every action is an admin's and a signed-in person's (API tokens are refused), is written to the audit log
 before it runs (if the entry cannot be written, nothing runs), and runs one at a time per Nextcloud. The
 update, the signalling update, the database work, mail, two-factor enforcement and app updates also need the
-master password. Viewers see the health and the checks, but not the log, user names, paths or container
-names. The page reads Nextcloud again every two minutes while it is open (a reading is kept 30 seconds).
+master password. Viewers see the health and the checks, but not the log, user names, paths, container or
+image names, or the confirm texts, and cannot ask for a fresh read. The page reads Nextcloud again every two minutes while it is open (a reading is kept 30 seconds).
 
 ### Settings
 
