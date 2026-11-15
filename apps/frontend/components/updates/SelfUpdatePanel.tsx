@@ -279,7 +279,7 @@ function WhatsNewNow({ wn }: { wn: WhatsNew }) {
   )
 }
 
-function JobView({ job, away, logRef }: { job: Job; away: boolean; logRef: React.RefObject<HTMLPreElement> }) {
+function JobView({ job, away, logRef }: { job: Job; away: boolean; logRef: React.RefObject<HTMLPreElement | null> }) {
   return (
     <div className="space-y-2 rounded-md border p-3" style={{ borderColor: 'var(--border-soft)' }} aria-live="polite">
       <div className="flex flex-wrap items-center gap-2 text-sm">

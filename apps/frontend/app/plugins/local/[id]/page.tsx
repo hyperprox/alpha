@@ -8,12 +8,13 @@
 //  only (the page says so plainly when the signed-in person is not).
 // =============================================================================
 
-import { useEffect, useState, type ComponentType } from 'react'
+import { useEffect, useState, type ComponentType, use } from 'react'
 import Link from 'next/link'
 import { LOCAL_PLUGINS } from '@local-plugins'
 import { Page, Panel } from '@/components/visual/kit'
 
-export default function LocalPluginPage({ params }: { params: { id: string } }) {
+export default function LocalPluginPage(props: { params: Promise<{ id: string }> }) {
+  const params = use(props.params)
   const plugin = LOCAL_PLUGINS.find(p => p.id === params.id)
   const [View, setView] = useState<ComponentType | null>(null)
   const [error, setError] = useState<string | null>(null)

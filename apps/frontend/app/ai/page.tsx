@@ -149,7 +149,7 @@ const TIER_COLOR: Record<string, string> = {
   large:  'var(--violet)',
 }
 
-const STEP_ICON: Record<string, (p: { size?: number }) => JSX.Element> = {
+const STEP_ICON: Record<string, (p: { size?: number }) => React.JSX.Element> = {
   create_lxc:       BoxIcon,
   configure_proxy:  SplitIcon,
   create_dns:       GlobeIcon,

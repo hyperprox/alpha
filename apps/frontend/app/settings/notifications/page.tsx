@@ -362,7 +362,7 @@ export default function NotificationsPage() {
   const [testing, setTesting] = useState<string | null>(null)
   const [justMade, setJustMade] = useState<Channel | null>(null)
   const [toast, setToast] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
-  const toastTimer = useRef<ReturnType<typeof setTimeout>>()
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // Only the newest read may fill the list: an older read that finishes late (after a delete, say) would put the
   // removed channel back.

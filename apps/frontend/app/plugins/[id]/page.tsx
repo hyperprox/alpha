@@ -9,7 +9,7 @@
 //  table in full, filterable, folded into Details at the bottom.
 // =============================================================================
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, use } from 'react'
 import type { PluginVisual } from '@hyperprox/types'
 import { HomeAssistantPage } from '@/components/plugins/home-assistant/HomeAssistant'
 import { QnapPage } from '@/components/plugins/qnap/QnapPage'
@@ -520,7 +520,8 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
 }
 
 /** Home Assistant has its own page: several houses, each with Devices (controls), health and settings. */
-export default function PluginPage({ params }: { params: { id: string } }) {
+export default function PluginPage(props: { params: Promise<{ id: string }> }) {
+  const params = use(props.params)
   if (params.id === 'qnap') return <QnapPage />
   if (params.id === 'asus') return <AsusPage />
   if (params.id === 'pbs') return <PbsPage />
