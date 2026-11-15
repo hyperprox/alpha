@@ -20,6 +20,7 @@ import type { Shell } from './shell'
 import { FINAL, initialState, readState, writeJsonAtomic, STEP_LABELS, type UpdateJob, type UpdateState } from './state'
 import { makeRedactor, envSecrets, type Redactor } from './redact'
 import { findUpdate, type AvailableUpdate, type CheckResult, type Installed } from './check'
+import { dayOf, entriesSince, notesSummary, parseChangelog, type ChangelogEntry } from './changelog'
 import { RateLimitedError, type Upstream } from './upstream'
 import { inWindow, mergeSettings, SettingsError, SettingsStore, type SelfUpdateSettings } from './settings'
 import { effectiveChannel, installedLabel, type ChannelSource } from './channel'
@@ -150,7 +151,8 @@ export class SelfUpdateService {
     }
     const branch = await git(['symbolic-ref', '--short', '-q', 'HEAD'])
     const describe = await git(['describe', '--tags', '--always'])
-    const inst: Installed = { version, sha, describe: describe || sha.slice(0, 7), branch: branch || null, git: true }
+    const date = await git(['show', '-s', '--format=%cI', 'HEAD'])
+    const inst: Installed = { version, sha, describe: describe || sha.slice(0, 7), branch: branch || null, git: true, date: dayOf(date) ? date : null }
     const l = installedLabel(inst)
     return (this.lastInstalled = { ...inst, tagged: l.tagged, label: l.label, display: l.display })
   }
@@ -194,7 +196,8 @@ export class SelfUpdateService {
           type: 'updates.self.available', severity: result.available.flags.breaking.length ? 'warning' : 'info',
           title: `HyperProx ${result.available.label} is available`,
           lines: [`Installed: ${inst.version} (${inst.sha.slice(0, 7)})`, `Channel: ${s.channel}`,
-                  ...(result.available.flags.breaking.length ? [`Breaking or migration notes: ${result.available.flags.breaking.length}`] : [])],
+                  ...(result.available.flags.breaking.length ? [`Breaking or migration notes: ${result.available.flags.breaking.length}`] : []),
+                  ...whatsNewLines(result.available)],
           link: '/updates#hyperprox', where: 'Updates page', fingerprint: `updates.self.available:${result.available.sha}`,
         })
         notifiedSha = result.available.sha
@@ -281,7 +284,8 @@ export class SelfUpdateService {
       if (available.flags.migrations.length) warnings.push(`${available.flags.migrations.length} database migration${available.flags.migrations.length === 1 ? '' : 's'} will run. Migrations only go forward: if the update then fails, the database is restored from the backup taken first, and anything written in between is lost.`)
       else if (available.flags.filesUnknown) warnings.push('Upstream did not say which files change; whether migrations run is checked after fetching.')
       if (available.flags.keyholder) warnings.push('This version changes the keyholder, so HyperProx locks once when it restarts: someone has to sign in again.')
-      if (available.flags.breaking.length) warnings.push(`Breaking or migration notes: ${available.flags.breaking.join(' · ')}`)
+      // Counted, never quoted: the flags can come from commit messages, which the page does not show.
+      if (available.flags.breaking.length) warnings.push(`This update is marked as having ${available.flags.breaking.length} breaking change${available.flags.breaking.length === 1 ? '' : 's'}. Read "Before you update" in what's new first.`)
       if (available.channel === 'stable' && available.signature) {
         const sig = available.signature
         if (!sig.signed) warnings.push(settings.requireSigned ? 'This release is not signed; it will be refused.' : 'This release is not a signed tag.')
@@ -359,6 +363,29 @@ export class SelfUpdateService {
       throw e
     }
     return st
+  }
+
+  // --- what's new in the version that is running --------------------------------------------------
+
+  /**
+   * After a successful update: the plain-English entries of the RUNNING version's CHANGELOG.md that the update
+   * brought (dated on or after the first commit it added). Null when the last run did not succeed, the install has
+   * moved on since, or nothing maps. The page shows it once; dismissing is remembered per browser.
+   */
+  async whatsNew(): Promise<{ job: string; label: string; finishedAt: string | null; entries: ChangelogEntry[] } | null> {
+    const s = await this.job()
+    if (!s || s.status !== 'succeeded') return null
+    const HEX = /^[0-9a-f]{40}$/
+    if (!HEX.test(s.from?.sha ?? '') || !HEX.test(s.target?.sha ?? '')) return null
+    const inst = await this.installed().catch(() => null)
+    if (!inst?.sha || inst.sha !== s.target.sha) return null
+    let md: string
+    try { md = fs.readFileSync(path.join(this.d.dir, 'CHANGELOG.md'), 'utf8') } catch { return null }
+    const git = async (args: string[]) => { const r = await this.d.sh.run('git', args, { cwd: this.d.dir }); return r.code === 0 ? r.stdout.trim() : '' }
+    const first = (await git(['log', '--reverse', '--format=%cI', `${s.from.sha}..${s.target.sha}`])).split('\n')[0]
+    const fromDay = dayOf(first) ?? dayOf(await git(['show', '-s', '--format=%cI', s.from.sha]))
+    const entries = entriesSince(parseChangelog(md), fromDay)
+    return entries.length ? { job: s.id, label: s.target.label, finishedAt: s.finishedAt ?? null, entries } : null
   }
 
   // --- after a restart, and the timer --------------------------------------------------------------
@@ -471,4 +498,11 @@ export function launchUpdater(sh: Shell, opts: { distDir: string; dataDir: strin
     const r = await sh.run('systemd-run', args)
     if (r.code !== 0) throw new Error(`systemd-run failed: ${(r.stderr || r.stdout).trim()}`)
   }
+}
+
+/** A line or two for the "update available" notification: the plain titles of what's new. */
+function whatsNewLines(av: AvailableUpdate): string[] {
+  const n = notesSummary(av.changelog)
+  if (!n.count) return []
+  return [`What's new: ${n.titles.join('; ')}`, ...(n.before ? ['There is something to read before you update.'] : [])]
 }

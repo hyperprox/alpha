@@ -7,12 +7,15 @@
 //    alpha   the newest commit on main
 //
 //  What comes back is everything the page shows before anyone presses
-//  anything: version, date, the release notes or the commits since the
-//  installed one in plain words, and flags for breaking changes, database
-//  migrations and a keyholder change (which locks HyperProx once).
+//  anything: version, date, what's new (the plain-English CHANGELOG.md entries
+//  of the offered version that this install does not have yet, changelog.ts),
+//  and flags for breaking changes, database migrations and a keyholder change
+//  (which locks HyperProx once). The page never shows commit messages: the
+//  commit list stays in the answer for the count and for API clients.
 // =============================================================================
 
 import { compareVersions, isVersion } from '../app-updates/versions'
+import { dayOf, notesFor, type UpdateNotes } from './changelog'
 import type { Channel } from './state'
 import type { Comparison, Upstream } from './upstream'
 
@@ -29,6 +32,8 @@ export interface Installed {
   label?:  string
   /** The same in words: "0.2.0-alpha (main @ 1a2b3c4, untagged)". */
   display?: string
+  /** When the installed commit was made (ISO); the fallback start of the changelog range. */
+  date?: string | null
 }
 
 export interface UpdateCommit { sha: string; text: string; date: string | null }
@@ -42,6 +47,8 @@ export interface AvailableUpdate {
   date:    string | null
   /** Release notes (stable), when the release has any. */
   notes:   string | null
+  /** What's new in plain English, from CHANGELOG.md at the offered commit. */
+  changelog: UpdateNotes
   url:     string | null
   commits: UpdateCommit[]
   /** Commits between the installed one and the target; more than `commits` when the list was cut. */
@@ -111,6 +118,21 @@ function commitsFrom(cmp: Comparison | null): { list: UpdateCommit[]; total: num
   return { list: newest.slice(0, 50), total: cmp?.total ?? newest.length }
 }
 
+/**
+ * What's new: CHANGELOG.md read from the OFFERED commit (never the installed copy), entries dated on or after
+ * the first commit the install does not have (else the installed commit's own day). When upstream lists the
+ * changed files and CHANGELOG.md is not among them, the update brings no new entries and nothing is fetched.
+ * A failed read never fails the check: the page then says there are no notes yet.
+ */
+export async function changelogFor(up: Upstream, sha: string, installed: Installed, cmp: Comparison | null): Promise<UpdateNotes> {
+  const firstNew = cmp?.commits?.find(c => dayOf(c.date))?.date ?? null
+  const fromDay = dayOf(firstNew) ?? dayOf(installed.date ?? null)
+  if (cmp?.files && !cmp.files.includes('CHANGELOG.md')) return { entries: [], read: true, fromDay }
+  if (!up.file) return notesFor(null, fromDay)
+  try { return notesFor(await up.file(sha, 'CHANGELOG.md'), fromDay) }
+  catch { return notesFor(null, fromDay) }
+}
+
 /** Ask one upstream. Throws when it cannot answer (the caller tries the next). */
 export interface FindOptions { branch?: string; /** Stable: also offer GitHub pre-releases (default true while every version is -alpha). */ includePrereleases?: boolean }
 
@@ -131,10 +153,11 @@ export async function findUpdate(installed: Installed, channel: Channel, up: Ups
         : `Upstream ${branch} (${head.sha.slice(0, 7)}) does not contain this install's commit ${installed.sha.slice(0, 7)}, so it is not offered as an update.` }
     }
     const { list, total } = commitsFrom(cmp)
+    const changelog = await changelogFor(up, head.sha, installed, cmp)
     return {
       available: {
         channel, sha: head.sha, ref: branch, label: `${branch} @ ${head.sha.slice(0, 7)}`, version: null, date: head.date,
-        notes: null, url: null, commits: list.length ? list : [{ sha: head.sha, text: plainCommit(head.subject) ?? head.subject, date: head.date }],
+        notes: null, changelog, url: null, commits: list.length ? list : [{ sha: head.sha, text: plainCommit(head.subject) ?? head.subject, date: head.date }],
         totalCommits: total || 1, flags: flagsFrom(null, cmp), signature: null,
       },
       note: `${total || 1} new commit${total === 1 ? '' : 's'} on ${branch}.`,
@@ -170,10 +193,11 @@ export async function findUpdate(installed: Installed, channel: Channel, up: Ups
   }
   const { list, total } = commitsFrom(cmp)
   const notes = best.release?.notes?.trim() || null
+  const changelog = await changelogFor(up, tag.commit, installed, cmp)
   return {
     available: {
       channel, sha: tag.commit, ref: best.tag, label: best.tag, version: best.version, date: best.release?.date ?? null,
-      notes, url: best.release?.url ?? null, commits: list, totalCommits: total, flags: flagsFrom(notes, cmp),
+      notes, changelog, url: best.release?.url ?? null, commits: list, totalCommits: total, flags: flagsFrom(notes, cmp),
       signature: { annotated: tag.annotated, signed: tag.signed, verifiedByHost: tag.verified },
     },
     note: cmpV === 0 ? `${best.tag} was released with commits newer than this build of ${installed.version}.` : `${best.tag} is available.`,

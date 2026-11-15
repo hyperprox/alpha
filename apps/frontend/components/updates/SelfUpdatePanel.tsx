@@ -8,6 +8,11 @@
 //  steps and log as the updater runs them. The updater restarts HyperProx, so
 //  the progress comes from its state file: when the API is back, the next
 //  poll carries on from where the updater is.
+//
+//  What's new is the plain-English CHANGELOG.md entries of the offered version
+//  (the API reads them from that version, lib/self-update/changelog.ts). Commit
+//  messages are never shown here; with no notes the page says so and gives the
+//  number of changes.
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -16,10 +21,15 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Badge, Btn, ConfirmDialog, Notice, Panel, fmtTime } from './ui'
 
 type Channel = 'stable' | 'alpha'
-interface Commit { sha: string; text: string; date: string | null }
+type NoteKind = 'before' | 'new' | 'improved' | 'fixed' | 'other'
+interface NoteEntry { id: string; date: string; version: string | null; title: string; sections: Array<{ kind: NoteKind; heading: string; items: string[] }> }
+interface Notes { entries: NoteEntry[]; read: boolean; fromDay: string | null }
+interface WhatsNew { job: string; label: string; finishedAt: string | null; entries: NoteEntry[] }
 interface Available {
   channel: Channel; sha: string; ref: string; label: string; version: string | null; date: string | null
-  notes: string | null; url: string | null; commits: Commit[]; totalCommits: number
+  url: string | null; totalCommits: number
+  /** Absent on a check saved by an older HyperProx. */
+  changelog?: Notes
   flags: { breaking: string[]; migrations: string[]; keyholder: boolean; unknownBase: boolean; filesUnknown: boolean }
   signature: { annotated: boolean; signed: boolean | null; verifiedByHost: boolean | null } | null
 }
@@ -35,6 +45,7 @@ interface Status {
   installed: { version: string; sha: string; describe: string; branch: string | null; git: boolean }
   running: { version: string; commit: string }
   settings: Settings; locks: { requireSigned?: string }; autoInstallBlocked: string | null; check: Check | null; job: Job | null
+  whatsNew?: WhatsNew | null
   upstream: { repoUrl: string; mirrorUrl: string | null; trustedKeys: boolean }
 }
 interface Refusal { code: string; text: string; detail?: string[] }
@@ -57,7 +68,6 @@ export function SelfUpdatePanel() {
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<{ tone: 'warn' | 'crit' | 'info'; text: string } | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
-  const [showCommits, setShowCommits] = useState(false)
   const [editing, setEditing] = useState<Settings | null>(null)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const logRef = useRef<HTMLPreElement>(null)
@@ -156,7 +166,8 @@ export function SelfUpdatePanel() {
 
             {job && (job.status === 'running' || job.finishedAt) && <JobView job={job} away={away} logRef={logRef} />}
 
-            {av && !running && <Offer av={av} showCommits={showCommits} onCommits={() => setShowCommits(v => !v)} onPreview={() => void openPreview()} busy={busy} />}
+            {st.whatsNew && !running && <WhatsNewNow wn={st.whatsNew} />}
+            {av && !running && <Offer av={av} onPreview={() => void openPreview()} busy={busy} />}
             {editing && <SettingsForm s={editing} locks={st.locks ?? {}} autoBlocked={st.autoInstallBlocked} onChange={setEditing} onSave={() => void saveSettings()} onCancel={() => setEditing(null)} busy={busy} />}
           </div>
         )}
@@ -167,6 +178,7 @@ export function SelfUpdatePanel() {
           <ol className="list-decimal space-y-1.5 pl-5 text-sm" style={{ color: 'var(--text-soft)' }}>
             {preview.steps.map((s, i) => <li key={i}>{s}</li>)}
           </ol>
+          {preview.target && <BeforeYouUpdate entries={preview.target.changelog?.entries ?? []} />}
           {preview.warnings.map((w, i) => <Notice key={i} tone="warn">{w}</Notice>)}
           {preview.refusals.map(r => (
             <Notice key={r.code} tone="crit">
@@ -186,29 +198,83 @@ export function SelfUpdatePanel() {
   )
 }
 
-function Offer({ av, showCommits, onCommits, onPreview, busy }: { av: Available; showCommits: boolean; onCommits: () => void; onPreview: () => void; busy: boolean }) {
+function Offer({ av, onPreview, busy }: { av: Available; onPreview: () => void; busy: boolean }) {
+  const entries = av.changelog?.entries ?? []
   return (
     <div className="space-y-2 rounded-md border p-3" style={{ borderColor: 'var(--border-soft)' }}>
       <div className="flex flex-wrap items-center gap-2">
         <b>{av.label}</b>
         {av.date && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{fmtTime(av.date)}</span>}
-        {av.flags.breaking.length > 0 && <Badge tone="crit">breaking / migration notes</Badge>}
+        {av.flags.breaking.length > 0 && <Badge tone="crit">read before you update</Badge>}
         {av.flags.migrations.length > 0 && <Badge tone="warn" title={av.flags.migrations.join('\n')}>{av.flags.migrations.length} database migration{av.flags.migrations.length === 1 ? '' : 's'}</Badge>}
         {av.flags.keyholder && <Badge tone="warn">locks once: sign in again</Badge>}
         {av.signature?.signed && <Badge tone="good">signed tag</Badge>}
         {safeHref(av.url) && <a href={safeHref(av.url)!} target="_blank" rel="noreferrer noopener" className="text-xs underline" style={{ color: 'var(--accent)' }}>release page</a>}
         <span className="ml-auto"><Btn kind="primary" small onClick={onPreview} disabled={busy}>Preview and install</Btn></span>
       </div>
-      {av.flags.breaking.length > 0 && <Notice tone="warn"><ul className="list-disc pl-5">{av.flags.breaking.map((b, i) => <li key={i}>{b}</li>)}</ul></Notice>}
-      {av.notes && <div className="max-h-64 overflow-auto whitespace-pre-wrap text-sm" style={{ color: 'var(--text-soft)' }}>{av.notes}</div>}
-      {av.commits.length > 0 && (
-        <div className="text-sm">
-          <button type="button" className="underline" style={{ color: 'var(--accent)' }} onClick={onCommits}>
-            {showCommits ? 'Hide' : 'Show'} what changed ({av.totalCommits} commit{av.totalCommits === 1 ? '' : 's'}{av.totalCommits > av.commits.length ? `, newest ${av.commits.length} listed` : ''})
-          </button>
-          {showCommits && <ul className="mt-1 list-disc space-y-0.5 pl-5" style={{ color: 'var(--text-soft)' }}>{av.commits.map(c => <li key={c.sha}>{c.text}</li>)}</ul>}
-        </div>
+      <h4 className="text-sm font-semibold">What's new in this update</h4>
+      {entries.length > 0 ? <NotesView entries={entries} /> : (
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          No notes for this update yet. It brings {av.totalCommits} change{av.totalCommits === 1 ? '' : 's'}{av.changelog && !av.changelog.read ? ' (the notes could not be read just now; Check now tries again)' : ''}.
+        </p>
       )}
+    </div>
+  )
+}
+
+const KIND_TITLE: Record<Exclude<NoteKind, 'before'>, string> = { new: 'New', improved: 'Improved', fixed: 'Fixed', other: 'Also' }
+
+/** "Before you update" from every entry, highlighted. Nothing when there is none. */
+function BeforeYouUpdate({ entries }: { entries: NoteEntry[] }) {
+  const items = entries.flatMap(e => e.sections.filter(x => x.kind === 'before').flatMap(x => x.items))
+  if (!items.length) return null
+  return (
+    <Notice tone="warn">
+      <b>Before you update</b>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5">{items.map((t, i) => <li key={i}>{t}</li>)}</ul>
+    </Notice>
+  )
+}
+
+/** The plain-English notes: "Before you update" first, then New, Improved and Fixed across the entries. */
+function NotesView({ entries }: { entries: NoteEntry[] }) {
+  const groups = (['new', 'improved', 'fixed', 'other'] as const)
+    .map(k => ({ k, items: entries.flatMap(e => e.sections.filter(x => x.kind === k).flatMap(x => x.items)) }))
+    .filter(g => g.items.length)
+  return (
+    <div className="space-y-2 text-sm">
+      <BeforeYouUpdate entries={entries} />
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        {entries.map(e => `${e.title || 'Changes'} (${e.date})`).join(' · ')}
+      </p>
+      <div className="max-h-96 space-y-2 overflow-auto pr-1">
+        {groups.map(g => (
+          <div key={g.k}>
+            <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--accent)' }}>{KIND_TITLE[g.k]}</div>
+            <ul className="mt-0.5 list-disc space-y-0.5 pl-5" style={{ color: 'var(--text-soft)' }}>{g.items.map((t, i) => <li key={i}>{t}</li>)}</ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const DISMISS_KEY = 'hyperprox.whatsNew.dismissed'
+
+/** After an update: what's new in the version now running, once, until dismissed (remembered per browser). */
+function WhatsNewNow({ wn }: { wn: WhatsNew }) {
+  const [hidden, setHidden] = useState(true)
+  useEffect(() => { try { setHidden(localStorage.getItem(DISMISS_KEY) === wn.job) } catch { setHidden(false) } }, [wn.job])
+  if (hidden) return null
+  const dismiss = () => { try { localStorage.setItem(DISMISS_KEY, wn.job) } catch { /* shown again next time */ } setHidden(true) }
+  return (
+    <div className="space-y-2 rounded-md border p-3" style={{ borderColor: 'var(--accent)' }} role="region" aria-label="What's new in the version you're running">
+      <div className="flex flex-wrap items-center gap-2">
+        <b>What's new in the version you're running</b>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{wn.label}</span>
+        <span className="ml-auto"><Btn small onClick={dismiss}>Dismiss</Btn></span>
+      </div>
+      <NotesView entries={wn.entries} />
     </div>
   )
 }

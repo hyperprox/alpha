@@ -11,7 +11,8 @@
 //      against the limit and the cached body is used;
 //    - a 403/429 that says the limit is spent stops every request until the
 //      reset time GitHub gives, and the check falls through to the mirror;
-//    - a check makes at most four requests, and runs every 6 hours by default.
+//    - a check makes at most four requests, and runs every 6 hours by default,
+//      plus one for CHANGELOG.md at the offered commit when the update changes it.
 // =============================================================================
 
 import fs from 'fs'
@@ -43,6 +44,18 @@ export interface Upstream {
   tag(tag: string): Promise<TagInfo>
   head(branch: string): Promise<CommitInfo>
   compare(base: string, head: string): Promise<Comparison>
+  /** A file's text at a commit; null when the commit has no such file. Optional: an upstream without it gives no notes. */
+  file?(ref: string, path: string): Promise<string | null>
+}
+
+/** The only files the check asks upstream for. */
+const READABLE_FILES = new Set(['CHANGELOG.md'])
+const checkFile = (p: string) => { if (!READABLE_FILES.has(p)) throw new UpstreamError(`"${p}" is not a file this check reads`); return p }
+const MAX_FILE = 512 * 1024
+const fromBase64 = (j: any): string | null => {
+  if (!j || typeof j.content !== 'string' || (j.encoding && j.encoding !== 'base64')) return null
+  const t = Buffer.from(j.content, 'base64').toString('utf8')
+  return t.length > MAX_FILE ? t.slice(0, MAX_FILE) : t
 }
 
 export class RateLimitedError extends Error {
@@ -192,6 +205,10 @@ export class GitHubUpstream implements Upstream {
       throw e
     }
   }
+  async file(ref: string, p: string): Promise<string | null> {
+    try { return fromBase64(await this.get(`/contents/${checkFile(p)}?ref=${encodeURIComponent(checkRef(ref))}`)) }
+    catch (e) { if (e instanceof UpstreamError && e.status === 404) return null; throw e }
+  }
 }
 
 // --- GitLab (a mirror) -------------------------------------------------------------------------------------
@@ -244,6 +261,10 @@ export class GitLabUpstream implements Upstream {
       if (e instanceof UpstreamError && e.status === 404) return { status: 'unknown', commits: [], files: null, total: 0 }
       throw e
     }
+  }
+  async file(ref: string, p: string): Promise<string | null> {
+    try { return fromBase64(await this.get(`/repository/files/${encodeURIComponent(checkFile(p))}?ref=${encodeURIComponent(checkRef(ref))}`)) }
+    catch (e) { if (e instanceof UpstreamError && e.status === 404) return null; throw e }
   }
 }
 
@@ -304,5 +325,12 @@ export class GitUpstream implements Upstream {
     const commits = (await this.log(['--reverse', `${base}..${checkRef(head)}`])).slice(-250)
     const files = (await this.git(['diff', '--name-only', base, head])).split('\n').filter(Boolean)
     return { status, commits, files, total: commits.length }
+  }
+  /** From the objects head()/tag() already fetched: nothing is fetched or checked out here. */
+  async file(ref: string, p: string): Promise<string | null> {
+    if (!/^[0-9a-f]{40}$/.test(ref)) throw new UpstreamError(`"${ref}" is not a commit this check will read from`)
+    const r = await this.sh.run('git', ['cat-file', '-p', `${ref}:${checkFile(p)}`], { cwd: this.dir, timeoutMs: 30_000 })
+    if (r.code !== 0) return null
+    return r.stdout.length > MAX_FILE ? r.stdout.slice(0, MAX_FILE) : r.stdout
   }
 }

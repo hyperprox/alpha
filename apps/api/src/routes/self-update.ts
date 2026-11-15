@@ -23,6 +23,7 @@ import { APP_VERSION } from '../lib/version'
 import { RealShell, type Shell } from '../lib/self-update/shell'
 import { SelfUpdateService, RefusedError, launchUpdater, type SelfUpdateConfig } from '../lib/self-update/service'
 import { SettingsError } from '../lib/self-update/settings'
+import { notesSummary } from '../lib/self-update/changelog'
 import { upstreamAllowed } from '../lib/self-update/runner'
 import { GitHubUpstream, GitLabUpstream, GitUpstream, HttpCache, githubRepo, gitlabProject, type Fetcher, type Upstream } from '../lib/self-update/upstream'
 
@@ -123,7 +124,8 @@ export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPl
         // What this install calls itself: its tag, or "0.2.0-alpha+main.1a2b3c4" when it is not a release.
         label: inst?.label ?? null, display: inst?.display ?? null, tagged: inst?.tagged ?? null,
         channel: svc.channelInfo().channel,
-        available: c?.available ? { label: c.available.label, version: c.available.version, channel: c.available.channel } : null,
+        // What's new, as titles only (the top-bar chip's tooltip); the full notes are on the admin status.
+        available: c?.available ? { label: c.available.label, version: c.available.version, channel: c.available.channel, notes: notesSummary(c.available.changelog) } : null,
         updating: job?.status === 'running',
       }
     })
@@ -136,6 +138,7 @@ export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPl
         // The channel in effect, whether someone chose it or it follows the install's kind, and why.
         channel: svc.channelInfo(),
         settings: svc.settings(), locks: svc.locks(), autoInstallBlocked: svc.autoInstallBlocked(), check: svc.lastCheck(), job,
+        whatsNew: await svc.whatsNew().catch(() => null),
         upstream: { repoUrl: cfg.repoUrl, mirrorUrl: cfg.mirrorUrl, trustedKeys: !!cfg.trustedKeys },
       }
     })
