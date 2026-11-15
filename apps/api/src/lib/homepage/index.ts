@@ -40,11 +40,21 @@ export const wizardRecordStore = (): RecordStore => ({
 let exclusionSource: (() => Promise<string[]>) | null = null
 /** Remote access's "never look inside" list; the routes set it (it lives in Postgres). */
 export function setHomepageExclusionSource(fn: (() => Promise<string[]>) | null): void { exclusionSource = fn }
+/** The list, failing closed: with no source, or an unreadable one, this throws and nothing is contacted or written. */
+export async function excludedMachines(): Promise<string[]> {
+  if (!exclusionSource) throw new Error('Remote access\'s exclusion list is not available.')
+  return exclusionSource()
+}
 
 /** Late-bound so this module does not load the route modules it reads from at import time. */
 const lazy = {
   detected: async (refresh: boolean) => (await import('../../routes/catalogue')).catalogueDetected(refresh),
-  candidates: async () => (await (await import('../../routes/site-metrics')).sharedCandidateCache().get(false)).candidates,
+  candidates: async () => {
+    const r = await (await import('../../routes/site-metrics')).sharedCandidateCache().get(false)
+    // The proxy's own list failed (no proxy candidate at all, and errors): count the source as failed, not empty.
+    if (r.errors.length && !r.candidates.some(c => c.source === 'proxy')) throw new Error(r.errors[0])
+    return r.candidates
+  },
   plugins: async () => (await import('../../plugins')).PLUGINS,
   pbs: async () => (await import('../pbs')).pbsService().instances.views(),
   qnap: async () => {
@@ -67,7 +77,9 @@ export function liveSources(): InventorySources {
   return {
     guests: async () => ((await pve().getClusterResources('vm')) ?? []) as any[],
     addresses: async g => {
-      const fromConfig = configAddresses(await pve().getVMConfig(g.node, g.vmid, g.type).catch(() => null)).filter(isProbeAddress)
+      // A config that cannot be read throws: the inventory then counts the guest list as failed (it could hide a
+      // guest on an excluded subnet).
+      const fromConfig = configAddresses(await pve().getVMConfig(g.node, g.vmid, g.type)).filter(isProbeAddress)
       if (fromConfig.length) return fromConfig
       const live = await pve().fetchStrict<unknown>(g.type === 'lxc' ? `/nodes/${enc(g.node)}/lxc/${g.vmid}/interfaces` : `/nodes/${enc(g.node)}/qemu/${g.vmid}/agent/network-get-interfaces`, 'GET', undefined, 5000).catch(() => null)
       return [...new Set(liveAddresses(live).filter(isProbeAddress))]
@@ -96,7 +108,7 @@ export function liveSources(): InventorySources {
       const [pbs, qnap] = await Promise.all([lazy.pbs().catch(() => []), lazy.qnap().catch(() => [])])
       return [...pbs.map((v: any) => ({ key: 'pbs', name: String(v.name ?? ''), url: String(v.url ?? '') })), ...qnap.map((v: any) => ({ key: 'qnap', name: String(v.name ?? ''), url: String(v.url ?? ''), remote: !!v.remote }))].filter(x => x.url)
     },
-    exclusions: async () => (exclusionSource ? exclusionSource() : []),
+    exclusions: () => excludedMachines(),
     self: async () => ({
       hyperprox: selfUrl(),
       proxmox: process.env.PROXMOX_HOST ? `https://${process.env.PROXMOX_HOST}:${Number(process.env.PROXMOX_PORT ?? 8006)}` : null,
@@ -148,6 +160,7 @@ export function productionHomepage(): HomepageService {
     exec,
     inventory,
     sightings,
+    excluded: () => excludedMachines(),
     secret: async (src, instanceId) => {
       if (src.kind === 'plugin') return pluginSecret(src.plugin, src.setting)
       if (src.part === 'id') return (await store.get(instanceId))?.proxmoxToken?.tokenId ?? null
@@ -172,6 +185,7 @@ export function productionHomepage(): HomepageService {
       async revokeToken(tokenId) {
         const m = /^([^!]+)!([A-Za-z0-9_.-]+)$/.exec(tokenId)
         if (!m) throw new Error('Not a token id HyperProx made.')
+        // Already gone (deleted by hand, or the user removed) counts as revoked (lib/homepage/service.ts tokenGone).
         await homePve().fetchStrict(`/access/users/${encodeURIComponent(m[1])}/token/${encodeURIComponent(m[2])}`, 'DELETE')
       },
       async saveSecret(instanceId, secret) {

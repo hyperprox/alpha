@@ -89,10 +89,34 @@ export function varName(entryId: string, field: string): string {
   return `HOMEPAGE_VAR_${s(entryId).slice(0, 60)}_${s(field)}`
 }
 
+/** A value with every {{ and }} taken out (repeatedly, so "{{{" cannot leave one behind). */
+export function noBraces(v: string): string {
+  let s = String(v ?? '')
+  for (let prev = ''; prev !== s;) { prev = s; s = s.replace(/\{\{|\}\}/g, '') }
+  return s
+}
+
 const isWeb = (u: string | null | undefined) => !!u && /^https?:\/\//i.test(u)
 
-function offerFor(app: KnownApp | null, id: string, opts: GenerateOptions) {
+/** An origin (scheme://host:port, default ports written out) for comparing two addresses. */
+export function originKey(url: string | null | undefined): string | null {
+  const hp = hostPort(url)
+  return hp ? `${hp.scheme}://${hp.host}:${hp.port}` : null
+}
+
+/**
+ * The widget this entry may have. A widget whose key is a plug-in's is offered only on the entry at the address that
+ * plug-in is configured for, so a key can never be sent to another host of the same kind (a second Sonarr). The
+ * cluster widget's token only on the cluster's own entry.
+ */
+function offerFor(app: KnownApp | null, id: string, opts: GenerateOptions, lanUrl: string | null, source: string) {
   if (!app?.widget) return undefined
+  for (const s of app.widget.secrets) {
+    if (s.from.kind === 'plugin') {
+      const want = originKey(opts.pluginUrls?.[`${s.from.plugin}:${s.from.urlSetting}`])
+      if (!want || want !== originKey(lanUrl)) return undefined
+    } else if (source !== 'cluster') return undefined
+  }
   const vars: Record<string, string> = {}
   for (const s of app.widget.secrets) vars[s.field] = varName(id, s.field)
   const enabled = opts.widgets.includes(id)
@@ -129,7 +153,8 @@ function monitorUrl(url: string, path?: string): string {
  * One entry per service on the dashboard. Order inside a group is by name; groups follow GROUPS. The ids are stable
  * across runs so a hidden entry stays hidden and a widget stays on.
  */
-export function buildEntries(inv: Inventory, opts: GenerateOptions): Entry[] {
+export function buildEntries(inv: Inventory, given: GenerateOptions): Entry[] {
+  const opts: GenerateOptions = { ...given, pluginUrls: given.pluginUrls ?? inv.pluginUrls ?? {} }
   const ex = exclusionOf(inv, opts.excludeSubnets)
   const proxies = inv.proxyHosts.filter(p => !excludedGuest(p.guest, ex) && !excludedHost(p.forward.host, ex) && p.url)
   const byTarget = new Map<string, typeof proxies>()
@@ -167,7 +192,7 @@ export function buildEntries(inv: Inventory, opts: GenerateOptions): Entry[] {
       id: k, group: app?.group ?? 'Infrastructure', name: s.label ?? app?.name ?? s.key, href, hrefKind: pub ? 'public' : 'lan',
       icon: app?.icon ?? 'mdi-application', description: app?.description ?? '', guest: s.guest ?? null, source: s.source,
     }
-    e.offer = offerFor(app, k, opts)
+    e.offer = offerFor(app, k, opts, s.url, s.source)
     drafts.push({ e, lan: s.url, key: app?.key ?? s.key })
   }
 
@@ -236,6 +261,14 @@ export function buildEntries(inv: Inventory, opts: GenerateOptions): Entry[] {
     if (opts.hiddenEntries.includes(d.e.id)) continue
     const target = d.monitorPublic && isWeb(d.e.href) ? d.e.href : (d.lan ?? d.e.href)
     if (isWeb(target) && !d.e.ping) d.e.siteMonitor = monitorUrl(target!, target === d.lan || d.monitorPublic ? knownApp(d.key)?.monitorPath : undefined)
+    // Homepage fills {{...}} from its environment anywhere in the file: no value HyperProx writes outside a widget
+    // block may carry one, or a name could pull a key into the page.
+    d.e.name = noBraces(d.e.name)
+    d.e.description = noBraces(d.e.description)
+    d.e.icon = noBraces(d.e.icon)
+    if (d.e.href) d.e.href = noBraces(d.e.href)
+    if (d.e.siteMonitor) d.e.siteMonitor = noBraces(d.e.siteMonitor)
+    if (d.e.ping) d.e.ping = noBraces(d.e.ping)
     const w = widgetBlock(d.e, d.lan)
     if (w) d.e.widget = w
     out.push(d.e)
@@ -304,6 +337,8 @@ export function parseServices(text: string): Item[] {
 }
 
 const nameOf = (it: Item) => Object.keys(it)[0]
+const entryNames = (list: unknown): string[] => (Array.isArray(list) ? list : [])
+  .filter(x => x && typeof x === 'object' && !Array.isArray(x)).map(x => Object.keys(x as object)[0])
 
 /** Homepage's own example groups, exactly as a fresh install writes them: safe to replace. */
 export function isSampleConfig(items: Item[]): boolean {
@@ -330,30 +365,36 @@ export function header(managed: string[]): string {
   ].join('\n')
 }
 
+/** A group's base name: HyperProx's twin of a group the person already had is "X (HyperProx)". */
+export const baseGroup = (g: string) => g.replace(/ \(HyperProx\)$/, '')
+
 /**
  * HyperProx has no record of this file (its database was reset, or another HyperProx wrote it) but the file's
- * header names HyperProx's groups: take those groups back. An entry in them is HyperProx's when it has the name of an
- * entry HyperProx would write there now; any other entry is the person's and is kept.
+ * header names HyperProx's groups: take those groups back. An entry is HyperProx's only when it is exactly what
+ * HyperProx would write there now (same name, same value); anything else is the person's (an edit or their own) and
+ * is kept. A listed group with no such entry is not taken: the header alone never lets HyperProx overwrite a group.
  */
 export function adoptFromHeader(text: string, items: Item[], entries: Entry[]): ManagedState {
   const m = /^# HyperProx keeps these groups up to date: (.*)\.$/m.exec(text ?? '')
-  if (!m || m[1] === '(none yet)') return { managedGroups: [], written: {} }
+  if (!m || m[1] === '(none yet)') return { managedGroups: [], written: {}, released: [] }
   const listed = m[1].split(',').map(x => x.trim()).filter(Boolean)
   const managedGroups: string[] = [], written: ManagedState['written'] = {}
   for (const it of items) {
     const g = nameOf(it)
     if (!listed.includes(g)) continue
-    managedGroups.push(g)
-    const base = g.replace(/ \(HyperProx\)$/, '')
-    const names = new Set(entries.filter(e => e.group === base).map(e => e.name))
-    written[g] = {}
+    const ours = new Map(entries.filter(e => e.group === baseGroup(g)).map(e => [e.name, valueHash(entryValue(e))]))
+    const claimed: Record<string, string> = {}
     for (const raw of Array.isArray(it[g]) ? it[g] as unknown[] : []) {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
       const n = Object.keys(raw)[0]
-      if (names.has(n)) written[g][n] = valueHash((raw as Item)[n])
+      const h = valueHash((raw as Item)[n])
+      if (ours.get(n) === h) claimed[n] = h
     }
+    if (!Object.keys(claimed).length) continue
+    managedGroups.push(g)
+    written[g] = claimed
   }
-  return { managedGroups, written }
+  return { managedGroups, written, released: [] }
 }
 
 /** One top-level item as YAML, marked when HyperProx owns it. */
@@ -369,16 +410,17 @@ function dumpItem(it: Item, managed: boolean): string {
  */
 export function mergeServices(currentText: string, entries: Entry[], prev: ManagedState, opts: Pick<GenerateOptions, 'hiddenGroups'> = { hiddenGroups: [] }): MergeResult {
   let items = parseServices(currentText)
-  const notes: MergeNotes = { keptUserGroups: [], keptUserEntries: [], keptEdits: [], userRemovedGroups: [], renamed: [], droppedSamples: false, adopted: [] }
+  const notes: MergeNotes = { keptUserGroups: [], keptUserEntries: [], keptEdits: [], userRemovedGroups: [], renamed: [], droppedSamples: false, adopted: [], handedOver: [] }
   if (isSampleConfig(items)) { items = []; notes.droppedSamples = true }
-  if (!prev.managedGroups.length) {
+  if (!prev.managedGroups.length && !(prev.released ?? []).length) {
     prev = adoptFromHeader(currentText, items, entries)
     notes.adopted = prev.managedGroups
   }
+  const released = new Set(prev.released ?? [])
 
   const present = new Set(items.map(nameOf))
   const managedBefore = new Set(prev.managedGroups)
-  for (const g of prev.managedGroups) if (!present.has(g) && !opts.hiddenGroups.includes(g)) notes.userRemovedGroups.push(g)
+  for (const g of prev.managedGroups) if (!present.has(g) && !opts.hiddenGroups.includes(baseGroup(g))) notes.userRemovedGroups.push(g)
   const removed = new Set(notes.userRemovedGroups)
 
   // Our group's name in the file: the plain name, unless the person already has a group called that.
@@ -392,15 +434,20 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
 
   const want = new Map<string, Entry[]>()
   for (const { group, entries: list } of groupsOf(entries, opts.hiddenGroups)) {
+    // A group handed to the person is theirs: HyperProx writes it neither under its name nor as a twin.
+    if (released.has(group)) continue
     const name = fileName(group)
     if (removed.has(name) || removed.has(group)) continue
-    want.set(name, list)
+    // A twin beside the person's own group never repeats an entry they already have there.
+    const theirs = name !== group ? new Set(entryNames(items.find(it => nameOf(it) === group)?.[group])) : new Set<string>()
+    want.set(name, list.filter(e => !theirs.has(e.name)))
   }
 
   const written: ManagedState['written'] = {}
   const managed: string[] = []
   const out: Array<{ item: Item; managed: boolean }> = []
 
+  const userAdded = new Map<string, number>()
   const build = (name: string, existing: unknown[]): Item | null => {
     const mine = want.get(name) ?? []
     const before = prev.written[name] ?? {}
@@ -410,7 +457,7 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
       const n = raw && typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length === 1 ? Object.keys(raw)[0] : null
       if (n === null) { keep.push(raw); continue }
       const val = (raw as Item)[n]
-      if (before[n] === undefined) { keep.push(raw); notes.keptUserEntries.push(`${name} / ${n}`); continue }
+      if (before[n] === undefined) { keep.push(raw); notes.keptUserEntries.push(`${name} / ${n}`); userAdded.set(name, (userAdded.get(name) ?? 0) + 1); continue }
       if (valueHash(val) !== before[n]) { keep.push(raw); edited.add(n); notes.keptEdits.push(`${name} / ${n}`) }
       // Otherwise it is HyperProx's own, unchanged: rebuilt below (or dropped when it is gone).
     }
@@ -428,8 +475,17 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
     const rebuilt = build(n, existing)
     want.delete(n)
     if (!rebuilt) continue
-    // A HyperProx group that is now only the person's entries is handed over to them.
-    if (!written[n] || !Object.keys(written[n]).length) { delete written[n]; out.push({ item: rebuilt, managed: false }); continue }
+    // Left holding none of HyperProx's entries but some the person added: it is theirs now, for good (released, so
+    // no "X (HyperProx)" twin is made next time). Holding only the person's edits of HyperProx's entries, it stays
+    // HyperProx's group and nothing in it is written over.
+    if (!Object.keys(written[n] ?? {}).length && (userAdded.get(n) ?? 0) > 0) {
+      delete written[n]
+      released.add(baseGroup(n))
+      notes.handedOver.push(n)
+      out.push({ item: rebuilt, managed: false })
+      continue
+    }
+    written[n] ??= {}
     managed.push(n)
     out.push({ item: rebuilt, managed: true })
   }
@@ -445,7 +501,7 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
   // Read back exactly what was meant, or nothing is offered.
   const back = parseServices(text)
   if (JSON.stringify(back) !== JSON.stringify(out.map(o => o.item))) throw new YamlProblem('The generated services.yaml did not read back as written.', 'roundtrip')
-  const state: ManagedState = { managedGroups: managed, written }
+  const state: ManagedState = { managedGroups: managed, written, released: [...released] }
   return { text, state, notes, changed: text !== currentText }
 }
 
@@ -484,7 +540,7 @@ const ENV_NAME = /^HOMEPAGE_VAR_[A-Z0-9_]{1,100}$/
 export function mergeEnv(currentText: string, values: Record<string, string>): string {
   for (const [k, v] of Object.entries(values)) {
     if (!ENV_NAME.test(k)) throw new Error(`Not a Homepage variable name: ${k}`)
-    if (/['\r\n\0]/.test(v)) throw new Error(`The value for ${k} holds a quote or a line break, which a .env cannot carry safely.`)
+    if (!safeSecret(v)) throw new Error(`The value for ${k} holds a quote, a backslash, {{ or a line break, which cannot be carried safely into the .env and Homepage's YAML.`)
   }
   const lines = (currentText ?? '').split('\n')
   if (lines.length && lines[lines.length - 1] === '') lines.pop()
@@ -496,6 +552,28 @@ export function mergeEnv(currentText: string, values: Record<string, string>): s
   })
   for (const [k, v] of Object.entries(values)) if (!done.has(k)) out.push(`${k}='${v}'`)
   return out.join('\n') + '\n'
+}
+
+/**
+ * A key HyperProx will write: no quote of either kind, no backslash, no {{ or }}, no line break or NUL. Homepage puts
+ * the value into a double-quoted YAML string, and compose reads the .env line in single quotes; any of these could
+ * end either one early.
+ */
+export function safeSecret(v: string): boolean {
+  return typeof v === 'string' && v.length > 0 && v.length <= 4096 && !/["'\\\r\n\0]|\{\{|\}\}/.test(v)
+}
+
+/** The .env with every HOMEPAGE_VAR_ line not in `keep` taken out; every other line kept. */
+export function pruneEnv(currentText: string, keep: string[]): { text: string; removed: string[] } {
+  const removed: string[] = []
+  const lines = (currentText ?? '').split('\n')
+  if (lines.length && lines[lines.length - 1] === '') lines.pop()
+  const out = lines.filter(l => {
+    const m = /^(HOMEPAGE_VAR_[A-Z0-9_]+)=/.exec(l)
+    if (m && !keep.includes(m[1])) { removed.push(m[1]); return false }
+    return true
+  })
+  return { text: out.length ? out.join('\n') + '\n' : '', removed }
 }
 
 /** The HOMEPAGE_VAR_ names a .env sets (values never leave this function). */

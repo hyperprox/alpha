@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import "./css-stub"
 import { renderToStaticMarkup } from 'react-dom/server'
 import { DashboardPreview, DiffView, ProblemList, WidgetList } from '../components/plugins/homepage/HomepagePage'
-import { diffStats, foldDiff, grouped, keptWords, monogram, syncWords, validSubnets, KEYS_WARNING, type PreviewEntry } from '../components/plugins/homepage/logic'
+import { applyGate, diffStats, foldDiff, grouped, keptWords, monogram, syncWords, validSubnets, KEYS_WARNING, type PreviewEntry } from '../components/plugins/homepage/logic'
 
 const e = (o: Partial<PreviewEntry>): PreviewEntry => ({
   id: 'x', group: 'Media', name: 'Plex', href: 'https://plex.example.org', hrefKind: 'public', icon: 'plex.png', description: 'Films and TV',
@@ -74,15 +74,27 @@ test('logic: grouping, monograms, kept-words, sync words, subnets', () => {
   assert.equal(monogram('Nginx Proxy Manager'), 'NP')
   assert.equal(monogram('Unmanic (worker-2)'), 'UN')
   assert.equal(monogram('plex'), 'PL')
-  const words = keptWords({ keptUserGroups: ['Mine'], keptUserEntries: [], keptEdits: ['Media / Plex'], userRemovedGroups: ['Dev'], renamed: [{ from: 'Media', to: 'Media (HyperProx)' }], droppedSamples: true, adopted: [] })
-  assert.equal(words.length, 5)
+  const words = keptWords({ keptUserGroups: ['Mine'], keptUserEntries: [], keptEdits: ['Media / Plex'], userRemovedGroups: ['Dev'], renamed: [{ from: 'Media', to: 'Media (HyperProx)' }], droppedSamples: true, adopted: [], handedOver: ['Dev'] })
+  assert.equal(words.length, 6)
+  assert.match(words.join(' '), /yours from now on: Dev/)
   assert.match(words.join(' '), /Your groups stay as they are: Mine/)
   const base = { id: 'i', machineId: 'lxc-1', kind: 'lxc' as const, vmid: 1, node: 'n', name: 'h', container: 'c', configDir: '/c', composeDir: null, url: null,
-    options: { excludeSubnets: [], includeBareGuests: false, hiddenGroups: [], hiddenEntries: [], widgets: [] }, autoSync: false, managedGroups: [], exportedVars: [], proxmoxToken: null }
+    options: { excludeSubnets: [], includeBareGuests: false, hiddenGroups: [], hiddenEntries: [], widgets: [] }, autoSync: false, managedGroups: [], exportedVars: [], releasedGroups: [], proxmoxToken: null }
   assert.deepEqual(syncWords({ ...base, lastSync: null }), { text: 'Not filled yet', tone: 'warn' })
   assert.equal(syncWords({ ...base, lastSync: { at: 0, by: 'a@b', ok: true, message: '', wrote: [], counts: {}, backups: [] } }, 5 * 60_000).text, 'In sync · 5 min ago · a@b')
   assert.deepEqual(validSubnets('192.0.2.0/24, 198.51.100.0/24'), { ok: true, list: ['192.0.2.0/24', '198.51.100.0/24'] })
   assert.equal(validSubnets('192.0.2.0').ok, false)
   assert.equal(validSubnets('300.0.0.0/8').ok, false)
   assert.deepEqual(validSubnets(''), { ok: true, list: [] })
+})
+
+test('apply gate: a preview with a source missing needs "apply anyway"; one without the exclusions never applies', () => {
+  assert.deepEqual(applyGate([], false), { ok: true, reason: null })
+  const g = applyGate(['scan'], false)
+  assert.equal(g.ok, false); assert.match(g.reason!, /Not read: the service scan/)
+  assert.equal(applyGate(['scan'], true).ok, true)
+  const x = applyGate(['exclusions', 'scan'], true)
+  assert.equal(x.ok, false); assert.match(x.reason!, /exclusion list/)
+  assert.match(KEYS_WARNING, /homepage\.env/)
+  assert.match(KEYS_WARNING, /backups/)
 })

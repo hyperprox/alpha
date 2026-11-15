@@ -46,9 +46,18 @@ export interface Inventory {
   /** Remote access's exclusion list (machine ids). Guests tagged hyperprox-ignore are left out as well. */
   excludedMachineIds: string[]
   builtAt: number
-  /** Sources that could not be read; the preview names them. */
+  /** Sources that could not be read, in words; the preview names them. */
   errors: string[]
+  /** The same, by source id (INVENTORY_SOURCES). Auto-sync never writes while one of CRITICAL_SOURCES is here. */
+  failed: InventorySourceId[]
+  /** Each configured plug-in's address settings, `plugin:setting` -> origin: a widget key goes only to that address. */
+  pluginUrls: Record<string, string>
 }
+
+export const INVENTORY_SOURCES = ['guests', 'exclusions', 'scan', 'proxies', 'plugins', 'detected', 'installs', 'sites', 'instances', 'self'] as const
+export type InventorySourceId = typeof INVENTORY_SOURCES[number]
+/** Without these the dashboard could lose real entries or show excluded ones: auto-sync waits, a manual apply asks. */
+export const CRITICAL_SOURCES: InventorySourceId[] = ['guests', 'exclusions', 'scan', 'proxies', 'plugins']
 
 export interface GenerateOptions {
   /** CIDRs whose addresses never go on the dashboard. */
@@ -61,8 +70,13 @@ export interface GenerateOptions {
   hiddenEntries: string[]
   /** Entry ids with their service widget turned on. */
   widgets: string[]
-  /** HOMEPAGE_VAR_* names already written to the guest's .env: a widget is only written once its keys are there. */
+  /**
+   * HOMEPAGE_VAR_* names on the guest whose value is still the one in the vault: a widget is only written once its
+   * keys are there, and goes back to waiting when a key is rotated or revoked.
+   */
   exportedVars: string[]
+  /** Each configured plug-in's address settings (Inventory.pluginUrls). */
+  pluginUrls?: Record<string, string>
 }
 
 export const DEFAULT_OPTIONS: GenerateOptions = {
@@ -104,9 +118,14 @@ export interface ManagedState {
   managedGroups: string[]
   /** Per managed group, the entries HyperProx wrote and a hash of exactly what it wrote. */
   written: Record<string, Record<string, string>>
+  /**
+   * Groups (base names) handed to the person: they were left holding only entries the person added, or the person
+   * took them over. HyperProx never writes that group again, under its own name or as "X (HyperProx)".
+   */
+  released?: string[]
 }
 
-export const EMPTY_STATE: ManagedState = { managedGroups: [], written: {} }
+export const EMPTY_STATE: ManagedState = { managedGroups: [], written: {}, released: [] }
 
 export interface MergeNotes {
   keptUserGroups: string[]
@@ -119,6 +138,8 @@ export interface MergeNotes {
   /** A HyperProx group renamed because the person already has a group of that name. */
   renamed: Array<{ from: string; to: string }>
   droppedSamples: boolean
+  /** Groups handed to the person in this run (only their own entries were left in them). */
+  handedOver: string[]
   /** Groups taken back from the file's header because HyperProx had no record of them. */
   adopted: string[]
 }

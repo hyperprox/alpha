@@ -15,7 +15,8 @@
 //    exclusions      Remote access's "never look inside" list (the
 //                    hyperprox-ignore tag is applied by the generator)
 //
-//  A source that cannot be read is named in `errors` and the rest still counts.
+//  A source that cannot be read is named in `errors` and `failed`, and the rest still counts. Auto-sync never
+//  writes from an inventory with a critical source missing (lib/homepage/service.ts).
 // =============================================================================
 
 import type { Candidate } from '../site-metrics/discovery'
@@ -23,7 +24,7 @@ import type { DetectResult } from '../catalogue-detect'
 import { PROBES } from '@hyperprox/hardware/service-probes'
 import { knownApp, appFromName } from './catalog'
 import { hostPort } from './generate'
-import type { GuestRef, InvGuest, InvService, Inventory, InvProxyHost, InvSite } from './types'
+import type { GuestRef, InvGuest, InvService, Inventory, InvProxyHost, InvSite, InventorySourceId } from './types'
 
 export interface RawGuest { vmid: number; name?: string; node: string; type: string; status: string; tags?: string; template?: number }
 export interface RawFinding { key: string; address: string; guest: GuestRef | null }
@@ -57,8 +58,10 @@ export interface InventorySources {
 
 const PROBE_BY_SETTING = new Map(PROBES.filter(p => p.pluginId && p.setting).map(p => [`${p.pluginId}:${p.setting}`, p.key]))
 
-async function attempt<T>(errors: string[], what: string, fn: () => Promise<T>, fallback: T): Promise<T> {
-  try { return (await fn()) ?? fallback } catch (e: any) { errors.push(`${what}: ${String(e?.message ?? e).slice(0, 160)}`); return fallback }
+type Failed = { errors: string[]; failed: Set<InventorySourceId> }
+
+async function attempt<T>(f: Failed, id: InventorySourceId, what: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+  try { return (await fn()) ?? fallback } catch (e: any) { f.errors.push(`${what}: ${String(e?.message ?? e).slice(0, 160)}`); f.failed.add(id); return fallback }
 }
 
 function originOf(url: string): string | null {
@@ -67,15 +70,19 @@ function originOf(url: string): string | null {
 }
 
 export async function buildInventory(src: InventorySources): Promise<Inventory> {
-  const errors: string[] = []
-  const raw = await attempt(errors, 'Proxmox guests', () => src.guests(), [] as RawGuest[])
+  const f: Failed = { errors: [], failed: new Set() }
+  const errors = f.errors
+  const raw = await attempt(f, 'guests', 'Proxmox guests', () => src.guests(), [] as RawGuest[])
+  // A running guest whose addresses cannot be read could be on an excluded subnet: the guest list counts as failed.
+  let addressFailures = 0
   const guests: InvGuest[] = await Promise.all(raw
     .filter(g => (g.type === 'lxc' || g.type === 'qemu') && g.template !== 1)
     .map(async g => {
       const ref: GuestRef = { vmid: Number(g.vmid), name: String(g.name ?? g.vmid), node: String(g.node), type: g.type as 'lxc' | 'qemu' }
-      const addresses = g.status === 'running' ? await src.addresses(ref).catch(() => []) : []
+      const addresses = g.status === 'running' ? await src.addresses(ref).catch(() => { addressFailures++; return [] as string[] }) : []
       return { ...ref, status: g.status, tags: String(g.tags ?? '').split(/[;,\s]+/).map(t => t.trim().toLowerCase()).filter(Boolean), addresses, machineId: `${ref.type}-${ref.vmid}` }
     }))
+  if (addressFailures) { f.failed.add('guests'); errors.push(`Guest addresses: ${addressFailures} running guest${addressFailures === 1 ? '' : 's'} could not be read`) }
   const byVmid = new Map(guests.map(g => [g.vmid, g]))
   const byAddress = new Map<string, InvGuest>()
   for (const g of guests) for (const a of g.addresses) if (!byAddress.has(a)) byAddress.set(a, g)
@@ -91,15 +98,15 @@ export async function buildInventory(src: InventorySources): Promise<Inventory> 
   const add = (s: InvService) => { if (running(s.guest ?? null)) services.push(s) }
 
   const [findings, detected, candidates, installs, sites, plugins, instances, excluded, self] = await Promise.all([
-    attempt(errors, 'Service scan', () => src.scan(), [] as RawFinding[]),
-    attempt(errors, 'Catalogue detection', () => src.detected(), { apps: {}, builtAt: 0, probed: 0, errors: [] } as DetectResult),
-    attempt(errors, 'Proxy hosts', () => src.candidates(), [] as Candidate[]),
-    attempt(errors, 'Catalogue installs', () => src.installs(), [] as RawInstall[]),
-    attempt(errors, 'Websites', () => src.sites(), [] as InvSite[]),
-    attempt(errors, 'Plug-ins', () => src.plugins(), [] as RawPlugin[]),
-    attempt(errors, 'Plug-in devices', () => src.instances(), [] as RawInstance[]),
-    attempt(errors, 'Remote access exclusions', () => src.exclusions(), [] as string[]),
-    attempt(errors, 'HyperProx address', () => src.self(), { hyperprox: null, proxmox: null }),
+    attempt(f, 'scan', 'Service scan', () => src.scan(), [] as RawFinding[]),
+    attempt(f, 'detected', 'Catalogue detection', () => src.detected(), { apps: {}, builtAt: 0, probed: 0, errors: [] } as DetectResult),
+    attempt(f, 'proxies', 'Proxy hosts', () => src.candidates(), [] as Candidate[]),
+    attempt(f, 'installs', 'Catalogue installs', () => src.installs(), [] as RawInstall[]),
+    attempt(f, 'sites', 'Websites', () => src.sites(), [] as InvSite[]),
+    attempt(f, 'plugins', 'Plug-ins', () => src.plugins(), [] as RawPlugin[]),
+    attempt(f, 'instances', 'Plug-in devices', () => src.instances(), [] as RawInstance[]),
+    attempt(f, 'exclusions', 'Remote access exclusions', () => src.exclusions(), [] as string[]),
+    attempt(f, 'self', 'HyperProx address', () => src.self(), { hyperprox: null, proxmox: null }),
   ])
 
   if (self.proxmox) services.push({ key: 'proxmox', url: self.proxmox, source: 'cluster', guest: null })
@@ -117,8 +124,10 @@ export async function buildInventory(src: InventorySources): Promise<Inventory> 
     if (o && knownApp(j.recipeId)) add({ key: j.recipeId, url: o, guest: g, source: 'install' })
   }
 
+  const pluginUrls: Record<string, string> = {}
   for (const p of plugins) {
     if (!p.configured) continue
+    for (const s of p.addressSettings) { const o = p.settings[s.key] ? originOf(p.settings[s.key]) : null; if (o) pluginUrls[`${p.id}:${s.key}`] = o }
     for (const s of p.addressSettings) {
       const v = p.settings[s.key]
       const o = v ? originOf(v) : null
@@ -157,7 +166,7 @@ export async function buildInventory(src: InventorySources): Promise<Inventory> 
     .map(c => ({ domains: c.domains, url: c.url, forward: { ...c.proxy!.forward, host: c.proxy!.forward.host.toLowerCase() }, guest: c.guest ? { vmid: c.guest.vmid, name: c.guest.name, node: c.guest.node, type: c.guest.type } : null }))
     .filter(p => !p.guest || running(p.guest))
 
-  return { guests, services, proxyHosts, sites, excludedMachineIds: excluded, builtAt: (src.now ?? Date.now)(), errors }
+  return { guests, services, proxyHosts, sites, excludedMachineIds: excluded, builtAt: (src.now ?? Date.now)(), errors, failed: [...f.failed], pluginUrls }
 }
 
 /** A short fingerprint of what the dashboard would be built from: auto-sync regenerates when it changes. */

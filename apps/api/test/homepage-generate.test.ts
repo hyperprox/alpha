@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildEntries, mergeServices, mergeWidgets, mergeEnv, envNames, lineDiff, parseServices, isSampleConfig, valueHash, varName, hostPort, inSubnets,
-  adoptFromHeader, yaml, YamlProblem, MANAGED_MARK,
+  adoptFromHeader, yaml, YamlProblem, MANAGED_MARK, noBraces, safeSecret, pruneEnv,
 } from '../src/lib/homepage/generate'
 import { appFromName, knownApp } from '../src/lib/homepage/catalog'
 import { buildInventory, inventoryFingerprint, type InventorySources } from '../src/lib/homepage/inventory'
@@ -46,6 +46,8 @@ function fixture(): Inventory {
     excludedMachineIds: ['lxc-105'],
     builtAt: 0,
     errors: [],
+    failed: [],
+    pluginUrls: { 'arrstack:sonarr_url': 'http://10.0.0.12:8989', 'plex:plex_url': 'http://10.0.0.11:32400' },
   }
 }
 
@@ -350,4 +352,103 @@ test('the Homepage probe and fingerprint match current images (a <title> with at
   assert.equal(await probeHost(async () => ({ status: 400, body: '{"error":"Host validation failed. See logs for more details."}' }), '10.0.0.30', probe), true)
   assert.equal(await probeHost(async () => ({ status: 200, body: '<title>Grafana</title>/_next/' }), '10.0.0.30', probe), false)
   assert.ok(DETECT.homepage[0].match({ status: 200, headers: {}, body: page }))
+})
+
+// ── review fixes ─────────────────────────────────────────────────────────────
+
+test('B3: a group left with only the person\'s edit stays HyperProx\'s; no "X (HyperProx)" twin and no second copy, ever', () => {
+  const sonarrOnly = (): Inventory => ({ ...fixture(), services: fixture().services.filter(s => s.key === 'sonarr'), proxyHosts: [], sites: [] })
+  const es = buildEntries(sonarrOnly(), opts())
+  const a = mergeServices('', es, EMPTY_STATE)
+  // The person edits HyperProx's only entry in Downloads.
+  const doc = parseServices(a.text) as any[]
+  doc.find(x => x.Downloads).Downloads[0].Sonarr.description = 'mine'
+  const b = mergeServices(yaml.dump(doc), es, a.state)
+  assert.deepEqual(b.notes.handedOver, [], 'an edit alone does not hand the group over')
+  assert.ok(b.state.managedGroups.includes('Downloads'))
+  const c = mergeServices(b.text, es, b.state)
+  const back = parseServices(c.text) as any[]
+  assert.ok(!back.some(x => x['Downloads (HyperProx)']), 'no twin group')
+  const all = back.flatMap(x => (Object.values(x)[0] as any[]).map(e => Object.keys(e)[0]))
+  assert.equal(all.filter(n => n === 'Sonarr').length, 1, 'never two copies of an entry')
+  assert.equal(back.find(x => x.Downloads).Downloads[0].Sonarr.description, 'mine')
+})
+
+test('B3: a group left with only entries the person added is handed over for good: released, never recreated as a twin', () => {
+  const inv = fixture()
+  const es = buildEntries(inv, opts())
+  const a = mergeServices('', es, EMPTY_STATE)
+  const doc = parseServices(a.text) as any[]
+  doc.find(x => x.Dev).Dev.push({ 'My Repo': { href: 'http://10.0.0.80' } })
+  // GitLab goes away: Dev now holds only the person's entry.
+  const gone = { ...inv, proxyHosts: inv.proxyHosts.filter(p => !p.domains[0].startsWith('gitlab')) }
+  const b = mergeServices(yaml.dump(doc), buildEntries(gone, opts()), a.state)
+  assert.deepEqual(b.notes.handedOver, ['Dev'])
+  assert.ok((b.state.released ?? []).includes('Dev'))
+  assert.ok(!b.state.managedGroups.includes('Dev'))
+  // GitLab comes back: it is not written into their group, nor as a twin.
+  const c = mergeServices(b.text, es, b.state)
+  const back = parseServices(c.text) as any[]
+  assert.deepEqual(back.find(x => x.Dev).Dev, [{ 'My Repo': { href: 'http://10.0.0.80' } }])
+  assert.ok(!back.some(x => x['Dev (HyperProx)']))
+})
+
+test('B3: a twin beside the person\'s own group never repeats an entry they already have there', () => {
+  const es = buildEntries(fixture(), opts())
+  const own = yaml.dump([{ Media: [{ Plex: { href: 'http://my-plex' } }] }])
+  const r = mergeServices(own, es, EMPTY_STATE)
+  const back = parseServices(r.text) as any[]
+  assert.deepEqual(back[0], { Media: [{ Plex: { href: 'http://my-plex' } }] })
+  assert.ok(!back.some(x => x['Media (HyperProx)']), 'the twin would only repeat Plex, so there is none')
+})
+
+test('B4: the header alone claims only entries exactly as HyperProx would write them; an edited one stays the person\'s', () => {
+  const es = buildEntries(fixture(), opts())
+  const a = mergeServices('', es, EMPTY_STATE)
+  const doc = parseServices(a.text) as any[]
+  doc.find(x => x.Media).Media[0].Plex.href = 'http://my-own-plex'
+  const text = a.text.split('\n').slice(0, 5).join('\n') + '\n' + yaml.dump(doc)
+  const st = adoptFromHeader(text, parseServices(text) as any, es)
+  assert.equal(st.written.Media?.Plex, undefined, 'the edited entry is not claimed')
+  const r = mergeServices(text, es, EMPTY_STATE)
+  assert.equal((parseServices(r.text) as any[]).find(x => x.Media).Media[0].Plex.href, 'http://my-own-plex', 'and not overwritten')
+  // A header that names a group of the person's (nothing in it is HyperProx's) does not take it.
+  const theirs = '# HyperProx keeps these groups up to date: Mine.\n' + yaml.dump([{ Mine: [{ Router: { href: 'http://10.0.0.1' } }] }])
+  assert.deepEqual(adoptFromHeader(theirs, parseServices(theirs) as any, es).managedGroups, [])
+  const r2 = mergeServices(theirs, es, EMPTY_STATE)
+  assert.deepEqual((parseServices(r2.text) as any[])[0], { Mine: [{ Router: { href: 'http://10.0.0.1' } }] })
+})
+
+test('B8: a plug-in key\'s widget is offered only on the entry at that plug-in\'s address, the token only on the cluster', () => {
+  const inv = fixture()
+  inv.services.push({ key: 'sonarr', url: 'http://10.0.0.99:8989', guest: null, source: 'scan' })
+  const es = buildEntries(inv, opts())
+  assert.ok(es.find(e => e.id === 'sonarr@10.0.0.12:8989')!.offer, 'the configured Sonarr')
+  assert.equal(es.find(e => e.id === 'sonarr@10.0.0.99:8989')!.offer, undefined, 'a second Sonarr never gets the first one\'s key')
+  assert.equal(buildEntries({ ...inv, pluginUrls: {} }, opts()).find(e => e.id === 'sonarr@10.0.0.12:8989')!.offer, undefined, 'no configured address, no offer')
+  assert.ok(es.find(e => e.id === 'proxmox@10.0.0.2:8006')!.offer)
+  inv.services.push({ key: 'proxmox', url: 'https://10.0.0.98:8006', guest: null, source: 'scan' })
+  assert.equal(buildEntries(inv, opts()).find(e => e.id === 'proxmox@10.0.0.98:8006')!.offer, undefined, 'a scanned Proxmox is not the cluster')
+})
+
+test('no {{ or }} in any generated value outside a widget block', () => {
+  const inv = fixture()
+  inv.services.push({ key: 'grafana', label: 'G {{HOMEPAGE_VAR_SONARR_10_0_0_12_8989_KEY}} x', url: 'http://10.0.0.30:3000', guest: null, source: 'plugin' })
+  inv.sites.push({ name: 'Site {{{HOMEPAGE_VAR_A}}}', recipeId: 'static-site', url: 'https://s.example.org/{{x}}', vmid: 130 })
+  const text = mergeServices('', buildEntries(inv, opts()), EMPTY_STATE).text
+  assert.ok(!/\{\{|\}\}/.test(text), text)
+  assert.equal(noBraces('a{{{b}}}c'), 'a{b}c'); assert.equal(noBraces('{{{{x}}}}'), 'x')
+})
+
+test('keys: refused when they hold quotes, a backslash, {{ or a line break; pruning keeps every other line', () => {
+  for (const bad of ['a"b', "a'b", 'a\\b', 'a{{b', 'a}}b', 'a\nb', '']) assert.equal(safeSecret(bad), false, JSON.stringify(bad))
+  assert.equal(safeSecret('abcDEF123-_.:$%'), true)
+  assert.throws(() => mergeEnv('', { HOMEPAGE_VAR_X: 'a"b' }), /quote/)
+  assert.deepEqual(pruneEnv("A=1\nHOMEPAGE_VAR_X='1'\nHOMEPAGE_VAR_Y='2'\n", ['HOMEPAGE_VAR_Y']), { text: "A=1\nHOMEPAGE_VAR_Y='2'\n", removed: ['HOMEPAGE_VAR_X'] })
+})
+
+test('B1: the inventory says which sources failed, a guest whose addresses cannot be read counts as guests failing', async () => {
+  const inv = await buildInventory(sources({ exclusions: async () => { throw new Error('db down') }, addresses: async gr => { if (gr.vmid === 102) throw new Error('nope'); return ['10.0.0.11'] } }))
+  assert.deepEqual([...inv.failed].sort(), ['exclusions', 'guests'])
+  assert.deepEqual(inv.pluginUrls, { 'arrstack:sonarr_url': 'http://10.0.0.12:8989', 'arrstack:radarr_url': 'http://10.0.0.12:7878' })
 })

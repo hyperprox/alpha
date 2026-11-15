@@ -19,8 +19,11 @@ import { createHash } from 'node:crypto'
 export const SAFE_PATH = /^\/(?:[A-Za-z0-9._@+-]+\/)*[A-Za-z0-9._@+-]+\/?$/
 export const SAFE_CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
 export const CONFIG_FILES = ['services.yaml', 'widgets.yaml', 'settings.yaml'] as const
-export type ConfigFile = typeof CONFIG_FILES[number] | '.env' | 'docker-compose.yml' | 'compose.yaml' | 'docker-compose.yaml' | 'compose.yml'
-const WRITABLE = new Set<string>(['services.yaml', 'widgets.yaml', '.env', 'docker-compose.yml', 'compose.yaml', 'docker-compose.yaml', 'compose.yml'])
+/** Homepage's own key file beside its compose file: only HOMEPAGE_VAR_ values, never the stack's shared .env. */
+export const KEY_FILE = 'homepage.env'
+export type ConfigFile = typeof CONFIG_FILES[number] | typeof KEY_FILE | 'docker-compose.yml' | 'compose.yaml' | 'docker-compose.yaml' | 'compose.yml'
+const WRITABLE = new Set<string>(['services.yaml', 'widgets.yaml', KEY_FILE, 'docker-compose.yml', 'compose.yaml', 'docker-compose.yaml', 'compose.yml'])
+export const SAFE_SERVICE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
 
 export class UnsafeValueError extends Error {
   constructor(what: string) { super(`Refused: ${what} is not a plain value HyperProx can name safely on the guest.`); this.name = 'UnsafeValueError' }
@@ -108,8 +111,7 @@ for f in ${files.map(sq).join(' ')}; do
   p="$d/$f"
   if [ -f "$p" ] && [ ! -L "$p" ]; then echo "HPX_FILE $f $(stat -c '%u:%g' "$p") $(stat -c '%a' "$p") $(base64 -w0 < "$p")"; else echo "HPX_MISSING $f"; fi
 done
-t="$d/.hyperprox-write-test.$$"
-if ( : > "$t" ) 2>/dev/null; then rm -f -- "$t"; echo 'HPX_WRITABLE yes'; else echo 'HPX_WRITABLE no'; fi
+if t=$(mktemp "$d/.hyperprox-write-test.XXXXXX" 2>/dev/null); then rm -f -- "$t"; echo 'HPX_WRITABLE yes'; else echo 'HPX_WRITABLE no'; fi
 echo HPX_DONE
 `
 }
@@ -156,18 +158,24 @@ export function writeScript(r: WriteRequest): string {
   if (!/^\d{8}-\d{6}$/.test(r.stamp)) throw new UnsafeValueError('the backup stamp')
   if (r.expectSha !== null && !/^[0-9a-f]{64}$/.test(r.expectSha)) throw new UnsafeValueError('the expected hash')
   const want = sha256(r.content)
+  const secret = r.mode === '0600'
+  // A key file is never readable by anyone else, not even for a moment: the temporary file is made under umask 077,
+  // and so is its backup. Nothing follows a symbolic link: not the folder, the file, its backup or the temporary file
+  // (mktemp makes a new one, never an existing name).
   return `set -u
 export LC_ALL=C
-umask 022
+umask ${secret ? '077' : '022'}
 d=${sq(d)}
 f=${sq(r.file)}
 p="$d/$f"
 expect=${sq(r.expectSha ?? 'none')}
 [ -d "$d" ] || { echo 'HPX_ERR no_dir'; exit 0; }
+[ -L "$d" ] && { echo 'HPX_ERR is_link'; exit 0; }
 [ -L "$p" ] && { echo 'HPX_ERR is_link'; exit 0; }
+if [ -e "$p" ] && [ ! -f "$p" ]; then echo 'HPX_ERR is_link'; exit 0; fi
 if [ -f "$p" ]; then now=$(sha256sum < "$p" | cut -d' ' -f1); else now=none; fi
 [ "$now" = "$expect" ] || { echo "HPX_ERR changed $now"; exit 0; }
-tmp="$d/.$f.hyperprox.$$"
+tmp=$(mktemp "$d/.$f.hyperprox.XXXXXX") || { echo 'HPX_ERR move'; exit 0; }
 base64 -d > "$tmp" <<'HPX_CONTENT_END' || { rm -f -- "$tmp"; echo 'HPX_ERR decode'; exit 0; }
 ${b64(r.content).replace(/(.{76})/g, '$1\n')}
 HPX_CONTENT_END
@@ -175,16 +183,48 @@ got=$(sha256sum < "$tmp" | cut -d' ' -f1)
 [ "$got" = ${sq(want)} ] || { rm -f -- "$tmp"; echo 'HPX_ERR corrupt'; exit 0; }
 if [ -f "$p" ]; then
   bak="$p.bak-hyperprox-"${sq(r.stamp)}
-  cp -p -- "$p" "$bak" || { rm -f -- "$tmp"; echo 'HPX_ERR backup'; exit 0; }
+  n=1
+  while [ -e "$bak" ] || [ -L "$bak" ]; do
+    [ "$n" -gt 9 ] && { rm -f -- "$tmp"; echo 'HPX_ERR backup'; exit 0; }
+    bak="$p.bak-hyperprox-"${sq(r.stamp)}"-$n"; n=$((n+1))
+  done
+  cp -P -p -n -- "$p" "$bak" || { rm -f -- "$tmp"; echo 'HPX_ERR backup'; exit 0; }
+  if [ -L "$bak" ] || [ ! -f "$bak" ] || [ "$(sha256sum < "$bak" | cut -d' ' -f1)" != "$now" ]; then rm -f -- "$tmp"; echo 'HPX_ERR backup'; exit 0; fi
   echo "HPX_BACKUP $bak"
   chown --reference="$p" -- "$tmp" 2>/dev/null; chmod --reference="$p" -- "$tmp" 2>/dev/null
 else
-  chmod ${r.mode} -- "$tmp"
   chown --reference="$d" -- "$tmp" 2>/dev/null
 fi
-${r.mode === '0600' ? 'chmod 0600 -- "$tmp"\n' : ''}mv -f -- "$tmp" "$p" || { rm -f -- "$tmp"; echo 'HPX_ERR move'; exit 0; }
+chmod ${r.mode} -- "$tmp"${secret ? '' : ' 2>/dev/null; [ -f "$p" ] && chmod --reference="$p" -- "$tmp" 2>/dev/null'}
+mv -f -T -- "$tmp" "$p" || { rm -f -- "$tmp"; echo 'HPX_ERR move'; exit 0; }
 ls -1t -- "$p".bak-hyperprox-* 2>/dev/null | tail -n +21 | while IFS= read -r old; do rm -f -- "$old"; done
 echo "HPX_WROTE $(sha256sum < "$p" | cut -d' ' -f1)"
+`
+}
+
+/** How many dated backups of a file there are (a key file's hold old keys). */
+export function backupsScript(dir: string, file: string): string {
+  const d = safePath(dir)
+  if (!WRITABLE.has(file)) throw new UnsafeValueError('that file')
+  return `set -u
+export LC_ALL=C
+d=${sq(d)}
+n=0
+for b in "$d"/${sq(file)}.bak-hyperprox-*; do [ -e "$b" ] || [ -L "$b" ] || continue; n=$((n+1)); done
+echo "HPX_BACKUPS $n"
+`
+}
+
+/** Delete those backups (the links themselves, never what a link points at). */
+export function purgeBackupsScript(dir: string, file: string): string {
+  const d = safePath(dir)
+  if (!WRITABLE.has(file)) throw new UnsafeValueError('that file')
+  return `set -u
+export LC_ALL=C
+d=${sq(d)}
+n=0
+for b in "$d"/${sq(file)}.bak-hyperprox-*; do [ -e "$b" ] || [ -L "$b" ] || continue; rm -f -- "$b" && n=$((n+1)); done
+echo "HPX_PURGED $n"
 `
 }
 
@@ -250,15 +290,20 @@ export function parseVerify(out: string, expect: Array<{ group: string; name: st
 
 // ── compose ──────────────────────────────────────────────────────────────────
 
-/** Recreate the Homepage service so a changed .env reaches it (compose only recreates what changed). */
-export function composeUpScript(composeDir: string, composeFile: string | null): string {
+/**
+ * Recreate the Homepage service, and only it, so a changed key file reaches it (compose recreates it only when its
+ * config changed). The output goes to a fresh mktemp file, never a name someone could have placed in /tmp.
+ */
+export function composeUpScript(composeDir: string, composeFile: string | null, service: string): string {
   const d = safePath(composeDir)
   const f = composeFile ? safePath(composeFile) : null
+  if (!SAFE_SERVICE.test(service)) throw new UnsafeValueError('the compose service name')
   return `set -u
 export LC_ALL=C
 cd ${sq(d)} || { echo 'HPX_ERR no_dir'; exit 0; }
-if docker compose ${f ? `-f ${sq(f)} ` : ''}up -d >/tmp/.hyperprox-compose.$$ 2>&1; then echo 'HPX_UP ok'; else echo 'HPX_UP failed'; tail -n 5 /tmp/.hyperprox-compose.$$ | sed 's/^/HPX_LOG /'; fi
-rm -f -- /tmp/.hyperprox-compose.$$
+log=$(mktemp) || { echo 'HPX_UP failed'; exit 0; }
+if docker compose ${f ? `-f ${sq(f)} ` : ''}up -d ${sq(service)} >"$log" 2>&1; then echo 'HPX_UP ok'; else echo 'HPX_UP failed'; tail -n 5 "$log" | sed 's/^/HPX_LOG /'; fi
+rm -f -- "$log"
 `
 }
 

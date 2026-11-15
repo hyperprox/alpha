@@ -13,7 +13,7 @@ export interface Instance {
   id: string; machineId: string; kind: 'lxc' | 'qemu'; vmid: number; node: string; name: string; container: string; configDir: string
   composeDir: string | null; url: string | null
   options: { excludeSubnets: string[]; includeBareGuests: boolean; hiddenGroups: string[]; hiddenEntries: string[]; widgets: string[] }
-  autoSync: boolean; managedGroups: string[]; exportedVars: string[]
+  autoSync: boolean; managedGroups: string[]; exportedVars: string[]; releasedGroups: string[]
   proxmoxToken: { tokenId: string; createdAt: number; createdBy: string } | null
   lastSync: { at: number; by: string; ok: boolean; message: string; wrote: string[]; counts: Record<string, number>; backups: string[] } | null
 }
@@ -26,8 +26,8 @@ export interface PreviewEntry {
 }
 export interface DiffLine { op: ' ' | '+' | '-'; text: string }
 export interface Preview {
-  planId: string; expiresAt: number; counts: Record<string, number>; errors: string[]; changed: boolean
-  notes: { keptUserGroups: string[]; keptUserEntries: string[]; keptEdits: string[]; userRemovedGroups: string[]; renamed: Array<{ from: string; to: string }>; droppedSamples: boolean; adopted: string[] }
+  planId: string; expiresAt: number; counts: Record<string, number>; errors: string[]; failed: string[]; changed: boolean
+  notes: { keptUserGroups: string[]; keptUserEntries: string[]; keptEdits: string[]; userRemovedGroups: string[]; renamed: Array<{ from: string; to: string }>; droppedSamples: boolean; adopted: string[]; handedOver: string[] }
   entries: PreviewEntry[]
   files: Array<{ name: string; changed: boolean; diff: DiffLine[] }>
 }
@@ -79,6 +79,7 @@ export function keptWords(n: Preview['notes']): string[] {
   if (n.keptEdits.length) out.push(`Entries you edited are left as you edited them: ${n.keptEdits.join(', ')}.`)
   if (n.userRemovedGroups.length) out.push(`Groups you deleted are not put back: ${n.userRemovedGroups.join(', ')}.`)
   for (const r of n.renamed) out.push(`You already have a group called ${r.from}, so HyperProx's is called ${r.to}.`)
+  if (n.handedOver?.length) out.push(`These groups now hold only entries you added, so they are yours from now on: ${n.handedOver.join(', ')}.`)
   return out
 }
 
@@ -96,7 +97,20 @@ export const SOURCE_WORD: Record<string, string> = {
   self: 'HyperProx itself', cluster: 'the cluster', proxy: 'a proxy host', site: 'a HyperProx website', guest: 'a running guest',
 }
 
-export const KEYS_WARNING = 'Homepage reads widget keys from its own config, so they are stored in plaintext on the Homepage guest: in the .env beside its compose file (mode 0600, readable by root on that guest) and in the container\'s environment. Anyone with root there can read them. Only turn on widgets whose keys you are happy to keep there.'
+export const KEYS_WARNING = 'Homepage reads widget keys from its own config, so they are stored in plaintext on the Homepage guest: in homepage.env beside its compose file (mode 0600, readable by root on that guest), in the container\'s environment, and in that file\'s dated backups until you delete them. Anyone with root there can read them. Only turn on widgets whose keys you are happy to keep there.'
+
+/** Words for the inventory sources a preview could not read. */
+export const SOURCE_NAME: Record<string, string> = {
+  guests: 'the guest list', exclusions: 'Remote access\'s exclusion list', scan: 'the service scan', proxies: 'the proxy hosts', plugins: 'the plug-ins',
+  detected: 'the Catalogue\'s detection', installs: 'the Catalogue\'s installs', sites: 'the Websites', instances: 'the plug-in devices', self: 'HyperProx\'s own address',
+}
+
+/** Whether Apply may go ahead: never without the exclusions; with another source missing, only when ticked. */
+export function applyGate(failed: string[], anyway: boolean): { ok: boolean; reason: string | null } {
+  if (failed.includes('exclusions')) return { ok: false, reason: 'Remote access\'s exclusion list could not be read, so this preview could show a guest that must be left out. Preview again later.' }
+  if (failed.length && !anyway) return { ok: false, reason: `Not read: ${failed.map(f => SOURCE_NAME[f] ?? f).join(', ')}. Entries could be missing or wrong.` }
+  return { ok: true, reason: null }
+}
 
 /** A subnet as a person types it: 192.0.2.0/24. */
 export function validSubnets(text: string): { ok: boolean; list: string[] } {

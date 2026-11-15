@@ -24,7 +24,7 @@ import { HudHeader, Icon, Panel, Pill, styles as vs } from '@/components/visual/
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import h from './homepage.module.css'
 import {
-  KEYS_WARNING, SOURCE_WORD, diffStats, foldDiff, grouped, keptWords, monogram, plural, syncWords, validSubnets,
+  KEYS_WARNING, SOURCE_NAME, SOURCE_WORD, applyGate, diffStats, foldDiff, grouped, keptWords, monogram, plural, syncWords, validSubnets,
   type Detected, type DiffLine, type Instance, type Preview, type PreviewEntry, type Problem,
 } from './logic'
 
@@ -209,6 +209,7 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
   const [chosen, setChosen] = useState<string[]>(i.options.widgets)
   const [subnets, setSubnets] = useState(i.options.excludeSubnets.join(', '))
   const [disconnecting, setDisconnecting] = useState(false)
+  const [anyway, setAnyway] = useState(false)
   const sync = syncWords(i)
 
   const secure = async (r: ApiResult, again: () => void): Promise<boolean> => {
@@ -233,7 +234,7 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
   const apply = async () => {
     if (!preview) return
     setLoading('apply'); setNote(null)
-    const r = await apiJson<{ data: { wrote: string[]; backups: string[]; verify: { ok: boolean; missing: string[]; error?: string }; unchanged: boolean } }>(`${API}/instances/${i.id}/apply`, 'POST', { planId: preview.planId })
+    const r = await apiJson<{ data: { wrote: string[]; backups: string[]; verify: { ok: boolean; missing: string[]; error?: string }; unchanged: boolean } }>(`${API}/instances/${i.id}/apply`, 'POST', { planId: preview.planId, applyAnyway: anyway })
     setLoading(null)
     if (r.ok) {
       const d = r.body!.data
@@ -264,12 +265,12 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
 
   const exportKeys = async (): Promise<void> => {
     setLoading('keys')
-    const r = await apiJson<{ data: { written: string[]; missing: string[]; restarted: boolean } }>(`${API}/instances/${i.id}/secrets`, 'POST', {})
+    const r = await apiJson<{ data: { written: string[]; removed: string[]; missing: string[]; restarted: boolean } }>(`${API}/instances/${i.id}/secrets`, 'POST', {})
     setLoading(null)
     if (!(await secure(r, () => void exportKeys()))) return
     if (r.ok) {
       const d = r.body!.data
-      setNote({ ok: true, text: `${plural(d.written.length, 'key')} written to the guest's .env${d.restarted ? ' and Homepage recreated' : ' (recreating Homepage failed; run docker compose up -d there)'}.${d.missing.length ? ` Not held by HyperProx: ${d.missing.join(', ')}.` : ''} Preview and apply to add the widgets.` })
+      setNote({ ok: true, text: `${plural(d.written.length, 'key')} written to the guest's homepage.env${d.restarted ? ' and Homepage recreated' : ' (recreating Homepage failed; run docker compose up -d there)'}.${d.missing.length ? ` Not held by HyperProx: ${d.missing.join(', ')}.` : ''} Preview and apply to add the widgets.` })
       await onChanged(); void loadPreview(); void loadProblems()
     } else setNote({ text: r.error ?? 'No key was written.', ok: false })
   }
@@ -283,8 +284,23 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
     if (r.ok) { await onChanged(); void loadPreview() }
   }
 
+  const wireEnv = async (): Promise<void> => {
+    setLoading('env_not_wired')
+    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${i.id}/wire-env`, 'POST', {})
+    setLoading(null)
+    if (!(await secure(r, () => void wireEnv()))) return
+    setNote(r.ok ? { text: r.body!.data.message, ok: true } : { text: r.error ?? 'The compose file was not changed.', ok: false })
+    void loadProblems()
+  }
+
+  const takeOver = async (g: string) => {
+    await saveSettings({ takeOver: g })
+    setNote({ ok: true, text: `${g} is yours now: HyperProx will not write it again.` })
+  }
+
   const fix = async (p: Problem): Promise<void> => {
     if (p.fix?.id === 'export_keys') return exportKeys()
+    if (p.fix?.id === 'wire_env') return wireEnv()
     setLoading(p.id)
     const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${i.id}/fix`, 'POST', { fix: p.fix!.id })
     setLoading(null)
@@ -292,13 +308,16 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
     await onChanged(); void loadProblems(); void loadPreview()
   }
 
-  const disconnect = async () => {
-    const r = await apiJson(`${API}/instances/${i.id}`, 'DELETE')
+  const disconnect = async (force = false) => {
+    const r = await apiJson<{ data: { keysRemoved: string[]; keysLeft: string[] } }>(`${API}/instances/${i.id}${force ? '?force=1' : ''}`, 'DELETE')
     setDisconnecting(false)
-    if (r.ok) await onChanged(); else setNote({ text: r.error ?? 'Not disconnected.', ok: false })
+    if (r.ok) { await onChanged(); return }
+    setNote({ text: r.error ?? 'Not disconnected.', ok: false })
+    if (r.code === 'keys_remain') setDisconnecting(true)
   }
 
   const sub = validSubnets(subnets)
+  const gate = applyGate(preview?.failed ?? [], anyway)
   const changedFiles = preview?.files.filter(f => f.changed) ?? []
   const kept = preview ? keptWords(preview.notes) : []
 
@@ -320,7 +339,11 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
         {!preview && loading === 'preview' && <BusyNote>Reading what runs on the cluster…</BusyNote>}
         {preview && (
           <div className="flex flex-col gap-4">
-            {preview.errors.length > 0 && <Notice kind="warn">Some sources could not be read, so the dashboard may be missing entries: {preview.errors.join('; ')}</Notice>}
+            {preview.failed.length > 0 && (
+              <Notice kind="warn">
+                Not read: {preview.failed.map(f => SOURCE_NAME[f] ?? f).join(', ')}. The dashboard below may be missing entries, or show some it should not. Auto-sync waits until everything can be read. ({preview.errors.join('; ')})
+              </Notice>
+            )}
             <DashboardPreview entries={preview.entries} hidden={i.options.hiddenEntries} onToggleHidden={toggleHidden} />
             {i.options.hiddenEntries.length > 0 && <p className="text-xs" style={{ color: 'var(--text-dimmer)' }}>{plural(i.options.hiddenEntries.length, 'entry')} left off the dashboard by you.</p>}
             {kept.length > 0 && <ul className={h.notes}>{kept.map(k => <li key={k}>{k}</li>)}</ul>}
@@ -332,8 +355,15 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
                   <p className="text-xs" style={{ color: 'var(--text-dimmer)' }}>
                     Applying writes exactly these lines. Each file is copied to a dated backup beside it first, and the write is refused if the file changed since this preview. Homepage reloads by itself; nothing is restarted. HyperProx changes only the groups marked as its own.
                   </p>
+                  {preview.failed.length > 0 && !preview.failed.includes('exclusions') && (
+                    <label className={h.check}>
+                      <input type="checkbox" checked={anyway} onChange={e => setAnyway(e.target.checked)} />
+                      <span><b>Apply anyway</b> · write this although part of the inventory could not be read. Entries from {preview.failed.map(f => SOURCE_NAME[f] ?? f).join(', ')} may be missing.</span>
+                    </label>
+                  )}
+                  {gate.reason && <p className="text-xs" style={{ color: 'var(--warn-2)' }}>{gate.reason}</p>}
                   <div className={h.toolbar}>
-                    <button type="button" className={`${vs.btn} ${vs.btnPri}`} disabled={loading === 'apply'} onClick={() => void apply()}>{loading === 'apply' ? 'Writing…' : `Apply ${plural(changedFiles.length, 'file')}`}</button>
+                    <button type="button" className={`${vs.btn} ${vs.btnPri}`} disabled={loading === 'apply' || !gate.ok} onClick={() => void apply()}>{loading === 'apply' ? 'Writing…' : `Apply ${plural(changedFiles.length, 'file')}`}</button>
                     <small>preview good for 10 minutes</small>
                   </div>
                 </>
@@ -378,7 +408,7 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
             <PrimaryButton type="button" disabled={!i.options.widgets.length || loading === 'keys'} onClick={() => void exportKeys()}>{loading === 'keys' ? 'Writing keys…' : 'Write the keys to the guest'}</PrimaryButton>
           </div>
           <p className="text-xs" style={{ color: 'var(--text-dimmer)' }}>
-            Keys come from HyperProx&apos;s vault (each plug-in&apos;s settings). services.yaml only ever holds a {'{{HOMEPAGE_VAR_…}}'} placeholder; the value goes into the .env (mode 0600), and Homepage is recreated so it reads it.
+            Keys come from HyperProx&apos;s vault (each plug-in&apos;s settings) and go only to the address that plug-in is set up for. services.yaml only ever holds a {'{{HOMEPAGE_VAR_…}}'} placeholder; the value goes into Homepage&apos;s own homepage.env (mode 0600, never the shared .env), and only the Homepage container is recreated so it reads it. Turning a widget off, revoking the token or disconnecting takes its key off the guest again.
             {i.exportedVars.length > 0 && ` On the guest now: ${plural(i.exportedVars.length, 'key')}.`}
           </p>
           <div className={h.toolbar}>
@@ -391,7 +421,13 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
       </Panel>
 
       <Panel title="Connection">
-        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Container <b>{i.container}</b>, config at <code>{i.configDir}</code>{i.composeDir ? <>, compose in <code>{i.composeDir}</code></> : null}. HyperProx owns the groups {i.managedGroups.length ? i.managedGroups.join(', ') : '(none yet)'}.</p>
+        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Container <b>{i.container}</b>, config at <code>{i.configDir}</code>{i.composeDir ? <>, compose in <code>{i.composeDir}</code></> : null}. HyperProx owns the groups {i.managedGroups.length ? i.managedGroups.join(', ') : '(none yet)'}.{i.releasedGroups?.length ? ` Yours now (never written again): ${i.releasedGroups.join(', ')}.` : ''}</p>
+        {i.managedGroups.length > 0 && (
+          <div className={h.toolbar}>
+            <small>Make a group yours, and HyperProx leaves it alone from then on:</small>
+            {i.managedGroups.map(g => <GhostButton key={g} type="button" onClick={() => void takeOver(g)}>{g}</GhostButton>)}
+          </div>
+        )}
         {i.lastSync?.backups?.length ? <p className="text-xs" style={{ color: 'var(--text-dimmer)' }}>Last backup: {i.lastSync.backups.join(', ')}</p> : null}
         <div className={h.toolbar}><GhostButton type="button" onClick={() => setDisconnecting(true)}>Disconnect</GhostButton><small>Leaves the dashboard as it is.</small></div>
       </Panel>
@@ -410,9 +446,10 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
       {disconnecting && (
         <Modal title="Disconnect this dashboard" onClose={() => setDisconnecting(false)}>
           <div className="flex flex-col gap-4">
-            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>HyperProx stops filling {i.name}. The dashboard stays as it is now; connect it again to take its groups back.</p>
+            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>HyperProx stops filling {i.name}. Widget keys are taken off the guest first; the dashboard stays as it is now, and connecting again takes its groups back.</p>
             <div className="flex justify-end gap-2">
               <GhostButton type="button" onClick={() => setDisconnecting(false)}>Cancel</GhostButton>
+              {note && !note.ok && i.exportedVars.length > 0 && <GhostButton type="button" onClick={() => void disconnect(true)}>Disconnect and leave the keys there</GhostButton>}
               <PrimaryButton type="button" onClick={() => void disconnect()}>Disconnect</PrimaryButton>
             </div>
           </div>

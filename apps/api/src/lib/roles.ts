@@ -197,9 +197,10 @@ const NEXTCLOUD_ADMIN_READ = /^\/api\/plugins\/nextcloud\/(candidates|instances\
 const NEXTCLOUD_RECONFIRM = /^\/api\/plugins\/nextcloud\/instances(\/[^/]+(\/secure-actions\/[^/]+|\/jobs\/[^/]+\/stop-watching)?)?$/
 // Homepage (routes/homepage.ts): admin for every method, reads included (the preview maps every LAN address); its
 // gallery card (/api/plugins/homepage/data, the generic plug-in route) stays a viewer read. Turning
-// widgets on, writing their keys to the guest, and making or revoking the Proxmox token are also re-confirmed.
+// widgets on, writing their keys to the guest, wiring Homepage's key file into its compose file, and making or
+// revoking the Proxmox token are also re-confirmed.
 const HOMEPAGE = /^\/api\/plugins\/homepage\/(installs|instances)(\/|$)/
-const HOMEPAGE_RECONFIRM = /^\/api\/plugins\/homepage\/instances\/[^/]+\/(widgets|secrets|proxmox-token)$/
+const HOMEPAGE_RECONFIRM = /^\/api\/plugins\/homepage\/instances\/[^/]+\/(widgets|secrets|proxmox-token|wire-env)$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/

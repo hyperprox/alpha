@@ -2508,8 +2508,12 @@ each file:
   is marked `# managed by HyperProx`. Your own groups stay where you put them, unchanged. An entry you add
   inside one of HyperProx's groups stays. An entry of HyperProx's that you edit is left as you edited it. A
   group of HyperProx's that you delete is not put back (the page offers **Bring them back**). If you already
-  have a group called, say, Media, HyperProx's is called Media (HyperProx). Comments in the file are not kept
-  when it is rewritten; the backup has them.
+  have a group called, say, Media, HyperProx's is called Media (HyperProx), and it never repeats an entry your
+  Media already has. A group of HyperProx's that ends up holding only entries you added becomes yours, and so
+  does one you take over on the page: HyperProx never writes it again. Comments in the file are not kept when it
+  is rewritten; the backup has them.
+- **A file HyperProx has no record of** (after a reinstall): it takes back only the entries in the groups its
+  header names that are exactly what it would write now. Anything else in them is treated as yours.
 
 **Apply** writes exactly what the preview showed. The preview is good for ten minutes and only the person who
 made it can apply it. Each file is first copied to a dated backup beside it
@@ -2519,27 +2523,42 @@ config by itself, so nothing is restarted. Afterwards HyperProx asks Homepage fo
 that every entry is there. Every write is in the audit log, written before anything changes. One write runs at
 a time per dashboard.
 
+If part of the inventory could not be read (the guest list, the exclusion list, the service scan, the proxy
+hosts, the plug-ins and so on), the preview says which, and **Apply** needs **Apply anyway** ticked. Without
+the exclusion list it does not apply at all. A Homepage guest that is tagged `hyperprox-ignore` or on Remote
+access's list is never contacted, and while that list cannot be read HyperProx contacts no Homepage guest.
+
 **Auto-sync** is off until you turn it on. When on, HyperProx looks every five minutes, and a minute after a
 Catalogue install finishes. It rewrites the dashboard when something changed (a new guest, proxy host, install
-or removal), at most once every ten minutes, and only when the file would change. **Sync now** builds a fresh
+or removal), at most once every ten minutes, and only when the file would change. It never writes while
+any of the guest list, the exclusion list, the service scan, the proxy hosts or the plug-ins could not be read. **Sync now** builds a fresh
 preview at any time.
 
 **Health** lists what is wrong, each with a fix button: Homepage not answering or stopped (**Start
 Homepage**), the config folder moved (**Use the folder Docker mounts now**), a `services.yaml` that is not
-valid YAML (**Back it up and start it fresh**, which asks first), a folder that cannot be written, and widgets
-that wait for keys.
+valid YAML (**Back it up and start it fresh**, which asks first), a folder that cannot be written, widgets
+that wait for keys, a key on the guest that is no longer the one in the vault, and old copies of the key file
+(**Delete the old key backups**, which asks first).
 
 **Service widgets** (Sonarr's queue, Plex's streams, the cluster's load and so on) are opt-in per service and
 off by default. Homepage reads their keys from its own config, so **they are stored in plaintext on the
-Homepage guest**: in the `.env` beside its compose file (mode 0600, readable by root there) and in the
-container's environment. The page says so before you choose any. Turning widgets on and **Write the keys to
-the guest** both ask for your master password again, and API tokens can never do either. The keys come from
-HyperProx's vault (each plug-in's own settings). `services.yaml` only ever holds a `{{HOMEPAGE_VAR_...}}`
-placeholder. Writing the keys recreates the Homepage container so it reads them; Catalogue installs of
-Homepage pass the `.env` to the container, and for an older one the page offers **Let Homepage read its key
-file**. For the cluster widget, **Make a read-only Proxmox token** creates a privilege-separated token with only
+Homepage guest**: in `homepage.env` beside its compose file (mode 0600, readable by root there), in the
+container's environment, and in that file's dated backups until you delete them. The page says so before you
+choose any. Turning widgets on and **Write the keys to the guest** both ask for your master password again, and
+API tokens can never do either. The keys come from HyperProx's vault (each plug-in's own settings). A widget is
+offered only on the entry at the address that plug-in is set up for, so a key never goes to another server of
+the same kind. `services.yaml` only ever holds a `{{HOMEPAGE_VAR_...}}` placeholder, and no other value HyperProx
+writes contains `{{` or `}}`. A key with a quote, a backslash, `{{` or a line break in it is refused. HyperProx
+remembers a hash of each key it wrote, never the key itself: when a key is changed or removed in the vault, its
+widget waits until the keys are written again. Writing the keys recreates only the Homepage container so it
+reads them. Turning a widget off, revoking the token or disconnecting takes its keys off the guest again.
+Homepage's key file is its own: the stack's shared `.env` is never written or handed to Homepage. Catalogue
+installs of Homepage read `homepage.env`; for an older one the page offers **Let Homepage read its key file**
+(master password again). For the cluster widget, **Make a read-only Proxmox token** creates a privilege-separated token with only
 `PVEAuditor` on `/` (master password again). HyperProx keeps the token's secret in the vault and records the
-token so it can be revoked. A dashboard with a token cannot be disconnected until the token is revoked.
+token so it can be revoked; a token that is already gone from Proxmox counts as revoked. A dashboard with a
+token cannot be disconnected until the token is revoked. When the guest cannot be reached to take its keys off,
+disconnecting asks again and names what is left there.
 
 ### Settings
 

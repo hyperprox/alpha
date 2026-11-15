@@ -12,28 +12,38 @@
 //  itself, so nothing is restarted.
 //
 //  Rules kept here, not in the routes:
+//    - a guest tagged hyperprox-ignore or on Remote access's exclusion list is
+//      never contacted, and when that list cannot be read nothing is contacted
 //    - one write at a time per dashboard, and auto-sync takes the same lock
 //    - the audit row is written before anything is changed; no row, no change
+//    - an inventory with a source missing is never written by auto-sync, and a
+//      person must say "apply anyway" to write one (never without exclusions)
 //    - nothing that leaves a secret on the guest (widget keys, the Proxmox
 //      token) is done for an API token, and the routes put those behind the
-//      master password (lib/roles.ts)
+//      master password (lib/roles.ts). Keys go in Homepage's own key file
+//      (homepage.env), are taken out again when their widget, token or dashboard
+//      goes, and are remembered by a hash so a rotated key is noticed
 //    - auto-sync is off until someone turns it on, writes at most once every
 //      ten minutes, and only when the content would change
 // =============================================================================
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { Machine } from '../remote/types'
 import type { ExecResult } from '../node-exec'
 import { KNOWN, type WidgetSource } from './catalog'
 import {
-  buildEntries, envNames, yaml, groupsOf, lineDiff, mergeEnv, mergeServices, mergeWidgets, parseServices, YamlProblem, varName,
+  baseGroup, buildEntries, envNames, yaml, groupsOf, lineDiff, mergeEnv, mergeServices, mergeWidgets, parseServices, pruneEnv, safeSecret,
+  YamlProblem, varName,
 } from './generate'
 import { inventoryFingerprint } from './inventory'
 import {
-  composeUpScript, locateScript, sq, parseLocate, parseRead, parseVerify, parseWrite, readScript, safeContainer, safePath, sha256, stampOf,
-  verifyScript, writeScript, type Located, type ReadFile, type VerifyResult,
+  KEY_FILE, backupsScript, composeUpScript, locateScript, sq, parseLocate, parseRead, parseVerify, parseWrite, purgeBackupsScript, readScript,
+  safeContainer, safePath, stampOf, verifyScript, writeScript, type Located, type ReadFile, type VerifyResult,
 } from './remote'
-import { DEFAULT_OPTIONS, EMPTY_STATE, type Entry, type GenerateOptions, type Inventory, type ManagedState, type MergeNotes } from './types'
+import {
+  CRITICAL_SOURCES, DEFAULT_OPTIONS, EMPTY_STATE, type Entry, type GenerateOptions, type Inventory, type InventorySourceId, type ManagedState,
+  type MergeNotes,
+} from './types'
 
 // ── records ──────────────────────────────────────────────────────────────────
 
@@ -53,10 +63,11 @@ export interface HomepageInstance {
   port: number | null
   /** Where a person opens it: the public address when one serves it, else the LAN address. */
   url: string | null
-  options: Omit<GenerateOptions, 'exportedVars'>
+  options: Omit<GenerateOptions, 'exportedVars' | 'pluginUrls'>
   autoSync: boolean
   state: ManagedState
-  exportedVars: string[]
+  /** HOMEPAGE_VAR_ names in the guest's key file, each with a keyed hash of the value written (never the value). */
+  exported: Record<string, string>
   proxmoxToken: ProxmoxTokenRecord | null
   lastSync: { at: number; by: string; ok: boolean; message: string; wrote: string[]; counts: Record<string, number>; backups: string[] } | null
   lastFingerprint: string | null
@@ -65,6 +76,9 @@ export interface HomepageInstance {
 }
 
 export interface Actor { email: string; token: string | null }
+
+/** Who did it, as the audit log and a preview's owner name them: a person, or a person's API token by name. */
+export const actorLabel = (a: Actor) => (a.token ? `${a.email} (API token ${a.token})` : a.email)
 
 export interface Detected {
   machineId: string; kind: 'lxc' | 'qemu'; vmid: number; node: string; name: string
@@ -93,6 +107,8 @@ export interface HomepageDeps {
   inventory(refresh: boolean): Promise<Inventory>
   /** Where Homepage was found: Catalogue install records, the shared scan, the install marker in a guest's notes. */
   sightings(): Promise<Array<{ vmid: number; url: string | null; via: 'catalogue' | 'scan' | 'marker' | 'proxy' }>>
+  /** Remote access's "never look inside" machine ids. Throws when it cannot be read: then nothing is contacted. */
+  excluded(): Promise<string[]>
   /** A widget's secret, from HyperProx's vault. null when it is not stored. */
   secret(src: WidgetSource, instanceId: string): Promise<string | null>
   proxmox: {
@@ -114,6 +130,8 @@ export const AUTO_MIN_GAP_MS = 10 * 60_000
 export const AUTO_TICK_MS = 5 * 60_000
 const READ_FILES = ['services.yaml', 'widgets.yaml'] as const
 const CIDR = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/
+/** Proxmox's answer for a token that is not there (deleted by hand, or its user removed). */
+const TOKEN_GONE = /no such (token|user)|does not exist|not found|HTTP 404/i
 
 export interface FilePlan { name: string; before: string; after: string; expectSha: string | null; diff: ReturnType<typeof lineDiff>; changed: boolean }
 
@@ -130,6 +148,8 @@ export interface Plan {
   fingerprint: string
   counts: Record<string, number>
   errors: string[]
+  /** Inventory sources that could not be read: applying then needs "apply anyway" (never without exclusions). */
+  failed: InventorySourceId[]
 }
 
 export interface Problem {
@@ -137,30 +157,44 @@ export interface Problem {
   severity: 'bad' | 'warn'
   title: string
   detail: string
+  /** `secure`: the fix has its own button behind the master password (export_keys, wire_env). */
   fix: { id: string; label: string; confirm?: string; secure?: boolean } | null
 }
 
 const plural = (n: number, one: string) => `${n} ${n === 1 ? one : one.endsWith('y') ? `${one.slice(0, -1)}ies` : `${one}s`}`
 
+/** A keyed hash of a key's value: tells a rotated key from the one written, without keeping the value. */
+export const keyHash = (instanceId: string, value: string) => createHash('sha256').update(`homepage-key:${instanceId}:${value}`).digest('hex')
+
+/** The secrets a widget needs, field by field. */
+const widgetSecrets = (type: string) => KNOWN.find(a => a.widget?.type === type)?.widget?.secrets ?? []
+
 export class HomepageService {
   private plans = new Map<string, Plan>()
-  private locks = new Map<string, Promise<unknown>>()
   private busy = new Set<string>()
   private autoTimer: ReturnType<typeof setInterval> | null = null
   private soon: ReturnType<typeof setTimeout> | null = null
 
   constructor(private d: HomepageDeps) {}
 
+  // ── exclusions ───────────────────────────────────────────────────────────
+
+  /** Remote access's list, or a refusal: when it cannot be read, no guest is contacted. */
+  private async excludedIds(): Promise<Set<string>> {
+    try { return new Set(await this.d.excluded()) }
+    catch { throw new HomepageRefusal('exclusions_unknown', 'Remote access\'s exclusion list could not be read, so HyperProx contacts no guest until it can.', 503) }
+  }
+
   // ── finding Homepage ──────────────────────────────────────────────────────
 
   async detected(): Promise<Detected[]> {
-    const [machines, sightings, instances] = await Promise.all([
-      this.d.exec.listMachines().catch(() => [] as Machine[]), this.d.sightings().catch(() => []), this.d.store.list(),
+    const [machines, sightings, instances, excluded] = await Promise.all([
+      this.d.exec.listMachines().catch(() => [] as Machine[]), this.d.sightings().catch(() => []), this.d.store.list(), this.excludedIds(),
     ])
     const out = new Map<number, Detected>()
     for (const s of sightings) {
       const m = machines.find(x => (x.kind === 'lxc' || x.kind === 'qemu') && x.vmid === s.vmid)
-      if (!m || m.tags?.includes('hyperprox-ignore')) continue
+      if (!m || m.tags?.includes('hyperprox-ignore') || excluded.has(m.id)) continue
       const d = out.get(s.vmid) ?? { machineId: m.id, kind: m.kind as 'lxc' | 'qemu', vmid: s.vmid, node: m.node!, name: m.name, url: null, via: [], running: m.running, connected: null }
       if (!d.via.includes(s.via)) d.via.push(s.via)
       if (s.url && (!d.url || s.via === 'proxy')) d.url = s.url
@@ -182,10 +216,13 @@ export class HomepageService {
     return i
   }
 
+  /** The guest, when it may be contacted: there, running, not tagged, not on the exclusion list (read every time). */
   private async machine(i: Pick<HomepageInstance, 'machineId' | 'name'>): Promise<Machine> {
-    const m = (await this.d.exec.listMachines()).find(x => x.id === i.machineId)
+    const [machines, excluded] = await Promise.all([this.d.exec.listMachines(), this.excludedIds()])
+    const m = machines.find(x => x.id === i.machineId)
     if (!m) throw new HomepageRefusal('gone', `${i.name} is not on the cluster any more.`, 409)
     if (m.tags?.includes('hyperprox-ignore')) throw new HomepageRefusal('excluded', `${m.name} carries the hyperprox-ignore tag, so HyperProx does not look inside it.`, 409)
+    if (excluded.has(m.id)) throw new HomepageRefusal('excluded', `${m.name} is on Remote access's "never look inside" list, so HyperProx does not contact it.`, 409)
     if (!m.running) throw new HomepageRefusal('stopped', `${m.name} is not running.`, 409)
     return m
   }
@@ -204,36 +241,56 @@ export class HomepageService {
     return r.found
   }
 
-  /** Connect one dashboard: look inside once for the container and its mounted config folder. */
+  /** Connect one dashboard: look inside once for the container and its mounted config folder. One at a time per guest. */
   async connect(machineId: string, actor: Actor, container?: string): Promise<HomepageInstance> {
     if (!/^(lxc|qemu)-\d{1,9}$/.test(machineId)) throw new HomepageRefusal('bad_input', 'Pick a guest from the list.')
-    const existing = (await this.d.store.list()).find(i => i.machineId === machineId && (!container || i.container === container))
-    if (existing) return existing
-    const m = await this.machine({ machineId, name: machineId })
-    await this.d.audit('homepage.connect', `homepage:${machineId}`, { by: actor.email, via: actor.token ? `token ${actor.token}` : 'session' })
-    const found = (await this.locate(m)).filter(l => !container || l.container === container)
-    if (!found.length) throw new HomepageRefusal('not_found', `No Homepage container on ${m.name}.`, 404)
-    if (found.length > 1 && !container) throw new HomepageRefusal('several', `${m.name} runs ${found.length} Homepage containers; pick one: ${found.map(f => f.container).join(', ')}.`, 409)
-    const l = found[0]
-    if (!l.configDir) throw new HomepageRefusal('no_mount', `${l.container} has no folder mounted at /app/config, so its config cannot be written from outside it.`, 409)
-    const sight = (await this.detected().catch(() => [])).find(x => x.machineId === machineId)
-    const i: HomepageInstance = {
-      id: randomUUID(), machineId, kind: m.kind as 'lxc' | 'qemu', vmid: m.vmid!, node: m.node!, name: m.name,
-      container: safeContainer(l.container), configDir: safePath(l.configDir), composeDir: l.composeDir, composeFile: l.composeFile, port: l.port,
-      url: sight?.url ?? null,
-      options: { excludeSubnets: [], includeBareGuests: false, hiddenGroups: [], hiddenEntries: [], widgets: [] },
-      autoSync: false, state: { ...EMPTY_STATE }, exportedVars: [], proxmoxToken: null, lastSync: null, lastFingerprint: null,
-      addedBy: actor.email, addedAt: this.d.now(),
-    }
-    await this.d.store.put(i)
-    return i
+    return this.withLock(`connect:${machineId}`, async () => {
+      const existing = (await this.d.store.list()).find(i => i.machineId === machineId && (!container || i.container === container))
+      if (existing) return existing
+      const m = await this.machine({ machineId, name: machineId })
+      await this.d.audit('homepage.connect', `homepage:${machineId}`, { by: actorLabel(actor) })
+      const found = (await this.locate(m)).filter(l => !container || l.container === container)
+      if (!found.length) throw new HomepageRefusal('not_found', `No Homepage container on ${m.name}.`, 404)
+      if (found.length > 1 && !container) throw new HomepageRefusal('several', `${m.name} runs ${found.length} Homepage containers; pick one: ${found.map(f => f.container).join(', ')}.`, 409)
+      const l = found[0]
+      if ((await this.d.store.list()).some(i => i.machineId === machineId && i.container === l.container)) {
+        return (await this.d.store.list()).find(i => i.machineId === machineId && i.container === l.container)!
+      }
+      if (!l.configDir) throw new HomepageRefusal('no_mount', `${l.container} has no folder mounted at /app/config, so its config cannot be written from outside it.`, 409)
+      const sight = (await this.detected().catch(() => [])).find(x => x.machineId === machineId)
+      const i: HomepageInstance = {
+        id: randomUUID(), machineId, kind: m.kind as 'lxc' | 'qemu', vmid: m.vmid!, node: m.node!, name: m.name,
+        container: safeContainer(l.container), configDir: safePath(l.configDir), composeDir: l.composeDir, composeFile: l.composeFile, port: l.port,
+        url: sight?.url ?? null,
+        options: { excludeSubnets: [], includeBareGuests: false, hiddenGroups: [], hiddenEntries: [], widgets: [] },
+        autoSync: false, state: { ...EMPTY_STATE, released: [] }, exported: {}, proxmoxToken: null, lastSync: null, lastFingerprint: null,
+        addedBy: actorLabel(actor), addedAt: this.d.now(),
+      }
+      await this.d.store.put(i)
+      return i
+    })
   }
 
-  async disconnect(id: string, actor: Actor): Promise<void> {
-    const i = await this.instance(id)
-    if (i.proxmoxToken) throw new HomepageRefusal('token_live', 'Revoke the Proxmox token made for this dashboard first, so it is not left behind.', 409)
-    await this.d.audit('homepage.disconnect', `homepage:${i.machineId}`, { by: actor.email })
-    await this.d.store.delete(id)
+  /**
+   * Stop filling a dashboard. Its keys are taken out of the guest's key file first; when the guest cannot be reached
+   * that is refused, unless `force` says to leave them (the answer names them). Never while a Proxmox token is live.
+   */
+  async disconnect(id: string, actor: Actor, force = false): Promise<{ keysRemoved: string[]; keysLeft: string[] }> {
+    return this.withLock(id, async () => {
+      const i = await this.instance(id)
+      if (i.proxmoxToken) throw new HomepageRefusal('token_live', 'Revoke the Proxmox token made for this dashboard first, so it is not left behind.', 409)
+      await this.d.audit('homepage.disconnect', `homepage:${i.machineId}`, { by: actorLabel(actor), keys: Object.keys(i.exported).length, force })
+      let removed: string[] = [], left: string[] = []
+      if (Object.keys(i.exported).length) {
+        try { removed = await this.removeKeys(i, Object.keys(i.exported)) }
+        catch (e: any) {
+          if (!force) throw new HomepageRefusal('keys_remain', `The widget keys could not be taken off ${i.name} (${e.message}). Try again when it answers, or disconnect anyway and remove ${KEY_FILE} there yourself.`, 409)
+          left = Object.keys(i.exported)
+        }
+      }
+      await this.d.store.delete(id)
+      return { keysRemoved: removed, keysLeft: left }
+    })
   }
 
   // ── settings ─────────────────────────────────────────────────────────────
@@ -254,33 +311,83 @@ export class HomepageService {
         if (body[k] === undefined) continue
         const list = Array.isArray(body[k]) ? (body[k] as unknown[]).map(String).filter(s => s.length > 0 && s.length <= 200) : null
         if (!list || list.length > 500) throw new HomepageRefusal('bad_input', `${k} must be a list.`)
-        o[k] = [...new Set(list)]
+        o[k] = [...new Set(k === 'hiddenGroups' ? list.map(baseGroup) : list)]
+      }
+      // The person takes one of HyperProx's groups over: it is theirs from now on, and HyperProx never writes it again.
+      let state = i.state
+      if (body.takeOver !== undefined) {
+        const g = String(body.takeOver)
+        if (!i.state.managedGroups.includes(g)) throw new HomepageRefusal('bad_input', 'That is not one of HyperProx\'s groups.')
+        const written = { ...i.state.written }
+        delete written[g]
+        state = { managedGroups: i.state.managedGroups.filter(x => x !== g), written, released: [...new Set([...(i.state.released ?? []), baseGroup(g)])] }
       }
       const autoSync = body.autoSync === undefined ? i.autoSync : body.autoSync === true
-      const next = { ...i, options: o, autoSync }
-      await this.d.audit('homepage.settings', `homepage:${i.machineId}`, { by: actor.email, autoSync, subnets: o.excludeSubnets.length, hiddenGroups: o.hiddenGroups.length, hiddenEntries: o.hiddenEntries.length, bareGuests: o.includeBareGuests })
+      const next: HomepageInstance = { ...i, options: o, autoSync, state, lastFingerprint: null }
+      await this.d.audit('homepage.settings', `homepage:${i.machineId}`, { by: actorLabel(actor), autoSync, subnets: o.excludeSubnets.length, hiddenGroups: o.hiddenGroups.length,
+        hiddenEntries: o.hiddenEntries.length, bareGuests: o.includeBareGuests, takeOver: body.takeOver === undefined ? null : String(body.takeOver) })
       await this.d.store.put(next)
       return next
     })
   }
 
-  /** Which entries get a service widget. Turning one on is what later puts its key on the guest. */
+  /**
+   * Which entries get a service widget. Turning one on is what later puts its key on the guest; turning one off takes
+   * its key out of the guest's key file again.
+   */
   async setWidgets(id: string, entryIds: unknown, actor: Actor): Promise<HomepageInstance> {
     if (actor.token) throw new HomepageRefusal('token_forbidden', 'API tokens cannot turn on widgets that need keys.', 403)
     const list = Array.isArray(entryIds) ? entryIds.map(String).filter(s => s.length <= 200).slice(0, 100) : null
     if (!list) throw new HomepageRefusal('bad_input', 'Send the list of entries to give a widget.')
     return this.withLock(id, async () => {
       const i = await this.instance(id)
-      await this.d.audit('homepage.widgets', `homepage:${i.machineId}`, { by: actor.email, widgets: list })
-      const next = { ...i, options: { ...i.options, widgets: [...new Set(list)] } }
-      await this.d.store.put(next)
-      return next
+      const wanted = new Set(list)
+      const drop = Object.keys(i.exported).filter(v => ![...wanted].some(w => v.startsWith(varName(w, 'X').slice(0, -1))))
+      await this.d.audit('homepage.widgets', `homepage:${i.machineId}`, { by: actorLabel(actor), widgets: list, keysRemoved: drop })
+      let cur: HomepageInstance = { ...i, options: { ...i.options, widgets: [...wanted] }, lastFingerprint: null }
+      await this.d.store.put(cur)
+      if (drop.length) {
+        await this.removeKeys(cur, drop)
+        cur = (await this.d.store.get(id)) ?? cur
+      }
+      return cur
     })
   }
 
-  // ── preview ──────────────────────────────────────────────────────────────
+  // ── keys: what is on the guest, and whether it is still the vault's ─────
 
-  private options(i: HomepageInstance): GenerateOptions { return { ...DEFAULT_OPTIONS, ...i.options, exportedVars: i.exportedVars } }
+  /**
+   * For each turned-on widget the entries offer: its variables, whether HyperProx holds each value, whether the
+   * guest has that same value. `valid` is the names whose value on the guest is still the vault's.
+   */
+  private async keyStatus(i: HomepageInstance, inv: Inventory) {
+    const entries = buildEntries(inv, { ...DEFAULT_OPTIONS, ...i.options, exportedVars: Object.keys(i.exported) })
+    const widgets: Array<{ entryId: string; name: string; type: string; vars: Array<{ field: string; name: string; held: boolean; exported: boolean; stale: boolean; value: string | null }> }> = []
+    for (const e of entries) {
+      if (!e.offer?.enabled) continue
+      const vars = []
+      for (const s of widgetSecrets(e.offer.type)) {
+        const name = varName(e.id, s.field)
+        const value = await this.d.secret(s.from, i.id).catch(() => null)
+        const on = i.exported[name]
+        vars.push({ field: s.field, name, held: !!value, exported: !!on && !!value && on === keyHash(i.id, value), stale: !!on && (!value || on !== keyHash(i.id, value)), value })
+      }
+      widgets.push({ entryId: e.id, name: e.name, type: e.offer.type, vars })
+    }
+    const valid = widgets.flatMap(w => w.vars.filter(v => v.exported).map(v => v.name))
+    return { widgets, valid }
+  }
+
+  /** The variables the turned-on widgets need, and whether HyperProx holds each value. Never the values. */
+  async widgetKeys(id: string) {
+    const i = await this.instance(id)
+    const { widgets } = await this.keyStatus(i, await this.d.inventory(false))
+    return widgets.map(w => ({ ...w, vars: w.vars.map(({ value: _v, ...rest }) => rest) }))
+  }
+
+  private options(i: HomepageInstance, valid: string[]): GenerateOptions { return { ...DEFAULT_OPTIONS, ...i.options, exportedVars: valid } }
+
+  // ── preview ──────────────────────────────────────────────────────────────
 
   private async readFiles(m: Machine, i: HomepageInstance, files: readonly string[] = READ_FILES) {
     const r = parseRead(await this.run(m, readScript(i.configDir, files)))
@@ -294,15 +401,16 @@ export class HomepageService {
     const i = await this.instance(id)
     const m = await this.machine(i)
     const [inv, read] = await Promise.all([this.d.inventory(refresh), this.readFiles(m, i)])
-    const plan = this.planFrom(i, inv, read.files, actor.email)
+    const plan = await this.planFrom(i, inv, read.files, actorLabel(actor))
     if (!read.writable) plan.errors.push('The config folder is not writable from the guest.')
     this.plans.set(plan.id, plan)
     this.prunePlans()
     return plan
   }
 
-  private planFrom(i: HomepageInstance, inv: Inventory, files: Record<string, ReadFile>, owner: string): Plan {
-    const opts = this.options(i)
+  private async planFrom(i: HomepageInstance, inv: Inventory, files: Record<string, ReadFile>, owner: string): Promise<Plan> {
+    const { valid } = await this.keyStatus(i, inv)
+    const opts = this.options(i, valid)
     const entries = buildEntries(inv, opts)
     const services = files['services.yaml'] ?? { name: 'services.yaml', exists: false, text: '', sha: null, owner: null, mode: null }
     const widgets = files['widgets.yaml'] ?? { name: 'widgets.yaml', exists: false, text: '', sha: null, owner: null, mode: null }
@@ -313,11 +421,11 @@ export class HomepageService {
       { name: 'widgets.yaml', before: widgets.text, after: w.text, expectSha: widgets.sha, diff: w.changed ? lineDiff(widgets.text, w.text) : [], changed: w.changed },
     ]
     const counts: Record<string, number> = {}
-    for (const g of groupsOf(entries, opts.hiddenGroups)) counts[g.group] = g.entries.length
+    for (const g of groupsOf(entries, opts.hiddenGroups)) if (!(merged.state.released ?? []).includes(g.group)) counts[g.group] = g.entries.length
     const now = this.d.now()
     return {
       id: randomUUID(), instanceId: i.id, owner, createdAt: now, expiresAt: now + PLAN_TTL_MS, files: out, entries, state: merged.state, notes: merged.notes,
-      fingerprint: inventoryFingerprint(inv), counts, errors: [...inv.errors],
+      fingerprint: inventoryFingerprint(inv), counts, errors: [...inv.errors], failed: [...(inv.failed ?? [])],
     }
   }
 
@@ -328,24 +436,32 @@ export class HomepageService {
 
   // ── apply ────────────────────────────────────────────────────────────────
 
-  /** Write exactly what the preview showed. Refused when it is old, someone else's, or the file changed since. */
-  async apply(id: string, planId: unknown, actor: Actor): Promise<{ wrote: string[]; backups: string[]; verify: VerifyResult; unchanged: boolean }> {
+  /**
+   * Write exactly what the preview showed. Refused when it is old, someone else's, or the file changed since; when a
+   * source of the inventory could not be read, only with `applyAnyway` (and never when the exclusions are unknown).
+   */
+  async apply(id: string, planId: unknown, actor: Actor, o: { applyAnyway?: boolean } = {}): Promise<{ wrote: string[]; backups: string[]; verify: VerifyResult; unchanged: boolean }> {
     const p = typeof planId === 'string' ? this.plans.get(planId) : undefined
     if (!p || p.instanceId !== id) throw new HomepageRefusal('no_plan', 'That preview is not here any more. Preview again.', 409)
-    if (p.owner !== actor.email) throw new HomepageRefusal('not_yours', 'That preview was made by someone else. Preview again.', 403)
+    if (p.owner !== actorLabel(actor)) throw new HomepageRefusal('not_yours', 'That preview was made by someone else. Preview again.', 403)
     if (p.expiresAt < this.d.now()) { this.plans.delete(p.id); throw new HomepageRefusal('plan_expired', 'That preview is more than ten minutes old. Preview again.', 409) }
+    if (p.failed.includes('exclusions')) throw new HomepageRefusal('exclusions_unknown', 'Remote access\'s exclusion list could not be read for this preview, so it could show a guest that must be left out. Preview again when it can be read.', 409)
+    if (p.failed.length && o.applyAnyway !== true) {
+      throw new HomepageRefusal('partial_inventory', `Part of the inventory could not be read (${p.failed.join(', ')}), so entries could be missing or wrong. Tick "apply anyway" to write it regardless.`, 409)
+    }
     return this.withLock(id, async () => {
       this.plans.delete(p.id)
-      return this.write(await this.instance(id), p, actor.email)
+      return this.write(await this.instance(id), p, actorLabel(actor), o.applyAnyway === true && p.failed.length > 0)
     })
   }
 
-  private async write(i: HomepageInstance, p: Plan, by: string) {
+  private async write(i: HomepageInstance, p: Plan, by: string, anyway = false) {
     const m = await this.machine(i)
     const changed = p.files.filter(f => f.changed)
     // Before anything changes: the audit row, or nothing happens.
     await this.d.audit('homepage.write', `homepage:${i.machineId}`, {
       by, files: changed.map(f => f.name), groups: Object.keys(p.counts), entries: p.entries.length, widgets: p.entries.filter(e => e.widget).length,
+      ...(anyway ? { applyAnyway: true, missingSources: p.failed } : {}),
     })
     const wrote: string[] = [], backups: string[] = []
     const stamp = stampOf(this.d.now())
@@ -358,10 +474,9 @@ export class HomepageService {
       wrote.push(f.name)
       if (out.backup) backups.push(out.backup)
     }
-    // Homepage reloads by itself; ask it for its list and look for every entry.
+    // Homepage reloads by itself; ask it for its list and look for every entry HyperProx wrote.
     let verify: VerifyResult = { ok: true, reached: true, groups: [], missing: [] }
-    const expect = groupsOf(p.entries, i.options.hiddenGroups).flatMap(g => g.entries.map(e => ({ group: this.fileGroupName(p, g.group), name: e.name })))
-      .filter(e => p.state.managedGroups.includes(e.group) && (p.state.written[e.group]?.[e.name] !== undefined))
+    const expect = Object.entries(p.state.written).flatMap(([group, names]) => Object.keys(names).map(name => ({ group, name })))
     if (wrote.includes('services.yaml') || !changed.length) {
       verify = parseVerify(await this.run(m, verifyScript(i.container, i.port)).catch(() => ''), expect)
     }
@@ -373,22 +488,17 @@ export class HomepageService {
     return { wrote, backups, verify, unchanged: !changed.length }
   }
 
-  private fileGroupName(p: Plan, group: string): string {
-    const r = p.notes.renamed.find(x => x.from === group)
-    return r ? r.to : group
-  }
-
   private async record(i: HomepageInstance, r: { ok: boolean; by: string; message: string; wrote: string[]; counts: Record<string, number>; backups: string[] }, p: Plan) {
     const cur = (await this.d.store.get(i.id)) ?? i
     const wroteServices = r.wrote.includes('services.yaml')
+    // A HyperProx group the person deleted from the file stays gone: remember it as hidden, by its base name.
+    const removed = p.notes.userRemovedGroups.map(baseGroup)
     const next: HomepageInstance = {
       ...cur,
       state: wroteServices ? p.state : cur.state,
-      // A HyperProx group the person deleted from the file stays gone: remember it as hidden.
-      options: wroteServices && p.notes.userRemovedGroups.length
-        ? { ...cur.options, hiddenGroups: [...new Set([...cur.options.hiddenGroups, ...p.notes.userRemovedGroups])] } : cur.options,
+      options: wroteServices && removed.length ? { ...cur.options, hiddenGroups: [...new Set([...cur.options.hiddenGroups, ...removed])] } : cur.options,
       lastSync: { at: this.d.now(), ...r },
-      lastFingerprint: r.ok ? p.fingerprint : cur.lastFingerprint,
+      lastFingerprint: r.ok && !p.failed.length ? p.fingerprint : cur.lastFingerprint,
     }
     await this.d.store.put(next)
   }
@@ -396,9 +506,7 @@ export class HomepageService {
   private async withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
     if (this.busy.has(id)) throw new HomepageRefusal('busy', 'Something is already being written to this dashboard. Try again in a moment.', 409)
     this.busy.add(id)
-    const run = fn()
-    this.locks.set(id, run)
-    try { return await run } finally { this.busy.delete(id); this.locks.delete(id) }
+    try { return await fn() } finally { this.busy.delete(id) }
   }
 
   // ── auto-sync ────────────────────────────────────────────────────────────
@@ -418,97 +526,139 @@ export class HomepageService {
   }
 
   /** One pass over every dashboard with auto-sync on. Returns what each did (tests read it). */
-  async tick(refresh = false): Promise<Array<{ id: string; did: 'off' | 'same' | 'soon' | 'unchanged' | 'wrote' | 'failed' | 'busy'; message?: string }>> {
-    const out: Array<{ id: string; did: 'off' | 'same' | 'soon' | 'unchanged' | 'wrote' | 'failed' | 'busy'; message?: string }> = []
+  async tick(refresh = false): Promise<Array<{ id: string; did: 'off' | 'same' | 'soon' | 'unchanged' | 'wrote' | 'failed' | 'busy' | 'partial'; message?: string }>> {
+    type Did = 'off' | 'same' | 'soon' | 'unchanged' | 'wrote' | 'failed' | 'busy' | 'partial'
+    const out: Array<{ id: string; did: Did; message?: string }> = []
     const list = await this.d.store.list().catch(() => [] as HomepageInstance[])
     if (!list.some(i => i.autoSync)) return list.map(i => ({ id: i.id, did: 'off' as const }))
     let inv: Inventory
     try { inv = await this.d.inventory(refresh) } catch (e: any) { return list.map(i => ({ id: i.id, did: 'failed' as const, message: String(e?.message ?? e) })) }
+    // Never from a partial inventory: a missing source would take its entries off the dashboard, and missing
+    // exclusions could put an excluded guest on it. The next pass tries again.
+    const missing = (inv.failed ?? []).filter(s => CRITICAL_SOURCES.includes(s))
     const fp = inventoryFingerprint(inv)
-    for (const i of list) {
-      if (!i.autoSync) { out.push({ id: i.id, did: 'off' }); continue }
-      if (i.lastFingerprint === fp) { out.push({ id: i.id, did: 'same' }); continue }
-      if (i.lastSync && this.d.now() - i.lastSync.at < AUTO_MIN_GAP_MS) { out.push({ id: i.id, did: 'soon' }); continue }
-      if (this.busy.has(i.id)) { out.push({ id: i.id, did: 'busy' }); continue }
+    for (const listed of list) {
+      if (!listed.autoSync) { out.push({ id: listed.id, did: 'off' }); continue }
+      if (missing.length) { out.push({ id: listed.id, did: 'partial', message: `not read: ${missing.join(', ')}` }); this.d.log?.(`[homepage] auto-sync of ${listed.name} waits: ${missing.join(', ')} could not be read`); continue }
+      if (this.busy.has(listed.id)) { out.push({ id: listed.id, did: 'busy' }); continue }
       try {
-        const r = await this.withLock(i.id, async () => {
+        const r = await this.withLock(listed.id, async (): Promise<Did> => {
+          // What the record says now, not what it said before the lock: it may have been turned off or synced since.
+          const i = await this.d.store.get(listed.id)
+          if (!i || !i.autoSync) return 'off'
+          if (i.lastFingerprint === fp) return 'same'
+          if (i.lastSync && this.d.now() - i.lastSync.at < AUTO_MIN_GAP_MS) return 'soon'
           const m = await this.machine(i)
           const read = await this.readFiles(m, i)
-          const p = this.planFrom(i, inv, read.files, 'auto-sync')
-          if (!p.files.some(f => f.changed)) { await this.d.store.put({ ...i, lastFingerprint: fp }); return 'unchanged' as const }
+          const p = await this.planFrom(i, inv, read.files, 'auto-sync')
+          if (!p.files.some(f => f.changed)) { await this.d.store.put({ ...i, lastFingerprint: fp }); return 'unchanged' }
           await this.write(i, p, `auto-sync (turned on for ${i.name})`)
-          return 'wrote' as const
+          return 'wrote'
         })
-        out.push({ id: i.id, did: r })
+        out.push({ id: listed.id, did: r })
       } catch (e: any) {
-        out.push({ id: i.id, did: 'failed', message: String(e?.message ?? e) })
-        this.d.log?.(`[homepage] auto-sync of ${i.name} failed: ${e?.message ?? e}`)
-        const cur = await this.d.store.get(i.id).catch(() => null)
+        out.push({ id: listed.id, did: 'failed', message: String(e?.message ?? e) })
+        this.d.log?.(`[homepage] auto-sync of ${listed.name} failed: ${e?.message ?? e}`)
+        const cur = await this.d.store.get(listed.id).catch(() => null)
         if (cur) await this.d.store.put({ ...cur, lastSync: { at: this.d.now(), by: 'auto-sync', ok: false, message: String(e?.message ?? e).slice(0, 300), wrote: [], counts: cur.lastSync?.counts ?? {}, backups: [] } }).catch(() => {})
       }
     }
     return out
   }
 
-  // ── widget keys ──────────────────────────────────────────────────────────
+  // ── the key file ─────────────────────────────────────────────────────────
 
-  /** The variables the turned-on widgets need, and whether HyperProx holds each value. Never the values. */
-  async widgetKeys(id: string): Promise<Array<{ entryId: string; name: string; type: string; vars: Array<{ field: string; name: string; held: boolean; exported: boolean }> }>> {
-    const i = await this.instance(id)
-    const inv = await this.d.inventory(false)
-    const entries = buildEntries(inv, { ...this.options(i), widgets: i.options.widgets })
-    const out = []
-    for (const e of entries) {
-      if (!e.offer?.enabled) continue
-      const app = KNOWN.find(a => a.widget?.type === e.offer!.type)
-      const vars = []
-      for (const s of app?.widget?.secrets ?? []) {
-        const v = await this.d.secret(s.from, i.id).catch(() => null)
-        vars.push({ field: s.field, name: varName(e.id, s.field), held: !!v, exported: i.exportedVars.includes(varName(e.id, s.field)) })
-      }
-      out.push({ entryId: e.id, name: e.name, type: e.offer.type, vars })
+  /** The compose file, its Homepage service's name, and whether that service reads homepage.env. */
+  private async compose(m: Machine, i: HomepageInstance) {
+    if (!i.composeDir) throw new HomepageRefusal('no_compose', `${i.container} was not started with Docker Compose, so there is no key file to put keys in.`, 409)
+    const name = i.composeFile?.split('/').pop() ?? 'docker-compose.yml'
+    const r = parseRead(await this.run(m, readScript(i.composeDir, [name, KEY_FILE])))
+    const c = r.files[name]
+    if (!c?.exists) throw new HomepageRefusal('no_compose', `No ${name} in ${i.composeDir}.`, 409)
+    let doc: unknown
+    try { doc = yaml.load(c.text) } catch { throw new HomepageRefusal('compose_invalid', `${name} does not read as YAML.`, 409) }
+    const svc = composeService(doc, i.container)
+    if (!svc) throw new HomepageRefusal('no_service', `${name} has no Homepage service HyperProx can recognise.`, 409)
+    return { name, file: c, keyFile: r.files[KEY_FILE] ?? { name: KEY_FILE, exists: false, text: '', sha: null, owner: null, mode: null } as ReadFile, service: svc.key, wired: composeReadsEnv(c.text, i.container) }
+  }
+
+  private async recreate(m: Machine, i: HomepageInstance, service: string): Promise<boolean> {
+    return /^HPX_UP ok$/m.test(await this.run(m, composeUpScript(i.composeDir!, i.composeFile, service), 180_000))
+  }
+
+  /** Take these variables out of the guest's key file (and out of the record), and recreate Homepage. */
+  private async removeKeys(i: HomepageInstance, names: string[]): Promise<string[]> {
+    const m = await this.machine(i)
+    const c = await this.compose(m, i)
+    const keep = Object.keys(i.exported).filter(n => !names.includes(n))
+    const pruned = pruneEnv(c.keyFile.text, keep)
+    if (c.keyFile.exists && pruned.removed.length) {
+      const out = parseWrite(await this.run(m, writeScript({ dir: i.composeDir!, file: KEY_FILE, content: pruned.text, expectSha: c.keyFile.sha, mode: '0600', stamp: stampOf(this.d.now()) })), pruned.text)
+      if (!out.ok) throw new HomepageRefusal('write_failed', `${KEY_FILE}: ${out.message}`, 409)
+      if (c.wired) await this.recreate(m, i, c.service)
     }
-    return out
+    const cur = (await this.d.store.get(i.id)) ?? i
+    const exported = { ...cur.exported }
+    for (const n of names) delete exported[n]
+    await this.d.store.put({ ...cur, exported, lastFingerprint: null })
+    return pruned.removed
   }
 
   /**
-   * Put the turned-on widgets' keys on the guest: into the compose .env (mode 0600), as HOMEPAGE_VAR_ values,
-   * then recreate the Homepage container so it reads them. Plaintext on the guest: the page says so before this.
+   * Put the turned-on widgets' keys on the guest: into Homepage's own key file (homepage.env beside its compose
+   * file, mode 0600 from the moment it exists), as HOMEPAGE_VAR_ values, then recreate the Homepage service only.
+   * Keys no widget uses any more are taken out in the same write. Plaintext on the guest: the page says so first.
    */
-  async exportKeys(id: string, actor: Actor): Promise<{ written: string[]; missing: string[]; restarted: boolean }> {
+  async exportKeys(id: string, actor: Actor): Promise<{ written: string[]; removed: string[]; missing: string[]; restarted: boolean }> {
     if (actor.token) throw new HomepageRefusal('token_forbidden', 'API tokens cannot export keys.', 403)
-    const plan = await this.widgetKeys(id)
     return this.withLock(id, async () => {
       const i = await this.instance(id)
-      if (!i.composeDir) throw new HomepageRefusal('no_compose', `${i.container} was not started with Docker Compose, so there is no .env to put keys in.`, 409)
       const m = await this.machine(i)
+      const { widgets } = await this.keyStatus(i, await this.d.inventory(false))
       const values: Record<string, string> = {}
       const missing: string[] = []
-      for (const w of plan) {
-        const app = KNOWN.find(a => a.widget?.type === w.type)
-        for (const s of app?.widget?.secrets ?? []) {
-          const v = await this.d.secret(s.from, i.id)
-          if (v) values[varName(w.entryId, s.field)] = v; else missing.push(`${w.name} (${s.field})`)
-        }
+      for (const w of widgets) for (const v of w.vars) {
+        if (!v.value) { missing.push(`${w.name} (${v.field})`); continue }
+        if (!safeSecret(v.value)) throw new HomepageRefusal('unsafe_secret', `${w.name}'s ${v.field} holds a quote, a backslash, {{ or a line break, so it cannot be written safely. Change it in that plug-in's settings.`, 409)
+        values[v.name] = v.value
       }
       const names = Object.keys(values)
       if (!names.length) throw new HomepageRefusal('nothing', missing.length ? `HyperProx holds none of the keys yet: ${missing.join(', ')}.` : 'No widget that needs a key is turned on.', 409)
-      const read = parseRead(await this.run(m, readScript(i.composeDir, ['.env', i.composeFile?.split('/').pop() ?? 'docker-compose.yml'])))
-      const composeName = i.composeFile?.split('/').pop() ?? 'docker-compose.yml'
-      const compose = read.files[composeName]
-      if (compose?.exists && !composeReadsEnv(compose.text, i.container)) {
-        throw new HomepageRefusal('env_not_wired', 'Homepage\'s compose file does not pass the .env to the container. Use the "Let Homepage read its key file" fix first.', 409)
-      }
-      const env = read.files['.env'] ?? { exists: false, text: '', sha: null } as ReadFile
-      const next = mergeEnv(env.text, values)
-      await this.d.audit('homepage.export_keys', `homepage:${i.machineId}`, { by: actor.email, vars: names, missing: missing.length })
-      const out = parseWrite(await this.run(m, writeScript({ dir: i.composeDir, file: '.env', content: next, expectSha: env.sha, mode: '0600', stamp: stampOf(this.d.now()) })), next)
-      if (!out.ok) throw new HomepageRefusal('write_failed', `.env: ${out.message}`, 409)
-      const up = await this.run(m, composeUpScript(i.composeDir, i.composeFile), 180_000)
-      const restarted = /^HPX_UP ok$/m.test(up)
+      const c = await this.compose(m, i)
+      if (!c.wired) throw new HomepageRefusal('env_not_wired', `Homepage's compose file does not pass ${KEY_FILE} to the container. Use "Let Homepage read its key file" first.`, 409)
+      const pruned = pruneEnv(c.keyFile.text, names)
+      const next = mergeEnv(pruned.text, values)
+      await this.d.audit('homepage.export_keys', `homepage:${i.machineId}`, { by: actorLabel(actor), vars: names, removed: pruned.removed, missing: missing.length })
+      const out = parseWrite(await this.run(m, writeScript({ dir: i.composeDir!, file: KEY_FILE, content: next, expectSha: c.keyFile.sha, mode: '0600', stamp: stampOf(this.d.now()) })), next)
+      if (!out.ok) throw new HomepageRefusal('write_failed', `${KEY_FILE}: ${out.message}`, 409)
+      const restarted = await this.recreate(m, i, c.service)
       const cur = (await this.d.store.get(i.id)) ?? i
-      await this.d.store.put({ ...cur, exportedVars: [...new Set([...envNames(next)])], lastFingerprint: null })
-      return { written: names, missing, restarted }
+      const exported: Record<string, string> = {}
+      for (const n of envNames(next)) if (values[n]) exported[n] = keyHash(i.id, values[n])
+      await this.d.store.put({ ...cur, exported, lastFingerprint: null })
+      return { written: names, removed: pruned.removed, missing, restarted }
+    })
+  }
+
+  /** Let the Homepage service read homepage.env: back up the compose file, add it as an env_file, make the file. */
+  async wireEnv(id: string, actor: Actor): Promise<{ message: string }> {
+    if (actor.token) throw new HomepageRefusal('token_forbidden', 'API tokens cannot change Homepage\'s compose file.', 403)
+    return this.withLock(id, async () => {
+      const i = await this.instance(id)
+      const m = await this.machine(i)
+      const c = await this.compose(m, i)
+      if (c.wired) return { message: `Homepage already reads ${KEY_FILE}.` }
+      await this.d.audit('homepage.wire_env', `homepage:${i.machineId}`, { by: actorLabel(actor), file: c.name })
+      const stamp = stampOf(this.d.now())
+      if (!c.keyFile.exists) {
+        const made = parseWrite(await this.run(m, writeScript({ dir: i.composeDir!, file: KEY_FILE, content: '', expectSha: null, mode: '0600', stamp })), '')
+        if (!made.ok) throw new HomepageRefusal('write_failed', `${KEY_FILE}: ${made.message}`, 409)
+      }
+      const next = wireEnv(c.file.text, i.container)!
+      const out = parseWrite(await this.run(m, writeScript({ dir: i.composeDir!, file: c.name as any, content: next, expectSha: c.file.sha, mode: '0644', stamp })), next)
+      if (!out.ok) throw new HomepageRefusal('write_failed', `${c.name}: ${out.message}`, 409)
+      return { message: (await this.recreate(m, i, c.service)) ? `Homepage now reads ${KEY_FILE}; its container was recreated.`
+        : `The compose file was changed (backup beside it), but recreating the container failed. Run docker compose up -d ${c.service} there.` }
     })
   }
 
@@ -520,28 +670,48 @@ export class HomepageService {
       const i = await this.instance(id)
       if (i.proxmoxToken) throw new HomepageRefusal('exists', `This dashboard already has a token (${i.proxmoxToken.tokenId}). Revoke it to make a new one.`, 409)
       const name = `homepage-${i.vmid}-${i.id.slice(0, 6)}`
-      await this.d.audit('homepage.proxmox_token.create', `homepage:${i.machineId}`, { by: actor.email, name, role: 'PVEAuditor', path: '/' })
+      await this.d.audit('homepage.proxmox_token.create', `homepage:${i.machineId}`, { by: actorLabel(actor), name, role: 'PVEAuditor', path: '/' })
       const t = await this.d.proxmox.createAuditorToken(name, `Homepage dashboard on ${i.name}: read-only (PVEAuditor), made by HyperProx`)
-      try { await this.d.proxmox.saveSecret(i.id, t.secret) }
-      catch (e) { await this.d.proxmox.revokeToken(t.tokenId).catch(() => {}); throw e }
-      const proxmoxEntry = (await this.d.inventory(false).then(inv => buildEntries(inv, this.options(i))).catch(() => [] as Entry[])).find(e => e.id.startsWith('proxmox@'))
-      const cur = (await this.d.store.get(i.id)) ?? i
-      await this.d.store.put({ ...cur, proxmoxToken: { tokenId: t.tokenId, createdAt: this.d.now(), createdBy: actor.email },
-        options: proxmoxEntry ? { ...cur.options, widgets: [...new Set([...cur.options.widgets, proxmoxEntry.id])] } : cur.options })
+      // From here a failure takes the token back again, so none is left that HyperProx has no record of.
+      const undo = async () => { await this.d.proxmox.revokeToken(t.tokenId).catch(() => {}); await this.d.proxmox.saveSecret(i.id, null).catch(() => {}) }
+      try {
+        await this.d.proxmox.saveSecret(i.id, t.secret)
+        const proxmoxEntry = (await this.d.inventory(false).then(inv => buildEntries(inv, this.options(i, []))).catch(() => [] as Entry[])).find(e => e.offer?.type === 'proxmox')
+        const cur = (await this.d.store.get(i.id)) ?? i
+        await this.d.store.put({ ...cur, proxmoxToken: { tokenId: t.tokenId, createdAt: this.d.now(), createdBy: actorLabel(actor) },
+          options: proxmoxEntry ? { ...cur.options, widgets: [...new Set([...cur.options.widgets, proxmoxEntry.id])] } : cur.options, lastFingerprint: null })
+      } catch (e) { await undo(); throw e }
       return { tokenId: t.tokenId }
     })
   }
 
-  async revokeProxmoxToken(id: string, actor: Actor): Promise<void> {
+  /** Revoke the token (one that is already gone counts as revoked) and take its values off the guest. */
+  async revokeProxmoxToken(id: string, actor: Actor): Promise<{ keysLeft: string[] }> {
     if (actor.token) throw new HomepageRefusal('token_forbidden', 'API tokens cannot revoke Proxmox tokens.', 403)
     return this.withLock(id, async () => {
       const i = await this.instance(id)
       if (!i.proxmoxToken) throw new HomepageRefusal('none', 'This dashboard has no Proxmox token.', 404)
-      await this.d.audit('homepage.proxmox_token.revoke', `homepage:${i.machineId}`, { by: actor.email, tokenId: i.proxmoxToken.tokenId })
-      await this.d.proxmox.revokeToken(i.proxmoxToken.tokenId)
+      await this.d.audit('homepage.proxmox_token.revoke', `homepage:${i.machineId}`, { by: actorLabel(actor), tokenId: i.proxmoxToken.tokenId })
+      try { await this.d.proxmox.revokeToken(i.proxmoxToken.tokenId) }
+      catch (e: any) { if (!TOKEN_GONE.test(String(e?.message ?? e))) throw e }
       await this.d.proxmox.saveSecret(i.id, null)
-      const cur = (await this.d.store.get(i.id)) ?? i
-      await this.d.store.put({ ...cur, proxmoxToken: null, options: { ...cur.options, widgets: cur.options.widgets.filter(w => !w.startsWith('proxmox@')) } })
+      const proxVars = Object.keys(i.exported).filter(n => /^HOMEPAGE_VAR_PROXMOX_/.test(n))
+      let cur: HomepageInstance = { ...((await this.d.store.get(i.id)) ?? i) }
+      cur = { ...cur, proxmoxToken: null, options: { ...cur.options, widgets: cur.options.widgets.filter(w => !w.startsWith('proxmox@')) }, lastFingerprint: null }
+      await this.d.store.put(cur)
+      // The values are dead now; still take them off the guest. If it cannot be reached, the names are dropped anyway
+      // (the widget goes back to waiting) and the answer says what is left there.
+      let left: string[] = []
+      if (proxVars.length) {
+        try { await this.removeKeys(cur, proxVars) } catch {
+          left = proxVars
+          const now = (await this.d.store.get(i.id)) ?? cur
+          const exported = { ...now.exported }
+          for (const n of proxVars) delete exported[n]
+          await this.d.store.put({ ...now, exported })
+        }
+      }
+      return { keysLeft: left }
     })
   }
 
@@ -552,7 +722,8 @@ export class HomepageService {
     const out: Problem[] = []
     let m: Machine
     try { m = await this.machine(i) } catch (e: any) {
-      return [{ id: 'unreachable', severity: 'bad', title: 'The guest cannot be reached', detail: e.message, fix: e.code === 'stopped' ? null : { id: 'recheck', label: 'Check again' } }]
+      return [{ id: e.code === 'excluded' || e.code === 'exclusions_unknown' ? e.code : 'unreachable', severity: 'bad', title: e.code === 'excluded' ? 'The guest is excluded' : 'The guest cannot be reached', detail: e.message,
+        fix: e.code === 'stopped' || e.code === 'excluded' ? null : { id: 'recheck', label: 'Check again' } }]
     }
     let located: Located | undefined
     try { located = (await this.locate(m)).find(l => l.container === i.container) } catch (e: any) {
@@ -583,30 +754,42 @@ export class HomepageService {
       if (!v.reached) out.push({ id: 'homepage_silent', severity: 'bad', title: 'Homepage does not answer', detail: v.error ?? 'No answer on /api/services.', fix: { id: 'start', label: 'Restart Homepage', confirm: `Restart the ${i.container} container on ${i.name}?` } })
       else if (v.error) out.push({ id: 'homepage_error', severity: 'warn', title: 'Homepage answered with an error', detail: v.error, fix: null })
     }
-    // Widgets turned on whose keys are not on the guest yet, or that HyperProx does not hold.
-    const keys = await this.widgetKeys(id).catch(() => [])
-    const pending = keys.filter(k => k.vars.some(v => !v.exported))
-    const unheld = keys.filter(k => k.vars.some(v => !v.held))
+    const { widgets } = await this.keyStatus(i, await this.d.inventory(false)).catch(() => ({ widgets: [] as Awaited<ReturnType<HomepageService['keyStatus']>>['widgets'] }))
+    const stale = widgets.filter(k => k.vars.some(v => v.stale))
+    const unheld = widgets.filter(k => k.vars.some(v => !v.held))
+    const pending = widgets.filter(k => k.vars.some(v => !v.exported && !v.stale))
+    if (stale.length) out.push({ id: 'key_mismatch', severity: 'bad', title: `${plural(stale.length, 'widget')} with an old key on the guest`, detail: `${stale.map(k => k.name).join(', ')}: the key on the guest is not the one HyperProx holds now (rotated or removed), so the widget is left out until the keys are written again.`, fix: { id: 'export_keys', label: 'Write the keys to the guest', secure: true } })
     if (unheld.length) out.push({ id: 'widget_no_key', severity: 'warn', title: `${plural(unheld.length, 'widget')} without a key in HyperProx`, detail: `${unheld.map(k => k.name).join(', ')}: add the key in that plug-in's settings, or turn the widget off.`, fix: { id: 'widgets_off', label: 'Turn those widgets off' } })
-    else if (pending.length) out.push({ id: 'widget_pending', severity: 'warn', title: `${plural(pending.length, 'widget')} waiting for keys`, detail: `${pending.map(k => k.name).join(', ')} are turned on, but their keys are not on the guest yet, so they are left out of services.yaml.`, fix: { id: 'export_keys', label: 'Write the keys to the guest', secure: true } })
-    if (keys.length && i.composeDir) {
-      const name = i.composeFile?.split('/').pop() ?? 'docker-compose.yml'
-      const r = await this.run(m, readScript(i.composeDir, [name])).then(parseRead).catch(() => null)
-      const c = r?.files[name]
-      if (c?.exists && !composeReadsEnv(c.text, i.container)) out.push({ id: 'env_not_wired', severity: 'warn', title: 'Homepage does not read its .env', detail: 'Its compose file uses the .env only for its own settings, so keys put there never reach the widgets.', fix: { id: 'wire_env', label: 'Let Homepage read its key file', confirm: 'Back up the compose file, add `env_file: .env` to the Homepage service, and recreate the container (a few seconds offline)?' } })
+    else if (pending.length && !stale.length) out.push({ id: 'widget_pending', severity: 'warn', title: `${plural(pending.length, 'widget')} waiting for keys`, detail: `${pending.map(k => k.name).join(', ')} are turned on, but their keys are not on the guest yet, so they are left out of services.yaml.`, fix: { id: 'export_keys', label: 'Write the keys to the guest', secure: true } })
+    if ((widgets.length || Object.keys(i.exported).length) && i.composeDir) {
+      const c = await this.compose(m, i).catch(() => null)
+      if (c && !c.wired) out.push({ id: 'env_not_wired', severity: 'warn', title: `Homepage does not read ${KEY_FILE}`, detail: 'Its compose file does not pass the key file to the container, so keys put there never reach the widgets.', fix: { id: 'wire_env', label: 'Let Homepage read its key file', secure: true, confirm: `Back up the compose file, add ${KEY_FILE} as an env_file of the Homepage service, and recreate that container (a few seconds offline)?` } })
+    }
+    if (i.composeDir) {
+      const n = Number(/^HPX_BACKUPS (\d+)$/m.exec(await this.run(m, backupsScript(i.composeDir, KEY_FILE)).catch(() => ''))?.[1] ?? 0)
+      if (n > 0) out.push({ id: 'key_backups', severity: 'warn', title: `${plural(n, 'old copy')} of the key file`, detail: `Each write of ${KEY_FILE} leaves a dated backup beside it, and those hold the keys as they were, revoked ones included.`, fix: { id: 'purge_key_backups', label: 'Delete the old key backups', confirm: `Delete the ${plural(n, 'dated backup')} of ${KEY_FILE} on ${i.name}? The current key file stays.` } })
     }
     return out
   }
 
   async fix(id: string, fixId: unknown, actor: Actor): Promise<{ message: string }> {
-    const known = ['recheck', 'relocate', 'start', 'reset_services', 'widgets_off', 'wire_env'] as const
-    if (!known.includes(fixId as any)) throw new HomepageRefusal('bad_input', fixId === 'export_keys' ? 'Writing keys has its own button (it needs the master password).' : 'Not a fix HyperProx knows.')
+    const known = ['recheck', 'relocate', 'start', 'reset_services', 'widgets_off', 'purge_key_backups'] as const
+    if (!known.includes(fixId as any)) {
+      throw new HomepageRefusal('bad_input', fixId === 'export_keys' || fixId === 'wire_env' ? 'That fix has its own button (it needs the master password).' : 'Not a fix HyperProx knows.')
+    }
     const f = fixId as typeof known[number]
     if (f === 'recheck') return { message: 'Checked again.' }
+    if (f === 'widgets_off') {
+      const keys = await this.widgetKeys(id).catch(() => [])
+      const off = new Set(keys.filter(k => k.vars.some(v => !v.held)).map(k => k.entryId))
+      const i = await this.instance(id)
+      await this.setWidgets(id, i.options.widgets.filter(w => !off.has(w)), actor)
+      return { message: `Turned off ${plural(off.size, 'widget')}. Preview and apply to take them off the dashboard.` }
+    }
     return this.withLock(id, async () => {
       const i = await this.instance(id)
       const m = await this.machine(i)
-      await this.d.audit('homepage.fix', `homepage:${i.machineId}`, { by: actor.email, fix: f })
+      await this.d.audit('homepage.fix', `homepage:${i.machineId}`, { by: actorLabel(actor), fix: f })
       if (f === 'relocate') {
         const found = await this.locate(m)
         const l = found.find(x => x.container === i.container) ?? (found.length === 1 ? found[0] : undefined)
@@ -620,30 +803,18 @@ export class HomepageService {
         if (!/^HPX_OK$/m.test(out)) throw new HomepageRefusal('start_failed', `Docker could not start ${c}.`, 502)
         return { message: `${c} is starting.` }
       }
-      if (f === 'widgets_off') {
-        const keys = await this.widgetKeys(id).catch(() => [])
-        const off = new Set(keys.filter(k => k.vars.some(v => !v.held)).map(k => k.entryId))
-        await this.d.store.put({ ...i, options: { ...i.options, widgets: i.options.widgets.filter(w => !off.has(w)) } })
-        return { message: `Turned off ${plural(off.size, 'widget')}. Preview and apply to take them off the dashboard.` }
-      }
-      if (f === 'wire_env') {
+      if (f === 'purge_key_backups') {
         if (!i.composeDir) throw new HomepageRefusal('no_compose', 'This container was not started with Docker Compose.', 409)
-        const name = i.composeFile?.split('/').pop() ?? 'docker-compose.yml'
-        const r = parseRead(await this.run(m, readScript(i.composeDir, [name])))
-        const c = r.files[name]
-        if (!c?.exists) throw new HomepageRefusal('no_compose', `No ${name} in ${i.composeDir}.`, 409)
-        const next = wireEnv(c.text, i.container)
-        if (next === null) return { message: 'Homepage already reads its .env.' }
-        const out = parseWrite(await this.run(m, writeScript({ dir: i.composeDir, file: name as any, content: next, expectSha: c.sha, mode: '0644', stamp: stampOf(this.d.now()) })), next)
-        if (!out.ok) throw new HomepageRefusal('write_failed', `${name}: ${out.message}`, 409)
-        const up = await this.run(m, composeUpScript(i.composeDir, i.composeFile), 180_000)
-        return { message: /^HPX_UP ok$/m.test(up) ? 'Homepage now reads its .env; the container was recreated.' : 'The compose file was changed (backup beside it), but recreating the container failed. Run docker compose up -d there.' }
+        const n = Number(/^HPX_PURGED (\d+)$/m.exec(await this.run(m, purgeBackupsScript(i.composeDir, KEY_FILE)))?.[1] ?? 0)
+        return { message: `Deleted ${plural(n, 'old copy')} of ${KEY_FILE}.` }
       }
       // reset_services: back up the broken file and write HyperProx's groups only.
       const read = await this.readFiles(m, i, ['services.yaml'])
       const cur = read.files['services.yaml']
       const inv = await this.d.inventory(false)
-      const merged = mergeServices('', buildEntries(inv, this.options(i)), EMPTY_STATE, { hiddenGroups: i.options.hiddenGroups })
+      if ((inv.failed ?? []).includes('exclusions')) throw new HomepageRefusal('exclusions_unknown', 'Remote access\'s exclusion list could not be read; try again when it can.', 503)
+      const { valid } = await this.keyStatus(i, inv)
+      const merged = mergeServices('', buildEntries(inv, this.options(i, valid)), { ...EMPTY_STATE, released: i.state.released ?? [] }, { hiddenGroups: i.options.hiddenGroups })
       const out = parseWrite(await this.run(m, writeScript({ dir: i.configDir, file: 'services.yaml', content: merged.text, expectSha: cur?.sha ?? null, mode: '0644', stamp: stampOf(this.d.now()) })), merged.text)
       if (!out.ok) throw new HomepageRefusal('write_failed', out.message, 409)
       await this.d.store.put({ ...i, state: merged.state, lastFingerprint: null })
@@ -659,7 +830,7 @@ export class HomepageService {
   }
 }
 
-// ── compose: does Homepage get the .env? ─────────────────────────────────────
+// ── compose: does Homepage get its key file? ─────────────────────────────────
 
 function composeService(doc: any, container: string): { key: string; svc: any } | null {
   const services = doc && typeof doc === 'object' ? doc.services : null
@@ -670,7 +841,9 @@ function composeService(doc: any, container: string): { key: string; svc: any } 
   return hit ? { key: hit[0], svc: hit[1] } : null
 }
 
-/** True when the Homepage service in this compose file passes .env into the container (env_file). */
+const isKeyFile = (p: unknown) => p === KEY_FILE || p === `./${KEY_FILE}`
+
+/** True when the Homepage service in this compose file passes homepage.env into the container (env_file). */
 export function composeReadsEnv(text: string, container: string): boolean {
   let doc: any
   try { doc = yaml.load(text) } catch { return false }
@@ -678,19 +851,21 @@ export function composeReadsEnv(text: string, container: string): boolean {
   if (!s) return false
   const ef = s.svc?.env_file
   const list = Array.isArray(ef) ? ef : ef ? [ef] : []
-  return list.some((x: any) => { const p = typeof x === 'string' ? x : x?.path; return p === '.env' || p === './.env' })
+  return list.some((x: any) => isKeyFile(typeof x === 'string' ? x : x?.path))
 }
 
-/** The compose file with `env_file: [.env]` on the Homepage service; null when it already has it. Read back before use. */
+/**
+ * The compose file with homepage.env as an env_file of the Homepage service; null when it already has it. Only
+ * Homepage's own key file, never the stack's shared .env (which may hold other services' secrets). Read back first.
+ */
 export function wireEnv(text: string, container: string): string | null {
   const doc: any = yaml.load(text)
   const s = composeService(doc, container)
   if (!s) throw new HomepageRefusal('no_service', 'The compose file has no Homepage service HyperProx can recognise.', 409)
   if (composeReadsEnv(text, container)) return null
   const ef = s.svc.env_file
-  s.svc.env_file = [...(Array.isArray(ef) ? ef : ef ? [ef] : []), '.env']
+  s.svc.env_file = [...(Array.isArray(ef) ? ef : ef ? [ef] : []), KEY_FILE]
   const out = yaml.dump(doc, { lineWidth: -1, noRefs: true })
   if (!composeReadsEnv(out, container)) throw new HomepageRefusal('roundtrip', 'The changed compose file did not read back as meant.', 500)
   return out
 }
-

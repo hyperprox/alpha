@@ -3,9 +3,10 @@
 //
 //  Roles (lib/roles.ts): everything here is admin, reads included: the preview
 //  maps every service's LAN address and the diff shows the whole file. Turning
-//  on widgets, writing their keys to the guest, and creating or revoking the
-//  Proxmox token also need the master password re-entered (and so never work
-//  for an API token); the service refuses a token there again by name.
+//  on widgets, writing their keys to the guest, wiring the key file into
+//  Homepage's compose file, and creating or revoking the Proxmox token also need
+//  the master password re-entered (and so never work for an API token); the
+//  service refuses a token there again by name.
 //
 //  No route takes a path, a command or a file's content: a dashboard is picked
 //  by its id, a fix by its name, and a write is the preview the same person
@@ -41,14 +42,14 @@ export function instanceView(i: HomepageInstance) {
   return {
     id: i.id, machineId: i.machineId, kind: i.kind, vmid: i.vmid, node: i.node, name: i.name, container: i.container, configDir: i.configDir,
     composeDir: i.composeDir, url: i.url, options: i.options, autoSync: i.autoSync, managedGroups: i.state.managedGroups,
-    exportedVars: i.exportedVars, proxmoxToken: i.proxmoxToken, lastSync: i.lastSync, addedBy: i.addedBy, addedAt: i.addedAt,
+    exportedVars: Object.keys(i.exported ?? {}), releasedGroups: i.state.released ?? [], proxmoxToken: i.proxmoxToken, lastSync: i.lastSync, addedBy: i.addedBy, addedAt: i.addedAt,
   }
 }
 
 /** A preview as the page sees it: the dashboard by group, each file's diff, and what was kept. */
 export function planView(p: Plan) {
   return {
-    planId: p.id, expiresAt: p.expiresAt, counts: p.counts, notes: p.notes, errors: p.errors,
+    planId: p.id, expiresAt: p.expiresAt, counts: p.counts, notes: p.notes, errors: p.errors, failed: p.failed,
     entries: p.entries.map(e => ({ id: e.id, group: e.group, name: e.name, href: e.href, hrefKind: e.hrefKind, icon: e.icon, description: e.description,
       status: e.siteMonitor ? 'siteMonitor' : e.ping ? 'ping' : null, widget: e.offer ? { type: e.offer.type, enabled: e.offer.enabled, pending: e.offer.pending, vars: Object.values(e.offer.vars) } : null,
       guest: e.guest ? { vmid: e.guest.vmid, name: e.guest.name } : null, source: e.source })),
@@ -81,8 +82,9 @@ export const homepageRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (e) { return fail(reply, e) }
   })
 
-  fastify.delete<P>('/instances/:iid', async (req, reply) => {
-    try { await svc().disconnect(req.params.iid, actor(req)); return { success: true } }
+  // ?force=1 disconnects even when the guest cannot be reached to take its keys off (the answer names what is left).
+  fastify.delete<P & { Querystring: { force?: string } }>('/instances/:iid', async (req, reply) => {
+    try { return { success: true, data: await svc().disconnect(req.params.iid, actor(req), req.query.force === '1') } }
     catch (e) { return fail(reply, e) }
   })
 
@@ -96,8 +98,8 @@ export const homepageRoutes: FastifyPluginAsync = async (fastify) => {
     catch (e) { return fail(reply, e) }
   })
 
-  fastify.post<P & { Body: { planId?: unknown } }>('/instances/:iid/apply', async (req, reply) => {
-    try { return { success: true, data: await svc().apply(req.params.iid, req.body?.planId, actor(req)) } }
+  fastify.post<P & { Body: { planId?: unknown; applyAnyway?: unknown } }>('/instances/:iid/apply', async (req, reply) => {
+    try { return { success: true, data: await svc().apply(req.params.iid, req.body?.planId, actor(req), { applyAnyway: req.body?.applyAnyway === true }) } }
     catch (e) { return fail(reply, e) }
   })
 
@@ -135,7 +137,13 @@ export const homepageRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   fastify.delete<P>('/instances/:iid/proxmox-token', async (req, reply) => {
-    try { await svc().revokeProxmoxToken(req.params.iid, actor(req)); return { success: true } }
+    try { return { success: true, data: await svc().revokeProxmoxToken(req.params.iid, actor(req)) } }
+    catch (e) { return fail(reply, e) }
+  })
+
+  // Re-confirmed: changes Homepage's compose file and recreates its container.
+  fastify.post<P>('/instances/:iid/wire-env', async (req, reply) => {
+    try { return { success: true, data: await svc().wireEnv(req.params.iid, actor(req)) } }
     catch (e) { return fail(reply, e) }
   })
 }

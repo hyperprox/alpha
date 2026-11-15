@@ -15,7 +15,8 @@ export type GroupName = typeof GROUPS[number]
 
 /** Where a widget field's value comes from: a plug-in's stored setting, or the Proxmox token HyperProx made for Homepage. */
 export type WidgetSource =
-  | { kind: 'plugin'; plugin: string; setting: string }
+  /** `urlSetting`: the address that key belongs to. The widget is offered only on the entry at that address. */
+  | { kind: 'plugin'; plugin: string; setting: string; urlSetting: string }
   | { kind: 'proxmox-token'; part: 'id' | 'secret' }
 
 export interface WidgetDef {
@@ -42,16 +43,16 @@ export interface KnownApp {
 
 const arr = (key: string, name: string, port: number, description: string, plugin = 'arrstack'): KnownApp => ({
   key, name, group: 'Downloads', icon: `${key}.png`, description, port, scheme: 'http', monitorPath: '/ping', aliases: [key],
-  widget: { type: key, secrets: [{ field: 'key', from: { kind: 'plugin', plugin, setting: `${key}_key` } }] },
+  widget: { type: key, secrets: [{ field: 'key', from: { kind: 'plugin', plugin, setting: `${key}_key`, urlSetting: `${key}_url` } }] },
 })
 
 export const KNOWN: KnownApp[] = [
   // ── Media ──
   { key: 'plex', name: 'Plex', group: 'Media', icon: 'plex.png', description: 'Films and TV', port: 32400, scheme: 'http', monitorPath: '/identity', aliases: ['plex'],
-    widget: { type: 'plex', secrets: [{ field: 'key', from: { kind: 'plugin', plugin: 'plex', setting: 'plex_token' } }] } },
+    widget: { type: 'plex', secrets: [{ field: 'key', from: { kind: 'plugin', plugin: 'plex', setting: 'plex_token', urlSetting: 'plex_url' } }] } },
   { key: 'jellyfin', name: 'Jellyfin', group: 'Media', icon: 'jellyfin.png', description: 'Films and TV', port: 8096, scheme: 'http', monitorPath: '/health', aliases: ['jellyfin'] },
   { key: 'tautulli', name: 'Tautulli', group: 'Media', icon: 'tautulli.png', description: 'Who is watching what', port: 8181, scheme: 'http', aliases: ['tautulli'],
-    widget: { type: 'tautulli', secrets: [{ field: 'key', from: { kind: 'plugin', plugin: 'plex', setting: 'apikey' } }] } },
+    widget: { type: 'tautulli', secrets: [{ field: 'key', from: { kind: 'plugin', plugin: 'plex', setting: 'apikey', urlSetting: 'url' } }] } },
   { key: 'seerr', name: 'Seerr', group: 'Media', icon: 'jellyseerr.png', description: 'Ask for a film or a show', port: 5055, scheme: 'http', aliases: ['seerr', 'jellyseerr', 'overseerr', 'request', 'requests'] },
   { key: 'tunarr', name: 'Tunarr', group: 'Media', icon: 'tunarr.png', description: 'Live TV channels', port: 8000, scheme: 'http', aliases: ['tunarr'] },
   { key: 'immich', name: 'Immich', group: 'Home', icon: 'immich.png', description: 'Photos and videos', port: 2283, scheme: 'http', monitorPath: '/api/server/ping', aliases: ['immich', 'photos'] },
