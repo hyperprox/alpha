@@ -1,0 +1,10 @@
+DOCKER|29.9.3
+COMPOSE|5.7.1
+CTR|nextcloud-app-1|custom-nextcloud:apache-ffmpeg|sha256:000000000000000000000000000000000000000000000000651a15908c4cc993|nextcloud|app|/opt/nextcloud|/opt/nextcloud/docker-compose.yml|running|1|1|0|34.0.3||1|1
+CTR|nextcloud-coturn-1|coturn/coturn:latest|sha256:fffffffffffffffffffffffffffffffffffffffffffffffffc06169ec0530309|nextcloud|coturn|/opt/nextcloud|/opt/nextcloud/docker-compose.yml|running|0|1|0|||1|0
+CTR|nextcloud-janus-1|canyan/janus-gateway:latest|sha256:ffffffffffffffffffffffffffffffffffffffffffffffff9970a02cf0fc7fbd|nextcloud|janus|/opt/nextcloud|/opt/nextcloud/docker-compose.yml|running|0|1|0|||1|0
+CTR|nextcloud-signaling-1|strukturag/nextcloud-spreed-signaling:latest|sha256:0000000000000000000000000000000000000000000000001e7f59de5a8636c9|nextcloud|signaling|/opt/nextcloud|/opt/nextcloud/docker-compose.yml|running|0|1|0||nextcloud-spreed-signaling version 2.1.1~docker/go1.26.1|1|0
+CTR|nextcloud-nats-1|nats:2-alpine|sha256:ffffffffffffffffffffffffffffffffffffffffffffffffd3affb771b8ddb1c|nextcloud|nats|/opt/nextcloud|/opt/nextcloud/docker-compose.yml|running|0|1|0|||1|0
+CTR|nextcloud-db-1|postgres:16-alpine|sha256:0000000000000000000000000000000000000000000000002df2062da8675e51|nextcloud|db|/opt/nextcloud|/opt/nextcloud/docker-compose.yml|running|0|1|0|||1|0
+CTR|nextcloud-redis-1|redis:7-alpine|sha256:000000000000000000000000000000000000000000000000745b69b9b4e4b847|nextcloud|redis|/opt/nextcloud|/opt/nextcloud/docker-compose.yml|running|0|1|0|||1|0
+END|ok

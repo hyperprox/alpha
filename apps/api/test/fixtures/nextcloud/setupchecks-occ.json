@@ -1,0 +1,548 @@
+{
+ "system": {
+  "OCA\\AppAPI\\SetupChecks\\DaemonCheck": {
+   "name": "AppAPI deploy daemon",
+   "severity": "info",
+   "description": "AppAPI default deploy daemon is not set. Please register a default deploy daemon in the settings to install External Apps (Ex-Apps).",
+   "descriptionParameters": null,
+   "linkToDoc": "https://docs.nextcloud.com/server/34/admin_manual/exapps_management/AppAPIAndExternalApps.html#setup-deploy-daemon"
+  },
+  "OCA\\AppAPI\\SetupChecks\\HarpVersionCheck": {
+   "name": "AppAPI HaRP version check",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\FilesReminders\\SetupChecks\\NeedNotificationsApp": {
+   "name": "Files reminder",
+   "severity": "success",
+   "description": "The \"files_reminders\" app can work properly.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\LogReader\\SetupChecks\\LogErrors": {
+   "name": "Errors in the log",
+   "severity": "info",
+   "description": "1 warning in the logs since November 8, 2026, 5:54:35 AM",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\AllowedAdminRanges": {
+   "name": "Allowed admin IP ranges",
+   "severity": "success",
+   "description": "Admin IP filtering isn't applied.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\BruteForceThrottler": {
+   "name": "Brute-force Throttle",
+   "severity": "info",
+   "description": "Your remote address could not be determined.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\CronErrors": {
+   "name": "Cron errors",
+   "severity": "success",
+   "description": "The last cron job ran without errors.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\CronInfo": {
+   "name": "Cron last run",
+   "severity": "success",
+   "description": "Last background job execution ran 4 minutes ago.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\DebugMode": {
+   "name": "Debug mode",
+   "severity": "success",
+   "description": "Debug mode is disabled.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\FileLocking": {
+   "name": "Transactional File Locking",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\MaintenanceWindowStart": {
+   "name": "Maintenance window start",
+   "severity": "warning",
+   "description": "Server has no maintenance window start time configured. This means resource intensive daily background jobs will also be executed during your main usage time. We recommend to set it to a time of low usage, so users are less impacted by the load caused from these heavy tasks.",
+   "descriptionParameters": null,
+   "linkToDoc": "https://docs.nextcloud.com/server/34/go.php?to=admin-background-jobs"
+  },
+  "OCA\\Settings\\SetupChecks\\MemcacheConfigured": {
+   "name": "Memcache",
+   "severity": "success",
+   "description": "Configured",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\MimeTypeMigrationAvailable": {
+   "name": "Mimetype migrations available",
+   "severity": "warning",
+   "description": "One or more mimetype migrations are available. Occasionally new mimetypes are added to better handle certain file types. Migrating the mimetypes take a long time on larger instances so this is not done automatically during upgrades. Use the command `occ maintenance:repair --include-expensive` to perform the migrations.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\RepairSanitizeSystemTagsAvailable": {
+   "name": "Sanitize and merge duplicate system tags available",
+   "severity": "success",
+   "description": "None",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\SystemIs64bit": {
+   "name": "Architecture",
+   "severity": "success",
+   "description": "64-bit",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\TempSpaceAvailable": {
+   "name": "Temporary space available",
+   "severity": "success",
+   "description": "Temporary directory is correctly configured:\n- 50.8 GiB available in /tmp (PHP temporary directory)",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PushService": {
+   "name": "Push service",
+   "severity": "success",
+   "description": "Free push service",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ },
+ "dav": {
+  "OCA\\DAV\\SetupChecks\\NeedsSystemAddressBookSync": {
+   "name": "DAV system address book",
+   "severity": "success",
+   "description": "No outstanding DAV system address book sync.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\DAV\\SetupChecks\\SystemAddressBookSize": {
+   "name": "DAV system address book size",
+   "severity": "success",
+   "description": "The system address book is enabled and contains less than the configured limit of 5000 contacts",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ },
+ "network": {
+  "OCA\\DAV\\SetupChecks\\WebdavEndpoint": {
+   "name": "WebDAV endpoint",
+   "severity": "success",
+   "description": "Your web server is properly set up to allow file synchronization over WebDAV.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\DataDirectoryProtected": {
+   "name": "Data directory protected",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\InternetConnectivity": {
+   "name": "Internet connectivity",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\JavaScriptSourceMaps": {
+   "name": "JavaScript source map support",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\JavaScriptModules": {
+   "name": "JavaScript modules support",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\OcxProviders": {
+   "name": "OCS provider resolving",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\WellKnownUrls": {
+   "name": ".well-known URLs",
+   "severity": "success",
+   "description": "Your server is correctly configured to serve `.well-known` URLs.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\Woff2Loading": {
+   "name": "Font file loading",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ },
+ "mail": {
+  "OCA\\Mail\\SetupChecks\\MailTransport": {
+   "name": "Mail Transport configuration",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Mail\\SetupChecks\\MailConnectionPerformance": {
+   "name": "Mail connection performance",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ },
+ "notifications": {
+  "OCA\\Notifications\\Settings\\SetupWarningOnRateLimitReached": {
+   "name": "Push notifications - Fair use policy",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ },
+ "security": {
+  "OCA\\Settings\\SetupChecks\\AppDirsWithDifferentOwner": {
+   "name": "App directories owner",
+   "severity": "success",
+   "description": "App directories have the correct owner \"www-data\"",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\CheckUserCertificates": {
+   "name": "Old administration imported certificates",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\CodeIntegrity": {
+   "name": "Code integrity",
+   "severity": "success",
+   "description": "No altered files",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\ForwardedForHeaders": {
+   "name": "Forwarded for headers",
+   "severity": "info",
+   "description": "Your remote address could not be determined.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\HttpsUrlGeneration": {
+   "name": "HTTPS access and URLs",
+   "severity": "success",
+   "description": "You are accessing your instance over a secure connection, and your instance is generating secure URLs.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\LegacySSEKeyFormat": {
+   "name": "Old server-side-encryption",
+   "severity": "success",
+   "description": "Disabled",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PhpOutdated": {
+   "name": "PHP version",
+   "severity": "success",
+   "description": "You are currently running PHP 8.5.10.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\RandomnessSecure": {
+   "name": "Random generator",
+   "severity": "success",
+   "description": "Secure",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\SecurityHeaders": {
+   "name": "HTTP headers",
+   "severity": "success",
+   "description": "Your server is correctly configured to send security headers.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\TwoFactorConfiguration": {
+   "name": "Second factor configuration",
+   "severity": "info",
+   "description": "Second factor providers are available but two-factor authentication is not enforced.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ },
+ "database": {
+  "OCA\\Settings\\SetupChecks\\DatabaseHasMissingColumns": {
+   "name": "Database missing columns",
+   "severity": "success",
+   "description": "None",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\DatabaseHasMissingIndices": {
+   "name": "Database missing indices",
+   "severity": "warning",
+   "description": "Detected some missing optional indices. Occasionally new indices are added (by Nextcloud or installed applications) to improve database performance. Adding indices can sometimes take awhile and temporarily hurt performance so this is not done automatically during upgrades. Once the indices are added, queries to those tables should be faster. Use the command `occ db:add-missing-indices` to add them.\nMissing indices:\n \"mail_messages_strucanalyz_idx\" in table \"mail_messages\", \n \"mail_acc_prov_idx\" in table \"mail_accounts\", \n \"mail_alias_accid_idx\" in table \"mail_aliases\", \n \"mail_messages_mb_id_uid_uidx\" in table \"mail_messages\", \n \"mail_smime_certs_uid_email_idx\" in table \"mail_smime_certificates\", \n \"mail_trusted_senders_idx\" in table \"mail_trusted_senders\", \n \"mail_coll_idx\" in table \"mail_coll_addresses\"",
+   "descriptionParameters": null,
+   "linkToDoc": "https://docs.nextcloud.com/server/34/go.php?to=admin-long-running-migration-steps"
+  },
+  "OCA\\Settings\\SetupChecks\\DatabaseHasMissingPrimaryKeys": {
+   "name": "Database missing primary keys",
+   "severity": "success",
+   "description": "None",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\DatabasePendingBigIntConversions": {
+   "name": "Database pending bigint migrations",
+   "severity": "success",
+   "description": "None",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\MysqlRowFormat": {
+   "name": "MySQL row format",
+   "severity": "success",
+   "description": "You are not using MySQL",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\MysqlUnicodeSupport": {
+   "name": "MySQL Unicode support",
+   "severity": "success",
+   "description": "You are not using MySQL",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\SchedulingTableSize": {
+   "name": "Scheduling objects table size",
+   "severity": "success",
+   "description": "Scheduling objects table size is within acceptable range.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\SupportedDatabase": {
+   "name": "Database version",
+   "severity": "success",
+   "description": "16.15",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\TransactionIsolation": {
+   "name": "Database transaction isolation level",
+   "severity": "success",
+   "description": "Read committed",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ },
+ "config": {
+  "OCA\\Settings\\SetupChecks\\DefaultPhoneRegionSet": {
+   "name": "Default phone region",
+   "severity": "info",
+   "description": "Your installation has no default phone region set. This is required to validate phone numbers in the profile settings without a country code. To allow numbers without a country code, please add \"default_phone_region\" with the respective ISO 3166-1 code of the region to your config file.",
+   "descriptionParameters": null,
+   "linkToDoc": "https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2#Officially_assigned_code_elements"
+  },
+  "OCA\\Settings\\SetupChecks\\EmailTestSuccessful": {
+   "name": "Email test",
+   "severity": "info",
+   "description": "You have not set or verified your email server configuration, yet. Please head over to the \"Basic settings\" in order to set them. Afterwards, use the \"Send email\" button below the form to verify your settings.",
+   "descriptionParameters": null,
+   "linkToDoc": "https://docs.nextcloud.com/server/34/go.php?to=admin-email"
+  },
+  "OCA\\Settings\\SetupChecks\\OverwriteCliUrl": {
+   "name": "Overwrite CLI URL",
+   "severity": "success",
+   "description": "The \"overwrite.cli.url\" option in your config.php is set to \"https://cloud.example.com\" which is a correct URL. Suggested URL is \"https://localhost\".",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\ReadOnlyConfig": {
+   "name": "Configuration file access rights",
+   "severity": "success",
+   "description": "Nextcloud configuration file is writable",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\ServerIdConfig": {
+   "name": "Configuration server ID",
+   "severity": "info",
+   "description": "Server identifier isn’t configured. It is recommended if your Nextcloud instance is running on several PHP servers. Add a server ID in your configuration.",
+   "descriptionParameters": null,
+   "linkToDoc": "https://docs.nextcloud.com/server/34/go.php?to=admin-update"
+  }
+ },
+ "php": {
+  "OCA\\Settings\\SetupChecks\\PhpDefaultCharset": {
+   "name": "PHP default charset",
+   "severity": "success",
+   "description": "UTF-8",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PhpDisabledFunctions": {
+   "name": "PHP set_time_limit",
+   "severity": "success",
+   "description": "The function is available.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PhpFreetypeSupport": {
+   "name": "Freetype",
+   "severity": "success",
+   "description": "Supported",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PhpApcuConfig": {
+   "name": "PHP APCu configuration",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PhpGetEnv": {
+   "name": "PHP getenv",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PhpMemoryLimit": {
+   "name": "PHP memory limit",
+   "severity": "success",
+   "description": "1 GB",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PhpModules": {
+   "name": "PHP modules",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PhpOpcacheSetup": {
+   "name": "PHP opcache",
+   "severity": "success",
+   "description": "Checking from CLI, OPcache checks have been skipped.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\PhpOutputBuffering": {
+   "name": "PHP \"output_buffering\" option",
+   "severity": "success",
+   "description": "Disabled",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Theming\\SetupChecks\\PhpImagickModule": {
+   "name": "PHP Imagick module",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ },
+ "ai": {
+  "OCA\\Settings\\SetupChecks\\TaskProcessingPickupSpeed": {
+   "name": "Task Processing pickup speed",
+   "severity": "success",
+   "description": "No scheduled tasks in the last 14 days.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\TaskProcessingSuccessRate": {
+   "name": "Task Processing success rate",
+   "severity": "success",
+   "description": "No scheduled tasks in the last 14 days.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Settings\\SetupChecks\\TaskProcessingWorkerIsRunning": {
+   "name": "Task Processing worker status",
+   "severity": "success",
+   "description": "No scheduled tasks in the last 7 days.",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ },
+ "talk": {
+  "OCA\\Talk\\SetupCheck\\Configuration": {
+   "name": "Talk configuration values",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Talk\\SetupCheck\\HighPerformanceBackend": {
+   "name": "High-performance backend",
+   "severity": "warning",
+   "description": "Warning: Running version: 2.1.1~docker; Server does not support all features of this Talk version, missing features: changed-users",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Talk\\SetupCheck\\FederationLockCache": {
+   "name": "Federation",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Talk\\SetupCheck\\NotifyPush": {
+   "name": "Client Push",
+   "severity": "warning",
+   "description": "{notify_push} is not installed. This may lead to delayed Talk notifications.",
+   "descriptionParameters": {
+    "notify_push": {
+     "id": "notify_push",
+     "name": "Client Push",
+     "type": "app"
+    }
+   },
+   "linkToDoc": "https://github.com/nextcloud/notify_push/blob/main/README.md"
+  },
+  "OCA\\Talk\\SetupCheck\\RecordingBackend": {
+   "name": "Recording backend",
+   "severity": "info",
+   "description": "No recording backend configured",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Talk\\SetupCheck\\SIPConfiguration": {
+   "name": "SIP configuration",
+   "severity": "info",
+   "description": "No SIP backend configured",
+   "descriptionParameters": null,
+   "linkToDoc": null
+  },
+  "OCA\\Talk\\SetupCheck\\BackgroundBlurLoading": {
+   "name": "Background blur",
+   "severity": "success",
+   "description": null,
+   "descriptionParameters": null,
+   "linkToDoc": null
+  }
+ }
+}

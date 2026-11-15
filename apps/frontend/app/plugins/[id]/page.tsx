@@ -15,6 +15,7 @@ import { HomeAssistantPage } from '@/components/plugins/home-assistant/HomeAssis
 import { QnapPage } from '@/components/plugins/qnap/QnapPage'
 import { AsusPage } from '@/components/plugins/asus/AsusPage'
 import { PbsPage } from '@/components/plugins/pbs/PbsPage'
+import { NextcloudPage } from '@/components/plugins/nextcloud/NextcloudPage'
 import { HudHeader, styles as vs, type StatChip } from '@/components/visual/kit'
 import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
@@ -522,5 +523,6 @@ export default function PluginPage({ params }: { params: { id: string } }) {
   if (params.id === 'qnap') return <QnapPage />
   if (params.id === 'asus') return <AsusPage />
   if (params.id === 'pbs') return <PbsPage />
+  if (params.id === 'nextcloud') return <NextcloudPage />
   return params.id === 'home-assistant' ? <HomeAssistantPage /> : <PluginDetailPage params={params} />
 }

@@ -14,6 +14,7 @@ import { asusPlugin }     from './asus'
 import { homeAssistantPlugin } from './home-assistant'
 import { meshcentralPlugin } from './meshcentral'
 import { mikrotikPlugin } from './mikrotik'
+import { nextcloudPlugin } from './nextcloud'
 import { plexPlugin }     from './plex'
 import { qnapPlugin }     from './qnap'
 import { pbsPlugin }      from './pbs'
@@ -29,6 +30,7 @@ export const PLUGINS: Plugin[] = [
   meshcentralPlugin,
   qnapPlugin,
   pbsPlugin,
+  nextcloudPlugin,
 ]
 
 export function findPlugin(id: string): Plugin | undefined {

@@ -67,9 +67,10 @@ const PROBES = [
   { key: 'jellyfin', label: 'Jellyfin', port: 8096, path: '/System/Info/Public', scheme: 'http', recipeId: 'jellyfin', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => s === 200 && /"ProductName"\s*:\s*"[^"]*jellyfin/i.test(b) },
   // Nextcloud answers /status.php without a login, naming itself; on 443 behind its own TLS or on plain 80.
-  { key: 'nextcloud', label: 'Nextcloud', port: 443, path: '/status.php', scheme: 'https', recipeId: 'nextcloud', pluginId: null, setting: null, needs: [], multiple: false,
+  // The Nextcloud plug-in keeps its own instance list (no address setting): a finding points at its page to add it.
+  { key: 'nextcloud', label: 'Nextcloud', port: 443, path: '/status.php', scheme: 'https', recipeId: 'nextcloud', pluginId: 'nextcloud', setting: null, page: '/plugins/nextcloud', needs: ['an admin app password (optional)'], multiple: false,
     match: (s, b) => s === 200 && /"productname"\s*:\s*"[^"]*nextcloud|"installed"\s*:\s*true[^}]*"versionstring"/i.test(b) },
-  { key: 'nextcloud', label: 'Nextcloud', port: 80, path: '/status.php', scheme: 'http', recipeId: 'nextcloud', pluginId: null, setting: null, needs: [], multiple: false,
+  { key: 'nextcloud', label: 'Nextcloud', port: 80, path: '/status.php', scheme: 'http', recipeId: 'nextcloud', pluginId: 'nextcloud', setting: null, page: '/plugins/nextcloud', needs: ['an admin app password (optional)'], multiple: false,
     match: (s, b) => s === 200 && /"productname"\s*:\s*"[^"]*nextcloud|"installed"\s*:\s*true[^}]*"versionstring"/i.test(b) },
   // Vaultwarden's /api/config is public and names the server ("server": { "name": "Vaultwarden" }).
   { key: 'vaultwarden', label: 'Vaultwarden', port: 443, path: '/api/config', scheme: 'https', recipeId: 'vaultwarden', pluginId: null, setting: null, needs: [], multiple: false,

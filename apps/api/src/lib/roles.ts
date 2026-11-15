@@ -186,6 +186,14 @@ const PBS_RECONFIRM = /^\/api\/plugins\/pbs\/instances(\/(?!probe-certificate$)[
 // Backup management (opt-in, lib/pbs/manage.ts): turning it on or off, previews, applies and clean-up. All admin and
 // re-confirmed, which keeps API tokens out; the snapshot list of one group is a read (viewer).
 const PBS_MANAGE_RECONFIRM = /^\/api\/plugins\/pbs\/instances\/[^/]+\/manage(\/(preview|apply|gc))?$/
+// Nextcloud (routes/nextcloud.ts). The instance list and a reading are viewer (trimmed by the route below admin). The
+// guest list, the 2FA user list and a job's progress are admin, though reads (they name guests, users and paths). Every
+// write is admin, the default for a POST/PUT/DELETE: detection and the update check only read, a snooze changes only
+// HyperProx's own list, and the plain actions (lib/nextcloud/checks.ts ACTIONS) each set one setting. Adding, changing or
+// removing an instance stores a login, and the secure actions (the update, the Talk signalling update, long database
+// work, enforcing 2FA, mail) change much more: those are re-confirmed, which keeps API tokens out too.
+const NEXTCLOUD_ADMIN_READ = /^\/api\/plugins\/nextcloud\/(candidates|instances\/[^/]+\/(two-factor|jobs\/[^/]+))$/
+const NEXTCLOUD_RECONFIRM = /^\/api\/plugins\/nextcloud\/instances(\/[^/]+(\/secure-actions\/[^/]+)?)?$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -326,6 +334,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (SITE_METRICS_ADMIN_READ.test(p)) return 'admin'
   if (SETUP_CHECKLIST.test(p)) return 'admin'
   if (ASUS_DIAGNOSTICS.test(p)) return 'admin'
+  if ((m === 'GET' || m === 'HEAD') && NEXTCLOUD_ADMIN_READ.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
   if (PLACEMENT.test(p)) return (m === 'GET' || m === 'HEAD') && PLACEMENT_READ.test(p) ? 'viewer' : 'admin'
   if (SELF_UPDATE.test(p)) return (m === 'GET' || m === 'HEAD') && p === SELF_UPDATE_SUMMARY ? 'viewer' : 'admin'
@@ -397,6 +406,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m !== 'GET' && m !== 'HEAD' && ASUS_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && PBS_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && PBS_MANAGE_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && NEXTCLOUD_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   if (m === 'POST' && PLEX_SIGNIN_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true

@@ -98,8 +98,9 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes |
 | Websites | Its own section: a New website wizard (static site, WordPress or Ghost) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link or open Ghost's admin, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
-| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
+| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and the master password; a message when something new is added |
+| Nextcloud | Version and update, every setup warning from the admin page grouped by severity with a one-click fix, a guided step or an honest "optional" for each, Talk's signalling server and Client Push, PHP, database, background jobs and the log; updates a Docker Compose install (database dump first, master password) |
 | Backups | The Proxmox Backup Server plug-in: datastores, stale guests, job health and an optional Verify, read-only unless you turn on managing backups (delete, prune, clean up; protected snapshots are never touched) |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
 | Security | Built-in Vaultwarden sign-in with 2FA, secrets in memory only, auto-lock, roles and API tokens (an owner can let one admin token save plug-in settings without the master password; off by default and audited) |
@@ -1061,8 +1062,9 @@ more than one, gets a question back listing your clusters.
 - **Site metrics**: visitors, page views, error rate, p95 response time, top pages and referrers, and uptime
   per site, for today, this week or this month. Nothing collects these yet, so the assistant says the figures
   are not collected; the source plugs into the site-metrics module when it is added.
-- **Plug-in pages**: for Plex, the Arr Stack, Unmanic, MikroTik and MeshCentral, the figures their pages
-  show (now playing, the download pipeline, encoding workers, the router's traffic), in words.
+- **Plug-in pages**: for Plex, the Arr Stack, Unmanic, MikroTik, MeshCentral and Nextcloud, the figures their
+  pages show (now playing, the download pipeline, encoding workers, the router's traffic, each Nextcloud's
+  version, update and warning counts), in words.
 - **Plex Clear-out and Library**: read only. How far back Plex's history goes, how much of each library has
   never been played, what the never-watched and idle lists add up to and their largest items, what the keep
   rules held back, how big the library is and how much of it Sonarr and Radarr manage. It cannot remove
@@ -2357,6 +2359,92 @@ and every refused attempt, by the gate or by HyperProx, is in the audit log.
 Viewers see the readings but not the server's address, token id or pin. The page reads the server again
 every two minutes while it is open (a reading is kept 30 seconds), and a server that cannot be read says
 why.
+
+#### Nextcloud
+
+Open **Plug-ins, Nextcloud** and press **Add a Nextcloud** (admins; the master password is asked again).
+Pick the container or VM it runs in and press **Look for Nextcloud there**: HyperProx looks inside the guest
+(read-only) for a running container with Nextcloud's `occ` in it, its Docker Compose project, directory and
+file, whether the image is built from a Dockerfile, the database container, Talk's signalling server and a
+Client Push daemon; or, with no container, a plain install's `occ` and the user that owns it. Nothing is
+saved until Nextcloud is found. The Compose file itself is never read back (it usually holds the database
+password); only whether its service has a `build:` key.
+
+HyperProx reaches Nextcloud the way the VPN page reaches a guest: the node's login, then `pct exec` (a
+container) or the guest agent (a VM), the script on standard input. It runs `occ` there
+(`docker exec -u www-data <container> php occ ...`, or `sudo -u www-data php <path>/occ ...` for a plain
+install) from a fixed list of commands, each with checked arguments; nothing you type reaches a shell as
+anything but one quoted, checked word. A guest with the Proxmox tag `hyperprox-ignore` is never entered.
+
+**The web login (optional).** An admin user and an app password (Personal settings → Security → Create
+new app password), or tick **Make the app password for me** and HyperProx makes one named `HyperProx` with
+`occ user:auth-tokens:add`. It is tested with a real read before it is saved, kept in the vault, and used
+only for two read-only GETs: the serverinfo API (PHP limits, database size, storage, active users) and the
+admin page's own setup checks, which know the browser's request. Without it the checks come from
+`occ setupchecks`, and the two that only fire on the command line (no visitor address there:
+brute-force throttle and forwarded-for headers) are folded under **Not problems here**.
+
+The page opens with a health ring and counts of errors, warnings and notes, then:
+
+- **Version**: the running version, the available one, how it is installed, and **Check and update**.
+- **Setup checks**: every warning as a card, grouped Errors, Warnings, Notes, each with its action:
+  - *one-click fixes*, each behind a confirm that says what changes: the maintenance window (suggested
+    from the busy hours in Placement settings, else 01:00 UTC; pick another hour), the default phone region
+    (a country list, the suggestion from Nextcloud's locale or the cluster's time zone), the server id,
+    the missing database indices (with the missing columns and primary keys), the mimetype migrations
+    (`occ maintenance:repair --include-expensive`, in the background with its output), turning AppAPI off
+    when no External Apps are installed, app updates (`occ app:update --all`), and updating Talk's signalling
+    server;
+  - *guided steps*: mail (a form; the password goes to the vault and to `occ config:import` on standard
+    input, never a command line; send a test mail from Nextcloud afterwards to clear the check), enforcing
+    two-factor authentication (it lists who has no second factor yet, takes groups to leave out, and wants
+    you to confirm you read the list), Client Push, the log entries, and switching background jobs to cron;
+  - *optional*: what the recording backend, SIP and the AppAPI deploy daemon would give you and what they
+    need, with **Dismiss**.
+  Every card can be snoozed for 7 or 30 days; snoozed ones are folded away and can be brought back.
+- **Talk**: the signalling server's version and image and the features Talk says it lacks, calls running,
+  and Client Push in three parts (app, daemon, address).
+- **System**: PHP, the database, users, files, apps, background-job mode and last run, the maintenance window.
+- **Log**: recent warnings and errors (admins).
+
+**Client Push** is set up in four steps: install the app (one click); run its daemon (HyperProx shows the
+Compose service to add, built from your app's own image; it does not edit your Compose file); route `/push/`
+to it (when the site is a host in HyperProx's proxy on Nginx Proxy Manager, HyperProx previews adding the
+location to its Advanced configuration and applies it when you confirm; otherwise it shows the exact nginx
+block); then **Test and save**, which runs `occ notify_push:setup` against your Nextcloud's own address at
+`/push`.
+
+**Updating Nextcloud** (Docker Compose only; a plain install or a container without Compose gets the exact
+steps instead). **Check and update** first shows the check: who has been active in the last 10 minutes
+(every user's sessions; HyperProx's own `HyperProx` app password is not counted), Talk calls running, a
+backup of the guest running, room for the dump, and a pending upgrade or maintenance mode left on. Any of
+them stops it, with the reason. It shows where the database dump goes (`hyperprox-backups` in the Compose
+directory), every step, how to roll back, and whether Proxmox can snapshot the guest: a container with bind
+mounts cannot be snapshotted, so the dump and the kept image are the rollback. **Back up and update** needs
+the master password. Then, in the background, with each step on the page:
+
+1. maintenance mode on;
+2. the database dumped inside the Compose project (`pg_dump -Fc`, read back with `pg_restore --list`; or
+   `mysqldump`, checked with `gzip -t`), and `config.php` copied beside it;
+3. the image in use tagged `<image>:hyperprox-pre-<version>`, so the old code stays on disk;
+4. the new image: `docker compose build --pull` when the service is built from a Dockerfile (a plain pull
+   would change nothing), else `docker compose pull`. The image's own `NEXTCLOUD_VERSION` must be newer and
+   at most one major version ahead, or it stops here and turns maintenance mode off again;
+5. `docker compose up -d --no-deps <service>`: the image upgrades Nextcloud when it starts;
+6. `occ status` until it reports the new version (`occ upgrade` once if the image did not run it; maintenance
+   mode off if it was left on);
+7. `occ db:add-missing-indices`, `db:add-missing-columns` and `db:add-missing-primary-keys`.
+
+Nothing is deleted at any step: old dumps and old images stay until you remove them.
+
+**Updating Talk's signalling server** pulls its image and recreates only that container when the image
+changed (the previous one is tagged `hyperprox-pre-<version>`), refused while a call is running.
+
+Every action is an admin's and a signed-in person's (API tokens are refused), is written to the audit log
+before it runs (if the entry cannot be written, nothing runs), and runs one at a time per Nextcloud. The
+update, the signalling update, the database work, mail, two-factor enforcement and app updates also need the
+master password. Viewers see the health and the checks, but not the log, user names, paths or container
+names. The page reads Nextcloud again every two minutes while it is open (a reading is kept 30 seconds).
 
 ### Settings
 
