@@ -57,7 +57,9 @@ location /api {
     proxy_read_timeout 180s;  # vault sign-in plus first migration can take ~30 s
     # The API stopped or restarting: a JSON answer the page can read and explain, never nginx's HTML error page.
     proxy_intercept_errors off;
-    error_page 502 503 504 = @api_down;
+    error_page 502 503 = @api_down;
+    # A 504 here is the API taking longer than proxy_read_timeout to answer, not the API being down.
+    error_page 504 = @api_slow;
 }
 
 location @api_down {
@@ -65,6 +67,12 @@ location @api_down {
     add_header Cache-Control "no-store" always;
     add_header Retry-After "5" always;
     return 503 '{"ok":false,"success":false,"code":"api_down","error":"HyperProx\'s server is restarting or stopped. This page will reconnect by itself."}';
+}
+
+location @api_slow {
+    default_type application/json;
+    add_header Cache-Control "no-store" always;
+    return 504 '{"ok":false,"success":false,"code":"api_timeout","error":"HyperProx took too long to answer. Try again."}';
 }
 
 # Live updates (/ws) and the terminal (/ws/terminal/...).
@@ -78,6 +86,7 @@ location /ws {
     proxy_set_header    X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header    X-Forwarded-Proto $hpx_proto;
     proxy_set_header    X-Forwarded-Host  $http_host;
+    proxy_set_header    X-Request-Id      $request_id;
     proxy_read_timeout  3600s;
     proxy_send_timeout  3600s;
 }
@@ -103,6 +112,7 @@ location = /_hpx/session {
     proxy_set_header        X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header        X-Forwarded-Proto $hpx_proto;
     proxy_set_header        X-Forwarded-Host  $http_host;
+    proxy_set_header        X-Request-Id      $request_id;
     proxy_set_header        X-Original-URI    $request_uri;
 }
 
