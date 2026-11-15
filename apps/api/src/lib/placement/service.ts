@@ -69,11 +69,11 @@ import { corosyncAround, corosyncWords } from './corosync'
 import { checkablePaths, placementMap, type EngineInput } from './engine'
 import { copySeconds } from './network'
 import { readCluster, readHistory, taskRunning, type ClusterRead, type PromRange } from './read'
-import { DEFAULT_SETTINGS, IN_FLIGHT, MoveSlotTaken, PlanSlotTaken, mergeAuto, mergeSettings, stricterSettings, type PlacementStore } from './store'
+import { DEFAULT_SETTINGS, IN_FLIGHT, MoveSlotTaken, PlanSlotTaken, mergeAuto, mergeSettings, stricterAuto, stricterSettings, type PlacementStore } from './store'
 import { backupMask, quietStatus, type QuietStatus } from './windows'
 import type {
   Advice, AutoSettings, AutoState, BalanceGoal, BalanceResult, GuestPlacement, MoveRecord, NetworkCost, PlacementMap, PlacementSettings,
-  PlanRecord, PlanSnapshot, PlanStatus, PlanStepRecord,
+  AutoConfig, PlanRecord, PlanSnapshot, PlanStatus, PlanStepRecord,
 } from './types'
 
 export interface Actor { email: string; role?: string }
@@ -157,12 +157,22 @@ export interface BalanceView extends BalanceResult {
   network:  NetworkCost
   window:   { hours: number; stepSec: number }
   settings: Pick<PlacementSettings, 'balanceGoal' | 'unevenAbove' | 'minGain' | 'maxPlanMoves' | 'cpuAbove' | 'memAbove'>
-  auto:     { settings: AutoSettings; state: AutoState }
+  auto:     AutoConfig & { state: AutoState }
   running:  PlanRecord | null
   plans:    PlanRecord[]
 }
 
 const APPROVER_ROLES = new Set(['admin', 'owner'])
+/** An approval to apply automatically lasts 30 days; then it notifies only until renewed. */
+export const AUTO_APPROVAL_TTL_MS = 30 * 24 * 3600_000
+/**
+ * Ceph warnings accepted when applying was approved are good for 7 days. A person saw them and said "go on despite
+ * these"; a week later they have to look again (save once more). A baseline of HEALTH_OK has no such limit beyond
+ * the approval's own 30 days, since nothing was accepted. Chosen over a hand-kept "accepted checks" list because
+ * there is nothing to misconfigure, and over refreshing the baseline on its own because that would accept a new
+ * warning with no person looking.
+ */
+export const CEPH_BASELINE_TTL_MS = 7 * 24 * 3600_000
 const DAY_MS = 24 * 3600_000
 
 export class PlacementService {
@@ -754,8 +764,11 @@ export class PlacementService {
     const input: BalanceInput = {
       map, nodes: hist.nodes, guests: hist.guests, masked, stepSec: hist.stepSec, settings: s, goal: opts.goal,
       past: await this.pastMoves(hist.start), auto: opts.auto, recentHours: opts.recentHours, endSec: hist.end,
+      locations: hist.locations ?? undefined,
     }
-    return { s, r, map, hist, input, result: balance(input) }
+    const result = balance(input)
+    if (!hist.locations) result.unread.push('where each guest ran over the window (a guest HA moved after a failure cannot be told apart)')
+    return { s, r, map, hist, input, result }
   }
 
   /** The balance page: load per node, the score, the plan that would even it out, and what is running. */
@@ -786,11 +799,30 @@ export class PlacementService {
   async plans(): Promise<PlanRecord[]> { return this.d.store.listPlans({ limit: 50 }) }
   async getPlan(id: string): Promise<PlanRecord | null> { return this.d.store.getPlan(id) }
 
-  /** Ceph's health now, or null when there is no Ceph status to read. */
-  private async cephNow(): Promise<{ status: string; checks: string[]; down: number } | null> {
+  /**
+   * Ceph's health now. "none": the cluster has no Ceph of its own (no rbd or cephfs storage without an external
+   * monhost, and no status). "unread": Ceph is in use, or might be, and its health or OSD count could not be read;
+   * that is never taken as healthy.
+   */
+  private async cephNow(): Promise<CephNow> {
+    const storage = await this.d.pve().fetchStrict<any[]>('/storage').catch(() => null)
+    if (!Array.isArray(storage)) return { kind: 'unread', why: 'the storage list could not be read, so whether Ceph is in use is unknown' }
+    const ours = storage.some(x => (x?.type === 'rbd' || x?.type === 'cephfs') && !x?.monhost)
     const st = await this.d.pve().fetchStrict<any>('/cluster/ceph/status').catch(() => null)
-    if (!st?.health?.status) return null
-    return { status: String(st.health.status), checks: Object.keys(st.health.checks ?? {}).sort(), down: Math.max(0, Number(st.osdmap?.num_osds ?? 0) - Number(st.osdmap?.num_up_osds ?? 0)) }
+    if (!st?.health?.status) return ours ? { kind: 'unread', why: 'Ceph is in use but its health could not be read' } : { kind: 'none' }
+    const num = Number(st.osdmap?.num_osds), up = Number(st.osdmap?.num_up_osds)
+    if (!Number.isFinite(num) || !Number.isFinite(up) || num <= 0) return { kind: 'unread', why: "Ceph's OSD count could not be read" }
+    return { kind: 'ok', status: String(st.health.status), checks: Object.keys(st.health.checks ?? {}).sort(), osds: num, up }
+  }
+
+  /** The Ceph baseline a person approves: refused when Ceph cannot be read, or shows a warning that always blocks. */
+  private async approvalCeph(): Promise<{ checks: string[] } | null> {
+    const h = await this.cephNow()
+    if (h.kind === 'none') return null
+    if (h.kind === 'unread') throw new PlacementRefusal(`Not approved: ${h.why}. HyperProx does not move guests while it cannot see Ceph.`, 409, 'ceph-unread')
+    const why = cephProblem(h, h.checks)
+    if (why) throw new PlacementRefusal(`Not approved: ${why}.`, 409, 'ceph-not-ok')
+    return { checks: h.checks }
   }
 
   /** Has the cluster changed since the plan was approved? Null when it has not; otherwise why, in words. */
@@ -803,14 +835,10 @@ export class PlacementService {
       const e = st.find(x => x?.type === 'node' && String(x.name) === n)
       if (!e || Number(e.online) !== 1) return `${n} is offline`
     }
-    if (snap?.ceph) {
-      const h = await this.cephNow()
-      if (!h) return 'Ceph health could not be read'
-      if (h.status === 'HEALTH_ERR') return 'Ceph is in HEALTH_ERR'
-      if (h.down > 0) return `${h.down} Ceph OSD${h.down === 1 ? ' is' : 's are'} down`
-      const fresh = h.checks.filter(x => !snap.ceph!.checks.includes(x))
-      if (fresh.length) return `Ceph has a warning it did not have when the plan was approved (${fresh.join(', ')})`
-    }
+    // Ceph is always looked at: no baseline (no Ceph at approval) means any warning now is new.
+    const h = await this.cephNow()
+    if (h.kind === 'unread') return h.why
+    if (h.kind === 'ok') return cephProblem(h, snap?.ceph?.checks ?? [])
     return null
   }
 
@@ -848,10 +876,10 @@ export class PlacementService {
       const at = when === 'next-quiet' && !quiet.quietNow ? quiet.nextQuiet?.start ?? null : null
       if (when === 'next-quiet' && !quiet.quietNow && !at) throw new PlacementRefusal(`There is no known quiet window long enough for the plan${quiet.nowWhy.length ? ` (${quiet.nowWhy[0]})` : ''}.`, 409, 'no-window')
       if (at && at - this.now() > SCHEDULE_TTL_MS) throw new PlacementRefusal('The next quiet window is more than 7 days away, and scheduled plans expire after 7 days.', 409, 'no-window')
-      const ceph = await this.cephNow()
+      const ceph = await this.approvalCeph()
       const snapshot: PlanSnapshot = {
         settings: b.s, approver: { email: actor.email, role: String(actor.role), at: this.now() },
-        ceph: ceph ? { checks: ceph.checks } : null, nodes: b.map.nodes.filter(n => n.online && !n.maintenance).map(n => n.node), needSec: plan.needSec,
+        ceph, nodes: b.map.nodes.filter(n => n.online && !n.maintenance).map(n => n.node), needSec: plan.needSec,
       }
       // The audit row first: no row, no plan.
       await this.d.audit(at ? 'placement.plan.schedule' : 'placement.plan.create', 'balance', {
@@ -881,11 +909,24 @@ export class PlacementService {
     const p = await this.d.store.getPlan(id)
     if (!p) throw new PlacementRefusal('No such plan.', 404, 'not-found')
     await this.d.audit('placement.plan.stop', 'balance', { by: actor.email, id, status: p.status })
-    const done = p.status === 'scheduled'
-      ? await this.d.store.transitionPlan(id, { status: ['scheduled'] }, { status: 'cancelled', endedAt: this.now(), error: `Cancelled by ${actor.email}.` })
-      : p.status === 'running' ? await this.d.store.transitionPlan(id, { status: ['running'] }, { stopRequested: true }) : null
-    if (!done) throw new PlacementRefusal(`It is ${p.status}; only a scheduled or running plan can be stopped.`, 409, 'not-running')
+    const done = await this.stopOne(p, `Cancelled by ${actor.email}.`)
+    if (!done) {
+      const now = await this.d.store.getPlan(id)
+      throw new PlacementRefusal(`It is ${now?.status ?? 'gone'}; only a scheduled or running plan can be stopped.`, 409, 'not-running')
+    }
     return done
+  }
+
+  /**
+   * Cancel a scheduled plan, or ask a running one to stop. A scheduled plan the scheduler claimed in the meantime is
+   * running by then: the stop is tried again as running → stop requested, so it is never lost in that race.
+   */
+  private async stopOne(p: PlanRecord, why: string): Promise<PlanRecord | null> {
+    if (p.status === 'scheduled') {
+      const r = await this.d.store.transitionPlan(p.id, { status: ['scheduled'] }, { status: 'cancelled', endedAt: this.now(), error: why })
+      if (r) return r
+    }
+    return this.d.store.transitionPlan(p.id, { status: ['running'] }, { stopRequested: true })
   }
 
   private async beatPlan(id: string, force = false): Promise<void> {
@@ -942,6 +983,14 @@ export class PlacementService {
       const step = steps[i]
       if (step.status === 'done') continue
       if (row.stopRequested) return stop(i, 'stopped', `Stopped on request before move ${i + 1}.`)
+      if (row.source === 'auto') {
+        // Automatic balancing as a person left it, read now: still on, still applying, the same approval, no stop since.
+        const c = await this.d.store.auto()
+        const a = row.snapshot?.auto
+        if (!c.settings.enabled || !c.settings.apply || !c.approval || !a || c.approval.at !== a.approvedAt || c.epoch !== a.epoch) {
+          return stop(i, 'stopped', `Stopped before move ${i + 1}: automatic balancing was stopped or changed.`)
+        }
+      }
       const ap = row.snapshot?.approver
       if (!ap || !APPROVER_ROLES.has(ap.role)) return stop(i, 'stopped', 'No admin approval is recorded for it.')
       const changed = this.d.approverChanged ? await this.d.approverChanged(ap.email, ap.at).catch(() => 'their role could not be checked') : null
@@ -977,68 +1026,84 @@ export class PlacementService {
       }
       step.status = 'done'
       await save()
-      if (row.source === 'auto') {
-        const a = await this.d.store.auto()
-        await this.d.store.saveAuto(a.settings, { ...a.state, lastMoveAt: this.now() }, 'automatic balancing').catch(() => undefined)
-      }
     }
     return this.finishPlan(id, 'done', null, steps)
   }
 
   // --- automatic balancing --------------------------------------------------------------------------
+  //
+  // Two records. The config (settings, the approval, the stop epoch) is written only by a person: saveAuto and
+  // autoStop, plus the one deliberate write of the check itself, turning applying off when the approver changed.
+  // The check's own state (when it last looked, what it said, what it last notified) is a separate row it merges
+  // into. So a check that was already running when someone pressed the emergency stop can never write the old
+  // settings back. Before it creates a plan the check reads the config again and gives up if applying is off, the
+  // approval changed, or the stop epoch moved; each move of an automatic plan checks the same again.
 
-  async autoSettings(): Promise<{ settings: AutoSettings; state: AutoState }> { return this.d.store.auto() }
+  async autoSettings(): Promise<AutoConfig & { state: AutoState }> { return this.d.store.auto() }
 
-  /** Saves automatic balancing. Turning "apply automatically" on records who approved it (re-confirmed) and Ceph's health then. */
-  async saveAuto(body: unknown, actor: Actor): Promise<{ settings: AutoSettings; state: AutoState }> {
+  /** Saves automatic balancing. Turning "apply automatically" on (or saving with it on) records a fresh approval. */
+  async saveAuto(body: unknown, actor: Actor): Promise<AutoConfig & { state: AutoState }> {
     const cur = await this.d.store.auto()
     const { settings, problems } = mergeAuto(cur.settings, body)
     if (problems.length) throw new PlacementRefusal(problems.join(' '), 400, 'invalid')
-    const state: AutoState = { ...cur.state }
-    if (settings.apply && (!cur.settings.apply || !state.approver)) {
+    let approval = cur.approval
+    let epoch = cur.epoch
+    if (settings.apply) {
       if (!APPROVER_ROLES.has(String(actor.role))) throw new PlacementRefusal('Only an admin can turn on applying automatically.', 403, 'forbidden')
       if (!this.d.isUnlocked()) throw new PlacementRefusal('HyperProx is locked. Sign in first.', 423, 'locked')
-      const ceph = await this.cephNow()
-      state.approver = { email: actor.email, role: String(actor.role), at: this.now() }
-      state.cephBaseline = ceph ? ceph.checks : null
+      // Saved with applying on, re-confirmed: a fresh approval, with today's limits, settings and Ceph health.
+      approval = { email: actor.email, role: String(actor.role), at: this.now(), limits: { ...settings }, placement: await this.d.store.settings(), ceph: await this.approvalCeph() }
+    } else {
+      if (cur.settings.apply || cur.approval) epoch++
+      approval = null
     }
-    if (!settings.apply) { state.approver = null; state.cephBaseline = null }
     await this.d.audit('placement.auto.settings', 'balance', {
       by: actor.email, enabled: settings.enabled, apply: settings.apply, sustainHours: settings.sustainHours,
       maxMovesPerDay: settings.maxMovesPerDay, minHoursBetween: settings.minHoursBetween, checkEveryMin: settings.checkEveryMin,
     })
-    await this.d.store.saveAuto(settings, state, actor.email)
-    return { settings, state }
+    await this.d.store.saveAutoConfig({ settings, approval, epoch }, actor.email)
+    return this.d.store.auto()
   }
 
-  /** The emergency stop: applying turns off, scheduled plans are cancelled, running ones stop after the move under way. */
-  async autoStop(actor: Actor): Promise<{ settings: AutoSettings; state: AutoState; stopped: number }> {
+  /**
+   * The emergency stop: applying turns off and the stop epoch moves (a check under way gives up), scheduled plans and
+   * scheduled single moves are cancelled, running plans stop after the move under way.
+   */
+  async autoStop(actor: Actor): Promise<AutoConfig & { state: AutoState; stopped: number; cancelledMoves: number }> {
     await this.d.audit('placement.auto.stop', 'balance', { by: actor.email })
     const cur = await this.d.store.auto()
-    const settings: AutoSettings = { ...cur.settings, apply: false }
-    const state: AutoState = { ...cur.state, approver: null, cephBaseline: null, lastWhy: `Emergency stop by ${actor.email}.` }
-    await this.d.store.saveAuto(settings, state, actor.email)
-    let stopped = 0
-    for (const p of await this.d.store.listPlans({ status: ['running', 'scheduled'], limit: 50 })) {
-      const r = p.status === 'scheduled'
-        ? await this.d.store.transitionPlan(p.id, { status: ['scheduled'] }, { status: 'cancelled', endedAt: this.now(), error: `Emergency stop by ${actor.email}.` })
-        : await this.d.store.transitionPlan(p.id, { status: ['running'] }, { stopRequested: true })
-      if (r) stopped++
+    await this.d.store.saveAutoConfig({ settings: { ...cur.settings, apply: false }, approval: null, epoch: cur.epoch + 1 }, actor.email)
+    await this.d.store.patchAutoState({ lastWhy: `Emergency stop by ${actor.email}.` })
+    const why = `Emergency stop by ${actor.email}.`
+    let stopped = 0, cancelledMoves = 0
+    for (const p of await this.d.store.listPlans({ status: ['running', 'scheduled'], limit: 50 })) if (await this.stopOne(p, why)) stopped++
+    for (const m of await this.d.store.list({ status: ['scheduled'], limit: 200 })) {
+      if (await this.d.store.transition(m.id, { status: ['scheduled'] }, { status: 'cancelled', endedAt: this.now(), error: why })) cancelledMoves++
     }
-    return { settings, state, stopped }
+    return { ...(await this.d.store.auto()), stopped, cancelledMoves }
+  }
+
+  /** HyperProx's automatic moves, from the move history (never from the check's own memory). */
+  private async autoMoves(): Promise<MoveRecord[]> {
+    return (await this.d.store.list({ limit: 500 })).filter(m => m.source === 'hyperprox' && m.snapshot?.auto)
   }
 
   /** One automatic check, when it is due. Exposed for tests. */
   async autoTick(): Promise<void> {
-    const { settings: a, state: st0 } = await this.d.store.auto()
-    if (!a.enabled) return
-    if (st0.lastCheckAt && this.now() - st0.lastCheckAt < a.checkEveryMin * 60_000) return
-    const state: AutoState = { ...st0, lastCheckAt: this.now() }
-    let settings = a
-    const done = async (why: string) => { state.lastWhy = why; await this.d.store.saveAuto(settings, state, 'automatic balancing') }
+    const c0 = await this.d.store.auto()
+    if (!c0.settings.enabled) return
+    const ap0 = c0.settings.apply ? c0.approval : null
+    // Under the stricter of what was approved and what is set now.
+    const a = ap0 ? stricterAuto(ap0.limits, c0.settings) : c0.settings
+    if (c0.state.lastCheckAt && this.now() - c0.state.lastCheckAt < a.checkEveryMin * 60_000) return
+    const epoch = c0.epoch
+    const patch: Partial<AutoState> = { lastCheckAt: this.now() }
+    const done = async (why: string) => { patch.lastWhy = why; await this.d.store.patchAutoState(patch) }
     if (!this.d.isUnlocked()) return done('HyperProx is locked: nothing is read or moved until someone signs in.')
+    const current = await this.d.store.settings()
+    const settings = ap0 ? stricterSettings(ap0.placement, current) : current
     let b: Awaited<ReturnType<PlacementService['balanceRead']>>
-    try { b = await this.balanceRead({ fresh: true, auto: true, recentHours: a.sustainHours }) }
+    try { b = await this.balanceRead({ fresh: true, auto: true, recentHours: a.sustainHours, settings }) }
     catch (e: any) { return done(`The history could not be read (${String(e?.message ?? e).slice(0, 80)}).`) }
     const r = b.result
     if (!r.uneven) return done(`${r.headline.replace(/\.$/, '')} (score ${Math.round(r.score.score)}).`)
@@ -1057,53 +1122,81 @@ export class PlacementService {
       `Score ${Math.round(plan.score.score)} now, ${Math.round(plan.target.score)} after.`,
       'Automatic balancing applies only to guests HA does not manage; for HA guests it suggests a move or a rule change.',
     ]
-    const notifyOnce = async (title: string) => {
-      if (state.lastNotifiedSig === sig && state.lastNotifiedAt && this.now() - state.lastNotifiedAt < DAY_MS) return
-      await this.d.notify?.(title, lines, `placement:auto:${sig}`, 'info').catch(() => undefined)
-      state.lastNotifiedSig = sig; state.lastNotifiedAt = this.now()
+    const notifyOnce = async (title: string, key = sig, extra: string[] = []) => {
+      if (c0.state.lastNotifiedSig === key && c0.state.lastNotifiedAt && this.now() - c0.state.lastNotifiedAt < DAY_MS) return
+      await this.d.notify?.(title, [...extra, ...lines], `placement:auto:${key}`, extra.length ? 'warning' : 'info').catch(() => undefined)
+      patch.lastNotifiedSig = key; patch.lastNotifiedAt = this.now()
     }
-    if (!a.apply || !plan.steps.length) {
+    if (!ap0 || !plan.steps.length) {
       await notifyOnce('The cluster has been uneven: a balancing plan is ready')
-      return done(a.apply ? 'Uneven: only suggestions for HA guests, nothing to apply.' : 'Uneven: a plan was proposed (notify only).')
+      return done(ap0 ? 'Uneven: only suggestions for HA guests, nothing to apply.' : c0.settings.apply ? 'Uneven: applying is on but no approval is recorded; notify only.' : 'Uneven: a plan was proposed (notify only).')
     }
-    // Applying: its own limits, then one move as a one-move plan.
-    if (this.planSlot || (await this.d.store.listPlans({ status: ['running'], limit: 1 })).length || await this.moveInFlight()) return done('Uneven, but a move or a plan is running.')
-    const today = (await this.d.store.listPlans({ source: 'auto', limit: 100 }))
-      .filter(p => (p.startedAt ?? 0) > this.now() - DAY_MS)
-      .reduce((n, p) => n + p.steps.filter(x => x.status === 'done' || x.status === 'running' || x.status === 'failed').length, 0)
-    if (today >= a.maxMovesPerDay) { await notifyOnce('The cluster is uneven: automatic balancing reached its daily limit'); return done(`Uneven, but ${today} automatic move${today === 1 ? '' : 's'} in the last 24 h is the limit.`) }
-    if (state.lastMoveAt && this.now() - state.lastMoveAt < a.minHoursBetween * 3600_000) return done(`Uneven, but the last automatic move was less than ${a.minHoursBetween} h ago.`)
-    const ap = state.approver
-    const changed = !ap || !APPROVER_ROLES.has(ap.role) ? 'no admin approval is recorded'
-      : this.d.approverChanged ? await this.d.approverChanged(ap.email, ap.at).catch(() => 'their role could not be checked') : null
+    // The approval: young enough, its Ceph baseline young enough, the approver still an admin.
+    if (this.now() - ap0.at > AUTO_APPROVAL_TTL_MS) {
+      await notifyOnce('Automatic balancing needs a new approval', `renew:${ap0.at}`, [`Applying was approved by ${ap0.email} more than 30 days ago. Save automatic balancing again (with your master password) to renew it; until then it only notifies.`])
+      return done('Uneven, but the approval to apply is more than 30 days old: notify only until it is renewed.')
+    }
+    if (ap0.ceph?.checks.length && this.now() - ap0.at > CEPH_BASELINE_TTL_MS) {
+      await notifyOnce('Automatic balancing needs a new approval', `ceph:${ap0.at}`, [`Ceph had warnings when applying was approved (${ap0.ceph.checks.join(', ')}). Accepted warnings are good for 7 days: look at Ceph and save automatic balancing again to go on applying.`])
+      return done('Uneven, but the Ceph warnings accepted at approval are more than 7 days old: notify only until it is approved again.')
+    }
+    const changed = !APPROVER_ROLES.has(ap0.role) ? 'no admin approval is recorded'
+      : this.d.approverChanged ? await this.d.approverChanged(ap0.email, ap0.at).catch(() => 'their role could not be checked') : null
     if (changed) {
-      settings = { ...a, apply: false }
-      state.approver = null; state.cephBaseline = null
-      await this.d.notify?.('Automatic balancing stopped applying', [`Applying automatically was turned off: ${ap ? `${ap.email} ${changed}` : changed}. It notifies only until an admin turns applying on again.`], 'placement:auto:approver', 'warning').catch(() => undefined)
-      return done(`Applying was turned off: ${ap ? `${ap.email} ${changed}` : changed}.`)
+      // The one write of the config the check makes: applying off, into the config as it is now, and only if it is
+      // still the same approval.
+      const fresh = await this.d.store.auto()
+      if (fresh.approval?.at === ap0.at) await this.d.store.saveAutoConfig({ settings: { ...fresh.settings, apply: false }, approval: null, epoch: fresh.epoch + 1 }, 'automatic balancing')
+      await this.d.notify?.('Automatic balancing stopped applying', [`Applying automatically was turned off: ${ap0.email} ${changed}. It notifies only until an admin turns applying on again.`], 'placement:auto:approver', 'warning').catch(() => undefined)
+      return done(`Applying was turned off: ${ap0.email} ${changed}.`)
     }
+    // Its own limits, from the move history.
+    if (this.planSlot || (await this.d.store.listPlans({ status: ['running'], limit: 1 })).length || await this.moveInFlight()) return done('Uneven, but a move or a plan is running.')
+    const mine = await this.autoMoves()
+    const today = mine.filter(m => (m.startedAt ?? 0) > this.now() - DAY_MS && m.status !== 'cancelled' && m.status !== 'skipped').length
+    if (today >= a.maxMovesPerDay) { await notifyOnce('The cluster is uneven: automatic balancing reached its daily limit'); return done(`Uneven, but ${today} automatic move${today === 1 ? '' : 's'} in the last 24 h is the limit.`) }
+    const lastEnd = Math.max(0, ...mine.filter(m => m.status === 'done' || m.status === 'failed').map(m => m.endedAt ?? 0))
+    if (lastEnd && this.now() - lastEnd < a.minHoursBetween * 3600_000) return done(`Uneven, but the last automatic move was less than ${a.minHoursBetween} h ago.`)
     const nodes = b.map.nodes.filter(n => n.online && !n.maintenance).map(n => n.node)
-    const why = await this.gate({ ceph: state.cephBaseline ? { checks: state.cephBaseline } : null, nodes })
+    const why = await this.gate({ ceph: ap0.ceph, nodes })
     if (why) return done(`Uneven, but not now: ${why}.`)
     const step = plan.steps[0]
     // The network cost: a move that shares corosync's network runs under the bandwidth limit, or not at all.
     if (b.map.network.shared !== false && step.method === 'migrate' && !step.bwlimitKiB) return done('Uneven, but the move would run without a bandwidth limit on the network corosync uses.')
+    if (step.ha || step.method !== 'migrate') return done('Uneven, but the only move is of an HA guest, which automatic balancing never moves.')
+    // Right before acting: the config as a person left it now. A stop or a change since the check began wins.
+    const stillOn = async () => {
+      const c = await this.d.store.auto()
+      return c.epoch === epoch && c.settings.enabled && c.settings.apply && c.approval?.at === ap0.at
+    }
+    if (!(await stillOn())) return done('Stopped or changed while checking: nothing was moved.')
     try {
-      await this.d.audit('placement.auto.plan', 'balance', { approver: ap!.email, sid: step.sid, from: step.from, to: step.to, scoreBefore: Math.round(plan.score.score), scoreAfter: Math.round(step.scoreAfter) })
+      await this.d.audit('placement.auto.plan', 'balance', { approver: ap0.email, sid: step.sid, from: step.from, to: step.to, scoreBefore: Math.round(plan.score.score), scoreAfter: Math.round(step.scoreAfter) })
     } catch { return done('Uneven, but the audit row could not be written, so nothing moved.') }
     if (this.planSlot) return done('Uneven, but a plan is running.')
     this.planSlot = 'auto'
     let rec: PlanRecord
     try {
       rec = await this.d.store.createPlan({
-        source: 'auto', status: 'running', by: ap!.email, goal: plan.goal, scoreBefore: plan.score.score, scoreTarget: step.scoreAfter,
+        source: 'auto', status: 'running', by: ap0.email, goal: plan.goal, scoreBefore: plan.score.score, scoreTarget: step.scoreAfter,
         steps: [stepRecord(step)], startedAt: this.now(), owner: this.owner, heartbeatAt: this.now(),
-        snapshot: { settings: b.s, approver: ap!, ceph: state.cephBaseline ? { checks: state.cephBaseline } : null, nodes },
+        snapshot: { settings: b.s, approver: { email: ap0.email, role: ap0.role, at: ap0.at }, ceph: ap0.ceph, nodes, auto: { approvedAt: ap0.at, epoch } },
       })
     } catch (e: any) { if (this.planSlot === 'auto') this.planSlot = null; return done(`Uneven, but the plan could not be stored (${String(e?.message ?? e).slice(0, 80)}).`) }
     this.planSlot = rec.id
-    state.lastMoveAt = this.now()
-    await done(`Moving ${step.name || step.sid} from ${step.from} to ${step.to}.`)
+    const abandon = async (error: string) => {
+      await this.d.store.transitionPlan(rec.id, { status: ['running'], owner: this.owner }, {
+        status: 'failed', endedAt: this.now(), error, steps: rec.steps.map(x => ({ ...x, status: 'skipped' as const, error })),
+      }).catch(() => null)
+      if (this.planSlot === rec.id) this.planSlot = null
+    }
+    try { await done(`Moving ${step.name || step.sid} from ${step.from} to ${step.to}.`) }
+    catch (e: any) {
+      await abandon(`Not run: automatic balancing could not record its own state (${String(e?.message ?? e).slice(0, 120)}).`)
+      await this.d.notify?.('Automatic balancing could not record its state', ['A move was about to start and was not run: HyperProx could not save the check\'s state. Nothing moved.'], `placement:auto:state:${rec.id}`, 'warning').catch(() => undefined)
+      return
+    }
+    if (!(await stillOn())) { await abandon('Not run: automatic balancing was stopped or changed just before the move.'); return }
     void this.runPlan(rec.id)
   }
 
@@ -1202,6 +1295,22 @@ export class PlacementService {
     ;(this.timer as any).unref?.()
     return () => { if (this.timer) clearInterval(this.timer); this.timer = null }
   }
+}
+
+type CephNow = { kind: 'none' } | { kind: 'unread'; why: string } | { kind: 'ok'; status: string; checks: string[]; osds: number; up: number }
+
+/** Ceph checks that stop a move whatever was accepted when it was approved. */
+export const CEPH_ALWAYS_BLOCK = ['PG_DEGRADED', 'PG_AVAILABILITY', 'OSD_DOWN', 'MON_DOWN']
+
+/** Why Ceph's health stops a move, against the checks accepted at approval, or null. */
+export function cephProblem(h: { status: string; checks: string[]; osds: number; up: number }, accepted: string[]): string | null {
+  if (h.status === 'HEALTH_ERR') return 'Ceph is in HEALTH_ERR'
+  if (h.up < h.osds) return `${h.osds - h.up} Ceph OSD${h.osds - h.up === 1 ? ' is' : 's are'} down`
+  const always = h.checks.filter(x => CEPH_ALWAYS_BLOCK.includes(x))
+  if (always.length) return `Ceph reports ${always.join(', ')}`
+  const fresh = h.checks.filter(x => !accepted.includes(x))
+  if (fresh.length) return `Ceph has a warning it did not have when the plan was approved (${fresh.join(', ')})`
+  return null
 }
 
 /** A plan step as stored, from the step as planned. */

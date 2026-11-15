@@ -237,3 +237,59 @@ test('score and the sustained check', () => {
   const r = recentUneven([a, b], 'mem', 0.25, 6, END, STEP)
   assert.ok(near(r.covered, 6, 0.1) && near(r.hours, 4, 0.1), JSON.stringify(r))
 })
+
+// --- review fixes -------------------------------------------------------------------------------------------------
+
+test('G4: a guest whose history covers less than 80% of its node\'s readings is not a candidate', () => {
+  const map = mapOf(ABC.map(n => node(n)), [guest('ct:151', 'A', ABC)])
+  const base = input(map, { A: 0.85, B: 0.3, C: 0.4 }, { 'ct:151': { mem: 8 * G } }, { goal: 'mem' })
+  base.guests = [{ sid: 'ct:151', cores: flat(0.2), mem: flat(8 * G).filter((_, i) => i % 2 === 0) }]
+  const r = balance(base)
+  assert.deepEqual(r.plan.steps, [])
+  assert.ok(r.plan.left.some(l => /history covers only 50% of the window/.test(l)), r.plan.left.join(' | '))
+  assert.match(checkStep(base, 'ct:151', 'B').why, /covers only 50%/)
+  const noCpu = { ...base, guests: [{ sid: 'ct:151', cores: [] as Sample[], mem: flat(8 * G) }] }
+  assert.deepEqual(balance(noCpu).plan.steps, [], 'both a CPU and a memory series are needed')
+})
+
+test('G4: a gap in a guest\'s history counts as its own p95, never as zero load', () => {
+  const map = mapOf(ABC.map(n => node(n)), [guest('ct:152', 'A', ABC)])
+  const base = input(map, { A: 0.85, B: 0.3, C: 0.4 }, {}, { goal: 'mem' })
+  // 85% coverage: the guest's 8 GiB is missing for one reading in seven.
+  base.guests = [{ sid: 'ct:152', cores: flat(0.2), mem: flat(8 * G).filter((_, i) => i % 7 !== 0) }]
+  const r = balance(base)
+  assert.equal(r.plan.steps.length, 1)
+  assert.ok(near(r.plan.steps[0].after.from.mem, 0.6, 0.01), `the source is relieved at every reading, gaps included: ${r.plan.steps[0].after.from.mem}`)
+  assert.ok(near(r.plan.steps[0].after.to.mem, 0.55, 0.01), 'and the target carries it at every reading')
+})
+
+test('M1: in automatic mode an HA guest is never a candidate, by exclusion as well as in the plan', () => {
+  const map = mapOf(ABC.map(n => node(n)), [guest('ct:153', 'A', ABC, { ha: true })])
+  const inp = input(map, { A: 0.9, B: 0.2, C: 0.3 }, { 'ct:153': { mem: 8 * G } }, { goal: 'mem', auto: true })
+  assert.match(checkStep(inp, 'ct:153', 'B').why, /never moves HA guests/)
+  assert.equal(balance(inp).plan.suggestions[0]?.kind, 'ha-move', 'it is still suggested to a person')
+})
+
+test('M2: in automatic mode a container with a disk on node-local storage is left alone too', () => {
+  const local: Reason = { code: 'local-disk', level: 'warn', words: 'Its disk is on node-local storage.' }
+  const map = mapOf(ABC.map(n => node(n)), [guest('ct:154', 'A', ABC, { copyBytes: 0 }, { B: [local], C: [local] })])
+  const inp = input(map, { A: 0.9, B: 0.2, C: 0.3 }, { 'ct:154': { mem: 8 * G } }, { goal: 'mem', auto: true })
+  assert.deepEqual(balance(inp).plan.steps, [])
+  assert.match(checkStep(inp, 'ct:154', 'B').why, /never copies disks/)
+})
+
+test('M5: a guest the history saw on another node with no recorded move (an HA recovery) is left alone until fresh history covers the window', () => {
+  const map = mapOf(ABC.map(n => node(n)), [guest('ct:155', 'A', ABC)])
+  const lastAway = END - 6 * 3600
+  const locations = { 'ct:155': [{ node: 'C', first: times[0], last: lastAway }, { node: 'A', first: lastAway + STEP, last: END }] }
+  const inp = input(map, { A: 0.85, B: 0.3, C: 0.4 }, { 'ct:155': { mem: 8 * G } }, { goal: 'mem', locations })
+  const r = balance(inp)
+  assert.deepEqual(r.plan.steps, [])
+  assert.ok(r.plan.left.some(l => /no move of it is recorded/.test(l)), r.plan.left.join(' | '))
+  // With the move recorded, it is known where its load was: a candidate again.
+  const known = balance({ ...inp, past: [{ sid: 'ct:155', from: 'C', to: 'A', at: lastAway + STEP }] })
+  assert.equal(known.plan.steps.length, 1)
+  // Long enough on its new node, the history is fresh again.
+  const old = { 'ct:155': [{ node: 'C', first: times[0], last: times[Math.floor(N * 0.1)] }, { node: 'A', first: times[Math.floor(N * 0.1) + 1], last: END }] }
+  assert.equal(balance({ ...inp, locations: old }).plan.steps.length, 1)
+})

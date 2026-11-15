@@ -100,15 +100,24 @@ export async function approverChanged(prisma: any, email: string, sinceMs: numbe
   if (rec && rec !== 'admin') return `is now ${rec}, not admin`
   if (!prisma?.auditLog) return null
   const since = new Date(sinceMs)
-  const rows: any[] = await prisma.auditLog.findMany({ where: { action: { in: ['users.remove', 'users.role'] }, createdAt: { gte: since } }, take: 200 })
-  for (const r of rows) {
-    const d = (r.details ?? {}) as Record<string, unknown>
-    if (r.action === 'users.remove' && String(d.email ?? '').toLowerCase() === e) return 'was removed after approving it'
-    if (r.action === 'users.role' && d.role !== 'admin' && !(own && (own.role === 'admin' || own.role === 'owner'))) {
-      return 'may have been demoted: a role was lowered after the approval, and HyperProx cannot tell whose'
+  // Every removal and role change since the approval, oldest first, page by page: none is missed however many there
+  // are. More than the pages allow is "could not check", never "nothing changed".
+  const PAGE = 200, PAGES = 25
+  for (let page = 0; page < PAGES; page++) {
+    const rows: any[] = await prisma.auditLog.findMany({
+      where: { action: { in: ['users.remove', 'users.role'] }, createdAt: { gte: since } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], skip: page * PAGE, take: PAGE,
+    })
+    for (const r of rows) {
+      const d = (r.details ?? {}) as Record<string, unknown>
+      if (r.action === 'users.remove' && String(d.email ?? '').toLowerCase() === e) return 'was removed after approving it'
+      if (r.action === 'users.role' && d.role !== 'admin' && !(own && (own.role === 'admin' || own.role === 'owner'))) {
+        return 'may have been demoted: a role was lowered after the approval, and HyperProx cannot tell whose'
+      }
     }
+    if (rows.length < PAGE) return null
   }
-  return null
+  return 'could not be checked: too many role changes since the approval'
 }
 
 export function buildPlacementRoutes(deps: { service?: () => PlacementService; startScheduler?: boolean } = {}): FastifyPluginAsync {

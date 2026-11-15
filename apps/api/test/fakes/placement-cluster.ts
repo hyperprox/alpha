@@ -54,6 +54,9 @@ export function placementFixture(): Record<string, any> {
       { storage: 'media-local', node: 'node1', shared: 0, status: 'available' },
     ],
     '/cluster/options': { crs: { ha: 'dynamic', 'ha-auto-rebalance': 1, 'ha-rebalance-on-start': 1 } },
+    // The cluster's own Ceph (an rbd storage with no external monhost), healthy.
+    '/storage': [{ storage: 'shared-rbd', type: 'rbd', pool: 'rbd', content: 'images,rootdir' }, { storage: 'local-lvm', type: 'lvmthin' }, { storage: 'media-local', type: 'dir' }],
+    '/cluster/ceph/status': { health: { status: 'HEALTH_OK', checks: {} }, osdmap: { num_osds: 3, num_up_osds: 3, num_in_osds: 3 } },
     '/cluster/tasks': [],
     '/cluster/config/nodes': [
       { node: 'node1', ring0_addr: '192.0.2.11' }, { node: 'node2', ring0_addr: '192.0.2.12' }, { node: 'node3', ring0_addr: '192.0.2.13' },

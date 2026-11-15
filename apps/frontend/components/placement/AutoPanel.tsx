@@ -10,10 +10,10 @@ import { useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Btn, Note, Switch, SELECT } from '@/components/ha/ui'
-import { autoWords } from './balance-logic'
-import type { AutoSettings, AutoState } from './types'
+import { autoWords, stopWords } from './balance-logic'
+import type { AutoSettings, AutoView } from './types'
 
-export function AutoPanel({ auto, admin, onSaved }: { auto: { settings: AutoSettings; state: AutoState }; admin: boolean; onSaved: () => void }) {
+export function AutoPanel({ auto, admin, onSaved }: { auto: AutoView; admin: boolean; onSaved: () => void }) {
   const [s, setS] = useState<AutoSettings>(auto.settings)
   const [msg, setMsg] = useState<{ tone: 'good' | 'crit' | 'info'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -32,9 +32,9 @@ export function AutoPanel({ auto, admin, onSaved }: { auto: { settings: AutoSett
   }
   const stop = async () => {
     setBusy(true); setMsg(null)
-    const r = await apiJson<{ data: { stopped: number } }>('/api/placement/auto/stop', 'POST', {})
+    const r = await apiJson<{ data: { stopped: number; cancelledMoves: number } }>('/api/placement/auto/stop', 'POST', {})
     setBusy(false)
-    setMsg(r.ok ? { tone: 'info', text: `Stopped: applying is off${r.body?.data.stopped ? `, and ${r.body.data.stopped} plan${r.body.data.stopped === 1 ? '' : 's'} stop after the move under way` : ''}.` } : { tone: 'crit', text: r.error ?? 'Not stopped.' })
+    setMsg(r.ok ? { tone: 'info', text: stopWords(r.body?.data.stopped ?? 0, r.body?.data.cancelledMoves ?? 0) } : { tone: 'crit', text: r.error ?? 'Not stopped.' })
     onSaved()
   }
   const num = (k: 'sustainHours' | 'checkEveryMin' | 'maxMovesPerDay' | 'minHoursBetween', label: string) => (
@@ -62,11 +62,12 @@ export function AutoPanel({ auto, admin, onSaved }: { auto: { settings: AutoSett
           {num('minHoursBetween', 'Hours between moves')}
         </div>
       )}
-      {s.apply && !auto.settings.apply && <Note tone="warn">Turning applying on asks for your master password and records you as the person who approved it. If your role is lowered, applying turns itself off.</Note>}
+      {auto.settings.apply && <p className="text-xs" style={{ color: 'var(--text-dim)' }}>Emergency stop turns applying off at once, cancels every scheduled plan and scheduled single move, and stops running plans after the move under way.</p>}
+      {s.apply && !auto.settings.apply && <Note tone="warn">Turning applying on asks for your master password and records you as the person who approved it, with today's limits (later changes can only make them stricter). The approval lasts 30 days, and Ceph warnings you accept now are good for 7. If your role is lowered, applying turns itself off.</Note>}
       {msg && <Note tone={msg.tone}>{msg.text}</Note>}
       {admin && (
         <div className="flex flex-wrap justify-end gap-2">
-          {(auto.settings.apply) && <Btn kind="danger" disabled={busy} onClick={stop}>Emergency stop</Btn>}
+          {(auto.settings.apply) && <Btn kind="danger" disabled={busy} onClick={stop} title="Turns applying off, cancels scheduled plans and scheduled single moves, and stops running plans after the move under way">Emergency stop</Btn>}
           <Btn kind="primary" disabled={busy || !dirty} onClick={save}>{busy ? 'Saving…' : 'Save'}</Btn>
         </div>
       )}

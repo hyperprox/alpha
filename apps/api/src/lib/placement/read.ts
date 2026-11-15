@@ -19,6 +19,7 @@ import { networkCost } from './network'
 import { observedDurations, type BackupJob } from './windows'
 import type { GuestSeries, NetworkCost, NodeSeries, Sample } from './types'
 import type { EngineInput } from './engine'
+import type { GuestLocations } from './balance'
 
 const enc = encodeURIComponent
 
@@ -128,7 +129,11 @@ export const livePromRange = (base: string): PromRange => async (expr, start, en
 /** The home cluster's series carry no hpx_cluster label; this selects exactly them. */
 const HOME = 'hpx_cluster=""'
 
-export async function readHistory(prom: PromRange, opts: { hours: number; now: number; guests: Sid[] }): Promise<{ nodes: NodeSeries[]; guests: GuestSeries[]; stepSec: number; start: number; end: number }> {
+export async function readHistory(prom: PromRange, opts: { hours: number; now: number; guests: Sid[] }): Promise<{
+  nodes: NodeSeries[]; guests: GuestSeries[]; stepSec: number; start: number; end: number
+  /** Where the history saw each guest (null when that could not be read). */
+  locations: GuestLocations | null
+}> {
   const end = Math.floor(opts.now / 1000 / 60) * 60
   const start = end - Math.round(opts.hours * 3600)
   const stepSec = Math.max(300, Math.ceil((end - start) / 1000 / 60) * 60)
@@ -139,6 +144,8 @@ export async function readHistory(prom: PromRange, opts: { hours: number; now: n
     prom(`max by (id) (pve_cpu_usage_ratio{${guest},${HOME}}) * on (id) max by (id) (pve_cpu_usage_limit{${guest},${HOME}})`, start, end, stepSec),
     prom(`max by (id) (pve_memory_usage_bytes{${guest},${HOME}})`, start, end, stepSec),
   ])
+  // The node each guest ran on: the exporter's guest info carries it (as exported_node when Prometheus relabels it).
+  const where = await prom(`max by (id, exported_node, node) (pve_guest_info{${guest},${HOME}})`, start, end, stepSec).catch(() => null)
   const byNode = new Map<string, NodeSeries>()
   const nodeOf = (id: string) => id.replace(/^node\//, '')
   for (const r of cpu) { const n = nodeOf(r.metric.id ?? ''); byNode.set(n, { node: n, cpu: r.values, mem: byNode.get(n)?.mem ?? [] }) }
@@ -148,6 +155,16 @@ export async function readHistory(prom: PromRange, opts: { hours: number; now: n
   const sidOfId = (id: string): Sid | null => { const m = /^(qemu|lxc)\/(\d+)$/.exec(id); return m ? sidOf(m[1] as 'qemu' | 'lxc', m[2]) : null }
   for (const r of gcores) { const s = sidOfId(r.metric.id ?? ''); if (s && want.has(s)) byGuest.set(s, { sid: s, cores: r.values, mem: byGuest.get(s)?.mem ?? [] }) }
   for (const r of gmem) { const s = sidOfId(r.metric.id ?? ''); if (s && want.has(s)) byGuest.set(s, { sid: s, cores: byGuest.get(s)?.cores ?? [], mem: r.values }) }
-  return { nodes: [...byNode.values()], guests: [...byGuest.values()], stepSec, start, end }
+  let locations: GuestLocations | null = null
+  if (where) {
+    locations = {}
+    for (const r of where) {
+      const s = sidOfId(r.metric.id ?? ''), node = r.metric.exported_node ?? r.metric.node
+      if (!s || !node || !want.has(s) || !r.values.length) continue
+      ;(locations[s] ??= []).push({ node, first: r.values[0][0], last: r.values[r.values.length - 1][0] })
+    }
+    for (const l of Object.values(locations)) l.sort((a, b) => a.last - b.last)
+  }
+  return { nodes: [...byNode.values()], guests: [...byGuest.values()], stepSec, start, end, locations }
 }
 

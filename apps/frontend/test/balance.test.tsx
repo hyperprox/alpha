@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { LoadColumns, LoadColumn, PlanView, PlanProgress, StepCard } from '../components/placement/balance-parts'
-import { loadBars, sparkPoints, planChoices, progressWords, autoWords, scoreTone, orderNodes, afterOf, stepLine } from '../components/placement/balance-logic'
+import { loadBars, sparkPoints, planChoices, progressWords, autoWords, scoreTone, orderNodes, afterOf, stepLine, stopWords } from '../components/placement/balance-logic'
 import type { BalancePlan, NodeLoad, PlanRecord, PlanStep, QuietStatus } from '../components/placement/types'
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const movedPages = require('../redirects') as Array<{ source: string; destination: string; permanent: boolean }>
@@ -101,13 +101,19 @@ test('plan progress: each move with its state, the reason a plan stopped, and a 
   assert.match(progressWords({ ...p, source: 'auto' }), /^Automatic/)
 })
 
-test('automatic balancing in words: off by default, notify only, or applying within its limits', () => {
-  const state = { approver: null, cephBaseline: null, lastCheckAt: null, lastWhy: null, lastNotifiedAt: null, lastNotifiedSig: null, lastMoveAt: null }
+test('automatic balancing in words: off by default, notify only, or applying within the stricter limits', () => {
+  const state = { lastCheckAt: null, lastWhy: null, lastNotifiedAt: null, lastNotifiedSig: null }
   const s = { enabled: false, apply: false, sustainHours: 6, checkEveryMin: 60, maxMovesPerDay: 2, minHoursBetween: 6 }
-  assert.match(autoWords({ settings: s, state }), /^Off\./)
-  assert.match(autoWords({ settings: { ...s, enabled: true }, state }), /notifying only/)
-  assert.match(autoWords({ settings: { ...s, enabled: true, apply: true }, state: { ...state, approver: { email: 'a@example.com', role: 'admin', at: T }, lastWhy: 'Balanced.' } }),
-    /up to 2 moves a day, at least 6 h apart, in quiet windows only, approved by a@example.com\. Last check: Balanced\./)
+  assert.match(autoWords({ settings: s, approval: null, state }), /^Off\./)
+  assert.match(autoWords({ settings: { ...s, enabled: true }, approval: null, state }), /notifying only/)
+  const approval = { email: 'a@example.com', role: 'admin', at: Date.UTC(2026, 5, 15), limits: { ...s, enabled: true, apply: true, maxMovesPerDay: 1 }, ceph: { checks: ['POOL_NO_REDUNDANCY'] } }
+  assert.match(autoWords({ settings: { ...s, enabled: true, apply: true, maxMovesPerDay: 5 }, approval, state: { ...state, lastWhy: 'Balanced.' } }),
+    /up to 1 move a day, at least 6 h apart, in quiet windows only, approved by a@example\.com on 2026-06-15 \(good for 30 days; the Ceph warnings accepted then, for 7\)\. Last check: Balanced\./)
+})
+
+test('the emergency stop says what it stopped, scheduled single moves included', () => {
+  assert.equal(stopWords(0, 0), 'Stopped: applying is off.')
+  assert.match(stopWords(1, 2), /1 plan is stopped or cancelled .*; 2 scheduled moves are cancelled\./)
 })
 
 test('score tones, node order and sparkline points', () => {

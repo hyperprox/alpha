@@ -9,14 +9,14 @@ import assert from 'node:assert/strict'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { registerGate } from '../src/lib/gate'
 import { authRoutes } from '../src/routes/auth'
-import { buildPlacementRoutes } from '../src/routes/placement'
+import { buildPlacementRoutes, approverChanged } from '../src/routes/placement'
 import { setBroker } from '../src/lib/vault/broker'
 import { lock, isUnlocked } from '../src/lib/vault/state'
 import { setCredentialTable } from '../src/lib/credentials'
 import { setAuditSink } from '../src/lib/audit'
 import { MemoryApiTokenStore, setApiTokenStore, createApiToken, tokenForbidden } from '../src/lib/api-tokens'
 import { requiredRole, needsReconfirm } from '../src/lib/roles'
-import { PlacementService } from '../src/lib/placement/service'
+import { PlacementService, cephProblem } from '../src/lib/placement/service'
 import { MemoryPlacementStore } from '../src/lib/placement/store'
 import type { PromRange } from '../src/lib/placement/read'
 import type { Sample } from '../src/lib/placement/types'
@@ -47,7 +47,10 @@ let app: FastifyInstance
 /** Node memory as a share of each node, and guests' memory: node1 is busy, node2 and node3 are not. */
 let nodeMem: Record<string, number> = { node1: 0.85, node2: 0.3, node3: 0.35 }
 let guestMem: Record<string, number> = { 'lxc/107': 4 * G, 'lxc/109': 2 * G }
+/** Runs once, the next time the history is read: something a person does while a check is reading Prometheus. */
+let promHook: (() => Promise<unknown>) | null = null
 const prom: PromRange = async (expr, start, end, step) => {
+  if (promHook) { const h = promHook; promHook = null; await h() }
   const ts: number[] = []
   for (let t = start; t <= end; t += step) ts.push(t)
   const flat = (v: number): Sample[] => ts.map(t => [t, v])
@@ -117,7 +120,7 @@ after(async () => { setApiTokenStore(null); setAuditSink(null); if (isUnlocked()
 function reset(two = true) {
   fixture = two ? withSecondWorker(placementFixture()) : placementFixture()
   pve = makePve(); store = new MemoryPlacementStore(); svc = newService()
-  audits.length = 0; notes.length = 0; failMigrate = null; afterMove = null; moves = 0; clock = Date.UTC(2026, 5, 15, 12, 0)
+  audits.length = 0; notes.length = 0; failMigrate = null; afterMove = null; moves = 0; clock = Date.UTC(2026, 5, 15, 12, 0); promHook = null
   nodeMem = { node1: 0.85, node2: 0.3, node3: 0.35 }
   guestMem = { 'lxc/107': 4 * G, 'lxc/109': 2 * G }
   for (const k of Object.keys(changed)) delete changed[k]
@@ -252,7 +255,7 @@ test('re-checked before each move: a node going offline, lost quorum, or a new C
       const st = fixture['/cluster/status'] as any[]
       if (change === 'offline') st.find(x => x.name === 'node3').online = 0
       if (change === 'quorum') st.find(x => x.type === 'cluster').quorate = 0
-      if (change === 'ceph') fixture['/cluster/ceph/status'].health.checks.PG_DEGRADED = {}
+      if (change === 'ceph') fixture['/cluster/ceph/status'].health.checks.OSD_NEARFULL = {}
     }
     const cookie = await reconfirmed()
     const v = await proposed(cookie)
@@ -261,7 +264,7 @@ test('re-checked before each move: a node going offline, lost quorum, or a new C
     const p = await settlePlan(r.json().data.id)
     assert.equal(p!.status, 'stopped', change)
     assert.deepEqual(p!.steps.map(s => s.status), ['done', 'skipped'], change)
-    assert.match(p!.error!, change === 'offline' ? /node3 is offline/ : change === 'quorum' ? /lost quorum/ : /did not have when the plan was approved \(PG_DEGRADED\)/)
+    assert.match(p!.error!, change === 'offline' ? /node3 is offline/ : change === 'quorum' ? /lost quorum/ : /did not have when the plan was approved \(OSD_NEARFULL\)/)
     assert.equal(pve.writes.length, 1, `${change}: the second move never ran`)
   }
 })
@@ -384,7 +387,8 @@ test('apply automatically: one non-HA move per check, audited, within the daily 
   nodeMem = { node1: 0.95, node2: 0.3, node3: 0.35 }   // still uneven after one move
   await svc.saveAuto({ enabled: true, apply: true, maxMovesPerDay: 1, minHoursBetween: 6 }, actorAdmin)
   const a = await store.auto()
-  assert.equal(a.state.approver?.email, 'admin@example.com', 'who approved it is recorded')
+  assert.equal(a.approval?.email, 'admin@example.com', 'who approved it is recorded')
+  assert.equal(a.approval?.limits.maxMovesPerDay, 1, 'with the limits approved')
   await svc.autoTick()
   const plans = await store.listPlans({ source: 'auto' })
   assert.equal(plans.length, 1)
@@ -473,4 +477,198 @@ test('the assistant answers "is it balanced?" from the same score and plan, and 
   assert.equal(pve.writes.length, 0)
   const locked = await balanceSource({ unlocked: () => false, map: async () => (await svc.map()).map, advice: () => svc.advice() }).load()
   assert.equal(locked.locked, true)
+})
+
+// --- review fixes -------------------------------------------------------------------------------------------------
+
+const autoCfg = async () => (await store.auto())
+const shortly = async () => { for (let i = 0; i < 200; i++) await new Promise(r => setImmediate(r)) }
+
+test('B1: an emergency stop during the check\'s history read wins: no plan, applying stays off', async () => {
+  reset()
+  nodeMem = { node1: 0.95, node2: 0.3, node3: 0.35 }
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  promHook = () => svc.autoStop(actorAdmin)
+  await svc.autoTick()
+  await shortly()
+  assert.equal((await store.listPlans()).length, 0, 'no plan was made')
+  assert.equal(pve.writes.length, 0, 'nothing moved')
+  const c = await autoCfg()
+  assert.equal(c.settings.apply, false, 'the stop was not written over')
+  assert.equal(c.approval, null)
+  assert.equal(c.epoch, 1)
+  assert.match(c.state.lastWhy!, /Stopped or changed while checking/)
+})
+
+test('B1: a stop during a check that ends early (balanced) stays a stop', async () => {
+  reset()
+  nodeMem = { node1: 0.5, node2: 0.45, node3: 0.4 }
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  promHook = () => svc.autoStop(actorAdmin)
+  await svc.autoTick()
+  const c = await autoCfg()
+  assert.equal(c.settings.apply, false)
+  assert.equal(c.approval, null)
+  assert.match(c.state.lastWhy!, /^Balanced/, 'the check still records what it saw, in its own state')
+})
+
+test('B1: turning applying off (PUT /auto) during a check stays off', async () => {
+  reset()
+  nodeMem = { node1: 0.95, node2: 0.3, node3: 0.35 }
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  promHook = () => svc.saveAuto({ apply: false }, actorAdmin)
+  await svc.autoTick()
+  await shortly()
+  const c = await autoCfg()
+  assert.equal(c.settings.apply, false)
+  assert.equal(c.settings.enabled, true)
+  assert.equal((await store.listPlans()).length, 0)
+  assert.equal(pve.writes.length, 0)
+})
+
+test('B1: an automatic plan re-reads automatic balancing before its move; a stop since it was made stops it', async () => {
+  reset()
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  const c = await autoCfg()
+  const p = await store.createPlan({ source: 'auto', status: 'running', by: 'admin@example.com', goal: 'both', scoreBefore: 50, scoreTarget: 60,
+    steps: [{ sid: 'ct:107', name: 'worker', from: 'node1', to: 'node2', method: 'migrate', status: 'pending', moveId: null, error: null, startedAt: null, endedAt: null }],
+    startedAt: clock, owner: svc.owner, heartbeatAt: clock,
+    snapshot: { approver: { email: 'admin@example.com', role: 'admin', at: c.approval!.at }, ceph: { checks: [] }, nodes: ['node1', 'node2', 'node3'], auto: { approvedAt: c.approval!.at, epoch: c.epoch } } })
+  // Applying turned off since the plan was made (the epoch moves): the plan's own re-read stops it.
+  await svc.saveAuto({ apply: false }, actorAdmin)
+  const end = await svc.executePlan(p.id)
+  assert.equal(end!.status, 'stopped')
+  assert.match(end!.error!, /automatic balancing was stopped or changed/)
+  assert.equal(pve.writes.length, 0)
+})
+
+test('M3: if the check cannot save its state after making the plan, the plan is failed, people are told, nothing moves', async () => {
+  reset()
+  nodeMem = { node1: 0.95, node2: 0.3, node3: 0.35 }
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  const orig = store.patchAutoState.bind(store)
+  store.patchAutoState = async (patch) => { if (/^Moving/.test(String(patch.lastWhy ?? ''))) throw new Error('db down'); return orig(patch) }
+  await svc.autoTick()
+  await shortly()
+  const plans = await store.listPlans({ source: 'auto' })
+  assert.equal(plans.length, 1)
+  assert.equal(plans[0].status, 'failed')
+  assert.match(plans[0].error!, /could not record its own state/)
+  assert.equal(pve.writes.length, 0)
+  assert.ok(notes.some(n => /could not record its state/.test(n.title)))
+})
+
+test('G1: Ceph in use but unreadable refuses the approval, for plans and for applying automatically', async () => {
+  reset()
+  delete fixture['/cluster/ceph/status']
+  const cookie = await reconfirmed()
+  const v = await proposed(cookie)
+  const r = await app.inject({ method: 'POST', url: `${B}/plans`, headers: { cookie }, payload: { expect: v.plan.steps.map((x: any) => ({ sid: x.sid, to: x.to })), goal: 'mem' } })
+  assert.equal(r.statusCode, 409)
+  assert.equal(r.json().code, 'ceph-unread')
+  await assert.rejects(svc.saveAuto({ enabled: true, apply: true }, actorAdmin), /Ceph is in use but its health could not be read/)
+  assert.equal((await autoCfg()).settings.apply, false)
+  // Storage that cannot be listed is unknown, not "no Ceph".
+  reset()
+  delete fixture['/storage']
+  await assert.rejects(svc.saveAuto({ enabled: true, apply: true }, actorAdmin), /storage list could not be read/)
+  // No Ceph at all (no Ceph storage, no status): approved, with no baseline.
+  reset()
+  delete fixture['/cluster/ceph/status']
+  fixture['/storage'] = [{ storage: 'shared-rbd', type: 'nfs' }]
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  assert.equal((await autoCfg()).approval!.ceph, null)
+  assert.equal(pve.writes.length, 0)
+})
+
+test('G1b: degraded PGs, unavailable PGs, a down OSD or monitor, HEALTH_ERR and an unreadable OSD count always block', async () => {
+  const ok = { status: 'HEALTH_WARN', osds: 3, up: 3 }
+  for (const c of ['PG_DEGRADED', 'PG_AVAILABILITY', 'OSD_DOWN', 'MON_DOWN']) assert.match(cephProblem({ ...ok, checks: [c] }, [c])!, new RegExp(c), `${c} blocks even when accepted`)
+  assert.match(cephProblem({ ...ok, status: 'HEALTH_ERR', checks: [] }, [])!, /HEALTH_ERR/)
+  assert.match(cephProblem({ ...ok, up: 2, checks: [] }, [])!, /1 Ceph OSD is down/)
+  assert.equal(cephProblem({ ...ok, checks: ['POOL_NO_REDUNDANCY'] }, ['POOL_NO_REDUNDANCY']), null, 'an accepted, harmless warning does not')
+  reset()
+  fixture['/cluster/ceph/status'] = { health: { status: 'HEALTH_WARN', checks: { PG_DEGRADED: {} } }, osdmap: { num_osds: 3, num_up_osds: 3 } }
+  await assert.rejects(svc.saveAuto({ enabled: true, apply: true }, actorAdmin), /Ceph reports PG_DEGRADED/, 'not even accepted at approval')
+  fixture['/cluster/ceph/status'] = { health: { status: 'HEALTH_OK', checks: {} }, osdmap: { num_osds: 'x', num_up_osds: 3 } }
+  assert.match((await svc.gate({ ceph: { checks: [] }, nodes: [] }))!, /OSD count could not be read/)
+  fixture['/cluster/ceph/status'] = { health: { status: 'HEALTH_WARN', checks: { POOL_NO_REDUNDANCY: {} } }, osdmap: { num_osds: 3, num_up_osds: 3 } }
+  assert.match((await svc.gate({ ceph: null, nodes: [] }))!, /did not have when the plan was approved/, 'no baseline: any warning now is new')
+})
+
+test('G1b: Ceph warnings accepted for applying automatically are good for 7 days; then it only notifies', async () => {
+  reset()
+  nodeMem = { node1: 0.95, node2: 0.3, node3: 0.35 }
+  fixture['/cluster/ceph/status'] = { health: { status: 'HEALTH_WARN', checks: { POOL_NO_REDUNDANCY: {} } }, osdmap: { num_osds: 3, num_up_osds: 3 } }
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  clock += 8 * 24 * 3600_000
+  await svc.autoTick()
+  assert.equal(pve.writes.length, 0)
+  assert.match((await autoCfg()).state.lastWhy!, /more than 7 days old/)
+  assert.ok(notes.some(n => /needs a new approval/.test(n.title)))
+})
+
+test('M4: an approval to apply lasts 30 days; then it notifies to renew and moves nothing', async () => {
+  reset()
+  nodeMem = { node1: 0.95, node2: 0.3, node3: 0.35 }
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  clock += 31 * 24 * 3600_000
+  await svc.autoTick()
+  assert.equal(pve.writes.length, 0)
+  assert.match((await autoCfg()).state.lastWhy!, /more than 30 days old/)
+  assert.ok(notes.some(n => /needs a new approval/.test(n.title) && n.lines.some(l => /renew/.test(l))))
+})
+
+test('M4: the role check reads every change since the approval, in order, however many there are', async () => {
+  const since = Date.UTC(2026, 5, 1)
+  const rows = Array.from({ length: 450 }, (_, i) => ({ id: `a${i}`, action: 'users.role', createdAt: new Date(since + (i + 1) * 1000), details: { role: i === 300 ? 'viewer' : 'admin' } }))
+  const db = (list: any[]) => ({ auditLog: { findMany: async (q: any) => list.filter(r => q.where.action.in.includes(r.action) && r.createdAt >= q.where.createdAt.gte)
+    .sort((a, b) => a.createdAt - b.createdAt).slice(q.skip ?? 0, (q.skip ?? 0) + (q.take ?? Infinity)) } })
+  assert.match((await approverChanged(db(rows), 'admin@example.com', since, () => [], () => undefined))!, /may have been demoted/, 'the 301st change is found')
+  const many = Array.from({ length: 25 * 200 + 1 }, (_, i) => ({ id: `b${i}`, action: 'users.role', createdAt: new Date(since + (i + 1) * 1000), details: { role: 'admin' } }))
+  assert.match((await approverChanged(db(many), 'admin@example.com', since, () => [], () => undefined))!, /could not be checked/)
+  assert.equal(await approverChanged(db(rows.slice(0, 10)), 'admin@example.com', since, () => [], () => undefined), null)
+})
+
+test('G2: a stop that loses the race with the scheduler still stops the plan; the emergency stop cancels scheduled single moves', async () => {
+  reset()
+  const p = await store.createPlan({ source: 'manual', status: 'running', by: 'admin@example.com', goal: 'mem', scoreBefore: 50, scoreTarget: 80,
+    steps: [{ sid: 'ct:107', name: 'worker', from: 'node1', to: 'node2', method: 'migrate', status: 'pending', moveId: null, error: null, startedAt: null, endedAt: null }],
+    startedAt: clock, owner: svc.owner, heartbeatAt: clock })
+  // The stop read the plan while it was still scheduled; the scheduler claimed it before the stop's write.
+  const getPlan = store.getPlan.bind(store)
+  store.getPlan = async (id) => { const r = await getPlan(id); return r ? { ...r, status: 'scheduled' } : r }
+  const done = await svc.stopPlan(p.id, actorAdmin)
+  store.getPlan = getPlan
+  assert.equal(done.status, 'running')
+  assert.equal(done.stopRequested, true, 'retried as running → stop requested')
+
+  reset()
+  const m = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock + 3600_000 })
+  const cookie = await admin()
+  const r = await app.inject({ method: 'POST', url: `${B}/auto/stop`, headers: { cookie } })
+  assert.equal(r.statusCode, 200, r.body)
+  assert.equal(r.json().data.cancelledMoves, 1)
+  assert.equal((await store.get(m.id))!.status, 'cancelled')
+  assert.match((await store.get(m.id))!.error!, /Emergency stop/)
+})
+
+test('G3: limits loosened after the approval do not apply; the gap between moves comes from the move history', async () => {
+  reset()
+  nodeMem = { node1: 0.95, node2: 0.3, node3: 0.35 }
+  await svc.saveAuto({ enabled: true, apply: true, maxMovesPerDay: 1, minHoursBetween: 6 }, actorAdmin)
+  // Loosened afterwards, without a new approval.
+  store.autoConfig.settings = { ...store.autoConfig.settings, maxMovesPerDay: 10, minHoursBetween: 0.5 }
+  // An automatic move that ended an hour ago, which the check's own state knows nothing about.
+  await store.create({ sid: 'ct:109', name: 'worker2', fromNode: 'node2', toNode: 'node1', source: 'hyperprox', method: 'migrate', status: 'done',
+    startedAt: clock - 2 * 3600_000, endedAt: clock - 3600_000, snapshot: { auto: true } })
+  await svc.autoTick()
+  assert.equal(pve.writes.length, 0)
+  assert.match((await autoCfg()).state.lastWhy!, /1 automatic move in the last 24 h is the limit/, 'the approved 1 a day, not 10')
+  clock += 2 * 3600_000 + 61 * 60_000
+  store.autoConfig.settings.maxMovesPerDay = 10
+  store.autoConfig.approval!.limits.maxMovesPerDay = 10
+  await svc.autoTick()
+  assert.equal(pve.writes.length, 0)
+  assert.match((await autoCfg()).state.lastWhy!, /less than 6 h ago/, 'the approved 6 h, measured from the recorded move')
 })

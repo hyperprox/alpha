@@ -837,13 +837,18 @@ not compete with it. Open it from the rail, or go to `/balance` (old `/placement
   password once for the whole plan. The moves run one at a time, each through the same safe path as a
   single move, and each is recorded in the audit log. Before every move HyperProx checks again that the
   cluster has not changed: quorum, every node that was online, Ceph (a warning that was not there when you
-  approved stops the plan), and where the guest is. It also checks that the move still evens out the load.
+  approved stops the plan, and degraded or unavailable placement groups, a down OSD or monitor, or
+  HEALTH_ERR always stop it), and where the guest is. It also checks that the move still evens out the
+  load. If Ceph is in use but HyperProx cannot read its health, nothing is approved.
   A failed move or any change stops the plan, and the page shows its progress. You can stop a plan at any
   time; the move under way finishes first, because a migration is never cut off.
 - **Automatic balancing, off by default.** When you turn it on, it checks every hour. If the cluster has
   been uneven for 6 hours in a row, outside your busy hours and backups, it sends a notification with the
   plan. **Apply automatically** also runs the moves:
-  - it needs your master password to turn on, and records who approved it;
+  - it needs your master password to turn on, and records who approved it, with the limits and settings
+    then: changing them later can only make it stricter;
+  - the approval lasts 30 days, and Ceph warnings accepted when you approved are good for 7. After that
+    it only notifies, and asks you to save it again;
   - one move at a time, at most 2 a day and at least 6 hours apart by default, only in quiet windows;
   - only guests HA does not manage. For HA guests it suggests a move or a rule change, and you decide;
   - never a guest with disks to copy over the network;
@@ -852,7 +857,11 @@ not compete with it. Open it from the rail, or go to `/balance` (old `/placement
     onto a small node can starve the cluster heartbeat (corosync) and drop its links.
 
   If the approver's role is lowered, applying turns itself off. **Emergency stop** turns applying off at
-  once and stops any plan after the move under way.
+  once, cancels every scheduled plan and scheduled single move, and stops running plans after the move
+  under way. A check that was already running when you pressed it gives up.
+- **Guests with thin history are left alone.** A guest is moved only when both its CPU and memory history
+  cover most of the window; a gap counts as the guest's 95th-percentile load, never as idle. A guest that
+  changed node with no move recorded (an HA recovery after a failure) waits until fresh history covers it.
 - **Why each guest is where it is**, HA or not, and for every other node whether it could go there: a GPU
   or other device, a folder mounted from the node, a disk on the node's own storage, an HA rule, more CPUs
   than the smaller nodes have, a CPU type the other node cannot run live, a backup running now. Anything

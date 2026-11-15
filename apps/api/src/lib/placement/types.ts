@@ -348,6 +348,8 @@ export interface PlanStepRecord {
 
 export interface PlanSnapshot {
   settings?: Partial<PlacementSettings>
+  /** An automatic plan: the approval it runs under (its time) and the stop epoch when it was made. */
+  auto?:     { approvedAt: number; epoch: number }
   /** Who approved it (with the master password just re-entered), with the role they held then. */
   approver?: { email: string; role: string; at: number }
   /** Ceph's health checks when it was approved: a check that was not there then stops the plan. Null: no Ceph status. */
@@ -388,14 +390,32 @@ export interface AutoSettings {
   minHoursBetween: number
 }
 
+/**
+ * What a person approved when they turned "apply automatically" on (with the master password): who, when, the limits
+ * and placement settings then (later changes can only make it stricter), and Ceph's health then.
+ */
+export interface AutoApproval {
+  email:     string
+  role:      string
+  at:        number
+  limits:    AutoSettings
+  placement: Partial<PlacementSettings>
+  /** Ceph's health checks then; null only when the cluster has no Ceph. */
+  ceph:      { checks: string[] } | null
+}
+
+/** Automatic balancing's own record: written only by a person (save, stop), never by the automatic check. */
+export interface AutoConfig {
+  settings: AutoSettings
+  approval: AutoApproval | null
+  /** Raised by every emergency stop and by turning applying off: a check that started before it gives up. */
+  epoch:    number
+}
+
+/** What the automatic check writes about itself, kept apart from the config so it can never undo a stop. */
 export interface AutoState {
-  /** Who turned on "apply automatically", re-confirmed then; cleared when it is turned off. */
-  approver:     { email: string; role: string; at: number } | null
-  /** Ceph's health checks when apply was turned on: a new one stops automatic moves. */
-  cephBaseline: string[] | null
-  lastCheckAt:  number | null
-  lastWhy:      string | null
-  lastNotifiedAt: number | null
+  lastCheckAt:     number | null
+  lastWhy:         string | null
+  lastNotifiedAt:  number | null
   lastNotifiedSig: string | null
-  lastMoveAt:   number | null
 }

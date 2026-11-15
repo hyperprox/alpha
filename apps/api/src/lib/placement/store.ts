@@ -12,7 +12,7 @@
 
 import { busyHoursProblems } from './windows'
 import { DEFAULT_BWLIMIT_KIB } from './network'
-import type { AutoSettings, AutoState, BalanceGoal, BusyHours, CorosyncCount, MoveRecord, MoveSnapshot, MoveStatus, PlacementSettings, PlanRecord, PlanSnapshot, PlanStatus, PlanStepRecord } from './types'
+import type { AutoApproval, AutoConfig, AutoSettings, AutoState, BalanceGoal, BusyHours, CorosyncCount, MoveRecord, MoveSnapshot, MoveStatus, PlacementSettings, PlanRecord, PlanSnapshot, PlanStatus, PlanStepRecord } from './types'
 
 export const DEFAULT_SETTINGS: PlacementSettings = {
   avoidBackups: true, backupHours: 3, backupMarginMin: 30, busyHours: [],
@@ -23,7 +23,21 @@ export const DEFAULT_SETTINGS: PlacementSettings = {
 
 /** Automatic balancing is off until someone turns it on, and only notifies until "apply automatically" is re-confirmed. */
 export const DEFAULT_AUTO: AutoSettings = { enabled: false, apply: false, sustainHours: 6, checkEveryMin: 60, maxMovesPerDay: 2, minHoursBetween: 6 }
-export const EMPTY_AUTO_STATE: AutoState = { approver: null, cephBaseline: null, lastCheckAt: null, lastWhy: null, lastNotifiedAt: null, lastNotifiedSig: null, lastMoveAt: null }
+export const EMPTY_AUTO_STATE: AutoState = { lastCheckAt: null, lastWhy: null, lastNotifiedAt: null, lastNotifiedSig: null }
+export const EMPTY_AUTO_CONFIG: AutoConfig = { settings: { ...DEFAULT_AUTO }, approval: null, epoch: 0 }
+
+/** The stricter of what was approved and what is set now: fewer moves, further apart, longer sustained, checked less often. */
+export function stricterAuto(approved: AutoSettings, current: AutoSettings): AutoSettings {
+  return {
+    ...current,
+    enabled: approved.enabled && current.enabled,
+    apply: approved.apply && current.apply,
+    maxMovesPerDay: Math.min(approved.maxMovesPerDay, current.maxMovesPerDay),
+    minHoursBetween: Math.max(approved.minHoursBetween, current.minHoursBetween),
+    sustainHours: Math.max(approved.sustainHours, current.sustainHours),
+    checkEveryMin: Math.max(approved.checkEveryMin, current.checkEveryMin),
+  }
+}
 const GOALS: BalanceGoal[] = ['mem', 'cpu', 'both']
 
 const num = (v: unknown, lo: number, hi: number, name: string, problems: string[]): number | undefined => {
@@ -91,6 +105,9 @@ export function stricterSettings(approved: Partial<PlacementSettings> | undefine
     linkMbps: Math.min(a.linkMbps, current.linkMbps),
     cpuAbove: Math.min(a.cpuAbove, current.cpuAbove),
     memAbove: Math.min(a.memAbove, current.memAbove),
+    minGain: Math.max(a.minGain, current.minGain),
+    maxPlanMoves: Math.min(a.maxPlanMoves, current.maxPlanMoves),
+    unevenAbove: Math.max(a.unevenAbove, current.unevenAbove),
   }
 }
 
@@ -166,8 +183,12 @@ export interface PlacementStore {
   listPlans(opts?: { status?: PlanStatus[]; source?: 'manual' | 'auto'; limit?: number }): Promise<PlanRecord[]>
   /** The atomic claim for plans, as transition() is for moves. */
   transitionPlan(id: string, where: PlanWhere, patch: Partial<Omit<PlanRecord, 'id'>>): Promise<PlanRecord | null>
-  auto(): Promise<{ settings: AutoSettings; state: AutoState }>
-  saveAuto(settings: AutoSettings, state: AutoState, by: string): Promise<void>
+  /** Automatic balancing's config (a person's) and the check's own state, read fresh. */
+  auto(): Promise<AutoConfig & { state: AutoState }>
+  /** Writes the config. Only saveAuto, autoStop and the approver check (applying off) call it. */
+  saveAutoConfig(c: AutoConfig, by: string): Promise<void>
+  /** Merges fields into the check's own state, read fresh; never touches the config. */
+  patchAutoState(patch: Partial<AutoState>): Promise<void>
 }
 
 export class MemoryPlacementStore implements PlacementStore {
@@ -223,7 +244,8 @@ export class MemoryPlacementStore implements PlacementStore {
     await this.create(m)
   }
   plans: PlanRecord[] = []
-  autoRow: { settings: AutoSettings; state: AutoState } = { settings: { ...DEFAULT_AUTO }, state: { ...EMPTY_AUTO_STATE } }
+  autoConfig: AutoConfig = JSON.parse(JSON.stringify(EMPTY_AUTO_CONFIG))
+  autoState: AutoState = { ...EMPTY_AUTO_STATE }
   private p = 0
   private planSlotTaken(exceptId: string | null, status: PlanStatus | undefined) {
     return status === 'running' && this.plans.some(r => r.id !== exceptId && r.status === 'running')
@@ -253,8 +275,9 @@ export class MemoryPlacementStore implements PlacementStore {
     Object.assign(r, patch, patch.steps ? { steps: patch.steps.map(x => ({ ...x })) } : {})
     return clonePlan(r)
   }
-  async auto() { return { settings: { ...this.autoRow.settings }, state: { ...this.autoRow.state } } }
-  async saveAuto(settings: AutoSettings, state: AutoState) { this.autoRow = { settings: { ...settings }, state: { ...state } } }
+  async auto() { return { ...JSON.parse(JSON.stringify(this.autoConfig)) as AutoConfig, state: { ...this.autoState } } }
+  async saveAutoConfig(c: AutoConfig) { this.autoConfig = JSON.parse(JSON.stringify(c)) }
+  async patchAutoState(patch: Partial<AutoState>) { this.autoState = { ...this.autoState, ...pick(patch) } }
 }
 
 const clonePlan = (r: PlanRecord): PlanRecord => ({ ...r, steps: r.steps.map(x => ({ ...x })), snapshot: r.snapshot ? JSON.parse(JSON.stringify(r.snapshot)) : null })
@@ -354,18 +377,35 @@ export function prismaPlacementStore(db: any): PlacementStore {
     },
     async auto() {
       // Before the migration has run the defaults apply: automatic balancing is then simply off.
-      let row: any = null
-      try { row = await db.placementSettings.findUnique({ where: { id: AUTO_ROW } }) } catch { row = null }
-      const d = (row?.data ?? {}) as { settings?: Partial<AutoSettings>; state?: Partial<AutoState> }
-      return { settings: { ...DEFAULT_AUTO, ...(d.settings ?? {}) }, state: { ...EMPTY_AUTO_STATE, ...(d.state ?? {}) } }
+      const read = async (id: string) => { try { return (await db.placementSettings.findUnique({ where: { id } }))?.data ?? null } catch { return null } }
+      const c = ((await read(AUTO_ROW)) ?? {}) as Partial<AutoConfig>
+      const st = ((await read(AUTO_STATE_ROW)) ?? {}) as Partial<AutoState>
+      return {
+        settings: { ...DEFAULT_AUTO, ...(c.settings ?? {}) }, approval: (c.approval ?? null) as AutoApproval | null, epoch: Number(c.epoch) || 0,
+        state: { ...EMPTY_AUTO_STATE, ...pick(st) },
+      }
     },
-    async saveAuto(settings, state, by) {
-      const data = { settings, state } as any
+    async saveAutoConfig(c, by) {
+      const data = { settings: c.settings, approval: c.approval, epoch: c.epoch } as any
       await db.placementSettings.upsert({ where: { id: AUTO_ROW }, create: { id: AUTO_ROW, data, updatedBy: by }, update: { data, updatedBy: by } })
+    },
+    async patchAutoState(patch) {
+      const cur = await db.placementSettings.findUnique({ where: { id: AUTO_STATE_ROW } }).catch(() => null)
+      const data = { ...EMPTY_AUTO_STATE, ...pick((cur?.data ?? {}) as Partial<AutoState>), ...pick(patch) } as any
+      await db.placementSettings.upsert({ where: { id: AUTO_STATE_ROW }, create: { id: AUTO_STATE_ROW, data, updatedBy: 'automatic balancing' }, update: { data, updatedBy: 'automatic balancing' } })
     },
   }
 }
 
+/** Only the check's own fields: nothing else can ride along into the state row. */
+function pick(s: Partial<AutoState>): Partial<AutoState> {
+  const out: Partial<AutoState> = {}
+  for (const k of Object.keys(EMPTY_AUTO_STATE) as Array<keyof AutoState>) if (s[k] !== undefined) (out as any)[k] = s[k]
+  return out
+}
+
+/** Automatic balancing's config row (a person's) and the check's own state row, in the settings table. */
+const AUTO_STATE_ROW = 'balance-auto-state'
 /** Automatic balancing's row in the settings table, beside the settings' own. */
 const AUTO_ROW = 'balance-auto'
 

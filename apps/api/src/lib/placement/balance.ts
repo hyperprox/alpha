@@ -43,6 +43,12 @@ export type BalanceSettings = Pick<PlacementSettings,
 /** A move that finished: replayed onto the history for the time before `at` (unix seconds). */
 export interface PastMove { sid: string; from: string; to: string; at: number }
 
+/** Where the history saw a guest: each node it was on, first and last seen (unix seconds). */
+export type GuestLocations = Record<string, Array<{ node: string; first: number; last: number }>>
+
+/** A guest series must cover this share of its node's readings to count as measured. */
+export const MIN_COVERAGE = 0.8
+
 export interface BalanceInput {
   map:      PlacementMap
   nodes:    NodeSeries[]
@@ -53,6 +59,8 @@ export interface BalanceInput {
   goal?:    BalanceGoal
   /** Finished moves inside the window, oldest first. */
   past?:    PastMove[]
+  /** Where the history saw each guest; a guest seen elsewhere with no recorded move is left alone until fresh history covers it. */
+  locations?: GuestLocations
   /** Automatic mode: HA guests are only suggested, and guests with disks to copy are left alone. */
   auto?:    boolean
   /** The most recent stretch looked at for "uneven for a sustained time", hours. */
@@ -96,17 +104,23 @@ export function replay(series: Map<string, Series>, guests: Map<string, Series>,
   for (const m of past) {
     const g = guests.get(m.sid), from = series.get(m.from), to = series.get(m.to), cf = caps.get(m.from), ct = caps.get(m.to)
     if (!g || !from || !to || !cf || !ct) continue
-    // The guest's readings before the move, on the timeline of each node's own series (nothing after it).
-    const before = (gm: Map<number, number>, base: Map<number, number>) => { const out = new Map<number, number>(); for (const t of base.keys()) out.set(t, t < m.at ? gm.get(t) ?? 0 : 0); return out }
-    from.cpu = shifted(from.cpu, before(g.cpu, from.cpu), cf.threads || 1, -1); from.mem = shifted(from.mem, before(g.mem, from.mem), cf.maxmem || 1, -1)
-    to.cpu = shifted(to.cpu, before(g.cpu, to.cpu), ct.threads || 1, 1); to.mem = shifted(to.mem, before(g.mem, to.mem), ct.maxmem || 1, 1)
+    const fill = p95s(g)
+    // The guest's readings before the move, on the timeline of each node's own series (nothing after it); a gap is its p95.
+    const before = (gm: Map<number, number>, base: Map<number, number>, f: number) => { const out = new Map<number, number>(); for (const t of base.keys()) out.set(t, t < m.at ? gm.get(t) ?? f : 0); return out }
+    from.cpu = shifted(from.cpu, before(g.cpu, from.cpu, fill.cpu), cf.threads || 1, -1); from.mem = shifted(from.mem, before(g.mem, from.mem, fill.mem), cf.maxmem || 1, -1)
+    to.cpu = shifted(to.cpu, before(g.cpu, to.cpu, fill.cpu), ct.threads || 1, 1); to.mem = shifted(to.mem, before(g.mem, to.mem, fill.mem), ct.maxmem || 1, 1)
   }
 }
 
-/** Only the part of a guest series that a shift should apply: missing points count as nothing rather than as the nearest. */
-function only(m: Map<number, number>, base: Map<number, number>): Map<number, number> {
+const p95s = (g: Series) => ({ cpu: p95([...g.cpu.values()]), mem: p95([...g.mem.values()]) })
+
+/**
+ * A guest series on a node's timeline, for a shift. A missing reading is the guest's own p95, never zero: a gap in
+ * the scrape is not a guest using nothing, and zero would make a busy guest look light.
+ */
+function only(m: Map<number, number>, base: Map<number, number>, fill: number): Map<number, number> {
   const out = new Map<number, number>()
-  for (const t of base.keys()) out.set(t, m.get(t) ?? 0)
+  for (const t of base.keys()) out.set(t, m.get(t) ?? fill)
   return out
 }
 
@@ -117,8 +131,8 @@ function exclusion(g: GuestPlacement, auto: boolean): string | null {
   if (g.everywhere.some(r => r.code === 'crs')) return "HA: left to Proxmox's own auto-rebalance"
   if (g.everywhere.some(r => r.level === 'block')) return g.everywhere.find(r => r.level === 'block')!.words
   if (g.everywhere.some(r => r.level === 'unknown')) return 'not everything about it could be read'
-  if (auto && g.copyBytes > 0 && g.type === 'lxc') return 'automatic balancing never copies disks over the network'
-  if (auto && g.copyBytes > 0 && g.type === 'qemu' && g.targets.some(t => t.reasons.some(r => r.code === 'local-disk'))) return 'automatic balancing never copies disks over the network'
+  if (auto && g.ha) return 'automatic balancing never moves HA guests'
+  if (auto && g.targets.some(t => t.reasons.some(r => r.code === 'local-disk'))) return 'automatic balancing never copies disks over the network'
   return null
 }
 
@@ -167,8 +181,9 @@ function context(input: BalanceInput) {
     if (!nf || !nt || !sf || !st) return `${!sf ? from : to} has no history or is not online`
     const gs = gseries.get(g.sid)
     if (!gs) return 'it has no history'
-    const fromS: Series = { cpu: shifted(sf.cpu, only(gs.cpu, sf.cpu), nf.threads || 1, -1), mem: shifted(sf.mem, only(gs.mem, sf.mem), nf.maxmem || 1, -1) }
-    const toS: Series = { cpu: shifted(st.cpu, only(gs.cpu, st.cpu), nt.threads || 1, 1), mem: shifted(st.mem, only(gs.mem, st.mem), nt.maxmem || 1, 1) }
+    const f = p95s(gs)
+    const fromS: Series = { cpu: shifted(sf.cpu, only(gs.cpu, sf.cpu, f.cpu), nf.threads || 1, -1), mem: shifted(sf.mem, only(gs.mem, sf.mem, f.mem), nf.maxmem || 1, -1) }
+    const toS: Series = { cpu: shifted(st.cpu, only(gs.cpu, st.cpu, f.cpu), nt.threads || 1, 1), mem: shifted(st.mem, only(gs.mem, st.mem, f.mem), nt.maxmem || 1, 1) }
     const before = { from: loadOf(sf), to: loadOf(st) }
     const after = { from: loadOf(fromS), to: loadOf(toS) }
     if (after.to.cpu > s.cpuAbove) return `${to} would reach ${pct(after.to.cpu)} CPU, above the ${pct(s.cpuAbove)} line`
@@ -181,7 +196,35 @@ function context(input: BalanceInput) {
     const score = scoreOf(next, goal)
     return { g, to, kind, fromS, toS, before, after, score, gain: score.score - cur.score }
   }
-  return { s, goal, caps, series, gseries, counted, live, state, at, loadOf, loads, trial }
+  /** Why the guest's own history is not good enough to move it on, or null: both series, each covering most of its node's readings. */
+  const unmeasured = (g: GuestPlacement): string | null => {
+    const gs = gseries.get(g.sid)
+    const base = series.get(g.node)
+    if (!gs || !gs.cpu.size || !gs.mem.size) return 'it has no CPU or memory history'
+    if (!base || !base.cpu.size) return `${g.node} has no history`
+    const cover = (m: Map<number, number>, b: Map<number, number>) => { let n = 0; for (const t of b.keys()) if (m.has(t)) n++; return n / Math.max(1, b.size) }
+    const c = Math.min(cover(gs.cpu, base.cpu), cover(gs.mem, base.mem))
+    if (c < MIN_COVERAGE) return `its history covers only ${Math.round(c * 100)}% of the window`
+    return null
+  }
+  /**
+   * A guest the history saw on another node, with no recorded move to explain it (an HA recovery after a failure, a
+   * move made elsewhere): where its load was is not known, so it is left alone until fresh history on its node
+   * covers most of the window.
+   */
+  const relocated = (g: GuestPlacement): string | null => {
+    const locs = input.locations?.[g.sid]
+    if (!locs) return null
+    const away = locs.filter(l => l.node !== g.node)
+    if (!away.length) return null
+    const lastAway = Math.max(...away.map(l => l.last))
+    if ((input.past ?? []).some(m => m.sid === g.sid && m.to === g.node && m.at >= lastAway - 2 * input.stepSec)) return null
+    const times = [...(series.get(g.node)?.cpu.keys() ?? [])]
+    const fresh = times.filter(t => t > lastAway).length / Math.max(1, times.length)
+    if (fresh >= MIN_COVERAGE) return null
+    return `it was on ${away[away.length - 1].node} until recently and no move of it is recorded (an HA recovery?): left alone until fresh history covers the window`
+  }
+  return { s, goal, caps, series, gseries, counted, live, state, at, loadOf, loads, trial, unmeasured, relocated }
 }
 
 /**
@@ -192,7 +235,7 @@ export function checkStep(input: BalanceInput, sid: string, to: string): { ok: b
   const c = context(input)
   const g = input.map.guests.find(x => x.sid === sid)
   if (!g) return { ok: false, why: `${sid} is no longer in the cluster`, gain: 0 }
-  const ex = exclusion(g, !!input.auto)
+  const ex = exclusion(g, !!input.auto) ?? c.unmeasured(g) ?? c.relocated(g)
   if (ex) return { ok: false, why: `${g.name || sid}: ${ex}`, gain: 0 }
   const t = c.trial(g, to, scoreOf(c.loads(), c.goal))
   if (typeof t === 'string') return { ok: false, why: `${g.name || sid}: ${t}`, gain: 0 }
@@ -203,7 +246,7 @@ export function checkStep(input: BalanceInput, sid: string, to: string): { ok: b
 
 export function balance(input: BalanceInput): BalanceResult {
   const c = context(input)
-  const { s, goal, caps, series, gseries, counted, live, state, at, loadOf, loads, trial } = c
+  const { s, goal, series, gseries, counted, live, state, at, loadOf, loads, trial, unmeasured, relocated } = c
   const unread: string[] = []
   for (const n of input.map.nodes) if (n.online && !n.maintenance && !counted(n)) unread.push(`history for ${n.node}`)
   const score = scoreOf(loads(), goal)
@@ -242,11 +285,15 @@ export function balance(input: BalanceInput): BalanceResult {
   }
   const shared = input.map.network.shared !== false
   const notMeasured: string[] = []
+  const unsure: string[] = []
   const excluded = new Map<string, string>()
   const cands: GuestPlacement[] = []
+  /** In automatic mode, HA guests that could move: suggested to a person, never moved. */
+  const suggestOnly: GuestPlacement[] = []
   for (const g of input.map.guests) {
     const why = exclusion(g, auto)
-    if (why) { excluded.set(g.sid, why); continue }
+    const haInAuto = auto && g.ha && !exclusion(g, false)
+    if (why && !haInAuto) { excluded.set(g.sid, why); continue }
     if (!g.targets.some(t => routeTo(g, t.node))) {
       const block = g.targets.flatMap(t => t.reasons).find(r => r.level === 'block' || r.level === 'unknown')
       excluded.set(g.sid, block ? block.words.replace(/\.$/, '') : 'no other node fits')
@@ -255,8 +302,12 @@ export function balance(input: BalanceInput): BalanceResult {
     const gs = gseries.get(g.sid)
     if (!gs || (!gs.cpu.size && !gs.mem.size)) { notMeasured.push(g.name || g.sid); continue }
     if (!live.some(n => n.node === g.node)) { excluded.set(g.sid, `its node ${g.node} is not counted`); continue }
+    const thin = unmeasured(g) ?? relocated(g)
+    if (thin) { excluded.set(g.sid, thin); unsure.push(`${g.name || g.sid}: ${thin}`); continue }
+    if (haInAuto) { excluded.set(g.sid, why!); suggestOnly.push(g); continue }
     cands.push(g)
   }
+  if (unsure.length) left.push(`Left alone, history not good enough: ${unsure.slice(0, 4).join('; ')}${unsure.length > 4 ? '…' : ''}.`)
   if (notMeasured.length) left.push(`${notMeasured.length} running guest${notMeasured.length === 1 ? ' has' : 's have'} no history and ${notMeasured.length === 1 ? 'stays' : 'stay'} where ${notMeasured.length === 1 ? 'it is' : 'they are'}: ${notMeasured.slice(0, 6).join(', ')}${notMeasured.length > 6 ? '…' : ''}.`)
 
   const moved = new Set<string>()
@@ -308,7 +359,7 @@ export function balance(input: BalanceInput): BalanceResult {
   // Suggestions the plan does not carry out: HA guests held by their own preferred-node rule, and in automatic mode
   // HA guests at all. Worked out against the state after the plan, one per guest.
   const suggestions: BalanceSuggestion[] = []
-  for (const g of cands) {
+  for (const g of [...cands, ...suggestOnly]) {
     if (moved.has(g.sid) || !g.ha) continue
     let best: Trial | null = null
     for (const n of live) {

@@ -2,7 +2,7 @@
 // paths, plan buttons and progress words. No React and no CSS, so it is tested on its own (test/balance.test.tsx).
 
 import { gib, seconds, when } from './logic'
-import type { AutoSettings, AutoState, BalanceGoal, BalancePlan, BalanceView, NodeLoad, PlanRecord, PlanStep, Sample } from './types'
+import type { AutoView, BalanceGoal, BalancePlan, BalanceView, NodeLoad, PlanRecord, PlanStep, Sample } from './types'
 
 export const GOAL_WORD: Record<BalanceGoal, string> = { mem: 'RAM', cpu: 'CPU', both: 'CPU and RAM' }
 
@@ -63,10 +63,15 @@ export function progressWords(p: PlanRecord, tz?: string): string {
 }
 
 /** Automatic balancing in one line. */
-export function autoWords(a: { settings: AutoSettings; state: AutoState }): string {
+export function autoWords(a: Pick<AutoView, 'settings' | 'approval' | 'state'>): string {
   if (!a.settings.enabled) return 'Off. HyperProx does not check or move anything on its own.'
+  // The limits that apply are the stricter of the approved ones and today's.
+  const l = a.approval ? {
+    maxMovesPerDay: Math.min(a.approval.limits.maxMovesPerDay, a.settings.maxMovesPerDay),
+    minHoursBetween: Math.max(a.approval.limits.minHoursBetween, a.settings.minHoursBetween),
+  } : a.settings
   const base = a.settings.apply
-    ? `On, applying: up to ${a.settings.maxMovesPerDay} move${a.settings.maxMovesPerDay === 1 ? '' : 's'} a day, at least ${a.settings.minHoursBetween} h apart, in quiet windows only${a.state.approver ? `, approved by ${a.state.approver.email}` : ''}.`
+    ? `On, applying: up to ${l.maxMovesPerDay} move${l.maxMovesPerDay === 1 ? '' : 's'} a day, at least ${l.minHoursBetween} h apart, in quiet windows only${a.approval ? `, approved by ${a.approval.email} on ${new Date(a.approval.at).toISOString().slice(0, 10)} (good for 30 days${a.approval.ceph?.checks.length ? '; the Ceph warnings accepted then, for 7' : ''})` : ''}.`
     : 'On, notifying only: it tells you when a plan is worth running and moves nothing.'
   return a.state.lastWhy ? `${base} Last check: ${a.state.lastWhy}` : base
 }
@@ -80,4 +85,12 @@ export function orderNodes(nodes: NodeLoad[], goal: BalanceGoal): NodeLoad[] {
 /** After-values per node, from the plan. */
 export function afterOf(plan: BalancePlan | null): Map<string, { cpu: number; mem: number }> {
   return new Map((plan?.steps.length ? plan.nodesAfter : []).map(n => [n.node, { cpu: n.cpu, mem: n.mem }]))
+}
+
+/** What the emergency stop did, in words. */
+export function stopWords(plans: number, moves: number): string {
+  const parts = ['applying is off']
+  if (plans) parts.push(`${plans} plan${plans === 1 ? ' is' : 's are'} stopped or cancelled (a running one stops after the move under way)`)
+  if (moves) parts.push(`${moves} scheduled move${moves === 1 ? ' is' : 's are'} cancelled`)
+  return `Stopped: ${parts.join('; ')}.`
 }

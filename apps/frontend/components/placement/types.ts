@@ -97,15 +97,14 @@ export interface PlanRecord {
   steps: PlanStepRecord[]; scheduledFor: number | null; startedAt: number | null; endedAt: number | null; error: string | null; stopRequested: boolean
 }
 export interface AutoSettings { enabled: boolean; apply: boolean; sustainHours: number; checkEveryMin: number; maxMovesPerDay: number; minHoursBetween: number }
-export interface AutoState {
-  approver: { email: string; role: string; at: number } | null; cephBaseline: string[] | null
-  lastCheckAt: number | null; lastWhy: string | null; lastNotifiedAt: number | null; lastNotifiedSig: string | null; lastMoveAt: number | null
-}
+export interface AutoState { lastCheckAt: number | null; lastWhy: string | null; lastNotifiedAt: number | null; lastNotifiedSig: string | null }
+export interface AutoApproval { email: string; role: string; at: number; limits: AutoSettings; ceph: { checks: string[] } | null }
+export interface AutoView { settings: AutoSettings; approval: AutoApproval | null; epoch: number; state: AutoState }
 export interface BalanceView {
   goal: BalanceGoal; uneven: boolean; headline: string; nodes: NodeLoad[]; score: BalanceScore; plan: BalancePlan
   recent: { hours: number; covered: number }; unread: string[]
   quiet: QuietStatus; crs: { mode: string; autoRebalance: boolean }; network: NetworkCost; window: { hours: number; stepSec: number }
   settings: { balanceGoal: BalanceGoal; unevenAbove: number; minGain: number; maxPlanMoves: number; cpuAbove: number; memAbove: number }
-  auto: { settings: AutoSettings; state: AutoState }
+  auto: AutoView
   running: PlanRecord | null; plans: PlanRecord[]
 }
