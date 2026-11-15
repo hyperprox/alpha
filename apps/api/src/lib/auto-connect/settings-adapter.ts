@@ -56,6 +56,20 @@ export interface SettingsAdapterDeps {
   settings(pluginId: string): Promise<Record<string, string>>
   /** saveSettings (lib/plugin-host.ts): its origin rule refuses a key for another address. */
   save(m: PluginManifest, values: Record<string, string>): Promise<void>
+  /** A host name's IPv4 (null when it does not resolve). Two addresses for one worker are one worker. */
+  resolve?(host: string): Promise<string | null>
+}
+
+/** ip:port of an address (a name resolved when it can), so one service written two ways counts once. */
+async function endpointOf(address: string, resolve?: (h: string) => Promise<string | null>): Promise<string> {
+  let u: URL
+  try { u = new URL(address) } catch { return String(address).trim().toLowerCase() }
+  const port = u.port || (u.protocol === 'https:' ? '443' : '80')
+  let host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(host)
+  if (mapped) host = mapped[1]
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host) && resolve) host = (await resolve(host).catch(() => null)) ?? host
+  return `${host}:${port}`
 }
 
 const machineOf = (g: ScanSighting['guest']) => (g ? `${g.type}-${g.vmid}` : null)
@@ -91,15 +105,18 @@ export function settingsAdapter(plugin: string, d: SettingsAdapterDeps): AutoCon
       const [all, tags] = await Promise.all([d.findings(), d.tags()])
       let stored = await d.settings(plugin)
       for (const [scanKey, spec] of specs) {
-        const seen = all.filter(f => f.key === scanKey)
-        // One address per guest and origin; the scan can see a service on two addresses of the same guest.
-        const found = seen.filter((f, i) => seen.findIndex(x => originOf(x.address) === originOf(f.address)) === i)
-        const taken = new Set(spec.urlSettings.map(s => stored[s]).filter(Boolean).map(originOf))
+        // Only what the scan found on a guest: an address with no guest behind it (a node, something unknown) is
+        // never connected by itself.
+        const seen = all.filter(f => f.key === scanKey && f.guest)
+        // One per ip:port: the scan can see a service on two addresses, and a setting may name it by host name.
+        const ends = await Promise.all(seen.map(f => endpointOf(f.address, d.resolve)))
+        const found = seen.filter((_f, i) => ends.indexOf(ends[i]) === i)
+        const taken = new Set(await Promise.all(spec.urlSettings.map(s => stored[s]).filter(Boolean).map(a => endpointOf(a, d.resolve))))
         const usable: ScanSighting[] = []
         for (const f of found) {
           const k = outKey(spec.urlSettings[0], f.address)
           const label = `${m.name}: ${f.address}`
-          if (taken.has(originOf(f.address))) { out.push({ key: k, label, did: 'present' }); continue }
+          if (taken.has(ends[seen.indexOf(f)])) { out.push({ key: k, label, did: 'present' }); continue }
           const why = exclusionOf(ctx, { machineId: machineOf(f.guest), tags: tags.get(machineOf(f.guest) ?? '') ?? [], addresses: [f.address] })
           if (why) { out.push({ key: k, label, did: 'excluded', message: why }); continue }
           // Filled by an earlier pass and not there any more: a person cleared it. Never put back by itself.
@@ -110,6 +127,11 @@ export function settingsAdapter(plugin: string, d: SettingsAdapterDeps): AutoCon
         }
         const free = spec.urlSettings.map((s, i) => ({ s, i })).filter(x => !stored[x.s])
         if (!usable.length || !free.length) continue
+        // A key saved without its address is a person's half-done setup: never overwritten or paired by itself.
+        if (spec.secret && stored[spec.secret.setting]) {
+          out.push({ key: outKey(spec.urlSettings[0], usable[0].address), label: `${m.name}: ${spec.urlSettings[0]}`, did: 'skipped', message: `${spec.secret.what} is saved without an address; left for you.` })
+          continue
+        }
         // A single-address setting with two candidates: not guessed between.
         if (spec.urlSettings.length === 1 && usable.length > 1) {
           out.push({ key: `${spec.urlSettings[0]}@*`, label: `${m.name}: ${spec.urlSettings[0]}`, did: 'ambiguous', choiceKind: 'address',
@@ -145,10 +167,11 @@ export function settingsAdapter(plugin: string, d: SettingsAdapterDeps): AutoCon
       if (!m || !spec || at < 0) throw new Error('Not a choice of this plug-in.')
       const stored = await d.settings(plugin)
       if (stored[setting]) return { key, label: m.name, did: 'present' }
+      if (spec.secret && stored[spec.secret.setting]) throw new Error(`${spec.secret.what} is already saved; HyperProx does not replace it.`)
       const tags = await d.tags()
       const found = (await d.findings()).filter(f => f.key === scanKey)
       const f = key.endsWith('@*') ? found.find(x => x.address === choiceId) : found.find(x => originOf(x.address) === key.slice(at + 1))
-      if (!f) throw new Error('That server is not found by the scan any more.')
+      if (!f || !f.guest) throw new Error('That server is not found on a guest by the scan any more.')
       if (exclusionOf(ctx, { machineId: machineOf(f.guest), tags: tags.get(machineOf(f.guest) ?? '') ?? [], addresses: [f.address] })) throw new Error('That server is excluded.')
       let item: { choice: VaultChoice; secret: string } | null = null
       if (spec.secret) {

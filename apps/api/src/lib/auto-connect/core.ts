@@ -354,3 +354,14 @@ export function exclusionOf(ctx: Pick<AdapterContext, 'excludedMachines' | 'excl
   if ((o.addresses ?? []).some(a => a && inSubnets(a, ctx.excludedSubnets))) return 'an excluded subnet'
   return null
 }
+
+/**
+ * Whether a finished Catalogue install still describes the guest now at its VMID. A VMID is reused after a guest is
+ * destroyed: the install record then points at someone else's guest. It counts only while that guest is there and
+ * carries the hostname the install gave it (an install with no recorded hostname counts on the VMID alone).
+ */
+export function installStillOwns(job: { hostname?: unknown }, guest: { name?: unknown } | undefined | null): boolean {
+  if (!guest) return false
+  const want = typeof job.hostname === 'string' ? job.hostname.trim().toLowerCase() : ''
+  return !want || String(guest.name ?? '').trim().toLowerCase() === want
+}

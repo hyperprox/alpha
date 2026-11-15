@@ -948,3 +948,42 @@ test('G1: a web login a person clears is not made again; the retry time survives
   s3.advance(6 * 60 * 60_000 + 1)
   assert.equal((await s3.svc.autoConnect(acx()))[1].did, 'needs_credential', 'tried again once the wait is over')
 })
+
+test('minor 8: an app password that cannot be revoked is recorded and alerted; one that cannot be identified stops the retries', async () => {
+  // The test login fails, and so does the revoke: left over, recorded, alerted.
+  const alerts: string[] = []
+  const g = makerGuest({ scripts: [[/user:auth-tokens:delete/, 'boom', 1]] })
+  const s = service(g, { sightings: async () => SEEN, ocs: () => async () => { throw new Error('HTTP 401') }, alert: async t => { alerts.push(t) } })
+  const out = await s.svc.autoConnect(acx())
+  assert.equal(out[1].did, 'failed')
+  const [m] = await s.svc.instances.list()
+  assert.deepEqual(m.autoConnected?.orphans?.map(o => [o.user, o.id]), [['alice', 42]])
+  assert.equal(alerts.length, 1)
+  assert.ok(s.audits.some(a => a.action === 'nextcloud.app_password.left'))
+  // Failures back off: 1 h after the first, 2 h after the second, never more than a day.
+  const n = g.calls.filter(c => c.includes('user:auth-tokens:add')).length
+  s.advance(30 * 60_000)
+  await s.svc.autoConnect(acx())
+  assert.equal(g.calls.filter(c => c.includes('user:auth-tokens:add')).length, n, 'not retried within the hour')
+  s.advance(31 * 60_000)
+  await s.svc.autoConnect(acx())
+  assert.equal(g.calls.filter(c => c.includes('user:auth-tokens:add')).length, n + 1, 'retried after an hour')
+  // The new token cannot be told apart: every new "HyperProx" token is revoked by name, and the retries stop.
+  const g2 = fakeGuest({
+    parts: { t: () => '[{"id":3,"name":"Firefox","lastActivity":1,"type":0},{"id":51,"name":"HyperProx","lastActivity":1,"type":1},{"id":52,"name":"HyperProx","lastActivity":1,"type":1}]' },
+    scripts: [[/user:auth-tokens:add/, () => `app password:\n${'A'.repeat(72)}\n`]],
+  })
+  let first = true
+  g2.parts.t = () => { if (first) { first = false; return '[{"id":3,"name":"Firefox","lastActivity":1,"type":0}]' } return '[{"id":3,"name":"Firefox","lastActivity":1,"type":0},{"id":51,"name":"HyperProx","lastActivity":1,"type":1},{"id":52,"name":"HyperProx","lastActivity":1,"type":1}]' }
+  const s2 = service(g2, { sightings: async () => SEEN })
+  const o2 = await s2.svc.autoConnect(acx())
+  assert.equal(o2[1].did, 'failed')
+  const dels = g2.calls.filter(c => c.includes('user:auth-tokens:delete'))
+  assert.ok(dels.some(c => /'51'/.test(c)) && dels.some(c => /'52'/.test(c)), 'both new HyperProx tokens revoked')
+  const [m2] = await s2.svc.instances.list()
+  assert.ok(m2.autoConnected?.webLoginStopped)
+  s2.advance(48 * 60 * 60_000)
+  const adds = g2.calls.filter(c => c.includes('user:auth-tokens:add')).length
+  await s2.svc.autoConnect(acx())
+  assert.equal(g2.calls.filter(c => c.includes('user:auth-tokens:add')).length, adds, 'never retried by itself')
+})

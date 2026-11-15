@@ -32,6 +32,10 @@ export interface NcMeta {
     at: string; evidence: string[]; webLogin: string | null
     /** When the background pass last tried the web login, and how many tries in a row failed (its back-off). */
     webLoginTriedAt?: string; webLoginFailures?: number
+    /** Why the background pass stopped trying the web login for good (until a person acts), or absent. */
+    webLoginStopped?: string
+    /** App passwords HyperProx made but could not revoke: a person deletes them under that user's Security settings. */
+    orphans?: Array<{ user: string; id: number | null; at: string }>
   } | null
 }
 

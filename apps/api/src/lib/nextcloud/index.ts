@@ -24,6 +24,8 @@ import { ocsClient } from './ocs'
 import { prismaJobStore } from './jobs'
 import { sharedServiceScan } from '../service-scan'
 import { wizardStore } from '../catalogue-store'
+import { installStillOwns } from '../auto-connect/core'
+import { publish } from '../notify'
 import type { GuestRef } from './types'
 
 async function guestRows(): Promise<GuestRow[]> {
@@ -63,8 +65,11 @@ export async function sightings(): Promise<Array<{ guest: GuestRef; url: string 
   const out: Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null; ip?: string | null }> = []
   const scan = await sharedServiceScan().result(false)
   for (const f of scan.findings) if (f.key === 'nextcloud' && f.guest) out.push({ guest: { kind: f.guest.type, vmid: Number(f.guest.vmid) }, url: f.address, via: 'scan', ip: f.host })
+  const rows = await guestRows().catch(() => [] as GuestRow[])
   for (const r of await wizardStore().list('job').catch(() => [])) {
     const j: any = r.data
+    // A VMID reused by another guest since the install: not this Nextcloud any more.
+    if (j?.recipeId === 'nextcloud' && !installStillOwns(j, rows.find(g => g.kind === 'lxc' && g.vmid === Number(j.vmid)))) continue
     // The Catalogue makes containers.
     if (j?.recipeId === 'nextcloud' && j.status === 'completed' && Number(j.vmid) >= 100) out.push({ guest: { kind: 'lxc', vmid: Number(j.vmid) }, url: typeof j.url === 'string' ? j.url : null, via: 'catalogue', ip: typeof j.ip === 'string' ? j.ip.split('/')[0] : null,
       // The admin the installer made (its name only; its password stays in the vault and is never used here).
@@ -100,6 +105,7 @@ export function productionNextcloud(prisma?: unknown): NextcloudService {
     snapshotNote,
     sightings,
     dismissed: async (key, label, by) => (await import('../auto-connect')).rememberDismissed('nextcloud', key, label, by),
+    alert: async (title, lines) => publish({ type: 'vault.nextcloud.app_password_left', severity: 'warning', title, lines, link: '/plugins/nextcloud', linkLabel: 'Open Nextcloud', where: 'Nextcloud page' }),
     ...(prisma ? { jobs: prismaJobStore(prisma) } : {}),
   })
 }

@@ -7,6 +7,7 @@
 //  closed), the shared service scan.
 // =============================================================================
 
+import { lookup } from 'node:dns/promises'
 import { wizardStore } from '../catalogue-store'
 import { auditOrThrow } from '../audit'
 import { isUnlocked, cachedSecrets, onUnlock } from '../vault/state'
@@ -53,6 +54,7 @@ function adapters(): AutoConnectAdapter[] {
     manifest: (id: string) => manifests?.get(id),
     settings: (id: string) => getSettings(id),
     save: (m: any, values: Record<string, string>) => saveSettings(m, values),
+    resolve: async (host: string) => (await lookup(host, { family: 4 }).catch(() => null))?.address ?? null,
   }
   return [
     { plugin: 'homepage', reconcile: async ctx => (await lazy.homepage()).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.homepage()).autoPick(key, choice, ctx) },

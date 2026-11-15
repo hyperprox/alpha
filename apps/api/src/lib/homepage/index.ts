@@ -19,6 +19,7 @@ import { sharedServiceScan } from '../service-scan'
 import { configAddresses, liveAddresses } from '../wizard-placement'
 import { isProbeAddress } from '@hyperprox/hardware/service-probes'
 import { listSites } from '../sites'
+import { installStillOwns } from '../auto-connect/core'
 import { buildInventory, type InventorySources, type RawPlugin } from './inventory'
 import { HomepageService, type HomepageDeps, type HomepageInstance, type RecordStore } from './service'
 import type { Inventory } from './types'
@@ -131,8 +132,10 @@ async function inventory(refresh: boolean): Promise<Inventory> {
 /** Where Homepage was seen: Catalogue installs, the shared scan, the install marker, a proxy host's fingerprint. */
 async function sightings(): Promise<Array<{ vmid: number; url: string | null; via: 'catalogue' | 'scan' | 'marker' | 'proxy' }>> {
   const out: Array<{ vmid: number; url: string | null; via: 'catalogue' | 'scan' | 'marker' | 'proxy' }> = []
+  const all = ((await homePve().getClusterResources('vm').catch(() => [])) ?? []) as any[]
   const jobs = (await wizardStore().list('job').catch(() => [])).map(r => r.data).filter((j: any) => j?.recipeId === 'homepage' && j.status === 'completed' && j.vmid)
-  for (const j of jobs) out.push({ vmid: Number(j.vmid), url: j.url ?? null, via: 'catalogue' })
+  // A VMID reused by another guest since the install is not this Homepage any more.
+  for (const j of jobs) if (installStillOwns(j, all.find(g => Number(g.vmid) === Number(j.vmid)))) out.push({ vmid: Number(j.vmid), url: j.url ?? null, via: 'catalogue' })
   for (const f of (await sharedServiceScan().result(false).catch(() => ({ findings: [] as any[] }))).findings) {
     if (f.key === 'homepage' && f.guest) out.push({ vmid: Number(f.guest.vmid), url: f.address, via: 'scan' })
   }

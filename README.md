@@ -2048,7 +2048,9 @@ press:
 - **A key needed** (an Arr app's API key, a Plex token, Tautulli's key): HyperProx looks in its vault for
   a login whose saved web address is that same server. With exactly one, it uses that key, for that
   server only. With none, the plug-in waits for you. With two or more, the plug-ins page asks you to pick
-  one. A web password is never used as an API key.
+  one. A web password is never used as an API key: the vault item must say it is a key (a field named like
+  "API key" or "token", or an item named that way). A key you saved without its address is left alone.
+  Only services found on a guest are connected, and one service seen by name and by IP counts once.
 - **Never** a guest tagged `hyperprox-ignore`, a guest on Remote access's "never look inside" list, or an
   address in a subnet listed in `HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS` (CIDRs separated by commas or
   semicolons; one entry that cannot be read stops auto-connect altogether); never while either list cannot be

@@ -3,7 +3,7 @@
 // (homepage-service.test.ts, nextcloud.test.ts). Nothing real is contacted.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Reconciler, MemoryStateStore, SYSTEM_ACTOR, inSubnets, envExcludedSubnets, exclusionOf, type AdapterContext, type AutoConnectAdapter, type Outcome } from '../src/lib/auto-connect/core'
+import { Reconciler, MemoryStateStore, SYSTEM_ACTOR, inSubnets, envExcludedSubnets, exclusionOf, installStillOwns, type AdapterContext, type AutoConnectAdapter, type Outcome } from '../src/lib/auto-connect/core'
 import { matchVault, pickVault, uriMatches, credentialOf } from '../src/lib/auto-connect/vault-match'
 import { settingsAdapter, type SettingsAdapterDeps, type ScanSighting } from '../src/lib/auto-connect/settings-adapter'
 import { requiredRole, needsReconfirm } from '../src/lib/roles'
@@ -181,7 +181,9 @@ test('vault: exactly one item for the host is used; two are a pick; another host
   // A person's web password is never taken for an API key or a token; a password shaped like the key is.
   assert.equal(credentialOf(item('x', 'x', [], { username: 'me', password: 'correct horse battery' }), 'api_key'), null)
   assert.equal(credentialOf(item('x', 'x', [], { username: 'me', password: 'correct horse battery' }), 'token'), null)
-  assert.equal(credentialOf(item('x', 'x', [], { password: '0123456789abcdef0123456789abcdef' }), 'api_key')?.secret, '0123456789abcdef0123456789abcdef')
+  assert.equal(credentialOf(item('x', 'Sonarr', [], { password: '0123456789abcdef0123456789abcdef' }), 'api_key'), null, 'a key-shaped password alone is not enough')
+  assert.equal(credentialOf(item('x', 'Sonarr API key', [], { password: '0123456789abcdef0123456789abcdef' }), 'api_key')?.secret, '0123456789abcdef0123456789abcdef', 'an item that says it is a key')
+  assert.equal(credentialOf(item('x', 'Plex token', [], { password: 'tok' }), 'token')?.secret, 'tok')
 })
 
 // ── the address-setting plug-ins ─────────────────────────────────────────────
@@ -415,4 +417,33 @@ test('B1: a pick during a slow pass is kept, and only its own choice is resolved
   assert.ok(store.s.connected['slow/amb-1'], 'the pass\'s write does not undo the pick')
   assert.equal(store.s.pending['slow/amb-1'], undefined, 'a stale "ambiguous" from the pass does not re-open a picked choice')
   assert.ok(store.s.pending['slow/amb-2'])
+})
+
+test('minor 6: a key saved without its address is never overwritten or paired by itself', async () => {
+  const s = settingsDeps([{ key: 'sonarr', address: 'http://10.0.0.12:8989', guest: g(102, 'arr') }], { arrstack: { sonarr_key: 'mine' } })
+  const rc = reconciler([settingsAdapter('arrstack', s.d)], { items: [item('i1', 'Sonarr', ['http://10.0.0.12:8989'], { api_key: SECRET })] })
+  const res = await rc.r.run('timer')
+  assert.equal(res.outcomes.arrstack[0].did, 'skipped')
+  assert.equal(s.saves.length, 0)
+  assert.equal(s.stored.arrstack.sonarr_key, 'mine')
+})
+
+test('minor 7 and 10: one Unmanic worker written by name and by IP counts once; a finding with no guest is never connected', async () => {
+  const s = settingsDeps([
+    { key: 'unmanic', address: 'http://10.0.0.21:8888', guest: g(121, 'w1') },
+    { key: 'unmanic', address: 'http://10.0.0.22:8888', guest: null },
+  ], { unmanic: { url: 'http://worker-one.lan:8888' } })
+  s.d.resolve = async h => (h === 'worker-one.lan' ? '10.0.0.21' : null)
+  const { r } = reconciler([settingsAdapter('unmanic', s.d)])
+  const res = await r.run('timer')
+  assert.equal(res.outcomes.unmanic[0].did, 'present', 'the stored name resolves to the found IP')
+  assert.equal(s.saves.length, 0, 'not added again, and the node-only finding is ignored')
+  assert.equal(res.outcomes.unmanic.length, 1)
+})
+
+test('minor 9: a finished install counts only while its VMID still holds the guest it made', () => {
+  assert.ok(installStillOwns({ hostname: 'cloud' }, { name: 'Cloud' }))
+  assert.ok(!installStillOwns({ hostname: 'cloud' }, { name: 'gameserver' }), 'the VMID was reused')
+  assert.ok(!installStillOwns({ hostname: 'cloud' }, undefined), 'the guest is gone')
+  assert.ok(installStillOwns({}, { name: 'anything' }), 'no recorded hostname: the VMID alone')
 })

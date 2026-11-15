@@ -98,6 +98,8 @@ function parseIndex(raw: string | null): NcMeta[] {
         at: String(ac.at ?? '').slice(0, 40), evidence: (Array.isArray(ac.evidence) ? ac.evidence : []).map(String).map((e: string) => e.slice(0, 120)).slice(0, 10), webLogin: typeof ac.webLogin === 'string' ? ac.webLogin.slice(0, 200) : null,
         ...(typeof ac.webLoginTriedAt === 'string' && !Number.isNaN(Date.parse(ac.webLoginTriedAt)) ? { webLoginTriedAt: ac.webLoginTriedAt.slice(0, 40) } : {}),
         ...(Number.isInteger(ac.webLoginFailures) && ac.webLoginFailures >= 0 ? { webLoginFailures: Math.min(ac.webLoginFailures, 64) } : {}),
+        ...(typeof ac.webLoginStopped === 'string' ? { webLoginStopped: ac.webLoginStopped.slice(0, 300) } : {}),
+        ...(Array.isArray(ac.orphans) ? { orphans: ac.orphans.filter((o: any) => o && typeof o.user === 'string').slice(0, 20).map((o: any) => ({ user: String(o.user).slice(0, 64), id: Number.isInteger(o.id) ? o.id : null, at: String(o.at ?? '').slice(0, 40) })) } : {}),
       } : null
       return { id: x.id, name: String(x.name).slice(0, 40), guest, deployment: (x.deployment ?? null) as Deployment | null, snoozed, addedAt: typeof x.addedAt === 'string' ? x.addedAt.slice(0, 40) : '', ...(autoConnected ? { autoConnected } : {}) }
     }).filter(m => m.guest.vmid > 0)

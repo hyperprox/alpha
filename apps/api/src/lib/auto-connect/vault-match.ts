@@ -74,10 +74,10 @@ export function credentialOf(item: SecretItem, kind: CredentialKind): { secret: 
   if (kind === 'login') return username && f.password ? { secret: f.password, username } : null
   const named = field(kind === 'api_key' ? /^(x-)?api[ _-]?key$|^apikey$/i : /^(x-plex-)?token$|^api[ _-]?token$/i)
   if (named) return { secret: f[named], username }
-  // A login's password is taken for a key only when it has the key's shape (the Arr apps' and Tautulli's 32 hex
-  // characters, Plex's 20-character token): a person's web password is never sent as an API key.
-  const shaped = kind === 'api_key' ? /^[a-f0-9]{32}$/i : /^[A-Za-z0-9_-]{20}$/
-  return f.password && shaped.test(f.password) ? { secret: f.password, username } : null
+  // A login's password is taken for a key only when the item itself says it is one ("Sonarr API key", "Plex token"):
+  // a person's web password is never sent as an API key, whatever it looks like.
+  const label = kind === 'api_key' ? /\bapi[ _-]?key\b|\bapikey\b/i : /\btoken\b/i
+  return f.password && label.test(String(item.name ?? '')) ? { secret: f.password, username } : null
 }
 
 /** The vault items for this address and kind: none, exactly one (with the credential), or several to pick from. */

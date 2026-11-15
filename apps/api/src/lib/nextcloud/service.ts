@@ -79,6 +79,8 @@ export interface ServiceDeps {
   sightings?: () => Promise<Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null; ip?: string | null }>>
   /** A person removed this instance: auto-connect must never add its guest back by itself. */
   dismissed?: (key: string, label: string, by: string) => Promise<void>
+  /** Tell the admins (notifications): an app password HyperProx made could not be revoked, and the like. */
+  alert?: (title: string, lines: string[]) => Promise<void>
 }
 
 const WEB_LOGIN_RETRY_MS = 6 * 60 * 60_000
@@ -317,6 +319,7 @@ export class NextcloudService {
       try { await this.revokeMade(m, login, actor.email) } catch (e: any) {
         if (!force) throw new NcRefusal('revoke_failed', `HyperProx could not revoke the app password it made for ${login.user} (${String(e?.message ?? e).slice(0, 160)}). Try again when the guest answers, or remove anyway and delete the "HyperProx" app password under that user's Security settings.`, 409)
         left = true
+        await this.orphanAlert(m, login.user ?? '?', login.tokenId, String(e?.message ?? e), actor.email)
       }
     }
     await this.d.dismissed?.(machineKey(m.guest), m.name, actor.email)
@@ -353,6 +356,7 @@ export class NextcloudService {
   /** When the background pass may try the web login again: never before the persisted time (it survives a restart). */
   private webLoginDue(m: NcMeta): boolean {
     const a = m.autoConnected
+    if (a?.webLoginStopped) return false
     if (!a?.webLoginTriedAt) return true
     const f = a.webLoginFailures ?? 0
     // Nothing to use (no vault login, several admins): every 6 hours. A login that failed its test: 1 h, 2 h, 4 h... at most once a day.
@@ -529,14 +533,14 @@ export class NextcloudService {
       let ok: string | null = null, last: any = null
       for (const t of targets) { try { await this.testLogin(t, user, appPassword); ok = t; break } catch (e) { last = e } }
       if (!ok) {
-        await this.revokeMade(m, { user, tokenId, made: true }, SYSTEM_ACTOR).catch(() => {})
+        await this.revokeOrRecord(m, user, tokenId)
         return { key, label: m.name, did: 'failed', message: String(last?.message ?? 'the web login did not work').slice(0, 200) }
       }
       url = ok
       how = hit ? `an app password HyperProx made for ${user} (the user of the vault item "${hit.item.name}")` : admins.length === 1 ? `an app password HyperProx made for ${user}, the admin the Catalogue made` : `an app password HyperProx made for ${user}, the only admin`
     }
     try { await this.d.store.setLogin(m.id, { url, user, appPassword, tokenId, made }) } catch (e) {
-      if (made) await this.revokeMade(m, { user, tokenId, made: true }, SYSTEM_ACTOR).catch(() => {})
+      if (made) await this.revokeOrRecord(m, user, tokenId)
       throw e
     }
     const cur = await this.d.store.get(m.id)
@@ -556,8 +560,44 @@ export class NextcloudService {
     const appPassword = APP_PASSWORD_OUT.exec(r.output)?.[1] ?? null
     if (r.code !== 0 || !appPassword) throw new NcRefusal('app_password_failed', 'Nextcloud did not make the app password (is that user an admin?).', 502)
     const tokenId = await this.tokenIdFor(m.guest, dep.occ, user, this.now(), known.length ? known : [-1])
-    if (!tokenId) throw new NcRefusal('app_password_failed', 'Nextcloud made the app password, but HyperProx could not tell which token it is. Delete the "HyperProx" app password under that user\'s Security settings.', 502)
+    if (!tokenId) {
+      // Which token it is cannot be told. Take back every new token named HyperProx for this user (all made by
+      // HyperProx since the list above); if that cannot be done, stop trying for good and tell a person.
+      const b2 = batch(dep.occ, [{ key: 't', id: 'auth-tokens', params: { uid: user } }])
+      const t1 = b2.parse((await this.run(m.guest, b2.script)).output).t
+      const fresh = (t1 ? parseAuthTokens(t1.output) : []).filter(k => k.id > 0 && !known.includes(k.id) && k.name === 'HyperProx')
+      let undone = fresh.length > 0
+      for (const k of fresh) { try { await this.revokeMade(m, { user, tokenId: k.id, made: true }, SYSTEM_ACTOR) } catch { undone = false } }
+      const why = undone ? 'Nextcloud made an app password HyperProx could not identify; it was revoked by name.' : 'Nextcloud made an app password HyperProx could not identify or revoke.'
+      await this.stopWebLogin(m, why)
+      if (!undone) await this.orphanAlert(m, user, null, why, SYSTEM_ACTOR)
+      throw new NcRefusal('app_password_failed', `${why} HyperProx stops making web logins for ${m.name} until you add one in Settings.`, 502)
+    }
     return { appPassword, tokenId }
+  }
+
+  /** Revoke an app password HyperProx just made; when that fails, record it as left over and tell a person. */
+  private async revokeOrRecord(m: NcMeta, user: string, tokenId: number | null): Promise<void> {
+    try { await this.revokeMade(m, { user, tokenId, made: true }, SYSTEM_ACTOR) }
+    catch (e: any) { await this.orphanAlert(m, user, tokenId, String(e?.message ?? e), SYSTEM_ACTOR) }
+  }
+
+  /** Remember an app password that is left in Nextcloud, audit it, and tell the admins. Never throws. */
+  private async orphanAlert(m: NcMeta, user: string, id: number | null, why: string, by: string): Promise<void> {
+    try {
+      const cur = (await this.d.store.get(m.id))?.autoConnected
+      if (cur) await this.d.store.setAutoConnected(m.id, { ...cur, orphans: [...(cur.orphans ?? []), { user, id, at: new Date(this.now()).toISOString() }].slice(-20) })
+    } catch { /* the instance may be gone (a forced remove): the audit row and the alert still say it */ }
+    await this.d.audit('nextcloud.app_password.left', `nextcloud:${m.id}`, { by, user, credentialId: id, why: why.slice(0, 200) }).catch(() => {})
+    await this.d.alert?.(`An app password HyperProx made in ${m.name} is still there`, [
+      `HyperProx could not revoke the app password named HyperProx for ${user}${id ? ` (token ${id})` : ''}: ${why.slice(0, 160)}`,
+      `Delete it under that user's Security settings in Nextcloud.`,
+    ]).catch(() => {})
+  }
+
+  private async stopWebLogin(m: NcMeta, why: string): Promise<void> {
+    const cur = (await this.d.store.get(m.id))?.autoConnected
+    if (cur) await this.d.store.setAutoConnected(m.id, { ...cur, webLoginStopped: why.slice(0, 300) })
   }
 
   /** A person picked a container (two candidates in one guest) or a vault item (two logins for one address). */
