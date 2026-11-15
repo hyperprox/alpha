@@ -58,32 +58,8 @@ Infrastructure (see [Dashboard](#dashboard)); the pictures will be retaken.
 
 ## Try the demo
 
-The demo runs the real frontend against a stand-in API that answers every page from invented data: a
-three-node cluster called `homelab`, a remote "Family Server", and the plug-ins with rooms, devices,
-streams and downloads. The vault shows as unlocked, and anything that would change, reveal, send or
-open something (a save, a power action, a secret, Send files, a terminal) is refused by the API with
-"This is a demo".
-
-```bash
-git clone https://github.com/hyperprox/alpha.git hyperprox && cd hyperprox
-pnpm install
-pnpm demo        # first run builds the frontend, then open http://127.0.0.1:3100
-```
-
-Sign in with anything. The demo is a separate entrypoint (`apps/api/src/demo`): it never loads a
-`.env`, a database, the vault or a credential store, it refuses to start if the environment holds a
-real install's settings or if it would take the real ports (3000, 3002), and it keeps its own data
-directory. Every page shows a **DEMO** badge.
-
-To retake the screenshots, start the demo, then copy `scripts/screenshots.mjs` into a folder where
-Playwright is installed (`npm i playwright && npx playwright install chromium`) and run it there. It
-refuses any address that does not answer as the demo. By default it takes only the set kept in
-`docs/screenshots`; `--all` takes every main page at desktop and phone size, dark and light, for review.
-
-```bash
-node screenshots.mjs http://127.0.0.1:3100 /path/to/hyperprox/docs/screenshots
-node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
-```
+**[Open the live demo](https://demo.hyperprox.dev)**: the real interface on invented data, in your browser. Nothing you do there changes anything.
+To run it locally, see [docs/demo.md](docs/demo.md).
 
 ## Highlights
 

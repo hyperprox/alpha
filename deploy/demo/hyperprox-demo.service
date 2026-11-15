@@ -1,0 +1,32 @@
+# HyperProx public demo: the one public address. Answers the demo API itself and passes page requests
+# to hyperprox-demo-web.service on loopback. Settings for this machine go in /etc/hyperprox-demo.env:
+#   HYPERPROX_DEMO_LISTEN=<this machine's address>:8080
+#   HYPERPROX_DEMO_TRUSTED_PROXIES=<your reverse proxy's address>
+[Unit]
+Description=HyperProx public demo - API and front
+After=network-online.target hyperprox-demo-web.service
+Wants=network-online.target hyperprox-demo-web.service
+
+[Service]
+Type=simple
+User=hpxdemo
+Group=hpxdemo
+WorkingDirectory=/opt/hyperprox-demo/app/apps/api
+Environment=NODE_ENV=production HYPERPROX_DEMO=1 HYPERPROX_DEMO_PUBLIC=1 HYPERPROX_DEMO_WEB_PORT=3100 HYPERPROX_DEMO_DATA=/var/lib/hyperprox-demo
+EnvironmentFile=/etc/hyperprox-demo.env
+StateDirectory=hyperprox-demo
+StateDirectoryMode=0700
+ExecStart=/usr/bin/node dist-demo/demo/main.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

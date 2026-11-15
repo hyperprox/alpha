@@ -1,0 +1,7 @@
+# Restarts both demo services: the rate limiter's counters and any per-visitor state start empty again.
+[Unit]
+Description=HyperProx public demo - nightly reset
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart hyperprox-demo-web.service hyperprox-demo.service

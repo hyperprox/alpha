@@ -1,0 +1,10 @@
+[Unit]
+Description=HyperProx public demo - reset every night
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
