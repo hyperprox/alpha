@@ -116,7 +116,7 @@ export async function buildDemoServer(opts: DemoServerOptions = {}): Promise<Fas
   const app = Fastify({
     logger: opts.logger ?? false,
     bodyLimit: limits.bodyBytes,
-    maxParamLength: 200,
+    routerOptions: { maxParamLength: 200 },
     // Slow or idle visitors do not get to hold a connection open.
     connectionTimeout: 30_000,
     keepAliveTimeout: 5_000,

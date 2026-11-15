@@ -35,6 +35,10 @@ know or do before they install. Newest entry at the top.
   - Technical: a vault login matches only the same host, scheme and port; a URI without a port means its scheme's default port. State changes are serialised and merged key by key, so a disconnect, pick or connect-again made during a pass is never lost.
 - **The Plug-ins page shows "connecting automatically…" or the pick waiting** instead of "needs a device added on its page" for a plug-in HyperProx is connecting by itself.
 
+### Fixed
+- **Security fixes in the web server the HyperProx API runs on.** It moves to a new major version that closes several published weaknesses, among them one where an oddly written address could slip past the sign-in checks on some routes, and others that could let a request change its own body, skip input checks or slow the server down. Nothing changes in how HyperProx looks or works.
+  - Technical: Fastify 4.29.1 → 5.12.8 (GHSA-p68q-wchp-6fh7, GHSA-667r-xxjv-c9mm and the other 4.x advisories), with @fastify/cors 11.4.2, @fastify/helmet 13.2.0, @fastify/jwt 10.2.7, @fastify/rate-limit 11.2.2, @fastify/websocket 11.3.7 and fastify-plugin 6.0.1, all pinned exactly. @fastify/jwt 10 brings fast-jwt 6.3.6 itself, so the `fast-jwt` override is gone. Router options now sit under `routerOptions`; the `;` delimiter stays off and paths with `;` are still refused by the gate. Helmet 8's defaults apply (HSTS `max-age` one year instead of 180 days). No route used shorthand schemas, `reply.redirect`, `request.connection` or `getResponseTime`, and the WebSocket handlers already took the socket first.
+
 ## 2026-11-15 — Load balancing, choose exactly what to update, Nextcloud and Homepage plug-ins
 
 ### New
