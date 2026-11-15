@@ -5,7 +5,8 @@ import assert from 'node:assert/strict'
 import net from 'node:net'
 import { FakeBroker } from './fakes/fake-broker'
 import { buildTestApp, resetLock } from './fakes/app'
-import { VaultAuthError, CliVaultBroker, authCodeFromMessage, isVaultConnectionError } from '../src/lib/vault/broker'
+import { setBroker } from '../src/lib/vault/broker'
+import { VaultAuthError, CliVaultBroker, authCodeFromMessage, isVaultConnectionError, cliLoginFailure } from '../src/lib/vault/broker'
 import { signInLimiter } from '../src/lib/auth-limits'
 import { VaultHttpError } from '../src/lib/vault/bw-crypto'
 import { VAULT_UNREACHABLE, authInputProblem } from '../src/routes/auth'
@@ -96,4 +97,39 @@ test('text that merely contains a connection word is never "vault unreachable"',
   assert.equal(isVaultConnectionError(new Error('ECONNREFUSED@example.com is not a member')), false)
   assert.equal(isVaultConnectionError(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8222'), { code: 'ECONNREFUSED' })), true)
   assert.equal(isVaultConnectionError(new Error('socket hang up')), true)
+})
+
+test('CLI login: the vault\'s own refusal wins even when /alive is slow or down, and is counted', async () => {
+  const never = () => new Promise<boolean>(() => undefined)        // a box so loaded /alive never answers
+  const down = async () => false
+  const e1 = await cliLoginFailure('Username or password is incorrect. Try again.', '123456', never)
+  assert.equal(e1.code, 'bad_credentials')
+  const e2 = await cliLoginFailure('Invalid TOTP code! Server time: ...', '123456', down)
+  assert.equal(e2.code, 'totp_invalid')
+  // Only unrecognised text asks /alive.
+  assert.equal((await cliLoginFailure('Something odd happened.', '123456', down)).code, 'vault_unreachable')
+  assert.equal((await cliLoginFailure('Something odd happened.', '123456', async () => true)).code, 'totp_invalid')
+  assert.equal((await cliLoginFailure('Something odd happened.', '', async () => { throw new Error('x') })).code, 'vault_unreachable')
+
+  // Through the route: that refusal counts towards the per-account limit.
+  class CliRefuses extends FakeBroker {
+    async signIn(): Promise<never> { throw await cliLoginFailure('Username or password is incorrect. Try again.', '123456', never) }
+  }
+  const b = new CliRefuses()
+  b.addUser('cli@example.com', PW, 'owner')
+  const app = await buildTestApp(b)
+  try {
+    signInLimiter.reset()
+    for (let i = 0; i < signInLimiter.max; i++) {
+      const r = await app.inject({ method: 'POST', url: '/api/auth/sign-in', payload: { email: 'cli@example.com', password: 'wrong password!!', code: '123456' }, remoteAddress: `192.0.2.${i + 1}` })
+      assert.equal(r.statusCode, 401)
+      assert.equal(r.json().code, 'bad_credentials')
+    }
+    assert.ok(signInLimiter.retryAfter('cli@example.com') > 0, 'counted')
+    const blocked = await app.inject({ method: 'POST', url: '/api/auth/sign-in', payload: { email: 'cli@example.com', password: 'x', code: '123456' }, remoteAddress: '192.0.2.250' })
+    assert.equal(blocked.statusCode, 429)
+  } finally {
+    await app.close()
+    setBroker(broker)
+  }
 })

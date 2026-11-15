@@ -200,6 +200,19 @@ export function isVaultConnectionError(e: unknown, depth = 0): boolean {
   return x.cause !== undefined && x.cause !== e && isVaultConnectionError(x.cause, depth + 1)
 }
 
+/**
+ * Why a CLI login failed. The vault's own verdict comes first: a refusal it states (wrong password, bad code, too
+ * many tries) is that refusal, and is counted, however slow the box is. Only when the text says none of those is the
+ * vault asked whether it is up (/alive): down is vault_unreachable (not counted), up is a code problem. The text is
+ * never searched for connection words (it can echo the email).
+ */
+export async function cliLoginFailure(msg: string, totp: string, alive: () => Promise<boolean>): Promise<VaultAuthError> {
+  const code = authCodeFromMessage(msg)
+  if (code) return new VaultAuthError(code, msg)
+  if (!(await alive().catch(() => false))) return new VaultAuthError('vault_unreachable', 'the vault did not answer its health check after a failed CLI login')
+  return new VaultAuthError(totp ? 'totp_invalid' : 'totp_required', msg)
+}
+
 /** Maps a CLI / server message to a contract error code; null if it is not an auth failure. */
 export function authCodeFromMessage(msg: string): VaultAuthCode | null {
   const m = msg.toLowerCase()
@@ -494,11 +507,7 @@ export class CliVaultBroker implements VaultBroker {
     const login = await runBw(args, { dir, password: masterPassword })
     const sessionKey = login.stdout.trim()
     if (login.code !== 0 || !sessionKey) {
-      const msg = bwErrorMessage(login)
-      // The CLI says why only in text, which can echo the email. So the vault being down is decided by asking it
-      // (/alive), not by reading that text; only then is the text matched against the vault's own refusals.
-      if (!(await this.api().alive())) return fail(new VaultAuthError('vault_unreachable', 'the vault did not answer its health check after a failed CLI login'))
-      return fail(new VaultAuthError(authCodeFromMessage(msg) ?? (totp ? 'totp_invalid' : 'totp_required'), msg))
+      return fail(await cliLoginFailure(bwErrorMessage(login), totp, () => this.api().alive()))
     }
 
     // Every `bw` call is a new CLI process (~3 s to start), so the user id comes from the CLI's own state file
