@@ -25,6 +25,7 @@
 
 import type { SecretItem } from '../vault/broker'
 import type { VaultChoice } from './vault-match'
+import { appLog } from '../log-once'
 
 export const SYSTEM_ACTOR = 'system (auto-connect)'
 export const AUTO_TICK_MS = 5 * 60_000
@@ -95,7 +96,7 @@ export interface ReconcilerDeps {
   now?(): number
   log?(m: string): void
   /** The same, with the error itself so its stack is logged. Optional; `log` is used alone without it. */
-  logError?(m: string, err: unknown): void
+  logError?(m: string, err: unknown, level?: 'warn' | 'error'): void
 }
 
 const sid = (plugin: string, key: string) => `${plugin}/${key}`
@@ -151,11 +152,13 @@ export class Reconciler {
 
   /** One line in the log for a problem; the same problem again and again (the timer) is logged once until it changes. */
   private lastReported = ''
-  private report(m: string, e: unknown): void {
+  private report(m: string, e: unknown, level: 'warn' | 'error' = 'warn'): void {
     const key = `${m}|${(e as any)?.message ?? e}`
     if (key === this.lastReported) return
     this.lastReported = key
-    if (this.d.logError) this.d.logError(m, e); else this.d.log?.(`${m}: ${(e as any)?.message ?? e}`)
+    if (this.d.logError) this.d.logError(m, e, level)
+    else if (this.d.log) this.d.log(`${m}: ${(e as any)?.message ?? e}`)
+    else appLog[level]({ err: e }, m)
   }
 
   /** One pass over every plug-in. One at a time; a second call while one runs gets the same answer. */
@@ -181,7 +184,7 @@ export class Reconciler {
     let subnets: string[]
     try { subnets = this.d.excludedSubnets() } catch (e: any) {
       // Loud: a list that cannot be read could let an excluded subnet through, so nothing runs until it is fixed.
-      this.report(`[auto-connect] REFUSING TO RUN: excluded subnets unreadable`, e)
+      this.report(`[auto-connect] REFUSING TO RUN: excluded subnets unreadable`, e, 'error')
       return { waited: 'subnets', outcomes: {} }
     }
     let excluded: string[]

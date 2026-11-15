@@ -84,7 +84,7 @@ export function autoConnect(): Reconciler {
     vaultItems: () => cachedSecrets(),
     audit: (a, r, d) => auditOrThrow(a, r, d),
     log: m => appLog.warn(m),
-    logError: (m, err) => appLog.warn({ err }, m),
+    logError: (m, err, level = 'warn') => appLog[level]({ err }, m),
   })
   return reconciler
 }
