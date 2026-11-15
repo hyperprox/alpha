@@ -38,7 +38,8 @@ const CANNOT_DECRYPT = '[error: cannot decrypt]'
 
 /** The fast path cannot be used; nothing has been sent to the server yet, so the CLI can try. */
 export class FastPathUnavailable extends Error {
-  constructor(message: string) { super(message); this.name = 'FastPathUnavailable' }
+  /** `cause`: the underlying error, so a refused or dropped connection can be told apart by its code. */
+  constructor(message: string, cause?: unknown) { super(message, cause !== undefined ? { cause } : undefined); this.name = 'FastPathUnavailable' }
 }
 
 /**
@@ -46,7 +47,7 @@ export class FastPathUnavailable extends Error {
  * or item this code cannot read). A TOTP code is spent at this point.
  */
 export class FastPathFailed extends Error {
-  constructor(message: string) { super(message); this.name = 'FastPathFailed' }
+  constructor(message: string, cause?: unknown) { super(message, cause !== undefined ? { cause } : undefined); this.name = 'FastPathFailed' }
 }
 
 /** The account signed in but is not an enabled member of the HyperProx organization. */
@@ -129,7 +130,7 @@ export class NativeVaultSession {
   static async open(api: VaultwardenApi, email: string, password: string, totp: string): Promise<NativeVaultSession> {
     let kdf: KdfConfig
     try { kdf = await api.prelogin(email) }
-    catch (e) { throw new FastPathUnavailable(`prelogin failed: ${(e as Error).message}`) }
+    catch (e) { throw new FastPathUnavailable(`prelogin failed: ${(e as Error).message}`, e) }
     if (kdf.kdf !== KDF_PBKDF2) throw new FastPathUnavailable(`account uses KDF type ${kdf.kdf} (Argon2id); only PBKDF2 is built in`)
 
     let masterKey: Buffer
@@ -146,7 +147,7 @@ export class NativeVaultSession {
       } catch (e) {
         // A 4xx is the vault's verdict on the credentials; anything else (5xx, network) is not, and the CLI may fare better.
         if (e instanceof VaultHttpError && e.status >= 400 && e.status < 500) throw e
-        throw new FastPathUnavailable(`identity request failed: ${(e as Error).message}`)
+        throw new FastPathUnavailable(`identity request failed: ${(e as Error).message}`, e)
       }
     } catch (e) {
       masterKey.fill(0)
@@ -190,7 +191,7 @@ export class NativeVaultSession {
     } catch (e) {
       masterKey.fill(0); zero(userKey); zero(orgKey); localHash.fill(0)
       if (e instanceof NotMemberError) throw e
-      throw new FastPathFailed((e as Error).message)
+      throw new FastPathFailed((e as Error).message, e)
     } finally {
       privateDer?.fill(0)
     }

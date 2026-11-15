@@ -27,7 +27,7 @@ import {
 } from './bw-crypto'
 import { bwErrorMessage, encodeJson, runBw } from './bw-cli'
 import { fastSignInEnabled, sessionRoot, vaultAdminToken, vaultCaCert, vaultPublicUrl, vaultUrl } from './config'
-import { FastPathFailed, FastPathUnavailable, NativeSessionExpired, NativeVaultSession, NotMemberError, type DecryptedItem, type NativeSessionSnapshot } from './native'
+import { FastPathFailed, NativeSessionExpired, NativeVaultSession, NotMemberError, type DecryptedItem, type NativeSessionSnapshot } from './native'
 import { snapshotChanged } from './snapshot'
 import { GROUP_OPERATORS, GROUP_VIEWERS } from './bw-crypto'
 import { VaultOwnerOnlyError, isOwnerOnlyRefusal, keyFingerprint, memberStatus, memberTypeFor, type GrantableRole, type VaultMember } from './members'
@@ -415,8 +415,8 @@ export class CliVaultBroker implements VaultBroker {
       } catch (err) {
         if (err instanceof VaultAuthError) throw err
         // The vault is down: the CLI would fail the same way, only slower, and its message would read like a bad code.
-        // Decided by the error's class and code, or, for the fast path's own wrapper, by asking the vault if it is up.
-        if (isVaultConnectionError(err) || ((err instanceof FastPathUnavailable || err instanceof FastPathFailed) && !(await this.api().alive()))) {
+        // Decided by the error's class and code (the fast path's wrappers keep the socket error as their cause).
+        if (isVaultConnectionError(err)) {
           if (err instanceof FastPathFailed && totp) this.cliOnly.add(email)
           log.warn(`[vault] the vault did not answer the sign-in (${(err as Error).message})`)
           throw new VaultAuthError('vault_unreachable', (err as Error).message)
