@@ -190,7 +190,8 @@ export function buildTargets(inv: UpdatesInventory, policy: Policy, ctx: TargetC
     const refusal = nodeRefusal(n)
     const guarded = nodeGuarded(policy, n)
     const own = ctx.remote ? n.pending : n.pending.filter(p => !isCephPackage(p.name))
-    const verb = guarded ? 'upgrade' : n.policy.upgrade
+    // Any hold, not only a kernel one, means apt-get upgrade from a chosen run (the runner decides again).
+    const verb = guarded || n.held?.length ? 'upgrade' : n.policy.upgrade
     const notes: string[] = []
     if (guarded) notes.push(`Keeps its kernel held or pinned: it gets apt-get upgrade only, and no kernel, header or kernel metapackage is ever updated here.`)
     if (n.held?.length) notes.push(`Held, never offered: ${n.held.join(', ')}`)
@@ -559,7 +560,8 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
       if (why) refuse([whole.id], why)
       else {
         // A node that keeps its kernel held or pinned never gets dist-upgrade from a chosen update (the runner decides again).
-        const verb = guarded ? 'upgrade' : n.policy.upgrade
+        // Any hold, not only a kernel one, means apt-get upgrade from a chosen run (the runner decides again).
+        const verb = guarded || n.held?.length ? 'upgrade' : n.policy.upgrade
         const seqs = [add(n.node, 'node-upgrade', `apt-get ${verb} (${plural(own.length, 'package')})`)]
         // No kernel is installed on a node that holds or pins its kernel, so none is removed there either.
         if (n.kernelPending && !guarded) seqs.push(add(n.node, 'kernel-cleanup', 'keep the running kernel, the pinned one and one fallback; apt clean'))

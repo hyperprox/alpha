@@ -1140,8 +1140,10 @@ export class UpdatesRunner {
     if (!pre.ok) return { status: 'failed', reason: `stopped before installing: ${pre.reason}` }
     const picked = effectiveUpgrade(policy, node, before)
     // A chosen node that keeps its kernel held or pinned gets apt-get upgrade, never dist-upgrade, whatever the policy.
-    const strict = chosen && (nodeGuarded(policy, { node, held: before.holds }) || Boolean(before.pinned)) && picked.verb !== 'upgrade'
-    const choice = strict ? { verb: 'upgrade' as const, note: `${node} keeps its kernel held or pinned, so a chosen update gives it apt-get upgrade, never dist-upgrade.` } : picked
+    // A chosen node with any hold at all (a DKMS module, a driver, a kernel), or a pinned kernel, gets apt-get upgrade,
+    // never dist-upgrade, whatever the policy: dist-upgrade may remove or replace what the hold protects.
+    const strict = chosen && (before.holds.length > 0 || nodeGuarded(policy, { node, held: before.holds, pinned: before.pinned })) && picked.verb !== 'upgrade'
+    const choice = strict ? { verb: 'upgrade' as const, note: `${node} holds packages or keeps its kernel pinned, so a chosen update gives it apt-get upgrade, never dist-upgrade.` } : picked
     const verb = choice.verb
     if (choice.note) log(choice.note)
     const said = choice.note ? `${choice.note}\n` : ''
@@ -1266,6 +1268,9 @@ export class UpdatesRunner {
     const first = await this.rebootSafety(jobId, node, log)
     if (first.stop) return first.stop
 
+    // The wait for viewers can be hours: the holds and pin read before it are read again right before any flag.
+    const fresh = await this.rebootGate(node, policy)
+    if ('stop' in fresh) return fresh.stop
     const bootBefore = await this.bootId(node)
     await this.setFlags(peer, node, ceph, log)
     const drained = await this.waitFor(async () =>
@@ -1283,6 +1288,12 @@ export class UpdatesRunner {
       return { ...late.stop, reason: `${late.stop.reason} (checked again after HA moved the guests; maintenance${ceph ? ' and noout' : ''} cleared)` } as Outcome
     }
 
+    // And once more right before the reboot: the drain can take minutes. The node never went down, so the flags come off.
+    const atReboot = await this.rebootGate(node, policy)
+    if ('stop' in atReboot) {
+      await this.clearFlags(peer, node, ceph, log)
+      return { ...atReboot.stop, reason: `${(atReboot.stop as { reason: string }).reason} (checked again after HA moved the guests; maintenance${ceph ? ' and noout' : ''} cleared)` } as Outcome
+    }
     log(`rebooting ${node}`)
     let sent: { code: number; output: string; timedOut: boolean } | null = null
     try { sent = await this.exec.nodeExec(node, NODE_REBOOT_COMMAND, log, 30_000) }
@@ -1346,6 +1357,9 @@ export class UpdatesRunner {
     const before = await this.runningGuestsOn(node)
     log(before.length ? `running now, will stop: ${before.map(g => `${g.vmid} (${g.name})`).join(', ')}` : 'no guests running')
     const bootBefore = await this.bootId(node)
+    // Read again right before the reboot (reading the guests and the boot id took time).
+    const fresh = await this.rebootGate(node, policy)
+    if ('stop' in fresh) return fresh.stop
     log(`rebooting ${node}`)
     let sent: { code: number; output: string; timedOut: boolean } | null = null
     try { sent = await this.exec.nodeExec(node, NODE_REBOOT_COMMAND, log, 30_000) }
@@ -1452,6 +1466,9 @@ export class UpdatesRunner {
       if (first.stop) return first.stop
       const peer = await this.peerOf(node)
       const ceph = await this.ceph(jobId)
+      // Read again right before the handoff sets anything: the wait for viewers can be hours.
+      const fresh = await this.rebootGate(node, policy)
+      if ('stop' in fresh) return fresh.stop
       await this.setStep(step, { detail: `${step.detail} · ${handoffTag(peer)}` })
       await startHandoff(this.exec, peer, jobId, step.id, selfNodeRebootScript(jobId, step.id, node, { ceph, osds: first.osds, waitMinutes: Math.round(this.timing.nodeReturnMs / 60_000) }))
       log(`handoff started on ${peer}; HyperProx may go away while ${node} reboots`)

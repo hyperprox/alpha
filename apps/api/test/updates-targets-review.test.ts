@@ -273,3 +273,38 @@ test("minor: HyperProx's own upgrade waits while its guest is being backed up", 
   assert.match(self.reason!, /^not run: a backup is running \(on other-node, guest 301\)/)
   assert.equal(fake.ran(/systemd-run/), false)
 })
+
+test('follow-up 1: the holds and pin are read again right before any flag, after the wait for viewers', async () => {
+  for (const self of [false, true]) {
+    const fake = cluster(true)
+    fake.plex = [1, 0]                       // one viewer, then none: the reboot waits once
+    const { runner, store } = setup(fake, POLICY + (self ? 'self: { vmid: 301 }\n' : ''))
+    const id = await planned(runner, store, ['node:gpu-node:reboot'])
+    assert.equal((await store.getJob(id))!.status, 'awaiting-confirm', (await store.getJob(id))!.pauseReason ?? '')
+    // The pin is lost while the reboot waits for the viewer to stop.
+    const sleep = fake.sleep.bind(fake)
+    fake.sleep = async (ms: number) => { fake.nodes[2].pinned = null; return sleep(ms) }
+    const { steps } = await confirm(runner, store, id)
+    const r = steps.find(s => s.target === 'gpu-node' && (s.action === 'node-reboot' || s.action === 'self'))!
+    assert.equal(r.status, 'failed', `${self ? 'self' : 'node'}: ${r.reason}`)
+    assert.match(r.reason!, /refusing to reboot: .*kernel pin is not set/)
+    assert.equal(fake.ran(/node-maintenance enable/), false)
+    assert.equal(fake.ran(/ceph osd set noout/), false)
+    assert.equal(fake.ran(/systemctl reboot|systemd-run/), false)
+  }
+})
+
+test('follow-up 2: a chosen node with any hold at all gets apt-get upgrade, never dist-upgrade', async () => {
+  const fake = cluster(false)
+  fake.nodes[0].holds = ['zfs-dkms']             // not a kernel package, but a hold
+  const policy = parsePolicy(POLICY)
+  const inv = (await readInventory(fake, policy, { hostname: 'x' })).inventory
+  assert.match(buildSelectedPlan(inv, policy, { selection: ['node:node-a'] }).steps[0].detail!, /^apt-get upgrade/)
+  const { runner, store } = setup(fake)
+  const id = await planned(runner, store, ['node:node-a'])
+  const { steps } = await confirm(runner, store, id)
+  assert.equal(steps.find(s => s.action === 'node-upgrade')!.status, 'ok')
+  const cmds = fake.cmds('node-a')
+  assert.ok(cmds.some(c => /apt-get -y -q .* upgrade$/m.test(c)))
+  assert.equal(cmds.some(c => /dist-upgrade|full-upgrade/.test(c)), false, cmds.filter(c => /upgrade/.test(c)).join('\n'))
+})
