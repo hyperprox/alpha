@@ -1,11 +1,15 @@
 // How a plug-in card words its state. A plug-in that was never set up is not "unreachable": nothing was
 // asked of it, so nothing failed. CSS-free so it can be tested on its own.
 
-export interface PluginReading { off?: boolean; error?: string; tone?: 'good' | 'warn' | 'bad'; headline?: string }
+export interface PluginReading { off?: boolean; error?: string; code?: string; tone?: 'good' | 'warn' | 'bad'; headline?: string }
 export type PluginKind = 'off' | 'not-set-up' | 'unreachable' | 'attention' | 'active'
 
-/** The plug-in's own answer says it has nothing to talk to yet ("Not configured yet: add a router on ..."). */
-export function isNotConfigured(error: string | undefined | null): boolean {
+/**
+ * The plug-in has nothing to talk to yet. The API says so with code not_configured (or credential_required); the
+ * text ("Not configured yet: add a router on ...") is still matched for an older API.
+ */
+export function isNotConfigured(error: string | undefined | null, code?: string | null): boolean {
+  if (code === 'not_configured' || code === 'credential_required') return true
   return !!error && /^\s*not (configured|set up)\b|\bnot configured yet\b|\bno (address|login|token|api key|server|router|nas)\b.*\b(saved|added|set up|configured)\b/i.test(error)
 }
 
@@ -13,7 +17,7 @@ export function pluginKind(p: PluginReading): PluginKind {
   // Not set up has one name everywhere: a plug-in with no settings (off) and one whose own answer says it has
   // nothing to talk to read the same, "Not set up", on the dashboard, the gallery and the detail page.
   if (p.off) return 'not-set-up'
-  if (p.error) return isNotConfigured(p.error) ? 'not-set-up' : 'unreachable'
+  if (p.error) return isNotConfigured(p.error, p.code) ? 'not-set-up' : 'unreachable'
   if (p.tone === 'bad' || p.tone === 'warn') return 'attention'
   return 'active'
 }

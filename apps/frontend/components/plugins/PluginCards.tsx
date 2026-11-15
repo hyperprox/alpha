@@ -23,6 +23,8 @@ interface Card {
   id: string; name: string; icon: string; hasDetail: boolean
   headline?: string
   tone?: 'good' | 'warn' | 'bad'
+  /** not_configured: the plug-in has nothing to talk to yet (shown as Not set up). */
+  code?: string
   rows?: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>
   error?: string
   off?: boolean
@@ -58,7 +60,7 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'car
             const data = d?.data ?? {}
             return data.ok
               ? { ...base, headline: data.headline, tone: data.tone, rows: data.rows }
-              : { ...base, error: data.error }
+              : { ...base, error: data.error, code: data.code }
           } catch (e: any) {
             return { ...base, error: failureText(e) }
           }

@@ -461,7 +461,17 @@ export async function getSettings(pluginId: string): Promise<Record<string, stri
 }
 
 export class PluginSettingsError extends Error {
+  readonly code = 'credential_required'
   constructor(message: string) { super(message); this.name = 'PluginSettingsError' }
+}
+
+/**
+ * A plug-in with nothing to talk to yet ("Not configured yet: add a router on the ASUS page."). Not a failure: the
+ * page shows "Not set up" with this sentence. Answered with code not_configured (lib/failure.ts).
+ */
+export class PluginNotConfigured extends Error {
+  readonly code = 'not_configured'
+  constructor(message: string) { super(message); this.name = 'PluginNotConfigured' }
 }
 
 /** The credential settings an endpoint's auth sends. */

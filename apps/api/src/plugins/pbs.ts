@@ -13,6 +13,7 @@
 //  through settings here.
 // =============================================================================
 
+import { PluginNotConfigured } from '../lib/plugin-host'
 import type { Plugin, PluginContext, PluginDetail, PluginTileData } from '../lib/plugin-host'
 import { detailOf, type ReadingRow } from '../lib/pbs'
 
@@ -20,7 +21,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 /** The card: "Active" means every datastore under 85%, nothing stale and no failure in 24 h, on every server. */
 export function tileOf(rows: ReadingRow[]): PluginTileData {
-  if (!rows.length) throw new Error('Not configured yet: add a backup server on the Proxmox Backup Server page.')
+  if (!rows.length) throw new PluginNotConfigured('Not configured yet: add a backup server on the Proxmox Backup Server page.')
   const lines = rows.map(x => {
     if (!x.reading) return { label: x.name, value: 'not reachable', tone: 'bad' as const }
     const h = x.reading.health
@@ -62,7 +63,10 @@ export const pbsPlugin: Plugin = {
   async detail(ctx: PluginContext): Promise<PluginDetail> {
     const rows: ReadingRow[] = await ctx.get('/readings')
     const first = (Array.isArray(rows) ? rows : []).find(r => r.reading)
-    if (!first) throw new Error(rows?.length ? rows[0].error ?? 'No backup server could be read.' : 'Not configured yet: add a backup server on the Proxmox Backup Server page.')
+    if (!first) {
+      if (!rows?.length) throw new PluginNotConfigured('Not configured yet: add a backup server on the Proxmox Backup Server page.')
+      throw new Error(rows[0].error ?? 'No backup server could be read.')
+    }
     return detailOf(first.name, first.reading!)
   },
 }

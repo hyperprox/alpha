@@ -5,7 +5,9 @@ import assert from 'node:assert/strict'
 import { Writable } from 'node:stream'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { classifyFailure, describeFailure, sendFailure, plainReason, MESSAGES, CERT_CHANGED_MESSAGE } from '../src/lib/failure'
+import { classifyFailure, describeFailure, sendFailure, plainReason, plainFailure, MESSAGES, CERT_CHANGED_MESSAGE } from '../src/lib/failure'
+import { PluginNotConfigured, PluginSettingsError } from '../src/lib/plugin-host'
+import { SECURITY_EVENTS_PER_IP_PER_MINUTE } from '../src/lib/security-events'
 import { securityEvent, resetSecurityEventThrottle } from '../src/lib/security-events'
 import { setAuditSink } from '../src/lib/audit'
 import { registerGate } from '../src/lib/gate'
@@ -260,4 +262,23 @@ test('security events: at most one row a minute per who, address and reason, the
     assert.equal(lines[2].repeated, 49)
     res()
   }))
+})
+
+test('an unconfigured plug-in: not_configured with its own sentence, never "could not be read"', () => {
+  const nc = plainFailure(new PluginNotConfigured('Not configured yet: add a router on the ASUS page.'), 'ASUS')
+  assert.deepEqual(nc, { error: 'Not configured yet: add a router on the ASUS page.', code: 'not_configured' })
+  assert.equal(plainReason(new PluginNotConfigured('Not configured yet: add a backup server.'), 'PBS'), 'Not configured yet: add a backup server.')
+  assert.deepEqual(plainFailure(new PluginSettingsError('Enter the API key first.'), 'Sonarr'), { error: 'Enter the API key first.', code: 'credential_required' })
+  assert.equal(plainFailure(new Error('HTTP 500 boom'), 'Sonarr').code, undefined)
+})
+
+test('security events: at most a fixed number of rows a minute from one address, whatever the emails', () => {
+  resetSecurityEventThrottle()
+  const rows: any[] = []
+  setAuditSink({ write: async r => { rows.push(r) } })
+  const req = { url: '/api/auth/sign-in', ip: '192.0.2.77', method: 'POST', id: 'q', log: { warn: () => undefined } } as any
+  const now = () => 5_000_000
+  for (let i = 0; i < SECURITY_EVENTS_PER_IP_PER_MINUTE + 40; i++) securityEvent(req, 'sign_in_failed', 'bad_credentials', `user${i}@example.com`, {}, now)
+  setAuditSink(null)
+  return new Promise<void>(res => setImmediate(() => { assert.equal(rows.length, SECURITY_EVENTS_PER_IP_PER_MINUTE); res() }))
 })

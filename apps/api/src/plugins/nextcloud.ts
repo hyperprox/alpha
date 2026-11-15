@@ -14,6 +14,7 @@
 //  through settings here.
 // =============================================================================
 
+import { PluginNotConfigured } from '../lib/plugin-host'
 import type { Plugin, PluginContext, PluginDetail, PluginTileData } from '../lib/plugin-host'
 import type { TileRow } from '../lib/nextcloud'
 import '../lib/nextcloud'
@@ -21,7 +22,7 @@ import '../lib/nextcloud'
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
 export function tileOf(rows: TileRow[]): PluginTileData {
-  if (!rows.length) throw new Error('Not configured yet: HyperProx connects a Nextcloud it finds by itself; none found so far.')
+  if (!rows.length) throw new PluginNotConfigured('Not configured yet: HyperProx connects a Nextcloud it finds by itself; none found so far.')
   const lines = rows.map(x => {
     if (!x.counts) return { label: x.name, value: x.error ?? 'not reachable', tone: 'bad' as const }
     const c = x.counts
@@ -66,7 +67,7 @@ export const nextcloudPlugin: Plugin = {
 
   async detail(ctx: PluginContext): Promise<PluginDetail> {
     const rows: TileRow[] = await ctx.get('/readings')
-    if (!Array.isArray(rows) || !rows.length) throw new Error('Not configured yet: HyperProx connects a Nextcloud it finds by itself; none found so far.')
+    if (!Array.isArray(rows) || !rows.length) throw new PluginNotConfigured('Not configured yet: HyperProx connects a Nextcloud it finds by itself; none found so far.')
     return detailOf(rows)
   },
 

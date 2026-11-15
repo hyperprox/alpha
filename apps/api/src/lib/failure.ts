@@ -130,6 +130,9 @@ export function classifyFailure(err: unknown, friendly?: string): Classified {
   }
   // Cloudflare's own refusals are made into one plain sentence by the client (lib/cloudflare-client.ts cfErrorMessage).
   if (name === 'CloudflareError' && Number(e.statusCode) >= 400 && Number(e.statusCode) < 500) return fail(Number(e.statusCode), 'refused', String(e.message), true)
+  // A plug-in with nothing to talk to yet, or a credential it still needs: a state to show, in its own words.
+  if (name === 'PluginNotConfigured') return fail(409, 'not_configured', String(e.message), true)
+  if (name === 'PluginSettingsError') return fail(400, 'credential_required', String(e.message), true)
   if (FRIENDLY_NAME.test(name) || name === 'DNSInputError') {
     // Its own status, 4xx or 5xx (a refusal can be "the NAS did not answer", 502); 400 when it has none. A 5xx one is
     // still worth a warning in the log.
@@ -221,8 +224,21 @@ const reasonLog = createLogOnce(appLog)
  * never the upstream's text. The error itself goes to the log under `what`.
  */
 export function plainReason(e: unknown, what: string): string {
-  reasonLog(`reading ${what}`, e)
+  return plainFailure(e, what).error
+}
+
+/**
+ * plainReason with the code a page can act on: `not_configured` (a plug-in with nothing to talk to yet, shown as
+ * "Not set up") or `credential_required`. Spread into a panel's `{ ok: false }` answer.
+ */
+export function plainFailure(e: unknown, what: string): { error: string; code?: string } {
   const c = classifyFailure(e)
+  if (c.body.code === 'not_configured' || c.body.code === 'credential_required') return { error: c.body.error, code: c.body.code }
+  return { error: plainReasonText(e, what, c) }
+}
+
+function plainReasonText(e: unknown, what: string, c: Classified): string {
+  reasonLog(`reading ${what}`, e)
   if (c.expected || c.ownWords || c.body.code === 'proxmox_cert_changed' || c.body.code === 'db_unavailable') return c.body.error
   if (connectionFailure(e)) return `${what} did not answer.`
   return `${what} could not be read. The details are in HyperProx's log.`

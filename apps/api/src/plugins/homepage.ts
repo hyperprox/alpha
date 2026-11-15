@@ -8,12 +8,13 @@
 //  the plug-in never reaches a guest itself.
 // =============================================================================
 
+import { PluginNotConfigured } from '../lib/plugin-host'
 import type { Plugin, PluginContext, PluginTileData } from '../lib/plugin-host'
 
 type Row = { id: string; name: string; url: string | null; autoSync: boolean; entries: number; lastSync: { at: number; ok: boolean; message: string } | null }
 
 export function tileOf(rows: Row[]): PluginTileData {
-  if (!rows.length) throw new Error('Not configured yet: HyperProx connects a Homepage it finds by itself; none found so far.')
+  if (!rows.length) throw new PluginNotConfigured('Not configured yet: HyperProx connects a Homepage it finds by itself; none found so far.')
   const lines = rows.map(r => ({
     label: r.name,
     value: !r.lastSync ? 'not filled yet' : r.lastSync.ok ? `${r.entries} entr${r.entries === 1 ? 'y' : 'ies'}${r.autoSync ? ', auto-sync on' : ''}` : r.lastSync.message.slice(0, 120),

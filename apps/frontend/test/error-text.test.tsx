@@ -8,6 +8,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { errorText, failureText, looksTechnical, requestIdOf, API_DOWN_TEXT, NO_CONNECTION_TEXT, SERVER_ERROR_TEXT } from '../lib/api'
 import { summaryProblem, feedProblem, SERVER_DOWN_TEXT, PROXMOX_UNREACHABLE_TEXT, CERT_CHANGED_TEXT } from '../lib/dashboard-problem'
 import { dnsLoadState } from '../lib/dns-state'
+import { isNotConfigured, pluginKind } from '../lib/plugin-status'
 import { ErrorNotice } from '../components/layout/ErrorNotice'
 import { PageError, PAGE_ERROR_TEXT } from '../components/layout/PageError'
 
@@ -97,4 +98,11 @@ test('dashboard: a changed certificate is its own problem, not an outage', () =>
 test("errorText: an admin's upstream detail follows the sentence; nginx's slow answer reads plainly", () => {
   assert.equal(errorText({ ok: false, error: 'The vault refused it.', detail: 'User already exists' }, 'x', 502), 'The vault refused it. Details: User already exists')
   assert.equal(errorText({ ok: false, code: 'api_timeout', error: 'HyperProx took too long to answer. Try again.' }, 'x', 504), 'HyperProx took too long to answer. Try again.')
+})
+
+test('plug-in not set up: by the API code first, the text as a fallback', () => {
+  assert.equal(isNotConfigured('ASUS could not be read.', 'not_configured'), true)
+  assert.equal(pluginKind({ error: 'Not configured yet: add a router on the ASUS page.', code: 'not_configured' }), 'not-set-up')
+  assert.equal(pluginKind({ error: 'Not configured yet: add a router on the ASUS page.' }), 'not-set-up')
+  assert.equal(pluginKind({ error: 'Sonarr did not answer.' }), 'unreachable')
 })

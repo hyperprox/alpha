@@ -88,7 +88,7 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
   }
 
   if (!data.ok) {
-    const unset = isNotConfigured(data.error)
+    const unset = isNotConfigured(data.error, data.code)
     return (
       <div className="flex h-[132px] flex-col justify-center gap-1.5 rounded border px-3.5"
         style={{ borderColor: unset ? 'var(--border-strong)' : 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--ground-deep)' }}>
@@ -479,7 +479,7 @@ export default function PluginsPage() {
         <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 340px), 1fr))' }}>
           {plugins.map(p => {
             const d    = data[p.id]
-            const tone = !p.configured ? 'idle' : d && !d.ok ? (isNotConfigured(d.error) ? 'idle' : 'bad') : d ? (d.tone ?? 'good') : 'idle'
+            const tone = !p.configured ? 'idle' : d && !d.ok ? (isNotConfigured(d.error, d.code) ? 'idle' : 'bad') : d ? (d.tone ?? 'good') : 'idle'
             const autoWord = !p.configured ? autoConnectWord(p.id, auto) : null
             return (
               <article key={p.id} className={styles.card} style={{ padding: 0 }}>
@@ -513,7 +513,7 @@ export default function PluginsPage() {
                   <span className="font-mono text-[11px]" style={{ color: TONE[tone] }}>
                     <span aria-hidden>● </span>{autoWord ? autoWord.word : !p.configured
                       ? `needs ${p.needs || p.missing.join(' and ') || 'setting up'}`
-                      : d && !d.ok ? (isNotConfigured(d.error) ? 'not set up' : 'unreachable')
+                      : d && !d.ok ? (isNotConfigured(d.error, d.code) ? 'not set up' : 'unreachable')
                       : d ? 'connected' : 'idle'}
                   </span>
 

@@ -15,6 +15,7 @@
 //  router): the address, the admin user and its password, nothing more.
 // =============================================================================
 
+import { PluginNotConfigured } from '../lib/plugin-host'
 import type { Plugin, PluginContext, PluginDetail, PluginTileData } from '../lib/plugin-host'
 import { detailOf, mbps, duration, type ReadingRow } from '../lib/asus'
 
@@ -29,7 +30,7 @@ export function quoted(v: string | null | undefined): string {
 
 async function rows(ctx: PluginContext): Promise<ReadingRow[]> {
   const r: ReadingRow[] = await ctx.get('/readings')
-  if (!Array.isArray(r) || !r.length) throw new Error('Not configured yet: add a router on the ASUS page.')
+  if (!Array.isArray(r) || !r.length) throw new PluginNotConfigured('Not configured yet: add a router on the ASUS page.')
   return r
 }
 
