@@ -15,7 +15,7 @@ import { type Policy, guestPolicy, nodePolicy, nodePolicyView, effectiveUpgrade 
 import {
   GUEST_PENDING_SCRIPT, NODE_FACTS_COMMAND, guestDockerImagesScript, isCephPackage, isKernelPackage,
   parseDockerImages, parseGuestPending, parseNodeFacts, nodeSimulateCommand, parseAptSimulation, summariseNodeChanges,
-  COMPOSE_LS_SCRIPT, parseComposeLs, composeImagesScript, parseComposeImages,
+  COMPOSE_LS_SCRIPT, parseComposeLs, composeImagesScript, parseComposeImages, composeKey, type ComposeProject,
   type NodeFacts,
 } from './commands'
 import { type AppEnv, readGuestApps } from './apps'
@@ -54,10 +54,12 @@ export interface InventoryOptions {
    */
   stopCheck?: () => Promise<string | null>
   /**
-   * Also find the compose projects running in each guest (`docker compose ls`, read-only) and read their images, so
-   * each can be chosen on its own. A guest whose policy says `docker: none` by its VMID is never looked at for this.
+   * Compose projects as projects (`docker compose ls`, read-only: name, every config file, images), so each can be
+   * chosen on its own. `policy`: only guests whose policy turns docker on. `all`: every guest, because a person asked
+   * for it. A set of VMIDs: the policy's guests and these (a run re-reading the guests it was asked to update).
+   * A guest whose policy says `docker: none` by its VMID is never looked at. Absent: the policy's directories only.
    */
-  discoverCompose?: boolean
+  discoverCompose?: 'policy' | 'all' | Set<number>
 }
 
 /** The Proxmox tag that keeps HyperProx out of a guest: it is never read or updated. */
@@ -157,6 +159,7 @@ async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: str
   if (f) {
     out.rebootRequired = f.rebootRequired
     if (f.holds.length) out.held = [...f.holds].sort()
+    out.pinned = f.pinned
     if (pol.requireHolds.length) out.holdsOk = pol.requireHolds.every(h => f.holds.includes(h))
     if (pol.requirePin) out.pinOk = f.pinned === pol.requirePin
   }
@@ -178,31 +181,43 @@ async function readApps(apps: AppEnv | undefined, exec: UpdatesExecutor, policy:
   } catch (e: any) { out.error = [out.error, `apps: ${e.message}`].filter(Boolean).join('; ') }
 }
 
-/** Compose projects (the policy's, and those Docker lists) and their images. Read-only. */
+/** Compose projects (the policy's directories, and the projects Docker lists) and their images. Read-only. */
 async function readCompose(exec: UpdatesExecutor, policy: Policy, g: GuestListing, out: UpdatesGuest): Promise<void> {
   const pol = guestPolicy(policy, g.vmid)
-  const own = policy.guests[String(g.vmid)]
-  if (own?.docker === 'none') return
   const fromPolicy = pol.docker !== 'none' ? pol.composeDirs : []
-  const dirs = new Map<string, 'policy' | 'found'>(fromPolicy.map(d => [d, 'policy']))
+  const projects: ComposeProject[] = []
   try {
     const ls = parseComposeLs((await exec.guestExec(g, COMPOSE_LS_SCRIPT, undefined, 60_000)).output)
-    if (ls.noDocker && !dirs.size) return
-    for (const d of ls.dirs) if (!dirs.has(d)) dirs.set(d, 'found')
+    if (ls.noDocker && !fromPolicy.length) return
+    projects.push(...ls.projects)
     if (ls.error) out.error = [out.error, `compose: ${ls.error}`].filter(Boolean).join('; ')
   } catch (e: any) { out.error = [out.error, `compose: ${e.message}`].filter(Boolean).join('; ') }
-  if (!dirs.size) return
+  // A policy directory Docker does not list (stopped, say) is still offered, by its directory.
+  const listedDirs = new Set(projects.map(p => p.dir))
+  const extra = fromPolicy.filter(d => !listedDirs.has(d)).map(dir => ({ dir }))
+  const all: (ComposeProject | { dir: string })[] = [...projects, ...extra]
+  if (!all.length) return
   try {
-    const r = await exec.guestExec(g, composeImagesScript([...dirs.keys()]), undefined, 180_000)
-    const read = new Map(parseComposeImages(r.output).map(x => [x.dir, x.images]))
-    out.compose = [...dirs].map(([dir, source]) => ({
-      dir, source, images: read.get(dir) ?? [], ...(read.has(dir) ? {} : { error: 'its images could not be read' }),
-    }))
+    const r = await exec.guestExec(g, composeImagesScript(all), undefined, 180_000)
+    const read = new Map(parseComposeImages(r.output).map(x => [x.key, x.images]))
+    out.compose = all.map(p => {
+      const key = composeKey(p)
+      const source = fromPolicy.includes(p.dir) ? 'policy' as const : 'found' as const
+      return { ...p, source, images: read.get(key) ?? [], ...(read.has(key) ? {} : { error: 'its images could not be read' }) }
+    })
     if (fromPolicy.length) out.dockerImages = out.compose.filter(c => c.source === 'policy').flatMap(c => c.images)
   } catch (e: any) { out.error = [out.error, `docker images: ${e.message}`].filter(Boolean).join('; ') }
 }
 
-async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing, haSids: Set<string>, apps?: AppEnv, discover = false): Promise<UpdatesGuest> {
+/** Whether compose projects are read in this guest, under `mode`. */
+function composeWanted(policy: Policy, vmid: number, mode: InventoryOptions['discoverCompose']): boolean {
+  if (!mode || policy.guests[String(vmid)]?.docker === 'none') return false
+  if (mode === 'all' || (mode instanceof Set && mode.has(vmid))) return true
+  return guestPolicy(policy, vmid).docker !== 'none'
+}
+
+async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing, haSids: Set<string>, apps?: AppEnv,
+                         discover?: InventoryOptions['discoverCompose']): Promise<UpdatesGuest> {
   const pol = guestPolicy(policy, g.vmid)
   const out: UpdatesGuest = {
     vmid: g.vmid, type: g.type, name: g.name, node: g.node, running: g.running,
@@ -241,7 +256,7 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
     return out
   }
 
-  if (discover) await readCompose(exec, policy, g, out)
+  if (discover) { if (composeWanted(policy, g.vmid, discover)) await readCompose(exec, policy, g, out) }
   else if (pol.docker !== 'none' && pol.composeDirs.length) {
     try {
       const r = await exec.guestExec(g, guestDockerImagesScript(pol.composeDirs), undefined, 180_000)

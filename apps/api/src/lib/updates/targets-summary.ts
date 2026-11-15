@@ -7,12 +7,12 @@
 
 import type { UpdatesTargetTree } from './types'
 
-let source: (() => UpdatesTargetTree | null) | null = null
+let source: ((clusterId: string) => UpdatesTargetTree | null) | null = null
 
 /** Set once by the Updates routes. */
-export function setTargetsSource(fn: (() => UpdatesTargetTree | null) | null): void { source = fn }
+export function setTargetsSource(fn: ((clusterId: string) => UpdatesTargetTree | null) | null): void { source = fn }
 
-/** Home's targets from the last inventory read, or null when none has been read (or Updates is not loaded). */
-export function lastTargets(): UpdatesTargetTree | null {
-  try { return source?.() ?? null } catch { return null }
+/** A cluster's targets from its last inventory read, or null when none has been read (or Updates is not loaded). */
+export function lastTargets(clusterId: string): UpdatesTargetTree | null {
+  try { return source?.(clusterId) ?? null } catch { return null }
 }

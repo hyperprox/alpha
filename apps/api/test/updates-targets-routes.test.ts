@@ -70,7 +70,7 @@ test('admin: the tree, with the held kernel package listed but not selectable; t
   const k = t.find(x => x.id === 'node:gpu-node:pkg:proxmox-kernel-7.0')
   assert.equal(k.selectable, false)
   assert.equal(t.find(x => x.id === 'guest:101').parent, 'node:node-a')
-  assert.equal(lastTargets()!.targets.length, t.length)
+  assert.equal(lastTargets('home')!.targets.length, t.length)
 })
 
 test('preview: the order and the refusals, read-only', async () => {

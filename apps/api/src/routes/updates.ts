@@ -269,17 +269,20 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       return { load, selfVmid, targets: buildTargets(inv, load.policy, { selfVmid, remote: s.remote }) }
     }
     // The assistant answers "what updates does X have" from what was last read, never by reading.
-    setTargetsSource(() => {
-      const inv = home.cached()
-      return inv ? { refreshedAt: inv.refreshedAt, cluster: { ...home.ref }, targets: treeFor(home, inv).targets } : null
+    setTargetsSource(id => {
+      if (!clusterRow(id)) return null
+      const s = services.get(id)
+      const inv = s.cached()
+      return inv ? { refreshedAt: inv.refreshedAt, cluster: { ...s.ref }, targets: treeFor(s, inv).targets } : null
     })
 
     // Everything that can be updated, as a tree, each row with its own count, preview and whether it can be chosen.
-    // Read-only, like the inventory it is built from.
-    fastify.get<{ Querystring: { refresh?: string } }>('/targets', async (req, reply) => {
+    // Read-only, like the inventory it is built from. `discover=1`: also look for compose projects in every guest
+    // (`docker compose ls` and registry reads), not only where the policy turns docker on.
+    fastify.get<{ Querystring: { refresh?: string; discover?: string } }>('/targets', async (req, reply) => {
       try {
         const s = svc()
-        const inv = await s.inventory(req.query.refresh === '1' || req.query.refresh === 'true')
+        const inv = await s.inventory(req.query.refresh === '1' || req.query.refresh === 'true', req.query.discover === '1')
         return { refreshedAt: inv.refreshedAt, cluster: { ...s.ref }, targets: treeFor(s, inv).targets }
       } catch (e) { return sendError(reply, e) }
     })

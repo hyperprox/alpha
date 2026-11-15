@@ -7,7 +7,7 @@ import { readInventory } from '../src/lib/updates/inventory'
 import { parsePolicy } from '../src/lib/updates/policy'
 import { buildPlan } from '../src/lib/updates/planner'
 import {
-  buildTargets, buildSelectedPlan, everythingSelection, parseTargetId, targetId, nodePackageRefusal, packagesOf, composeDirOf,
+  buildTargets, buildSelectedPlan, everythingSelection, parseTargetId, targetId, nodePackageRefusal, packagesOf, composeKeyOf,
 } from '../src/lib/updates/targets'
 import { FakeCluster, node, guest, pkg } from './updates-fake'
 
@@ -42,7 +42,7 @@ function cluster(): FakeCluster {
 
 async function inventory(fake = cluster(), yaml = POLICY) {
   const policy = parsePolicy(yaml)
-  const r = await readInventory(fake, policy, { hostname: 'x', discoverCompose: true })
+  const r = await readInventory(fake, policy, { hostname: 'x', discoverCompose: 'all' })
   return { inv: r.inventory, policy }
 }
 const ctx = { selfVmid: 150 }
@@ -50,8 +50,9 @@ const ctx = { selfVmid: 150 }
 test('target ids: only well-formed ids parse; anything shell-like is refused', () => {
   assert.deepEqual(parseTargetId('node:node-a'), { kind: 'node', node: 'node-a' })
   assert.deepEqual(parseTargetId('node:node-a:pkg:libc6'), { kind: 'node-pkg', node: 'node-a', pkg: 'libc6' })
-  assert.deepEqual(parseTargetId('guest:205:compose:/opt/stack'), { kind: 'compose', vmid: 205, dir: '/opt/stack' })
-  for (const bad of ['node:a;rm -rf /', 'node:a:pkg:curl;id', 'guest:1:compose:/opt/../etc', 'guest:1:compose:relative', 'guest:1:pkg:$(id)', 'guest:x', 'whatever', 42]) {
+  assert.deepEqual(parseTargetId('guest:205:compose:/opt/stack'), { kind: 'compose', vmid: 205, key: '/opt/stack' })
+  assert.deepEqual(parseTargetId('guest:205:compose:web-dev'), { kind: 'compose', vmid: 205, key: 'web-dev' })
+  for (const bad of ['node:a;rm -rf /', 'node:a:pkg:curl;id', 'guest:1:compose:/opt/../etc', 'guest:1:compose:Not A Name', 'guest:1:pkg:$(id)', 'guest:x', 'whatever', 42]) {
     assert.equal(parseTargetId(bad), null, String(bad))
   }
 })
@@ -80,9 +81,9 @@ test('the tree: nodes in order with their packages, guests under their node, blo
   assert.ok(row('node:node-b:reboot'))
   assert.equal(t.some(x => x.id === 'node:node-a:reboot'), false)
   // Compose projects: the policy's and one found running; images counted.
-  assert.equal(row('guest:205:compose:/opt/stack').pending, 1)
-  assert.equal(row('guest:205:compose:/opt/stack').everything, true)
-  assert.equal(row('guest:205:compose:/srv/other').everything, false, 'a found project is never part of "everything"')
+  assert.equal(row('guest:205:compose:p0').pending, 1)
+  assert.equal(row('guest:205:compose:p0').everything, true)
+  assert.equal(row('guest:205:compose:p1').everything, false, 'a found project is never part of "everything"')
   assert.equal(row('guest:150').label, '150 hyperprox (HyperProx)')
   assert.equal(row('guest:150:pkg:openssl').selectable, false)
 })
@@ -104,11 +105,18 @@ test('a single-package request for a held kernel package is refused, and nothing
 
 test('per-item selection on the guarded node never plans dist-upgrade or full-upgrade', async () => {
   const { inv, policy } = await inventory()
+  // Kernel metapackages are pending there: the whole node is refused, the chosen packages run on their own.
   const plan = buildSelectedPlan(inv, policy, { ...ctx, selection: ['node:gpu-node', 'node:gpu-node:pkg:curl', 'node:gpu-node:pkg:pve-manager'] })
   const details = plan.steps.map(s => s.detail ?? '').join('\n')
   assert.doesNotMatch(details, /dist-upgrade|full-upgrade/)
-  assert.deepEqual(plan.steps.map(s => `${s.target}:${s.action}`), ['gpu-node:node-upgrade'])
-  assert.match(plan.steps[0].detail!, /^apt-get upgrade/)
+  assert.deepEqual(plan.steps.map(s => `${s.target}:${s.action}`), ['gpu-node:node-packages'])
+  assert.match(plan.refused!.find(r => r.id === 'node:gpu-node')!.reason, /kernel packages are pending/)
+  // Without kernel packages pending, the whole node gets apt-get upgrade, though its policy names dist-upgrade.
+  const gpu = inv.nodes.find(n => n.node === 'gpu-node')!
+  const clean = { ...inv, nodes: inv.nodes.map(n => n === gpu ? { ...n, pending: n.pending.filter(p => !p.name.startsWith('proxmox-')) } : n) }
+  const whole = buildSelectedPlan(clean, policy, { ...ctx, selection: ['node:gpu-node'] })
+  assert.deepEqual(whole.steps.map(s => `${s.target}:${s.action}`), ['gpu-node:node-upgrade'])
+  assert.match(whole.steps[0].detail!, /^apt-get upgrade/)
   // Packages alone: one chosen-packages step, upgrade-only.
   const pk = buildSelectedPlan(inv, policy, { ...ctx, selection: ['node:gpu-node:pkg:curl', 'node:gpu-node:pkg:pve-manager', 'node:gpu-node:pkg:proxmox-kernel-7.0'] })
   assert.deepEqual(pk.steps.map(s => s.action), ['node-packages'])
@@ -132,7 +140,7 @@ test('a node whose holds and pin could not be read is refused, package by packag
 test('a mixed selection runs guests before their node, nodes one at a time, a reboot only where chosen and after what it waits for', async () => {
   const { inv, policy } = await inventory()
   const plan = buildSelectedPlan(inv, policy, { ...ctx, selection: [
-    'node:node-b:reboot', 'node:node-b', 'guest:102', 'node:node-a:pkg:curl', 'guest:205:compose:/srv/other', 'guest:101:pkg:openssl',
+    'node:node-b:reboot', 'node:node-b', 'guest:102', 'node:node-a:pkg:curl', 'guest:205:compose:p1', 'guest:101:pkg:openssl',
   ] })
   assert.deepEqual(plan.refused, [])
   assert.deepEqual(plan.steps.map(s => `${s.target}:${s.action}`), [
@@ -142,9 +150,9 @@ test('a mixed selection runs guests before their node, nodes one at a time, a re
     'node-a:node-packages',
     'node-b:node-upgrade', 'node-b:kernel-cleanup', 'node-b:node-reboot',
   ])
-  assert.equal(composeDirOf(plan.steps[5].detail), '/srv/other')
+  assert.equal(composeKeyOf(plan.steps[5].detail), 'p1')
   const reboot = plan.items!.find(i => i.id === 'node:node-b:reboot')!
-  assert.deepEqual(reboot.dependsOn.sort(), ['guest:102', 'guest:205:compose:/srv/other', 'node:node-b'])
+  assert.deepEqual(reboot.dependsOn.sort(), ['guest:102', 'guest:205:compose:p1', 'node:node-b'])
   assert.match(plan.steps.at(-1)!.detail!, /\(forced\)$/)
   // Every step belongs to exactly one item.
   const seqs = plan.items!.flatMap(i => i.seqs).sort((a, b) => a - b)
@@ -205,7 +213,8 @@ test('"Update everything" chooses what the whole-plan run does: same steps as th
   const key = (s: { target: string; action: string }) => `${s.target}:${s.action}`
   // The old run also listed a "manual — left pending" reboot that does nothing; a chosen run simply leaves it out.
   // Nor does it clean old kernels off a node that holds or pins its kernel (no new one is installed there).
-  const oldSteps = old.steps.filter(s => !(s.action === 'node-reboot' && /^manual/.test(s.detail ?? '')) && !(s.target === 'gpu-node' && s.action === 'kernel-cleanup'))
+  // And the guarded node, whose pending list includes kernel metapackages, is not offered as a whole (pick packages).
+  const oldSteps = old.steps.filter(s => !(s.action === 'node-reboot' && /^manual/.test(s.detail ?? '')) && s.target !== 'gpu-node')
   assert.deepEqual(plan.steps.map(key).sort(), oldSteps.map(key).sort())
 })
 

@@ -228,10 +228,10 @@ export function perClusterSources(c: ClusterRef, d: ClusterSourceDeps): AskSourc
 
 /** On a remote: one source that says plainly which features are the home cluster's only. */
 export function homeOnlySource(c: ClusterRef): AskSource {
-  const line = `DNS, proxy hosts, certificates, plug-ins, updates and deploying a service are ${HOME_ONLY_NOTE}, so I cannot answer that for ${c.name}.`
+  const line = `DNS, proxy hosts, certificates, plug-ins and deploying a service are ${HOME_ONLY_NOTE}, so I cannot answer that for ${c.name}.`
   return {
     id: 'home-only', title: 'Home-only features', blurb: 'features the home cluster has and a remote does not',
-    aliases: /\b(dns|domains?|zones?|records?|cname|proxy|proxies|reverse proxy|npm|nginx|certs?|certificates?|ssl|tls|https|let'?s ?encrypt|plug-?ins?|home assistant|sonarr|radarr|tautulli|updates?|upgrades?)\b/,
+    aliases: /\b(dns|domains?|zones?|records?|cname|proxy|proxies|reverse proxy|npm|nginx|certs?|certificates?|ssl|tls|https|let'?s ?encrypt|plug-?ins?|home assistant|sonarr|radarr|tautulli)\b/,
     load: async () => ({ headline: `${c.name}: DNS, proxy, certificates and plug-ins are home-only.`, lines: [line] }),
     answer: () => line,
   }

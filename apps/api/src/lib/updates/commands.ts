@@ -510,13 +510,32 @@ function pkgList(pkgs: string[]): string {
   return [...new Set(pkgs)].sort().map(shq).join(' ')
 }
 
+/** A Debian version, as apt prints it (epoch, upstream, revision). */
+export const PKG_VERSION = /^[A-Za-z0-9][A-Za-z0-9.+:~-]{0,127}$/
+
+export interface PkgSpec { name: string; version: string }
+
 /**
- * The only line a per-package node update runs. `install --only-upgrade` upgrades what is already installed and
- * installs nothing new; `--no-remove` refuses anything that would take a package away; apt itself never moves a held
- * package. There is no `upgrade`, `dist-upgrade` or `full-upgrade` in it, whatever the node's policy says.
+ * The only line a per-package node update runs: each package pinned to the version apt's simulation showed
+ * (`name=version`), so what lands is what was checked. `install --only-upgrade` upgrades what is already installed
+ * and installs nothing new; `--no-remove` refuses anything that would take a package away; apt itself never moves
+ * a held package. Packages that were installed automatically are marked automatic again afterwards (naming one to
+ * apt-get install would otherwise mark it manual). There is no `upgrade`, `dist-upgrade` or `full-upgrade` in it.
  */
-export function nodePackagesCommand(pkgs: string[]): string {
-  return withCephStartGuard(`apt-get -y -q ${CONFOLD} --no-remove --only-upgrade install ${pkgList(pkgs)}`)
+export function nodePackagesCommand(specs: PkgSpec[]): string {
+  if (!specs.length || specs.length > 200 || specs.some(p => !PKG_NAME.test(p.name) || !PKG_VERSION.test(p.version))) {
+    throw new Error(`not package=version pairs: ${specs.slice(0, 5).map(p => `${p.name}=${p.version}`).join(', ')}`)
+  }
+  const sorted = [...specs].sort((a, b) => a.name.localeCompare(b.name))
+  const names = sorted.map(p => shq(p.name)).join(' ')
+  const pinned = sorted.map(p => shq(`${p.name}=${p.version}`)).join(' ')
+  return withCephStartGuard([
+    `auto=$(apt-mark showauto ${names} 2>/dev/null || true)`,
+    `apt-get -y -q ${CONFOLD} --no-remove --only-upgrade install ${pinned}`,
+    'rc=$?',
+    '[ -n "$auto" ] && apt-mark auto $auto >/dev/null',
+    'exit $rc',
+  ].join('\n'))
 }
 
 /** Read-only: exactly what nodePackagesCommand would change, from apt's own simulation. */
@@ -545,6 +564,14 @@ export function guestPackagesScript(pkgs: string[]): string {
 /** An absolute directory a compose project lives in: no `..`, nothing a shell could read as more than a path. */
 export const COMPOSE_DIR = /^\/(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9_.@+\/-]{0,250}$/
 export const isComposeDir = (d: string) => COMPOSE_DIR.test(d) && !d.includes('//')
+/** A compose project name, as Docker allows them. */
+export const COMPOSE_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/
+
+/** A project as Docker lists it: its name, its directory and every config file it was started with. */
+export interface ComposeProject { name: string; dir: string; files: string[] }
+
+/** The key a project is known by: its name; a policy directory Docker does not list, by its directory. */
+export const composeKey = (p: { name?: string; dir: string }) => (p.name ? p.name : p.dir)
 
 /** Read-only: the compose projects Docker knows in this guest, running or not. */
 export const COMPOSE_LS_SCRIPT = [
@@ -552,32 +579,42 @@ export const COMPOSE_LS_SCRIPT = [
   'echo HP_COMPOSE_BEGIN; docker compose ls -a --format json 2>/dev/null || echo "[]"; echo; echo HP_COMPOSE_END',
 ].join('\n')
 
-/** The directories of the projects `docker compose ls` listed (from each project's first config file). */
-export function parseComposeLs(output: string): { noDocker: boolean; dirs: string[]; error?: string } {
+/** The projects `docker compose ls` listed: each with its name and all its config files. Anything odd is dropped. */
+export function parseComposeLs(output: string): { noDocker: boolean; projects: ComposeProject[]; error?: string } {
   const lines = String(output ?? '').split('\n').map(l => l.trim())
-  if (lines.includes('HP_NO_DOCKER')) return { noDocker: true, dirs: [] }
+  if (lines.includes('HP_NO_DOCKER')) return { noDocker: true, projects: [] }
   const block = between(lines, 'HP_COMPOSE_BEGIN', 'HP_COMPOSE_END').filter(Boolean)
-  if (!lines.includes('HP_COMPOSE_END')) return { noDocker: false, dirs: [], error: 'the compose listing did not finish' }
+  if (!lines.includes('HP_COMPOSE_END')) return { noDocker: false, projects: [], error: 'the compose listing did not finish' }
   let rows: unknown
-  try { rows = JSON.parse(block[0] ?? '[]') } catch { return { noDocker: false, dirs: [], error: 'the compose listing was not JSON' } }
-  if (!Array.isArray(rows)) return { noDocker: false, dirs: [] }
-  const dirs = new Set<string>()
+  try { rows = JSON.parse(block[0] ?? '[]') } catch { return { noDocker: false, projects: [], error: 'the compose listing was not JSON' } }
+  if (!Array.isArray(rows)) return { noDocker: false, projects: [] }
+  const out = new Map<string, ComposeProject>()
   for (const r of rows as any[]) {
-    const first = String(r?.ConfigFiles ?? '').split(',')[0]?.trim() ?? ''
-    const dir = first.replace(/\/[^/]+$/, '')
-    if (dir && isComposeDir(dir)) dirs.add(dir)
+    const name = String(r?.Name ?? '')
+    const files = String(r?.ConfigFiles ?? '').split(',').map(f => f.trim()).filter(Boolean)
+    if (!COMPOSE_NAME.test(name) || !files.length || !files.every(isComposeDir)) continue
+    out.set(name, { name, dir: files[0].replace(/\/[^/]+$/, '') || '/', files })
   }
-  return { noDocker: false, dirs: [...dirs].sort() }
+  return { noDocker: false, projects: [...out.values()].sort((a, b) => a.name.localeCompare(b.name)) }
 }
 
-/** Read-only: each project's images, the digest each runs and the registry's current one, per directory. */
-export function composeImagesScript(dirs: string[]): string {
-  const ok = dirs.filter(isComposeDir)
+/** `docker compose` with exactly this project's name and every one of its files; a policy directory by `cd`. */
+function composeCall(p: { name?: string; dir: string; files?: string[] }): string {
+  if (p.name && p.files?.length) {
+    if (!COMPOSE_NAME.test(p.name) || !p.files.every(isComposeDir)) throw new Error(`not a compose project: ${p.name}`)
+    return `docker compose -p ${shq(p.name)} ${p.files.map(f => `-f ${shq(f)}`).join(' ')}`
+  }
+  if (!isComposeDir(p.dir)) throw new Error(`not a compose directory: ${p.dir}`)
+  return `cd ${shq(p.dir)} && docker compose`
+}
+
+/** Read-only: each project's images, the digest each runs and the registry's current one. */
+export function composeImagesScript(projects: { name?: string; dir: string; files?: string[] }[]): string {
   return [
     'command -v docker >/dev/null 2>&1 || { echo HP_NO_DOCKER; exit 0; }',
-    ...ok.map(d => [
-      `echo ${shq(`HP_DIR ${d}`)}`,
-      `(cd ${shq(d)} && docker compose config --images 2>/dev/null) | sort -u | while read -r img; do [ -z "$img" ] && continue`,
+    ...projects.map(p => [
+      `echo ${shq(`HP_PROJ ${composeKey(p)}`)}`,
+      `(${composeCall(p)} config --images 2>/dev/null) | sort -u | while read -r img; do [ -z "$img" ] && continue`,
       `  cur=$(docker image inspect --format '{{index .RepoDigests 0}}' "$img" 2>/dev/null | sed 's/.*@//')`,
       `  new=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$img" 2>/dev/null || true)`,
       '  echo "HP_IMG $img ${cur:--} ${new:--}"',
@@ -587,15 +624,41 @@ export function composeImagesScript(dirs: string[]): string {
   ].join('\n')
 }
 
-export function parseComposeImages(output: string): { dir: string; images: { image: string; current: string; latest: string | null }[] }[] {
-  const out: { dir: string; images: { image: string; current: string; latest: string | null }[] }[] = []
+export function parseComposeImages(output: string): { key: string; images: { image: string; current: string; latest: string | null }[] }[] {
+  const out: { key: string; images: { image: string; current: string; latest: string | null }[] }[] = []
   for (const l of String(output ?? '').split('\n').map(x => x.trim())) {
-    const d = /^HP_DIR (\/\S*)$/.exec(l)
-    if (d) { if (isComposeDir(d[1])) out.push({ dir: d[1], images: [] }); continue }
+    const d = /^HP_PROJ (\S+)$/.exec(l)
+    if (d) { out.push({ key: d[1], images: [] }); continue }
     const m = /^HP_IMG (\S+) (\S+) (\S+)$/.exec(l)
     if (m && out.length) out[out.length - 1].images.push({ image: m[1], current: m[2], latest: m[3] === '-' ? null : m[3] })
   }
   return out
+}
+
+/**
+ * Pull and restart one compose project — by its own name and every config file it was started with, so two projects
+ * in one directory stay apart — then require each of its containers running and not unhealthy.
+ */
+export function composeProjectScript(p: { name?: string; dir: string; files?: string[] }): string {
+  const dc = composeCall(p)
+  return [
+    'set -e',
+    `${dc} pull -q`,
+    `${dc} up -d --remove-orphans`,
+    'for i in $(seq 1 12); do',
+    '  bad=""; starting=""',
+    `  out=$(${dc} ps -a --format '{{.Name}} {{.State}} {{.Health}}')`,
+    '  while read -r n s h; do [ -z "$n" ] && continue',
+    '    [ "$s" != "running" ] && bad="$bad $n:$s"',
+    '    [ "$h" = "unhealthy" ] && bad="$bad $n:unhealthy"',
+    '    [ "$h" = "starting" ] && starting="$starting $n"',
+    '  done <<< "$out"',
+    '  [ -n "$bad" ] && { echo "not healthy:$bad"; exit 1; }',
+    '  [ -z "$starting" ] && { echo "all containers running"; exit 0; }',
+    '  sleep 5',
+    'done',
+    'echo "still starting after 60s:$starting"; exit 1',
+  ].join('\n')
 }
 
 export function tail(text: string, max = 4000): string {

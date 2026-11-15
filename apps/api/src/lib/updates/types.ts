@@ -54,6 +54,8 @@ export type UpdatesNode = {
   policy:         UpdatesNodePolicyView
   holdsOk:        boolean | null    // null: the policy requires none
   pinOk:          boolean | null
+  /** The pinned kernel as read from the node (`proxmox-boot-tool kernel list`); null when none, absent when unread. */
+  pinned?:        string | null
   /** Its holds and kernel pin could not be read (no node login, or the read failed): unknown, not "none". */
   factsUnknown?:  boolean
   isSelf:         boolean           // the node HyperProx itself runs on
@@ -73,6 +75,10 @@ export type UpdatesUnmanagedReason = 'excluded' | 'ignored' | 'not-running' | 'n
 
 /** A compose project in a guest: from the policy's compose_dirs, or found running there (`docker compose ls`). */
 export type UpdatesComposeProject = {
+  /** The project name Docker reports (`docker compose ls`); absent for a policy directory Docker does not list. */
+  name?:   string
+  /** Every config file of the project, as Docker reports them (`-f` each); absent for a policy directory. */
+  files?:  string[]
   dir:     string
   source:  'policy' | 'found'
   images:  { image: string; current: string; latest: string | null }[]
@@ -193,6 +199,11 @@ export type UpdatesPlan = {
   refused?:  { id: string; reason: string }[]
   /** A job's steps carry the plan's seq plus this (its preflight and refresh come first). */
   stepOffset?: number
+  /**
+   * Plan seqs of reboots a person asked for by name (a ticked reboot row, the Reboot button): they reboot even when
+   * the node does not say it needs one. Kept apart from the step's words, which other checks append to.
+   */
+  forced?:   number[]
 }
 
 /** One thing a person chose, as the plan runs it: its steps (plan seqs) and the items it waits for. */

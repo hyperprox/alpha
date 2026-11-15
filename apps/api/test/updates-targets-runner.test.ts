@@ -73,7 +73,7 @@ test('a failed guest stops only what waits for it: its node is not rebooted, unr
 test('a failed node update stops its own reboot, not the next node', async () => {
   const fake = cluster()
   fake.nodes[0].pending = [pkg('curl', '8.1-2', '8.1-1')]
-  fake.inject = (where, cmd) => (where === 'node-a' && /--only-upgrade install 'curl'$/.test(cmd) ? { code: 100, output: 'E: broken', timedOut: false } : undefined)
+  fake.inject = (where, cmd) => (where === 'node-a' && /--only-upgrade install 'curl=8\.1-2'/.test(cmd) ? { code: 100, output: 'E: broken', timedOut: false } : undefined)
   const { runner, store } = setup(fake)
   const { job, steps } = await run(runner, store, ['node:node-a:pkg:curl', 'node:node-a:reboot', 'node:node-b'])
   assert.equal(job.status, 'done', job.pauseReason ?? '')
@@ -103,7 +103,7 @@ test('the guarded node: a per-package run installs upgrade-only, never upgrade, 
   assert.equal(job.status, 'done', job.pauseReason ?? '')
   assert.equal(steps.find(s => s.action === 'node-packages')!.status, 'ok')
   const cmds = fake.cmds('gpu-node')
-  assert.ok(cmds.some(c => /--no-remove --only-upgrade install 'curl' 'pve-manager'$/.test(c)))
+  assert.ok(cmds.some(c => /--no-remove --only-upgrade install 'curl=8\.1-2' 'pve-manager=9\.2-3'$/m.test(c)), 'installed pinned to the simulated versions')
   assert.equal(cmds.some(c => APT_WIDE.test(c)), false, cmds.join('\n'))
   assert.deepEqual(fake.nodes[2].holds, HOLDS)
   assert.equal(fake.nodes[2].pinned, '7.0.1-1-pve')

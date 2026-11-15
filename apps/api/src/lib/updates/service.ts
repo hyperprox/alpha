@@ -32,7 +32,8 @@ export interface ClusterUpdates {
   runner:     UpdatesRunner
   loadPolicy: () => PolicyLoad
   /** The inventory, read once and shared by the page's inventory and plan requests; per cluster. */
-  inventory(refresh: boolean): Promise<UpdatesInventory>
+  /** `discover`: also look for compose projects in every guest (a person asked), not only where the policy turns docker on. */
+  inventory(refresh: boolean, discover?: boolean): Promise<UpdatesInventory>
   /** The last inventory read, without reading anything (null before the first read). */
   cached(): UpdatesInventory | null
 }
@@ -119,8 +120,8 @@ export class UpdatesServices {
     const svc: ClusterUpdates = {
       ref, remote, exec, store, runner, loadPolicy,
       cached: () => cached,
-      async inventory(refresh: boolean) {
-        if (cached && !refresh) return cached
+      async inventory(refresh: boolean, discover = false) {
+        if (cached && !refresh && !discover) return cached
         // While a job is active the runner keeps the cache current; a page refresh must not send a second round
         // of reads into guests mid-upgrade.
         if (cached && await store.activeJob()) return cached
@@ -128,6 +129,7 @@ export class UpdatesServices {
           reading = readInventory(exec, loadPolicy().policy, {
             rebootPending: runner.rebootPending, hostname: remote ? undefined : d.hostname,
             apps: remote ? undefined : d.apps, ...runner.inventoryOptions(),
+            ...(discover && !remote ? { discoverCompose: 'all' as const } : {}),
           })
             .then(r => { cached = { ...r.inventory, cluster: { ...ref } }; return cached })
             .finally(() => { reading = null })

@@ -39,10 +39,11 @@ import {
   installedVersionsCommand, parseInstalledVersions, readBackProblems,
   parseNodeFacts, tail, type NodeFacts,
   nodePackagesCommand, nodePackagesSimulateCommand, guestPackagesScript, isGuardedKernelPackage, PKG_NAME,
-  COMPOSE_LS_SCRIPT, parseComposeLs,
+  COMPOSE_LS_SCRIPT, parseComposeLs, composeProjectScript,
 } from './commands'
+import { IGNORE_TAG } from './inventory'
 import {
-  buildSelectedPlan, parseTargetId, packagesOf, composeDirOf, DEPENDS_ON, MAX_SELECTION, nodeGuarded,
+  buildSelectedPlan, parseTargetId, packagesOf, composeKeyOf, DEPENDS_ON, MAX_SELECTION, nodeGuarded,
 } from './targets'
 import { handoffNodeOf, handoffTag, readHandoff, selfGuestScript, selfNodeRebootScript, startHandoff } from './handoff'
 import { type AppEnv, APPROVAL_ID, runAppStep } from './apps'
@@ -112,7 +113,10 @@ export interface RunnerDeps {
    * cluster (the address, certificate or token changed since). lib/updates/cluster-store.ts provides it.
    */
   checkJob?:  (job: JobRecord) => void
-  /** Find the compose projects running in each guest, so each can be chosen on its own (production, home). */
+  /**
+   * Read compose projects as projects (name and files) where the policy turns docker on, so each can be chosen on its
+   * own (production, home). Every other guest is looked at only when a person asks for it (inventory `discover`).
+   */
   discoverCompose?: boolean
 }
 
@@ -278,7 +282,8 @@ export class UpdatesRunner {
     const step = isSelf
       ? { seq: 1, target: node, action: 'self' as const, detail: `${DETAIL.selfReboot} — requested by hand, through a handoff` }
       : { seq: 1, target: node, action: 'node-reboot' as const, detail: `${DETAIL.rebootAuto} — requested by hand` }
-    const plan: UpdatesPlan = { steps: [step], warnings: [] }
+    // Asked for by name: it reboots whether or not the node says it needs to (the plan's `forced`, never its words).
+    const plan: UpdatesPlan = { steps: [step], warnings: [], forced: [1], stepOffset: 1 }
     const job = await this.store.createJob({ trigger: 'manual', status: 'running', plan })
     await this.store.audit('updates.node.reboot', job.id, { node, by: actor })
     await this.store.addSteps(job.id, [
@@ -410,6 +415,9 @@ export class UpdatesRunner {
     const allNodes = chosen?.some(t => t.kind === 'ceph') ?? true
     const chosenNodes = new Set(chosen ? chosen.flatMap(t => ('node' in t ? [t.node] : [])) : [])
     const chosenGuests = new Set(chosen ? chosen.flatMap(t => ('vmid' in t ? [t.vmid] : [])) : [])
+    // Guests whose compose projects were chosen are read as projects again, wherever the policy stands on docker.
+    const composeFor = new Set(chosen ? chosen.flatMap(t => (t.kind === 'compose' ? [t.vmid] : [])) : [])
+    const readInv = () => this.inventory(policy, composeFor.size ? composeFor : undefined)
     const makePlan = (inv: InventoryResult, extra: { policyNote?: string }) => selection
       ? buildSelectedPlan(inv.inventory, policy, { ...this.planContext(inv, policy, { ...extra, ...appPlan }), selection })
       : buildPlan(inv.inventory, policy, this.planContext(inv, policy, { ...extra, scope, ...appPlan }))
@@ -420,11 +428,13 @@ export class UpdatesRunner {
 
     const box: { inv: InventoryResult | null } = { inv: null }
     const pre = await this.runStep(jobId, preStep, async () => {
-      box.inv = await this.inventory(policy)
+      box.inv = await readInv()
       // Chosen targets: the per-node gates cover the nodes it will act on and can (a node it cannot act on is refused
       // in the plan, with the reason, instead of stopping the run for every other target).
       const facts = box.inv.facts
-      const only = allNodes ? undefined : new Set([...chosenNodes].filter(n => facts[n] && holdsPinGate(n, facts[n], nodePolicy(policy, n)).ok))
+      // A node whose reboot was chosen is always checked: one whose holds or pin are missing or unknown stops the run.
+      const rebootOf = new Set(chosen ? chosen.flatMap(t => (t.kind === 'node-reboot' ? [t.node] : [])) : [])
+      const only = allNodes ? undefined : new Set([...chosenNodes].filter(n => rebootOf.has(n) || (facts[n] && holdsPinGate(n, facts[n], nodePolicy(policy, n)).ok)))
       const pf0 = await preflight(this.exec, policy, facts, await this.ceph(jobId), this.remote, only)
       const noout = await this.nooutGate(jobId)
       if (!noout.ok && noout.reason === STALE_NOOUT) await this.announceStaleNoout(jobId, 'at the start of an Updates run')
@@ -445,7 +455,7 @@ export class UpdatesRunner {
 
     if (mode === 'dry-run') {
       // A dry run reads what is already known and executes nothing — not even `apt update`.
-      const inv = box.inv ?? await this.inventory(policy).catch(() => null)
+      const inv = box.inv ?? await readInv().catch(() => null)
       const plan = inv ? await this.withSafety(jobId, makePlan(inv, { policyNote })) : { steps: [], warnings: ['Inventory could not be read'] }
       await this.setJob(jobId, { plan })
       const verdict = pre.status === 'ok' ? 'preflight passed' : `preflight would stop the run: ${pre.reason}`
@@ -479,7 +489,7 @@ export class UpdatesRunner {
           if (r.code !== 0) lines.push(`${g.vmid}: apt update failed (${tail(r.output, 200).trim()})`)
         }))
       }
-      box.inv = await this.inventory(policy)
+      box.inv = await readInv()
       return { status: 'ok', output: lines.join('\n') || 'all lists refreshed' }
     })
     if (ref.status !== 'ok') return void await this.finish(jobId, 'failed', `Refreshing package lists failed: ${ref.reason}`)
@@ -523,6 +533,9 @@ export class UpdatesRunner {
       await Promise.all(targets.slice(i, i + policy.batchSize).map(async t => {
         const mine = guestSteps.filter(s => s.target === t)
         const guest = guests.get(Number(t))
+        // Checked again now, whatever the plan said: a guest excluded or tagged hyperprox-ignore since is not touched.
+        const off = guest && (guest.tags?.includes(IGNORE_TAG) ? 'tagged hyperprox-ignore' : guestPolicy(policy, guest.vmid).excluded ? 'excluded in the Updates policy' : null)
+        if (off) { for (const s of mine) await this.setStep(s, { status: 'skipped', reason: `not run: ${t} is ${off}` }); return }
         if (items.active && guest) {
           // Backups first: a guest being backed up right now is left alone (and Resume tries it again).
           const busy = await this.backupBusy(guest.node, guest.vmid)
@@ -566,7 +579,11 @@ export class UpdatesRunner {
         if (items.brokenBefore(step, now)) { await this.skipItem(jobId, items, step, AFTER_ITEM_FAILURE); continue }
         const waits = await items.unmet(step, now)
         if (waits) { await this.skipItem(jobId, items, step, `${DEPENDS_ON} ${waits}, which did not finish`); continue }
-        const busy = step.action === 'kernel-cleanup' ? null : await this.backupBusy(step.target, null)
+        // HyperProx's own upgrade acts on its guest: a backup of that guest, or on its node, holds it.
+        const selfGuest = step.action === 'self' && detailKey(step) === DETAIL.selfGuest ? guests.get(Number(step.target)) : undefined
+        const busy = step.action === 'kernel-cleanup' ? null
+          : selfGuest ? await this.backupBusy(selfGuest.node, selfGuest.vmid)
+          : await this.backupBusy(step.target, null)
         if (busy) {
           // Ceph moves on every node together: half an install waits for a person rather than being skipped.
           if (step.action === 'ceph') return this.pause(jobId, `A backup is running (${busy}); the Ceph item waits. Press Resume when it has finished.`)
@@ -651,14 +668,17 @@ export class UpdatesRunner {
           case 'apt':    return this.guestApt(guest, policy, log, snapshot)
           case 'apt-packages': return this.guestPackages(guest, policy, packagesOf(step.detail), log, snapshot)
           case 'docker': {
-            // A chosen compose project: only that directory, and only if it is still one the policy names or Docker lists.
-            const chosenDir = detailKey(step) === 'compose-dir' ? composeDirOf(step.detail) : null
-            if (detailKey(step) === 'compose-dir' && !chosenDir) return { status: 'failed', reason: 'unreadable compose step' }
-            if (chosenDir) {
-              const known = await this.composeDirKnown(guest, policy, chosenDir)
-              if (known !== true) return { status: 'failed', reason: known }
+            // A chosen compose project: only that one, by its name and every config file Docker lists for it now
+            // (never what the stored step says), or a policy directory by that directory.
+            const key = /^compose-(dir|project) /.test(step.detail ?? '') ? composeKeyOf(step.detail) : undefined
+            if (key === null) return { status: 'failed', reason: 'unreadable compose step' }
+            if (key !== undefined) {
+              const proj = await this.composeProjectNow(guest, policy, key)
+              if (typeof proj === 'string') return { status: 'failed', reason: proj }
+              const r = await this.exec.guestExec(guest, composeProjectScript(proj), log, 30 * 60_000)
+              return r.code === 0 ? { status: 'ok', output: tail(r.output) } : { status: 'failed', reason: `containers not healthy${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
             }
-            const dirs = chosenDir ? [chosenDir] : guestPolicy(policy, guest.vmid).composeDirs
+            const dirs = guestPolicy(policy, guest.vmid).composeDirs
             const r = await this.exec.guestExec(guest, guestDockerScript(dirs), log, 30 * 60_000)
             return r.code === 0 ? { status: 'ok', output: tail(r.output) } : { status: 'failed', reason: `containers not healthy${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
           }
@@ -752,14 +772,51 @@ export class UpdatesRunner {
     return { status: 'ok', output: tail(r.output) + (wantsReboot ? '\n(the guest asks for a reboot; a chosen package update does not reboot it)' : '') }
   }
 
-  /** True when `dir` is a compose project of this guest now (in the policy, or listed by Docker); else why not. */
-  private async composeDirKnown(guest: GuestListing, policy: Policy, dir: string): Promise<true | string> {
+  /** The chosen compose project as Docker lists it now (or a policy directory); a reason in words when it is not one. */
+  private async composeProjectNow(guest: GuestListing, policy: Policy, key: string): Promise<{ name?: string; dir: string; files?: string[] } | string> {
     if (policy.guests[String(guest.vmid)]?.docker === 'none') return `docker is off for ${guest.vmid} in the policy`
-    const pol = guestPolicy(policy, guest.vmid)
-    if (pol.docker !== 'none' && pol.composeDirs.includes(dir)) return true
     const r = await this.exec.guestExec(guest, COMPOSE_LS_SCRIPT, undefined, 60_000).catch((e: any) => ({ code: -1, output: String(e?.message ?? e), timedOut: false }))
     const ls = parseComposeLs(r.output)
-    return ls.dirs.includes(dir) ? true : `${dir} is no longer a compose project in ${guest.vmid}${ls.error ? ` (${ls.error})` : ''}; nothing was pulled`
+    if (!key.startsWith('/')) {
+      const p = ls.projects.find(x => x.name === key)
+      return p ?? `${key} is no longer a compose project in ${guest.vmid}${ls.error ? ` (${ls.error})` : ''}; nothing was pulled`
+    }
+    const pol = guestPolicy(policy, guest.vmid)
+    if (pol.docker !== 'none' && pol.composeDirs.includes(key)) return { dir: key }
+    return `${key} is not a compose directory in the policy for ${guest.vmid}; nothing was pulled`
+  }
+
+  /** Was this step asked for by name (a ticked reboot row, the Reboot button)? From the plan, never the step's words. */
+  private async forced(jobId: string, step: StepRecord): Promise<boolean> {
+    const plan = (await this.store.getJob(jobId))?.plan
+    return Boolean(plan?.forced?.includes(step.seq - (plan.stepOffset ?? 0)))
+  }
+
+  /**
+   * Before any reboot sets a flag: the node's holds and kernel pin, read now, must be what its policy requires. A node
+   * whose facts cannot be read, or whose pin or holds are gone, is not rebooted (it could come up on another kernel).
+   */
+  private async rebootGate(node: string, policy: Policy): Promise<{ facts: NodeFacts } | { stop: Outcome }> {
+    let facts: NodeFacts
+    try { facts = await this.nodeFacts(node) }
+    catch (e: any) { return { stop: { status: 'failed', reason: `refusing to reboot ${node}: ${e?.message ?? e}. Nothing was changed.` } } }
+    const g = holdsPinGate(node, facts, nodePolicy(policy, node))
+    if (!g.ok) return { stop: { status: 'failed', reason: `refusing to reboot: ${g.reason}. Nothing was changed.` } }
+    return { facts }
+  }
+
+  /**
+   * What a node that keeps its kernel held or pinned must never get from an apt run: held packages, packages its
+   * policy requires held, and any kernel, header or kernel metapackage. Ceph packages too, where Ceph runs. Null: fine.
+   */
+  private guardRefusal(policy: Policy, node: string, facts: NodeFacts, cephRuns: boolean): (name: string) => string | null {
+    const pol = nodePolicy(policy, node)
+    const guarded = nodeGuarded(policy, { node, held: facts.holds, pinned: facts.pinned })
+    return (name: string) =>
+      facts.holds.includes(name) ? `${name} is held`
+        : pol.requireHolds.includes(name) ? `${name} must stay held (policy)`
+        : guarded && isGuardedKernelPackage(name) ? `${name} moves the kernel, which ${node} keeps held or pinned`
+        : isCephPackage(name) && cephRuns ? `${name} is a Ceph package (Ceph moves only through the Ceph item)` : null
   }
 
   /**
@@ -776,14 +833,9 @@ export class UpdatesRunner {
     catch (e: any) { return { status: 'failed', reason: `refusing to update packages on ${node}: ${e?.message ?? e}. Nothing was installed.` } }
     const pre = await this.combine([Promise.resolve(holdsPinGate(node, before, pol)), Promise.resolve(freeSpaceGate(node, before, policy))])
     if (!pre.ok) return { status: 'failed', reason: `stopped before installing: ${pre.reason}` }
-    const guarded = nodeGuarded(policy, { node, held: before.holds }) || Boolean(before.pinned)
     // A remote has no Ceph phase: its Ceph client libraries move like any package only where Ceph does not run.
     const cephRuns = this.remote ? await this.ceph(jobId) : true
-    const refuse = (name: string): string | null =>
-      before.holds.includes(name) ? `${name} is held`
-        : pol.requireHolds.includes(name) ? `${name} must stay held (policy)`
-        : guarded && isGuardedKernelPackage(name) ? `${name} moves the kernel, which ${node} keeps held or pinned`
-        : isCephPackage(name) && cephRuns ? `${name} is a Ceph package (Ceph moves only through the Ceph item)` : null
+    const refuse = this.guardRefusal(policy, node, before, cephRuns)
     const asked = pkgs.map(refuse).filter(Boolean)
     if (asked.length) return { status: 'failed', reason: `refusing: ${asked.join('; ')}. Nothing was installed.` }
 
@@ -800,7 +852,11 @@ export class UpdatesRunner {
     }
     log(`apt's simulation: ${changes.length} package${changes.length === 1 ? '' : 's'} move (${changes.map(c => `${c.name} ${c.from ?? ''} → ${c.to}`).join(', ')})`)
 
-    const r = await this.exec.nodeExec(node, nodePackagesCommand(pkgs), log, 60 * 60_000)
+    // Exactly what the simulation showed, pinned: each chosen package at the version apt said it would install.
+    const specs = pkgs.map(name => ({ name, version: changes.find(c => c.name === name)?.to ?? '' }))
+    const missing = specs.filter(p => !p.version).map(p => p.name)
+    if (missing.length) return { status: 'failed', reason: `refusing: apt's simulation does not upgrade ${missing.join(', ')}. Nothing was installed.`, output: tail(sim.output) }
+    const r = await this.exec.nodeExec(node, nodePackagesCommand(specs as { name: string; version: string }[]), log, 60 * 60_000)
     if (r.code !== 0) return { status: 'failed', reason: 'apt-get install --only-upgrade failed', output: tail(r.output) }
     const svc = await this.exec.nodeExec(node, this.remote ? REMOTE_NODE_SERVICES_COMMAND : NODE_SERVICES_COMMAND, log, 60_000)
     if (svc.code !== 0) return { status: 'failed', reason: 'Proxmox services not all active after the update', output: tail(r.output + '\n' + svc.output) }
@@ -812,6 +868,8 @@ export class UpdatesRunner {
       holdsPinGate(node, after, pol).ok ? '' : holdsPinGate(node, after, pol).reason,
       lost.length ? `no longer on hold: ${lost.join(', ')}` : '',
       before.pinned && after.pinned !== before.pinned ? `the kernel pin changed from ${before.pinned} to ${after.pinned ?? 'none'}` : '',
+      // On a node that keeps its kernel held or pinned, no kernel may appear or go.
+      nodeGuarded(policy, { node, held: before.holds, pinned: before.pinned }) ? kernelsChanged(before, after) : '',
     ].filter(Boolean)
     if (problems.length) return { status: 'failed', reason: `after the update: ${problems.join('; ')} — not repaired; a person must look`, output: tail(r.output) }
     const v = await this.exec.nodeExec(node, installedVersionsCommand(changes.map(c => c.name)), undefined, 60_000)
@@ -1095,6 +1153,14 @@ export class UpdatesRunner {
     const parsed = sim.code === 0 ? parseAptSimulation(sim.output) : { changes: null, error: `the command exited ${sim.code}` }
     if (!parsed.changes) return { status: 'failed', reason: `could not simulate apt-get ${verb} on ${node}, so nothing was installed: ${this.remote ? shortReason(parsed.error) : parsed.error}`, output: tail(sim.output) }
     const changes = parsed.changes
+    // A node that keeps its kernel held or pinned: nothing in the simulation may be held, required held, or move a
+    // kernel (proxmox-kernel-helper, a headers metapackage...). Then nothing is installed at all.
+    const guardedNode = nodeGuarded(policy, { node, held: before.holds, pinned: before.pinned })
+    if (guardedNode) {
+      const refuseOne = this.guardRefusal(policy, node, before, false)
+      const bad = changes.map(c => refuseOne(c.name)).filter(Boolean)
+      if (bad.length) return { status: 'failed', reason: `refusing: apt-get ${verb} on ${node} would also move ${bad.join('; ')}. Nothing was installed; choose single packages instead.`, output: tail(sim.output) }
+    }
     const ceph = changes.filter(c => isCephPackage(c.name))
     // On a remote cluster there is no Ceph phase. Ceph client libraries on a server that runs no Ceph move with
     // the node like any other package; with Ceph running, the upgrade refuses as it does at home.
@@ -1121,6 +1187,8 @@ export class UpdatesRunner {
     catch (e: any) { return { status: 'failed', reason: `after the upgrade: ${e?.message ?? e} — a person must look`, output: tail(said + r.output) } }
     const after = holdsPinGate(node, afterFacts, pol)
     if (!after.ok) return { status: 'failed', reason: `after the upgrade: ${after.reason} — not repaired; a person must look`, output: tail(said + r.output) }
+    const kern = guardedNode ? kernelsChanged(before, afterFacts) : ''
+    if (kern) return { status: 'failed', reason: `after the upgrade: ${kern} — not repaired; a person must look`, output: tail(said + r.output) }
     if (!this.remote) return { status: 'ok', output: tail(said + r.output) }
 
     // Read-back (remote): every package where apt said it would land, held packages still held, the API answering.
@@ -1168,19 +1236,21 @@ export class UpdatesRunner {
 
   private async nodeReboot(jobId: string, step: StepRecord, policy: Policy, log: LineSink): Promise<Outcome> {
     const node = step.target
-    const forced = /\(forced\)$/.test(step.detail ?? '')
+    const forced = await this.forced(jobId, step)
     if (detailKey(step) === DETAIL.rebootManual) {
       this.rebootPending.add(node)
       return { status: 'skipped', reason: 'reboot: manual — reboot pending' }
     }
-    if (detailKey(step) === DETAIL.rebootStandalone) return this.standaloneReboot(step, log)
+    if (detailKey(step) === DETAIL.rebootStandalone) return this.standaloneReboot(step, policy, log)
     // A remote node is never rebooted as part of a run, whatever a stored plan says.
     if (this.remote) { this.rebootPending.add(node); return { status: 'skipped', reason: 'reboot: manual — reboot pending' } }
     const resumed = Boolean(step.startedAt)   // a previous attempt began; flags may be set
+    const gate = await this.rebootGate(node, policy)
+    if ('stop' in gate) return resumed ? { ...gate.stop, reason: `${(gate.stop as { reason: string }).reason} An earlier attempt may have left HA maintenance or noout on; check before clearing them.` } as Outcome : gate.stop
     const ceph = await this.ceph(jobId)
     const peer = await this.peerOf(node)
 
-    if (!forced && !this.rebootNeeded(await this.nodeFacts(node))) {
+    if (!forced && !this.rebootNeeded(gate.facts)) {
       if (resumed) await this.clearFlags(peer, node, ceph, log)
       this.rebootPending.delete(node)
       return { status: 'skipped', reason: 'no reboot needed' }
@@ -1267,10 +1337,12 @@ export class UpdatesRunner {
    * A one-node server, rebooted on a person's request. Nothing to drain and no flags to set: its running guests
    * stop with it. Waits for a new boot id, then reads back the running kernel and which guests came back.
    */
-  private async standaloneReboot(step: StepRecord, log: LineSink): Promise<Outcome> {
+  private async standaloneReboot(step: StepRecord, policy: Policy, log: LineSink): Promise<Outcome> {
     const node = step.target
     const status = await this.exec.clusterStatus()
     if (!status.standalone) return { status: 'failed', reason: `${node} is no longer a one-node server; nothing was rebooted` }
+    const gate = await this.rebootGate(node, policy)
+    if ('stop' in gate) return gate.stop
     const before = await this.runningGuestsOn(node)
     log(before.length ? `running now, will stop: ${before.map(g => `${g.vmid} (${g.name})`).join(', ')}` : 'no guests running')
     const bootBefore = await this.bootId(node)
@@ -1368,8 +1440,10 @@ export class UpdatesRunner {
     }
     if (detailKey(step) === DETAIL.selfReboot) {
       const node = step.target
-      const forced = /\(forced\)$/.test(step.detail ?? '')
-      if (!forced && !this.rebootNeeded(await this.nodeFacts(node))) return { status: 'skipped', reason: 'no reboot needed' }
+      const forced = await this.forced(jobId, step)
+      const gate = await this.rebootGate(node, policy)
+      if ('stop' in gate) return gate.stop
+      if (!forced && !this.rebootNeeded(gate.facts)) return { status: 'skipped', reason: 'no reboot needed' }
       const quiet = await this.waitForQuiet(jobId, policy, log)
       if (!quiet.ok) { this.rebootPending.add(node); return { status: 'skipped', reason: `${quiet.reason} — reboot pending` } }
       const again = await this.clusterGates(jobId, policy)
@@ -1636,16 +1710,18 @@ export class UpdatesRunner {
     return new Map((await this.exec.listGuests()).map(g => [g.vmid, g]))
   }
 
-  private async inventory(policy: Policy): Promise<InventoryResult> {
-    const r = await readInventory(this.exec, policy, { rebootPending: this.rebootPending, hostname: this.deps.hostname, apps: this.deps.apps, ...this.inventoryOptions() })
+  private async inventory(policy: Policy, composeFor?: Set<number>): Promise<InventoryResult> {
+    const opts = this.inventoryOptions()
+    if (composeFor && !this.remote) opts.discoverCompose = composeFor
+    const r = await readInventory(this.exec, policy, { rebootPending: this.rebootPending, hostname: this.deps.hostname, apps: this.deps.apps, ...opts })
     this.deps.onInventory?.(r)
     return r
   }
 
   /** How this cluster's inventory is read: home as always; a remote through apt's simulation, with backups. */
-  inventoryOptions(): { noSelf?: boolean; nodePreview?: 'apt-simulation'; backups?: boolean; noSnapshotAck?: boolean; apps?: undefined; discoverCompose?: boolean } {
+  inventoryOptions(): { noSelf?: boolean; nodePreview?: 'apt-simulation'; backups?: boolean; noSnapshotAck?: boolean; apps?: undefined; discoverCompose?: 'policy' | 'all' | Set<number> } {
     return this.remote ? { noSelf: true, nodePreview: 'apt-simulation', backups: true, noSnapshotAck: true, apps: undefined }
-      : this.deps.discoverCompose ? { discoverCompose: true } : {}
+      : this.deps.discoverCompose ? { discoverCompose: 'policy' } : {}
   }
 
   private selfVmid(inv: InventoryResult, policy: Policy): number | null {
@@ -1700,14 +1776,17 @@ class Items {
   private finished(it: UpdatesPlanItem, steps: StepRecord[]): boolean {
     const off = this.plan.stepOffset ?? 0
     const mine = steps.filter(s => it.seqs.includes(s.seq - off))
-    return mine.every(s => s.status === 'ok' || (s.status === 'skipped' && !retryable(s.reason) && s.reason !== 'cancelled'))
+    // Old kernels left behind are untidy, not unsafe: a failed cleanup does not hold back what waits for the item.
+    return mine.every(s => s.status === 'ok' || (s.action === 'kernel-cleanup' && s.status === 'failed')
+      || (s.status === 'skipped' && !retryable(s.reason) && s.reason !== 'cancelled'))
   }
   /** True when an earlier step of `step`'s own item failed or was skipped for a reason that is not routine. */
   brokenBefore(step: StepRecord, steps: StepRecord[]): boolean {
     const it = this.of(step)
     if (!it) return false
     const off = this.plan.stepOffset ?? 0
-    return steps.some(s => s.seq < step.seq && it.seqs.includes(s.seq - off) && (s.status === 'failed' || (s.status === 'skipped' && retryable(s.reason))))
+    return steps.some(s => s.seq < step.seq && it.seqs.includes(s.seq - off) && s.action !== 'kernel-cleanup'
+      && (s.status === 'failed' || (s.status === 'skipped' && retryable(s.reason))))
   }
   /** The label of the first prerequisite of `step`'s item that did not finish, or null. */
   async unmet(step: StepRecord, steps: StepRecord[]): Promise<string | null> {
@@ -1724,7 +1803,7 @@ class Items {
     const off = this.plan.stepOffset ?? 0
     return (this.plan.items ?? []).map(it => {
       const mine = steps.filter(s => it.seqs.includes(s.seq - off))
-      const failed = mine.find(s => s.status === 'failed')
+      const failed = mine.find(s => s.status === 'failed' && s.action !== 'kernel-cleanup')
       const skipped = mine.find(s => s.status === 'skipped' && (retryable(s.reason) || s.reason === 'cancelled' || /^the run stopped/.test(s.reason ?? '')))
       const status: UpdatesItemOutcome['status'] = failed ? 'failed' : skipped ? 'skipped'
         : mine.some(s => s.status === 'running') ? 'running' : mine.some(s => s.status === 'pending') ? 'pending'
@@ -1733,4 +1812,12 @@ class Items {
       return { id: it.id, label: it.label, status, ...(why ? { reason: why } : {}) }
     })
   }
+}
+
+/** Installed kernels that appeared or went, in words, or '' when the set is the same. */
+function kernelsChanged(before: NodeFacts, after: NodeFacts): string {
+  const a = new Set(before.kernelPackages), b = new Set(after.kernelPackages)
+  const added = [...b].filter(k => !a.has(k)), gone = [...a].filter(k => !b.has(k))
+  if (!added.length && !gone.length) return ''
+  return `installed kernels changed (${[added.length ? `added ${added.join(', ')}` : '', gone.length ? `removed ${gone.join(', ')}` : ''].filter(Boolean).join('; ')})`
 }

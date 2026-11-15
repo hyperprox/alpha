@@ -115,16 +115,23 @@ What a chosen run will not do:
 
 - **Reboot a node you did not tick.** A node upgrade never brings its reboot along. The reboot row is its
   own choice, and goes through HA maintenance (and `noout`) as a reboot always does.
+- **Reboot a node whose holds or kernel pin are missing or cannot be read.** Its reboot row cannot be
+  ticked, and a run that asks for it stops at preflight. Every reboot, the Reboot button's included, reads
+  the holds and pin again before it sets any flag, and refuses if they are not what the policy requires.
 - **Move a kernel on a node that holds or pins one.** One package at a time runs
-  `apt-get install --only-upgrade`, with `--no-remove`, after apt's own simulation. It is refused, with
+  `apt-get install --only-upgrade`, with `--no-remove`, after apt's own simulation, each package pinned to
+  the version the simulation showed. Packages that were installed automatically stay marked that way. It is refused, with
   nothing installed, when the package is held, when the policy requires it held, when it is a Ceph
   package, or when the node holds or pins its kernel and the package is a kernel, header or kernel
   metapackage. It is also refused when the simulation would remove a package, install a new one or move
   any of those. A whole node that holds or pins its kernel gets `apt-get upgrade`, never `dist-upgrade`,
-  whatever its policy says, and no old kernels are cleaned off it.
+  whatever its policy says, and no old kernels are cleaned off it. It is not offered as a whole while any
+  kernel package (`proxmox-kernel-helper` included) is pending there, and the run refuses if apt's
+  simulation would move one. The installed kernels are compared before and after.
 - **Touch a node whose holds and pin cannot be read**, or one whose required holds or pin are missing.
   It is refused in the plan with the reason. The rest of the selection still runs.
-- **Touch an excluded guest, or one tagged `hyperprox-ignore`.** HyperProx does not look inside it at all.
+- **Touch an excluded guest, or one tagged `hyperprox-ignore`.** HyperProx does not look inside it at all,
+  and checks both again right before each guest item runs.
 - **Act where a backup is running.** An item whose guest or node is being backed up is skipped, and says
   so; choose it again once the backup has finished. The Ceph item pauses the run instead, and goes on
   when you press Resume.
@@ -135,9 +142,14 @@ for it: a node's reboot waits for its guests and its own update. Unrelated items
 pauses the run, as it always has, and a node that does not come back stops it. Progress, the result and the log are shown item by item, live and in
 the history.
 
-Compose projects come from the policy's `compose_dirs` and from `docker compose ls` inside each guest.
-A project found that way is updated only when you tick it. A guest whose policy says `docker: none` by its
-VMID is never looked at. Ticking an app approves its update for that one run.
+Compose projects are read where the policy turns docker on for a guest, or in every running guest when
+you press **Find compose projects in every guest** (that runs `docker compose ls` and reads image digests
+from the registries). Each project is its own row, by the name Docker gives it, and is updated with that
+name and every config file it was started with (`-p` and each `-f`), so two projects in one directory
+stay apart. A project found this way is updated only when you tick it. A guest whose policy says
+`docker: none` by its VMID is never looked at. Ticking an app approves its update for that one run.
+
+A failed old-kernel cleanup counts as untidy, not unsafe: it does not hold back a reboot that waits for it.
 
 ## Remote clusters
 

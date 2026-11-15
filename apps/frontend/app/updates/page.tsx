@@ -106,6 +106,15 @@ export default function UpdatesPage() {
     if (r.ok && r.body) { setPlan(r.body); setErr('plan', undefined) } else { setPlan(null); setErr('plan', apiError(r, 'plan')) }
   }, [scope])
 
+  // Compose projects are read only where the policy turns docker on, unless a person asks to look in every guest.
+  const [discovering, setDiscovering] = useState(false)
+  const discoverCompose = async () => {
+    setDiscovering(true)
+    const t = await apiJson<UpdatesTargetTree>('/api/updates/targets?discover=1')
+    if (t.ok && t.body) { setTree(t.body); setTreeErr(null) } else setTreeErr(apiError(t, 'the compose projects'))
+    setDiscovering(false)
+  }
+
   const loadInventory = useCallback(async (fresh: boolean) => {
     const r = await apiJson<UpdatesInventory>('/api/updates/inventory' + (fresh ? '?refresh=1' : ''))
     if (r.ok && r.body) { setInv(r.body); setErr('inv', undefined) } else setErr('inv', apiError(r, 'inventory'))
@@ -451,8 +460,12 @@ export default function UpdatesPage() {
       </Panel>
 
       <Panel title="Choose what to update" tag={tag} edge={edge} right={
-        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        <span className="flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
           Tick any node, package, guest, compose project or app. A reboot is only ever chosen on its own row.
+          <Btn small onClick={() => void discoverCompose()} disabled={discovering || jobActive}
+               title="Runs docker compose ls and reads image digests from the registries, in every running guest">
+            {discovering ? 'Looking…' : 'Find compose projects in every guest'}
+          </Btn>
         </span>
       }>
         {guestsWith.length > 0 && (

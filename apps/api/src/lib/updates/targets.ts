@@ -24,7 +24,7 @@
 
 import type { UpdatesGuest, UpdatesInventory, UpdatesNode, UpdatesPlan, UpdatesPlanItem, UpdatesTarget, UpdatesTargetKind } from './types'
 import { type Policy, guestPolicy, nodePolicy } from './policy'
-import { isCephPackage, isGuardedKernelPackage, isComposeDir, PKG_NAME } from './commands'
+import { isCephPackage, isGuardedKernelPackage, isComposeDir, composeKey, COMPOSE_NAME, PKG_NAME } from './commands'
 import { orderNodes, cephTarget, DETAIL, type PlanContext, type PlanStep } from './planner'
 import { appStepDetail } from './apps'
 import { compareVersions, isVersion } from '../app-updates/versions'
@@ -41,7 +41,7 @@ export const targetId = {
   nodeReboot: (n: string) => `node:${n}:reboot`,
   guest:      (v: number) => `guest:${v}`,
   guestPkg:   (v: number, p: string) => `guest:${v}:pkg:${p}`,
-  compose:    (v: number, dir: string) => `guest:${v}:compose:${dir}`,
+  compose:    (v: number, key: string) => `guest:${v}:compose:${key}`,
   app:        (v: number, key: string) => `guest:${v}:app:${key}`,
   fix:        (v: number, fixId: string) => `guest:${v}:fix:${fixId}`,
 }
@@ -53,7 +53,8 @@ export type ParsedTarget =
   | { kind: 'node-reboot'; node: string }
   | { kind: 'guest'; vmid: number }
   | { kind: 'guest-pkg'; vmid: number; pkg: string }
-  | { kind: 'compose'; vmid: number; dir: string }
+  /** `key`: the project's name, or (a policy directory Docker does not list) its directory. */
+  | { kind: 'compose'; vmid: number; key: string }
   | { kind: 'app'; vmid: number; key: string }
   | { kind: 'app-fix'; vmid: number; fixId: string }
 
@@ -75,17 +76,20 @@ export function parseTargetId(id: unknown): ParsedTarget | null {
   if (!m[2]) return { kind: 'guest', vmid }
   const rest = m[3]
   if (m[2] === 'pkg') return PKG_NAME.test(rest) ? { kind: 'guest-pkg', vmid, pkg: rest } : null
-  if (m[2] === 'compose') return isComposeDir(rest) ? { kind: 'compose', vmid, dir: rest } : null
+  if (m[2] === 'compose') return isComposeDir(rest) || COMPOSE_NAME.test(rest) ? { kind: 'compose', vmid, key: rest } : null
   if (m[2] === 'app') return /^[a-f0-9]{6,64}$/.test(rest) ? { kind: 'app', vmid, key: rest } : null
   return /^fix:\d{1,9}:[a-z0-9-]{1,41}:[a-f0-9]{6,64}:[a-f0-9]{6,64}$/.test(rest) ? { kind: 'app-fix', vmid, fixId: rest } : null
 }
 
 // --- What a node allows -----------------------------------------------------------------------
 
-/** A node that holds packages, or whose policy names holds or a pin: it keeps its kernel where it is. */
-export function nodeGuarded(policy: Policy, n: Pick<UpdatesNode, 'node' | 'held'>): boolean {
+/**
+ * A node that keeps its kernel where it is: its policy names holds or a pin, its kernel is pinned, or it holds a kernel
+ * package. (A hold on something else, pve-firmware say, keeps that package and nothing more.)
+ */
+export function nodeGuarded(policy: Policy, n: Pick<UpdatesNode, 'node' | 'held' | 'pinned'>): boolean {
   const pol = nodePolicy(policy, n.node)
-  return Boolean(pol.requireHolds.length || pol.requirePin || n.held?.length)
+  return Boolean(pol.requireHolds.length || pol.requirePin || n.pinned || n.held?.some(isGuardedKernelPackage))
 }
 
 /** Why a node takes no update at all right now, or null. */
@@ -141,7 +145,7 @@ const imgNewer = (i: { current: string; latest: string | null }) => i.latest !==
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 
 /** The compose projects a guest offers: read ones, or (remote, no discovery) the policy's directories. */
-function projectsOf(policy: Policy, g: UpdatesGuest): { dir: string; source: 'policy' | 'found'; images: { image: string; current: string; latest: string | null }[]; error?: string }[] {
+function projectsOf(policy: Policy, g: UpdatesGuest): NonNullable<UpdatesGuest['compose']> {
   if (g.compose) return g.compose
   const pol = guestPolicy(policy, g.vmid)
   if (pol.docker === 'none' || !pol.composeDirs.length) return []
@@ -193,7 +197,9 @@ export function buildTargets(inv: UpdatesInventory, policy: Policy, ctx: TargetC
     if (!ctx.remote && n.cephPending) notes.push('Ceph packages are pending here too: they move with the Ceph item, which runs first.')
     if (n.upgradeNote) notes.push(n.upgradeNote)
     if (n.error && !refusal) notes.push(n.error)
-    const nothing = own.length ? undefined : 'nothing pending'
+    const kernels = guarded ? own.filter(p => isGuardedKernelPackage(p.name) || n.held?.includes(p.name)).map(p => p.name) : []
+    const nothing = !own.length ? 'nothing pending'
+      : kernels.length ? `keeps its kernel held or pinned, and kernel packages are pending (${kernels.join(', ')}): choose single packages instead` : undefined
     out.push({
       id: nid, kind: 'node', parent: null, label: n.node, node: n.node,
       sub: own.length ? `apt-get ${verb} · ${plural(own.length, 'package')}` : 'up to date',
@@ -213,7 +219,9 @@ export function buildTargets(inv: UpdatesInventory, policy: Policy, ctx: TargetC
     }
     const due = n.rebootRequired || n.rebootPending || n.kernelPending || Boolean(n.preview?.rebootAfter)
     if (n.online && due) {
-      const why = ctx.remote && !n.standalone ? 'on a remote cluster HyperProx reboots only one-node servers; reboot this node by hand after moving its guests' : undefined
+      // A node whose holds or pin are missing or unknown is never rebooted: it could come up on a kernel its GPU driver
+      // was not built for.
+      const why = refusal ?? (ctx.remote && !n.standalone ? 'on a remote cluster HyperProx reboots only one-node servers; reboot this node by hand after moving its guests' : undefined)
       out.push({
         id: targetId.nodeReboot(n.node), kind: 'node-reboot', parent: nid, node: n.node,
         label: ctx.remote ? 'Reboot (one-node server: its guests stop)' : 'Reboot (with HA maintenance)',
@@ -273,12 +281,14 @@ export function buildTargets(inv: UpdatesInventory, policy: Policy, ctx: TargetC
       const pw = isSelf ? "HyperProx's own images are updated by deploying HyperProx" : undefined
       const pol = guestPolicy(policy, g.vmid)
       out.push({
-        id: targetId.compose(g.vmid, c.dir), kind: 'compose', parent: gid, label: c.dir, vmid: g.vmid, node: g.node,
+        id: targetId.compose(g.vmid, composeKey(c)), kind: 'compose', parent: gid, vmid: g.vmid, node: g.node,
+        label: c.name ? `${c.name} (${c.dir})` : c.dir,
         sub: c.error ? c.error : fresh ? `${plural(fresh, 'newer image')} · compose pull, then up` : 'no newer image seen',
         pending: fresh, security: 0, selectable: !pw, ...(pw ? { blocked: pw } : {}),
         everything: !pw && !noSnap && pol.docker === 'auto' && c.source === 'policy',
         images: c.images,
-        notes: [c.source === 'found' ? 'Found running in the guest (not named in the policy); updated only when chosen.' : `In the policy (docker: ${pol.docker}).`],
+        notes: [c.source === 'found' ? 'Found in the guest (not named in the policy); updated only when chosen.' : `In the policy (docker: ${pol.docker}).`,
+          ...(c.files?.length ? [`Config files: ${c.files.join(', ')}`] : [])],
         ...(noSnap ? { approvals: [g.noSnapshotAckId ?? `nosnap:${g.vmid}`] } : {}),
       })
     }
@@ -328,10 +338,12 @@ export function packagesOf(detail: string | null | undefined): string[] {
   const m = /^only-upgrade \(\d+ packages?\): (.+)$/.exec(detail ?? '')
   return m ? m[1].split(' ').filter(Boolean) : []
 }
-export const composeDetail = (dir: string) => `compose-dir ${dir} — pull its images and restart it`
-export function composeDirOf(detail: string | null | undefined): string | null {
-  const m = /^compose-dir (\S+)(?: |$)/.exec(detail ?? '')
-  return m && isComposeDir(m[1]) ? m[1] : null
+/** A chosen compose step: `compose-project <name>`, or `compose-dir <dir>` for a policy directory Docker does not list. */
+export const composeDetail = (key: string) => key.startsWith('/') ? `compose-dir ${key} — pull its images and restart it` : `compose-project ${key} — pull its images and restart it`
+export function composeKeyOf(detail: string | null | undefined): string | null {
+  const m = /^compose-(dir|project) (\S+)(?: |$)/.exec(detail ?? '')
+  if (!m) return null
+  return m[1] === 'dir' ? (isComposeDir(m[2]) ? m[2] : null) : (COMPOSE_NAME.test(m[2]) ? m[2] : null)
 }
 
 /** "an item it depends on failed": the reason a skipped dependent carries, and how Resume knows to retry it. */
@@ -411,13 +423,14 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
       if (why) refuse([s.id], why); else { pkgs.push(p); pkgIds.push(s.id) }
     }
     const projects = projectsOf(policy, g)
-    const composeSel: { id: string; dir: string }[] = []
+    const composeSel: { id: string; key: string; label: string }[] = []
     for (const s of sel.filter(x => x.t.kind === 'compose')) {
-      const dir = (s.t as { dir: string }).dir
+      const key = (s.t as { key: string }).key
+      const proj = projects.find(p => composeKey(p) === key)
       const why = isSelf ? "HyperProx's own images are updated by deploying HyperProx, not by this run"
         : policy.guests[String(vmid)]?.docker === 'none' ? `docker is off for ${vmid} in the policy`
-        : !projects.some(p => p.dir === dir) ? `${dir} is not a compose project HyperProx found in ${vmid}` : null
-      if (why) refuse([s.id], why); else composeSel.push({ id: s.id, dir })
+        : !proj ? `${key} is not a compose project HyperProx found in ${vmid}` : null
+      if (why) refuse([s.id], why); else composeSel.push({ id: s.id, key, label: proj!.name ?? proj!.dir })
     }
     const fixSel: { id: string; detail: string; label: string }[] = []
     const appSel: { id: string; detail: string; label: string; approval: string }[] = []
@@ -478,8 +491,8 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
       mine.push(item(`guest:${vmid}:pkgs`, `${vmid} ${g.name}: ${pkgs.join(', ')}`, 'guest-pkg', pkgIds, seqs([s]), chain()))
     }
     for (const c of composeSel) {
-      const s = add(t, 'docker', composeDetail(c.dir))
-      mine.push(item(c.id, `${vmid} ${g.name}: ${c.dir}`, 'compose', [c.id], seqs([s]), chain()))
+      const s = add(t, 'docker', composeDetail(c.key))
+      mine.push(item(c.id, `${vmid} ${g.name}: ${c.label}`, 'compose', [c.id], seqs([s]), chain()))
     }
     for (const f of fixSel) {
       const s = add(t, 'app-config', f.detail)
@@ -523,6 +536,9 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
 
   // --- Nodes, one at a time ------------------------------------------------------------------
   let selfReboot: { node: string; deps: string[]; id: string } | null = null
+  const forced: number[] = []
+  // A chosen node that is not in the cluster any more is refused, never silently dropped.
+  for (const c of chosen) if ('node' in c.t && !nodes.has(c.t.node)) refuse([c.id], `no node ${c.t.node} in this cluster`)
   for (const n of ordered) {
     const sel = chosen.filter(c => 'node' in c.t && c.t.node === n.node)
     if (!sel.length) continue
@@ -538,6 +554,8 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
       const why = refusal
         ?? (!own.length ? `${n.node} has no packages pending` : null)
         ?? (!ctx.remote && n.cephPending && !cephItem ? `Ceph packages are pending on ${n.node}, and a node upgrade never moves Ceph: choose Ceph too (it runs first), or choose single packages` : null)
+        ?? (guarded && own.some(p => isGuardedKernelPackage(p.name) || n.held?.includes(p.name))
+          ? `${n.node} keeps its kernel held or pinned, and kernel packages are pending (${own.filter(p => isGuardedKernelPackage(p.name) || n.held?.includes(p.name)).map(p => p.name).join(', ')}): choose single packages instead` : null)
       if (why) refuse([whole.id], why)
       else {
         // A node that keeps its kernel held or pinned never gets dist-upgrade from a chosen update (the runner decides again).
@@ -562,7 +580,7 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
       }
     }
     if (rebootSel) {
-      const why = !n.online ? `${n.node} is offline`
+      const why = refusal ? `${refusal}; it is not rebooted`
         : ctx.remote && !n.standalone ? 'on a remote cluster HyperProx reboots only one-node servers; reboot this node by hand after moving its guests' : null
       if (why) refuse([rebootSel.id], why)
       else {
@@ -574,6 +592,7 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
             ? `${DETAIL.rebootStandalone} — chosen by a person; its running guests stop until it is back`
             : `${DETAIL.rebootAuto} — chosen by a person, through HA maintenance (forced)`
           const s = add(n.node, 'node-reboot', detail)
+          forced.push(s)
           item(rebootSel.id, `Reboot ${n.node}`, 'node-reboot', [rebootSel.id], [s], deps)
         }
       }
@@ -590,13 +609,14 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
   }
   if (selfReboot) {
     const s = add(selfReboot.node, 'self', `${DETAIL.selfReboot} — HyperProx's own node, through a handoff from another node (forced)`)
+    forced.push(s)
     item(selfReboot.id, `Reboot ${selfReboot.node} (HyperProx's own node)`, 'node-reboot', [selfReboot.id], [s],
       [...selfReboot.deps, ...(guestItemsOn.get(selfReboot.node) ?? []).filter(x => !selfReboot!.deps.includes(x))])
   }
 
   for (const r of refused) warnings.push(`Not planned: ${r.id} — ${r.reason}`)
   if (!steps.length) warnings.push('Nothing to run: none of the chosen targets can be updated now.')
-  const plan: UpdatesPlan = { steps, warnings, scope: 'all', selection: chosen.map(c => c.id), items, refused }
+  const plan: UpdatesPlan = { steps, warnings, scope: 'all', selection: chosen.map(c => c.id), items, refused, ...(forced.length ? { forced } : {}) }
   if (used.size) plan.approved = [...used].sort()
   return plan
 }

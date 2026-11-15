@@ -353,7 +353,8 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
     nameOf: id => clusterRow(id)?.name ?? 'a removed cluster',
   }
   const extra = perClusterSources(c, d)
-  if (c.kind === 'remote') return [...extra, homeOnlySource(c)]
+  // Updates work on a remote too: its own tree, as its Updates page last read it.
+  if (c.kind === 'remote') return [...extra, updatesSource({ role: currentContext()?.role, tree: () => lastTargets(c.id) }), homeOnlySource(c)]
   const role = currentContext()?.role
   const certs = async (): Promise<CertLite[]> => {
     const svc = (certsService ??= productionCertsService(prisma as any, () => {}))
@@ -397,7 +398,7 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
     placementSource({ unlocked: isUnlocked, map: async () => (await placementService(prisma).map()).map, advice: () => placementService(prisma).advice() }),
     balanceSource({ unlocked: isUnlocked, map: async () => (await placementService(prisma).map()).map, advice: () => placementService(prisma).advice() }),
     // Read-only: the Updates page's target tree as last read (admin only); nothing is read from any machine.
-    updatesSource({ role, tree: lastTargets }),
+    updatesSource({ role, tree: () => lastTargets(c.id) }),
   ]
   // Home's own sources (cluster, DNS, proxy, certificates, backups, plug-ins) are read in home's context whatever
   // cluster this request is for: a certificate inventory built while a remote is open must still be home's.

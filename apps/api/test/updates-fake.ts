@@ -36,7 +36,7 @@ export interface FakeGuest extends GuestListing {
   noApt?: boolean
   rebootAfterUpgrade?: boolean
   /** Compose projects Docker lists in the guest, and their images. */
-  compose?: { dir: string; images: { image: string; current: string; latest: string | null }[] }[]
+  compose?: { dir: string; name?: string; files?: string[]; images: { image: string; current: string; latest: string | null }[] }[]
   /** Packages held inside the guest (apt-mark showhold). */
   held?: string[]
 }
@@ -401,7 +401,7 @@ export class FakeCluster implements UpdatesExecutor {
     const tag = script === GUEST_PENDING_SCRIPT ? 'pending' : script === GUEST_UPGRADE_SCRIPT ? 'apt' : script === GUEST_REFRESH_SCRIPT ? 'refresh'
       : script === COMPOSE_LS_SCRIPT ? 'compose-ls' : /HP_IMAGES_END/.test(script) ? 'compose-images'
       : /--only-upgrade install/.test(script) ? 'apt-packages'
-      : /docker compose pull/.test(script) ? 'docker' : /check answered/.test(script) ? 'check' : script === 'true' ? 'ping'
+      : /docker compose (.* )?pull -q/.test(script) ? 'docker' : /check answered/.test(script) ? 'check' : script === 'true' ? 'ping'
       : /^# fake:(\S+)/.exec(script)?.[1] ?? 'other'
     this.calls.push({ where: String(g.vmid), cmd: `guest:${tag}`, t: this.t })
     const r = this.inject(String(g.vmid), `guest:${tag}`)
@@ -414,13 +414,14 @@ export class FakeCluster implements UpdatesExecutor {
     if (this.scripted.has(tag)) return this.scripted.get(tag)!(script)
     if (tag === 'compose-ls') {
       if (!fg.compose) return ok('HP_NO_DOCKER')
-      return ok(['HP_COMPOSE_BEGIN', JSON.stringify(fg.compose.map((c, i) => ({ Name: `p${i}`, Status: 'running(1)', ConfigFiles: `${c.dir}/compose.yaml` }))), 'HP_COMPOSE_END'].join('\n'))
+      return ok(['HP_COMPOSE_BEGIN', JSON.stringify(fg.compose.map((c, i) => ({ Name: c.name ?? `p${i}`, Status: 'running(1)', ConfigFiles: (c.files ?? [`${c.dir}/compose.yaml`]).join(',') }))), 'HP_COMPOSE_END'].join('\n'))
     }
     if (tag === 'compose-images') {
       const lines: string[] = []
-      for (const m of script.matchAll(/HP_DIR (\/[^']*)'/g)) {
-        lines.push(`HP_DIR ${m[1]}`)
-        for (const i of fg.compose?.find(c => c.dir === m[1])?.images ?? []) lines.push(`HP_IMG ${i.image} ${i.current} ${i.latest ?? '-'}`)
+      for (const m of script.matchAll(/HP_PROJ ([^']*)'/g)) {
+        lines.push(`HP_PROJ ${m[1]}`)
+        const c = fg.compose?.find((x, i) => (x.name ?? `p${i}`) === m[1] || (m[1].startsWith('/') && x.dir === m[1]))
+        for (const i of c?.images ?? []) lines.push(`HP_IMG ${i.image} ${i.current} ${i.latest ?? '-'}`)
       }
       return ok([...lines, 'HP_IMAGES_END'].join('\n'))
     }
