@@ -65,6 +65,8 @@ know or do before they install. Newest entry at the top.
   - Technical: the exporter token is always `<token>-exporter`; every token delete removes its ACL lines first, since Proxmox keeps them.
 - Self-update never offers an older version than the one you run, and follows the place you installed from.
 - Updates never upgrade a node whose package holds or kernel pin cannot be read.
+- **Updates on a remote server work like on your home cluster.** The list of what can be updated, the order preview, finding Compose projects in every guest and updating a single Compose project now all work for a remote server, with the same protections. HyperProx's own update is no longer shown on a remote server's page, since it updates this HyperProx and nothing on the remote, and "Add node login" there now opens that server's own logins.
+  - Technical: `GET /api/updates/targets` (with `discover=1`) and `POST /api/updates/preview` are allowed for a remote cluster. Compose projects are read through the remote's executor (pinned logins, the script guard): where its policy section turns docker on, or in every guest when asked, never in excluded guests, guests with `docker: none` or guests tagged `hyperprox-ignore`. A run re-lists the chosen project with `docker compose ls` and uses its `-p` name and every `-f` file from then, with the master password re-entered, audited, and a failed item leaving the others alone. Plug-in app updates stay home-only: they use plug-in settings and proxy hosts kept for the home cluster.
 - Many small fixes from the first round of fresh-install tests: layouts at phone width, clearer "found" versus "connected" in the wizard, the setup link can be copied, and the container form puts block storage first.
 
 ### Before you update

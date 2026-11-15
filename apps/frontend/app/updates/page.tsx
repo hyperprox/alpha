@@ -24,6 +24,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { clusterColor } from '@/lib/clusters'
 import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
 import { isNoLoginText } from '@/lib/node-login'
+import { updatesPageParts } from '@/lib/updates-cluster'
 
 const ACTIVE = ['running', 'paused', 'awaiting-confirm']
 const LOG_CAP = 500
@@ -45,6 +46,9 @@ export default function UpdatesPage() {
   const allowed = atLeast(role, 'admin')
   const cluster = useUpdatesCluster()
   const remote = cluster.kind === 'remote'
+  // What this cluster's page offers (lib/updates-cluster.ts): everything, except HyperProx's own update and plug-in
+  // app updates on a remote.
+  const parts = updatesPageParts(cluster)
   const tag = <ClusterTag c={cluster} />
   const edge = clusterColor(cluster.kind)
   const [check, setCheck] = useState<UpdatesCheckStatus | null>(null)
@@ -405,7 +409,7 @@ export default function UpdatesPage() {
         chips={[
           { label: 'Nodes with updates', value: inv ? `${nodesWith.length}/${inv.nodes.length}` : '…', tone: nodesWith.length ? 'warn' : 'good' },
           { label: 'Guests with updates', value: inv ? `${guestsWith.length}/${managedGuests}` : '…', tone: guestsWith.length ? 'warn' : 'good' },
-          { label: 'Apps with updates', value: inv ? appsWith.length : '…', tone: appsWith.length ? 'warn' : 'good' },
+          ...(parts.apps ? [{ label: 'Apps with updates', value: inv ? appsWith.length : '…', tone: (appsWith.length ? 'warn' : 'good') as Tone }] : []),
           { label: 'Machines with security updates', value: inv ? security : '…', tone: level === 'crit' ? 'crit' : 'good' },
         ]}>
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -426,15 +430,15 @@ export default function UpdatesPage() {
         <Notice tone="warn">
           <div className="flex flex-wrap items-center gap-3">
             <span>Updates cannot read some machines: there is no saved node login.</span>
-            <NodeLoginAction small />
+            <NodeLoginAction small href={parts.nodeLoginHref} />
           </div>
         </Notice>
       )}
 
       <CheckPanel status={check} error={checkErr} busy={busy} onCheck={checkNow} current={cluster.id} />
 
-      {/* HyperProx's own version and update: home only (it updates this install, nothing on a remote). */}
-      {!remote && <SelfUpdatePanel />}
+      {/* HyperProx's own version and update: not on a remote's page (it updates this install, nothing on a remote). */}
+      {parts.selfUpdate && <SelfUpdatePanel />}
 
       {active && <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>This job runs on {tag}</div>}
       {active && (
@@ -461,11 +465,13 @@ export default function UpdatesPage() {
 
       <Panel title="Choose what to update" tag={tag} edge={edge} right={
         <span className="flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
-          Tick any node, package, guest, compose project or app. A reboot is only ever chosen on its own row.
-          <Btn small onClick={() => void discoverCompose()} disabled={discovering || jobActive}
-               title="Runs docker compose ls and reads image digests from the registries, in every running guest">
-            {discovering ? 'Looking…' : 'Find compose projects in every guest'}
-          </Btn>
+          Tick any node, package, guest{parts.apps ? ', compose project or app' : ' or compose project'}. A reboot is only ever chosen on its own row.
+          {parts.discoverCompose && (
+            <Btn small onClick={() => void discoverCompose()} disabled={discovering || jobActive}
+                 title={`Runs docker compose ls and reads image digests from the registries, in every running guest of ${cluster.name}`}>
+              {discovering ? 'Looking…' : 'Find compose projects in every guest'}
+            </Btn>
+          )}
         </span>
       }>
         {guestsWith.length > 0 && (

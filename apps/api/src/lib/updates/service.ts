@@ -114,8 +114,10 @@ export class UpdatesServices {
       cluster: ref,
       remote,
       checkJob: store.checkJob,
-      // Home: the compose projects running in each guest are found too, so each can be chosen on its own.
-      discoverCompose: !remote,
+      // The compose projects running in each guest are found too, so each can be chosen on its own: home and remote
+      // alike, through that cluster's executor (a remote's: its pinned logins and the script guard). Only where the
+      // policy turns docker on, unless a person asks; `docker: none`, exclusions and hyperprox-ignore always win.
+      discoverCompose: true,
     })
     const svc: ClusterUpdates = {
       ref, remote, exec, store, runner, loadPolicy,
@@ -129,7 +131,7 @@ export class UpdatesServices {
           reading = readInventory(exec, loadPolicy().policy, {
             rebootPending: runner.rebootPending, hostname: remote ? undefined : d.hostname,
             apps: remote ? undefined : d.apps, ...runner.inventoryOptions(),
-            ...(discover && !remote ? { discoverCompose: 'all' as const } : {}),
+            ...(discover ? { discoverCompose: 'all' as const } : {}),
           })
             .then(r => { cached = { ...r.inventory, cluster: { ...ref } }; return cached })
             .finally(() => { reading = null })

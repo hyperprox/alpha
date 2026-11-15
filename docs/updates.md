@@ -165,7 +165,12 @@ is refused and you start a new one.
 **What is the same as at home.** Preflight (free space, required holds and kernel pin, Ceph health when
 Ceph runs there), `apt update`, the plan, a manual run stopping at *awaiting confirmation*, guests first
 with a snapshot where possible, then nodes one at a time, the report and the notifications (which name
-the remote and link to its page).
+the remote and link to its page). Choosing what to update works the same way: the tree, the order shown
+before you confirm, one failed item leaving the others alone, and compose projects, read where the
+remote's section turns docker on or in every running guest when you press **Find compose projects in
+every guest**. That runs through the remote's own logins and script guard; excluded guests, guests with
+`docker: none` and guests tagged `hyperprox-ignore` are never looked at, and a chosen project is
+re-listed with `docker compose ls` when it runs and updated by its name and every config file (`-p`, `-f`).
 
 **What is different, and why.**
 
@@ -217,9 +222,11 @@ the remote and link to its page).
   one the node reports. Every script HyperProx sends passes the remote script guard, which refuses
   anything naming the cluster filesystem, corosync or `/etc/pve` (the services check after an upgrade
   therefore leaves `pve-cluster` out, and the Proxmox API answering stands in for it).
-- **Not on a remote:** scheduled runs (a run starts only when you start it), app updates from plug-ins,
-  Docker pulls unless the cluster's section turns them on, the Plex viewer wait (the home Plex knows
-  nothing of a remote's viewers), and the Ceph phase. If a node upgrade would change Ceph packages and
+- **Not on a remote:** scheduled runs (a run starts only when you start it), app updates from plug-ins
+  (they use plug-in settings and proxy hosts kept for the home cluster), HyperProx's own update (it updates
+  this HyperProx, which never runs on a remote, so its panel is not on a remote's page), Docker pulls in a
+  whole-cluster run unless the cluster's section turns them on (a compose project you tick is
+  pulled), the Plex viewer wait (the home Plex knows nothing of a remote's viewers), and the Ceph phase. If a node upgrade would change Ceph packages and
   Ceph runs on that cluster, the step refuses; on a server without Ceph, the Ceph client libraries Proxmox
   installs move with the node like any other package.
 

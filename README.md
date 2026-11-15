@@ -1062,7 +1062,9 @@ showing versions, removals, kernel, firmware and Proxmox VE changes, held packag
 whether a reboot will follow. Applying asks for your master password, and every package is read back
 afterwards. A remote node is never rebooted on its own: **Reboot** is a separate action that first shows
 which guests will stop. A guest that cannot be snapshotted is updated only when you tick "update without
-a snapshot", which shows its newest backup. A remote's rules go in its own `clusters:` section of the
+a snapshot", which shows its newest backup. Choosing what to update and **Find compose projects in every
+guest** work there too, through that server's own node logins. HyperProx's own update and plug-in app
+updates are only on the home cluster's page. A remote's rules go in its own `clusters:` section of the
 same policy file; without one, safe defaults apply.
 
 **Daily check.** Once a day, and on **Check now**, HyperProx checks every cluster read-only (it refreshes

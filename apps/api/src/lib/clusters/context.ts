@@ -67,9 +67,11 @@ const REMOTE_OK: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/ai\/(wizard\/plan|actions\/apply)$/],
   // Updates (routes/updates.ts): one service per cluster (lib/updates/service.ts) with its own runner, policy section,
   // inventory cache and view of the jobs, so a job planned for one cluster is "No job" to every other. Changes on a
-  // remote also need a fresh re-confirmation. The daily check's status covers every cluster.
-  ['GET',    new RegExp(`^/api/updates/(policy|inventory|plan|jobs|jobs/[A-Za-z0-9]{1,64}|check|nodes/${N}/reboot-preview)$`)],
-  ['POST',   new RegExp(`^/api/updates/(jobs|jobs/[A-Za-z0-9]{1,64}/(confirm|resume|cancel|rollback)|nodes/${N}/reboot|check)$`)],
+  // remote also need a fresh re-confirmation. The daily check's status covers every cluster. The target tree
+  // (with `discover=1`, compose projects in every guest) and the preview of a selection are read-only, built from
+  // that cluster's own inventory and policy.
+  ['GET',    new RegExp(`^/api/updates/(policy|inventory|targets|plan|jobs|jobs/[A-Za-z0-9]{1,64}|check|nodes/${N}/reboot-preview)$`)],
+  ['POST',   new RegExp(`^/api/updates/(jobs|jobs/[A-Za-z0-9]{1,64}/(confirm|resume|cancel|rollback)|nodes/${N}/reboot|check|preview)$`)],
   // Home Assistant control (routes/ha-control.ts) names its instance in the path and, on a remote cluster's page,
   // reaches only the instances linked to that cluster.
   ['GET',    /^\/api\/plugins\/home-assistant\/instances(\/h[0-9a-f]{8}\/(status|health|devices)|\/default\/(status|health|devices))?$/],

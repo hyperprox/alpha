@@ -115,7 +115,7 @@ export interface RunnerDeps {
   checkJob?:  (job: JobRecord) => void
   /**
    * Read compose projects as projects (name and files) where the policy turns docker on, so each can be chosen on its
-   * own (production, home). Every other guest is looked at only when a person asks for it (inventory `discover`).
+   * own (production, home and remote). Every other guest is looked at only when a person asks for it (inventory `discover`).
    */
   discoverCompose?: boolean
 }
@@ -1729,7 +1729,7 @@ export class UpdatesRunner {
 
   private async inventory(policy: Policy, composeFor?: Set<number>): Promise<InventoryResult> {
     const opts = this.inventoryOptions()
-    if (composeFor && !this.remote) opts.discoverCompose = composeFor
+    if (composeFor) opts.discoverCompose = composeFor
     const r = await readInventory(this.exec, policy, { rebootPending: this.rebootPending, hostname: this.deps.hostname, apps: this.deps.apps, ...opts })
     this.deps.onInventory?.(r)
     return r
@@ -1737,8 +1737,8 @@ export class UpdatesRunner {
 
   /** How this cluster's inventory is read: home as always; a remote through apt's simulation, with backups. */
   inventoryOptions(): { noSelf?: boolean; nodePreview?: 'apt-simulation'; backups?: boolean; noSnapshotAck?: boolean; apps?: undefined; discoverCompose?: 'policy' | 'all' | Set<number> } {
-    return this.remote ? { noSelf: true, nodePreview: 'apt-simulation', backups: true, noSnapshotAck: true, apps: undefined }
-      : this.deps.discoverCompose ? { discoverCompose: 'policy' } : {}
+    const compose = this.deps.discoverCompose ? { discoverCompose: 'policy' as const } : {}
+    return this.remote ? { noSelf: true, nodePreview: 'apt-simulation', backups: true, noSnapshotAck: true, apps: undefined, ...compose } : compose
   }
 
   private selfVmid(inv: InventoryResult, policy: Policy): number | null {
