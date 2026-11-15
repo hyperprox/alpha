@@ -149,7 +149,11 @@ const SYNC_EVERY_MS = 10 * 60_000
 export const SCHEDULE_TTL_MS = 7 * 24 * 3600_000
 
 /** What a plan's move gets on top of a plain move: its plan, where the guest must still be, the settings it runs under. */
-export interface MoveContext { planId: string; step: number; expectFrom: string; auto?: boolean; settings?: PlacementSettings }
+export interface MoveContext {
+  planId: string; step: number; expectFrom: string; auto?: boolean; settings?: PlacementSettings
+  /** Asked again right before the audit row and right before the move is stored and sent: a reason to stop, or null. */
+  stillGo?: () => Promise<string | null>
+}
 
 export interface BalanceView extends BalanceResult {
   quiet:    QuietStatus
@@ -381,12 +385,16 @@ export class PlacementService {
       if (when === 'next-quiet' && !plan.quiet.quietNow && !at) {
         throw new PlacementRefusal(`There is no known quiet window to schedule it in${plan.quiet.nowWhy.length ? ` (${plan.quiet.nowWhy[0]})` : ''}. Move anyway, or try later.`, 409, 'no-window')
       }
+      // A plan's move: the plan may have been stopped while this was being checked.
+      const halt = async () => { const why = ctx?.stillGo ? await ctx.stillGo() : null; if (why) throw new PlacementRefusal(`Not moved: ${why}`, 409, 'stopped') }
+      await halt()
       // The audit row first: no row, no move.
       await this.d.audit(ctx ? (ctx.auto ? 'placement.auto.move' : 'placement.plan.move') : at ? 'placement.move.schedule' : 'placement.move', sid, {
         by: actor.email, from: plan.from, to, method: plan.method, anyway: !!opts.anyway && !plan.quiet.quietNow, scheduledFor: at ? new Date(at).toISOString() : null,
         bwlimitKiB: plan.bwlimitKiB, copyBytes: plan.copyBytes, downtimeSec: plan.downtimeSec,
         ...(ctx ? { planId: ctx.planId, step: ctx.step } : {}),
       })
+      await halt()
       let rec: MoveRecord
       try {
         rec = await this.d.store.create({
@@ -807,7 +815,8 @@ export class PlacementService {
   private async cephNow(): Promise<CephNow> {
     const storage = await this.d.pve().fetchStrict<any[]>('/storage').catch(() => null)
     if (!Array.isArray(storage)) return { kind: 'unread', why: 'the storage list could not be read, so whether Ceph is in use is unknown' }
-    const ours = storage.some(x => (x?.type === 'rbd' || x?.type === 'cephfs') && !x?.monhost)
+    // Any rbd or cephfs storage, ours or external (monhost): with no readable status, Ceph is in use and unseen.
+    const ours = storage.some(x => x?.type === 'rbd' || x?.type === 'cephfs')
     const st = await this.d.pve().fetchStrict<any>('/cluster/ceph/status').catch(() => null)
     if (!st?.health?.status) return ours ? { kind: 'unread', why: 'Ceph is in use but its health could not be read' } : { kind: 'none' }
     const num = Number(st.osdmap?.num_osds), up = Number(st.osdmap?.num_up_osds)
@@ -1006,12 +1015,16 @@ export class PlacementService {
       if (!g || g.node !== step.from) return stop(i, 'stopped', `Stopped before move ${i + 1}: ${step.name || step.sid} is ${g ? `on ${g.node} now` : 'gone'}, not on ${step.from} where the plan found it.`)
       const c = checkStep(b.input, step.sid, step.to)
       if (!c.ok) return stop(i, 'stopped', `Stopped before move ${i + 1}: the cluster changed (${c.why}).`)
+      // The checks above take a while (the history read): a stop, or a change to automatic balancing, during them wins.
+      const stillGo = () => this.planStillGo(id, row.source === 'auto' ? row.snapshot?.auto ?? null : undefined)
+      const late = await stillGo()
+      if (late) return stop(i, 'stopped', `Stopped before move ${i + 1}: ${late}.`)
       step.status = 'running'; step.startedAt = this.now(); step.error = null
       await save()
       let rec: MoveRecord
       try {
         rec = await this.move(step.sid, step.to, { when: 'now' }, { email: ap.email, role: ap.role },
-          { planId: id, step: i + 1, expectFrom: step.from, auto: row.source === 'auto', settings })
+          { planId: id, step: i + 1, expectFrom: step.from, auto: row.source === 'auto', settings, stillGo })
       } catch (e: any) {
         step.status = 'failed'; step.endedAt = this.now(); step.error = String(e?.message ?? e).slice(0, 400)
         return stop(i + 1, 'stopped', `Move ${i + 1} (${step.name || step.sid}) was not started: ${step.error}`)
@@ -1028,6 +1041,23 @@ export class PlacementService {
       await save()
     }
     return this.finishPlan(id, 'done', null, steps)
+  }
+
+  /**
+   * Should a plan's next move still go? Read fresh: the plan not stopped (or no longer ours), and for an automatic plan
+   * (`auto` given) automatic balancing still on, applying, under the same approval and with no stop since.
+   */
+  private async planStillGo(id: string, auto?: { approvedAt: number; epoch: number } | null): Promise<string | null> {
+    const row = await this.d.store.getPlan(id)
+    if (!row || row.status !== 'running' || row.owner !== this.owner) return 'the plan is no longer running here'
+    if (row.stopRequested) return 'it was stopped on request'
+    if (auto !== undefined) {
+      const c = await this.d.store.auto()
+      if (!auto || !c.settings.enabled || !c.settings.apply || !c.approval || c.approval.at !== auto.approvedAt || c.epoch !== auto.epoch) {
+        return 'automatic balancing was stopped or changed'
+      }
+    }
+    return null
   }
 
   // --- automatic balancing --------------------------------------------------------------------------
@@ -1057,11 +1087,16 @@ export class PlacementService {
       if (cur.settings.apply || cur.approval) epoch++
       approval = null
     }
+    // A stop (or another save) that landed while this one was reading wins: the epoch only goes up, and a save that
+    // started before it must not lower it or turn applying back on.
+    const changedMeanwhile = async () => (await this.d.store.auto()).epoch !== cur.epoch
+    if (await changedMeanwhile()) throw new PlacementRefusal('Automatic balancing was stopped or changed while saving. Read it again, then save.', 409, 'changed')
     await this.d.audit('placement.auto.settings', 'balance', {
       by: actor.email, enabled: settings.enabled, apply: settings.apply, sustainHours: settings.sustainHours,
       maxMovesPerDay: settings.maxMovesPerDay, minHoursBetween: settings.minHoursBetween, checkEveryMin: settings.checkEveryMin,
     })
-    await this.d.store.saveAutoConfig({ settings, approval, epoch }, actor.email)
+    if (await changedMeanwhile()) throw new PlacementRefusal('Automatic balancing was stopped or changed while saving. Read it again, then save.', 409, 'changed')
+    await this.d.store.saveAutoConfig({ settings, approval, epoch: Math.max(epoch, cur.epoch) }, actor.email)
     return this.d.store.auto()
   }
 
@@ -1069,18 +1104,22 @@ export class PlacementService {
    * The emergency stop: applying turns off and the stop epoch moves (a check under way gives up), scheduled plans and
    * scheduled single moves are cancelled, running plans stop after the move under way.
    */
-  async autoStop(actor: Actor): Promise<AutoConfig & { state: AutoState; stopped: number; cancelledMoves: number }> {
+  async autoStop(actor: Actor): Promise<AutoConfig & { state: AutoState; stopped: number; cancelledMoves: number; notCancelled: Array<{ id: string; sid: string; name: string; status: string }> }> {
     await this.d.audit('placement.auto.stop', 'balance', { by: actor.email })
     const cur = await this.d.store.auto()
     await this.d.store.saveAutoConfig({ settings: { ...cur.settings, apply: false }, approval: null, epoch: cur.epoch + 1 }, actor.email)
     await this.d.store.patchAutoState({ lastWhy: `Emergency stop by ${actor.email}.` })
     const why = `Emergency stop by ${actor.email}.`
     let stopped = 0, cancelledMoves = 0
+    const notCancelled: Array<{ id: string; sid: string; name: string; status: string }> = []
     for (const p of await this.d.store.listPlans({ status: ['running', 'scheduled'], limit: 50 })) if (await this.stopOne(p, why)) stopped++
     for (const m of await this.d.store.list({ status: ['scheduled'], limit: 200 })) {
-      if (await this.d.store.transition(m.id, { status: ['scheduled'] }, { status: 'cancelled', endedAt: this.now(), error: why })) cancelledMoves++
+      if (await this.d.store.transition(m.id, { status: ['scheduled'] }, { status: 'cancelled', endedAt: this.now(), error: why })) { cancelledMoves++; continue }
+      // Claimed by the scheduler a moment ago: it runs now, and it is said so.
+      const now = await this.d.store.get(m.id)
+      notCancelled.push({ id: m.id, sid: m.sid, name: m.name, status: now?.status ?? 'gone' })
     }
-    return { ...(await this.d.store.auto()), stopped, cancelledMoves }
+    return { ...(await this.d.store.auto()), stopped, cancelledMoves, notCancelled }
   }
 
   /** HyperProx's automatic moves, from the move history (never from the check's own memory). */
@@ -1127,7 +1166,13 @@ export class PlacementService {
       await this.d.notify?.(title, [...extra, ...lines], `placement:auto:${key}`, extra.length ? 'warning' : 'info').catch(() => undefined)
       patch.lastNotifiedSig = key; patch.lastNotifiedAt = this.now()
     }
-    if (!ap0 || !plan.steps.length) {
+    // Where each guest ran could not be read: an HA recovery cannot be told from a recorded move, so notify only.
+    const blind = !b.hist.locations
+    if (!ap0 || !plan.steps.length || blind) {
+      if (ap0 && blind) {
+        await notifyOnce('The cluster has been uneven: a balancing plan is ready')
+        return done('Uneven, but where each guest ran could not be read, so nothing is applied: notify only.')
+      }
       await notifyOnce('The cluster has been uneven: a balancing plan is ready')
       return done(ap0 ? 'Uneven: only suggestions for HA guests, nothing to apply.' : c0.settings.apply ? 'Uneven: applying is on but no approval is recorded; notify only.' : 'Uneven: a plan was proposed (notify only).')
     }

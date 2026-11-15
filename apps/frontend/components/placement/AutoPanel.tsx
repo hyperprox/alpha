@@ -32,9 +32,10 @@ export function AutoPanel({ auto, admin, onSaved }: { auto: AutoView; admin: boo
   }
   const stop = async () => {
     setBusy(true); setMsg(null)
-    const r = await apiJson<{ data: { stopped: number; cancelledMoves: number } }>('/api/placement/auto/stop', 'POST', {})
+    const r = await apiJson<{ data: { stopped: number; cancelledMoves: number; notCancelled?: Array<{ name: string; sid: string; status: string }> } }>('/api/placement/auto/stop', 'POST', {})
     setBusy(false)
-    setMsg(r.ok ? { tone: 'info', text: stopWords(r.body?.data.stopped ?? 0, r.body?.data.cancelledMoves ?? 0) } : { tone: 'crit', text: r.error ?? 'Not stopped.' })
+    const late = r.body?.data.notCancelled ?? []
+    setMsg(r.ok ? { tone: late.length ? 'crit' : 'info', text: stopWords(r.body?.data.stopped ?? 0, r.body?.data.cancelledMoves ?? 0, late) } : { tone: 'crit', text: r.error ?? 'Not stopped.' })
     onSaved()
   }
   const num = (k: 'sustainHours' | 'checkEveryMin' | 'maxMovesPerDay' | 'minHoursBetween', label: string) => (

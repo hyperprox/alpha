@@ -160,10 +160,12 @@ export async function readHistory(prom: PromRange, opts: { hours: number; now: n
     locations = {}
     for (const r of where) {
       const s = sidOfId(r.metric.id ?? ''), node = r.metric.exported_node ?? r.metric.node
-      if (!s || !node || !want.has(s) || !r.values.length) continue
+      if (!s || !want.has(s) || !r.values.length) continue
+      // A series that does not say which node: where the guests ran is not known at all.
+      if (!node) { locations = null; break }
       ;(locations[s] ??= []).push({ node, first: r.values[0][0], last: r.values[r.values.length - 1][0] })
     }
-    for (const l of Object.values(locations)) l.sort((a, b) => a.last - b.last)
+    if (locations) for (const l of Object.values(locations)) l.sort((a, b) => a.last - b.last)
   }
   return { nodes: [...byNode.values()], guests: [...byGuest.values()], stepSec, start, end, locations }
 }

@@ -88,9 +88,12 @@ export function afterOf(plan: BalancePlan | null): Map<string, { cpu: number; me
 }
 
 /** What the emergency stop did, in words. */
-export function stopWords(plans: number, moves: number): string {
+export function stopWords(plans: number, moves: number, notCancelled: Array<{ name: string; sid: string; status: string }> = []): string {
   const parts = ['applying is off']
   if (plans) parts.push(`${plans} plan${plans === 1 ? ' is' : 's are'} stopped or cancelled (a running one stops after the move under way)`)
   if (moves) parts.push(`${moves} scheduled move${moves === 1 ? ' is' : 's are'} cancelled`)
-  return `Stopped: ${parts.join('; ')}.`
+  const late = notCancelled.length
+    ? ` Not cancelled, because it had already started: ${notCancelled.map(m => `${m.name || m.sid} (${m.status})`).join(', ')}. Watch it in the move history.`
+    : ''
+  return `Stopped: ${parts.join('; ')}.${late}`
 }

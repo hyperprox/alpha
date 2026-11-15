@@ -49,14 +49,26 @@ let nodeMem: Record<string, number> = { node1: 0.85, node2: 0.3, node3: 0.35 }
 let guestMem: Record<string, number> = { 'lxc/107': 4 * G, 'lxc/109': 2 * G }
 /** Runs once, the next time the history is read: something a person does while a check is reading Prometheus. */
 let promHook: (() => Promise<unknown>) | null = null
+/** Runs once, at the n-th history query counted from when it is set: a person acting while a plan's step is being checked. */
+let promCalls = 0
+let promAt: { n: number; fn: () => Promise<unknown> } | null = null
+const hookAt = (n: number, fn: () => Promise<unknown>) => { promCalls = 0; promAt = { n, fn } }
+/** The guest-location series carries no node label (an exporter or relabelling that drops it). */
+let whereNoNode = false
 const prom: PromRange = async (expr, start, end, step) => {
   if (promHook) { const h = promHook; promHook = null; await h() }
+  promCalls++
+  if (promAt && promCalls === promAt.n) { const h = promAt.fn; promAt = null; await h() }
   const ts: number[] = []
   for (let t = start; t <= end; t += step) ts.push(t)
   const flat = (v: number): Sample[] => ts.map(t => [t, v])
   if (/id=~"node\/\.\+"/.test(expr) && /pve_memory_usage_bytes/.test(expr)) return Object.entries(nodeMem).map(([n, v]) => ({ metric: { id: `node/${n}` }, values: flat(v) }))
   if (/id=~"node\/\.\+"/.test(expr)) return Object.keys(nodeMem).map(n => ({ metric: { id: `node/${n}` }, values: flat(0.2) }))
   if (/pve_memory_usage_bytes/.test(expr)) return Object.entries(guestMem).map(([id, v]) => ({ metric: { id }, values: flat(v) }))
+  if (/pve_guest_info/.test(expr)) return Object.keys(guestMem).map(id => {
+    const v = (fixture['/cluster/resources?type=vm'] as any[]).find(x => `${x.type}/${x.vmid}` === id)
+    return { metric: whereNoNode ? { id } : { id, exported_node: String(v?.node ?? '') }, values: flat(1) }
+  })
   return Object.keys(guestMem).map(id => ({ metric: { id }, values: flat(0.1) }))
 }
 
@@ -120,7 +132,7 @@ after(async () => { setApiTokenStore(null); setAuditSink(null); if (isUnlocked()
 function reset(two = true) {
   fixture = two ? withSecondWorker(placementFixture()) : placementFixture()
   pve = makePve(); store = new MemoryPlacementStore(); svc = newService()
-  audits.length = 0; notes.length = 0; failMigrate = null; afterMove = null; moves = 0; clock = Date.UTC(2026, 5, 15, 12, 0); promHook = null
+  audits.length = 0; notes.length = 0; failMigrate = null; afterMove = null; moves = 0; clock = Date.UTC(2026, 5, 15, 12, 0); promHook = null; promAt = null; promCalls = 0; whereNoNode = false
   nodeMem = { node1: 0.85, node2: 0.3, node3: 0.35 }
   guestMem = { 'lxc/107': 4 * G, 'lxc/109': 2 * G }
   for (const k of Object.keys(changed)) delete changed[k]
@@ -671,4 +683,96 @@ test('G3: limits loosened after the approval do not apply; the gap between moves
   await svc.autoTick()
   assert.equal(pve.writes.length, 0)
   assert.match((await autoCfg()).state.lastWhy!, /less than 6 h ago/, 'the approved 6 h, measured from the recorded move')
+})
+
+// --- re-check fixes -----------------------------------------------------------------------------------------------
+
+test('N1: a stop during a manual plan\'s per-step checks stops that step: no migration', async () => {
+  reset()
+  const cookie = await reconfirmed()
+  const v = await proposed(cookie)
+  // The plan's own read is queries 1-5; the first step's history read starts at 6.
+  hookAt(6, async () => { const p = (await store.listPlans({ status: ['running'] }))[0]; await svc.stopPlan(p.id, actorAdmin) })
+  const r = await app.inject({ method: 'POST', url: `${B}/plans`, headers: { cookie }, payload: { expect: v.plan.steps.map((x: any) => ({ sid: x.sid, to: x.to })), goal: 'mem' } })
+  assert.equal(r.statusCode, 200, r.body)
+  const p = await settlePlan(r.json().data.id)
+  assert.equal(p!.status, 'stopped')
+  assert.match(p!.error!, /Stopped before move 1: it was stopped on request/)
+  assert.equal(pve.writes.length, 0, 'no migration')
+  assert.ok(!audits.some(a => a.action === 'placement.plan.move'), 'no move was even audited')
+})
+
+test('N1: an emergency stop, or applying turned off, during an automatic plan\'s per-step checks: no migration', async () => {
+  for (const how of ['stop', 'off'] as const) {
+    reset()
+    nodeMem = { node1: 0.95, node2: 0.3, node3: 0.35 }
+    await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+    // The check's read is queries 1-5; the plan's step read starts at 6.
+    hookAt(6, () => (how === 'stop' ? svc.autoStop(actorAdmin) : svc.saveAuto({ apply: false }, actorAdmin)))
+    await svc.autoTick()
+    const plans = await store.listPlans({ source: 'auto' })
+    assert.equal(plans.length, 1, how)
+    const p = await settlePlan(plans[0].id)
+    assert.equal(p!.status, 'stopped', how)
+    assert.match(p!.error!, how === 'stop' ? /stopped on request|stopped or changed/ : /automatic balancing was stopped or changed/, how)
+    assert.equal(pve.writes.length, 0, `${how}: no migration`)
+  }
+})
+
+test('N1: move() for a plan asks again right before it audits and sends; a stop then means no move', async () => {
+  reset()
+  await assert.rejects(svc.move('ct:107', 'node2', { when: 'now' }, actorAdmin, { planId: 'pl9', step: 1, expectFrom: 'node1', stillGo: async () => 'it was stopped on request' }), /Not moved: it was stopped on request/)
+  assert.equal(pve.writes.length, 0)
+  assert.equal(audits.length, 0)
+  assert.equal((await store.list()).length, 0)
+  let n = 0
+  await assert.rejects(svc.move('ct:107', 'node2', { when: 'now' }, actorAdmin, { planId: 'pl9', step: 1, expectFrom: 'node1', stillGo: async () => (++n === 2 ? 'automatic balancing was stopped or changed' : null) }), /stopped or changed/)
+  assert.equal(pve.writes.length, 0, 'the second ask, after the audit row, still stops it before Proxmox')
+  assert.equal((await store.list()).length, 0)
+})
+
+test('a save that started before a stop cannot undo it: refused, applying stays off, the epoch only goes up', async () => {
+  reset()
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  const orig = store.settings.bind(store)
+  store.settings = async () => { store.settings = orig; await svc.autoStop(actorAdmin); return orig() }
+  await assert.rejects(svc.saveAuto({ maxMovesPerDay: 3 }, actorAdmin), /stopped or changed while saving/)
+  const c = await store.auto()
+  assert.equal(c.settings.apply, false)
+  assert.equal(c.approval, null)
+  assert.equal(c.epoch, 1)
+})
+
+test('Ceph storage with an external monhost still counts as Ceph in use when its status cannot be read', async () => {
+  reset()
+  delete fixture['/cluster/ceph/status']
+  fixture['/storage'] = [{ storage: 'shared-rbd', type: 'rbd', monhost: 'mon.example.com' }]
+  await assert.rejects(svc.saveAuto({ enabled: true, apply: true }, actorAdmin), /Ceph is in use but its health could not be read/)
+})
+
+test('automatic mode only notifies when where the guests ran cannot be read (no node label)', async () => {
+  reset()
+  nodeMem = { node1: 0.95, node2: 0.3, node3: 0.35 }
+  whereNoNode = true
+  await svc.saveAuto({ enabled: true, apply: true }, actorAdmin)
+  await svc.autoTick()
+  assert.equal((await store.listPlans()).length, 0)
+  assert.equal(pve.writes.length, 0)
+  assert.match((await store.auto()).state.lastWhy!, /where each guest ran could not be read/)
+  assert.ok(notes.some(n => /a balancing plan is ready/.test(n.title)))
+})
+
+test('the emergency stop says which scheduled move it could not cancel because it had already been claimed', async () => {
+  reset()
+  const m = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock })
+  // The scheduler claimed it after the stop listed it.
+  const list = store.list.bind(store)
+  store.list = async (o) => {
+    if (o?.status?.includes('scheduled')) { const rows = await list(o); await store.update(m.id, { status: 'running', owner: 'x', heartbeatAt: clock }); return rows }
+    return list(o)
+  }
+  const r = await svc.autoStop(actorAdmin)
+  store.list = list
+  assert.equal(r.cancelledMoves, 0)
+  assert.deepEqual(r.notCancelled.map(x => [x.sid, x.status]), [['ct:107', 'running']])
 })

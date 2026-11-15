@@ -858,7 +858,9 @@ not compete with it. Open it from the rail, or go to `/balance` (old `/placement
 
   If the approver's role is lowered, applying turns itself off. **Emergency stop** turns applying off at
   once, cancels every scheduled plan and scheduled single move, and stops running plans after the move
-  under way. A check that was already running when you pressed it gives up.
+  under way. A check, or a plan's move, that was being checked when you pressed it gives up before it
+  moves anything. A scheduled move that had already started is named, so you can watch it. If HyperProx
+  cannot read where each guest ran, automatic balancing only notifies.
 - **Guests with thin history are left alone.** A guest is moved only when both its CPU and memory history
   cover most of the window; a gap counts as the guest's 95th-percentile load, never as idle. A guest that
   changed node with no move recorded (an HA recovery after a failure) waits until fresh history covers it.

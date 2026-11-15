@@ -114,6 +114,7 @@ test('automatic balancing in words: off by default, notify only, or applying wit
 test('the emergency stop says what it stopped, scheduled single moves included', () => {
   assert.equal(stopWords(0, 0), 'Stopped: applying is off.')
   assert.match(stopWords(1, 2), /1 plan is stopped or cancelled .*; 2 scheduled moves are cancelled\./)
+  assert.match(stopWords(0, 0, [{ name: 'worker', sid: 'ct:107', status: 'running' }]), /Not cancelled, because it had already started: worker \(running\)/)
 })
 
 test('score tones, node order and sparkline points', () => {
