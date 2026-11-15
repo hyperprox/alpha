@@ -205,6 +205,8 @@ export const APPS: FixtureRoute[] = [
   { path: '/api/updates/check', get: () => checkStatus() },
   { path: '/api/updates/policy', get: () => policy() },
   { path: '/api/updates/plan', get: () => plan() },
+  // The Update preview dialog: the same plan as the page shows. Running it is refused like any change.
+  { path: '/api/updates/preview', post: () => plan() },
   { path: '/api/updates/inventory', get: () => inventory() },
   { path: '/api/updates/jobs', get: () => ({ jobs: jobs() }) },
   { path: '/api/updates/jobs/:id', get: p => ({ job: jobs().find(j => j.id === p.id) ?? jobs()[0] }) },

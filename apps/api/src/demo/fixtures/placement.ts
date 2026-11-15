@@ -112,6 +112,24 @@ function quiet() {
   }
 }
 
+/** What a move would take, as the Move dialog shows it before anything happens. */
+function moveCheck(type: string, vmid: number) {
+  const g = GUESTS.find(x => x.vmid === vmid) ?? GUESTS[0]
+  const to = g.node === 'pve-a' ? 'pve-b' : 'pve-a'
+  const running = g.status === 'running'
+  const pinned = !!g.gpu
+  const net = mapView().map.network
+  return {
+    sid: sidOf(g), name: g.name, type: type === 'qemu' ? 'qemu' : 'lxc', from: g.node, to, method: g.ha ? 'ha' : 'migrate', allowed: !pinned,
+    refusals: pinned ? [`${g.name} uses the GPU in ${g.node}; ${to} has none it can use.`] : [],
+    warnings: running && g.type === 'lxc' ? [`${g.name} is a container: it stops for the move and starts again on ${to}.`] : [],
+    running, downtimeSec: running ? (g.type === 'lxc' ? 25 : 2) : null, copyBytes: 0, copySec: 4,
+    localDisks: false, bwlimitKiB: 51200, network: net, quiet: quiet(), needsAnyway: !quiet().quietNow,
+    call: `${g.ha ? 'ha-manager crm-command migrate' : 'pct migrate'} ${sidOf(g)} ${to}`,
+    lastMove: null,
+  }
+}
+
 // -- balance --------------------------------------------------------------------------------------
 const GUEST_LOAD: Record<string, { cores: number; mem: number }> = { 'ct:305': { cores: 2.6, mem: 6.2 * GiB }, 'vm:306': { cores: 1.9, mem: 9 * GiB } }
 const PLAN_MOVES: Array<{ sid: string; to: string }> = [{ sid: 'ct:305', to: 'pve-a' }, { sid: 'vm:306', to: 'pve-a' }]
@@ -255,4 +273,6 @@ export const PLACEMENT_ROUTES: FixtureRoute[] = [
   { path: '/api/placement/settings', get: () => ok(settings()) },
   { path: '/api/placement/auto', get: () => ok(auto()) },
   { path: '/api/placement/guests/:type/:vmid/paths', get: () => ok({ checked: NODES.map(n => n.node), paths: [] }) },
+  // The Move dialog's check: what moving this guest would take. The move itself is refused like any change.
+  { path: '/api/placement/guests/:type/:vmid/check', post: p => ok(moveCheck(p.type, Number(p.vmid))) },
 ]

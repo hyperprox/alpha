@@ -14,6 +14,8 @@ import { UPDATE_ROUTES } from './updates'
 import { MISC_ROUTES } from './misc'
 import { pveNodes, pveStorage } from './data'
 
+import { PREVIEW_ROUTES } from './previews'
+
 export type { FixtureRoute, FixtureContext }
 
 const ok = (data: unknown) => ({ success: true, data })
@@ -26,4 +28,4 @@ const PER_CLUSTER: FixtureRoute[] = [
   { path: '/api/ha/badges', get: (_p, _q, ctx) => ok(isRemote(ctx) ? {} : haBadges()) },
 ]
 
-export const FIXTURES: FixtureRoute[] = [...PER_CLUSTER, ...CORE, ...CLUSTERS, ...QNAP_ROUTES, ...MEDIA_ROUTES, ...PLUGIN_EXTRA_ROUTES, ...PLUGIN_ROUTES, ...PLACEMENT_ROUTES, ...UPDATE_ROUTES, ...MISC_ROUTES, ...NETWORK, ...APPS, ...SITE_ROUTES]
+export const FIXTURES: FixtureRoute[] = [...PREVIEW_ROUTES, ...PER_CLUSTER, ...CORE, ...CLUSTERS, ...QNAP_ROUTES, ...MEDIA_ROUTES, ...PLUGIN_EXTRA_ROUTES, ...PLUGIN_ROUTES, ...PLACEMENT_ROUTES, ...UPDATE_ROUTES, ...MISC_ROUTES, ...NETWORK, ...APPS, ...SITE_ROUTES]

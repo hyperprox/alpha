@@ -117,6 +117,7 @@ test('demo mode: every fixture read answers, with Prisma, the vault and the cred
   try {
     let answered = 0
     for (const f of FIXTURES) {
+      if (!f.get && !f.refuse) continue   // a POST-only preview, tested below
       const url = sampleUrl(f.path)
       const res = await app.inject({ method: 'GET', url })
       if (f.refuse) { assert.equal(res.statusCode, 403, url); continue }
@@ -188,6 +189,23 @@ test('demo mode: the master-password prompt appears where the real product asks,
     // A change the real product does not re-confirm goes straight to the friendly refusal.
     const plain = await app.inject({ method: 'POST', url: '/api/updates/jobs', payload: {} })
     assert.equal(plain.json().code, 'demo')
+  } finally { await app.close() }
+})
+
+test('demo mode: previews answer with invented plans so their dialogs can be seen; applying them is refused', async () => {
+  const app = await buildDemoServer()
+  try {
+    for (const url of ['/api/updates/preview', '/api/ha/preview', '/api/placement/guests/lxc/305/check']) {
+      const res = await app.inject({ method: 'POST', url, payload: {} })
+      assert.equal(res.statusCode, 200, url); assert.notEqual(res.json().code, 'demo', url)
+    }
+    const cookie = { cookie: 'hyperprox_demo_reconfirmed=1' }
+    for (const url of ['/api/ha/plans/demo-ha-plan/apply', '/api/placement/guests/lxc/305/move', '/api/updates/jobs']) {
+      const res = await app.inject({ method: 'POST', url, payload: {}, headers: cookie })
+      assert.equal(res.statusCode, 403, url); assert.equal(res.json().code, 'demo', url)
+    }
+    // A preview path is only a preview for POST: any other change to it is refused.
+    assert.equal((await app.inject({ method: 'PUT', url: '/api/ha/preview', payload: {}, headers: cookie })).json().code, 'demo')
   } finally { await app.close() }
 })
 
