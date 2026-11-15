@@ -1,12 +1,18 @@
 // =============================================================================
-//  HyperProx — placement advisor routes (/api/placement)
+//  HyperProx — load balancing routes (/api/placement, the Load balancing page)
 //
-//  Reads are for anyone signed in, as the guest list is: the map, the advice,
-//  one guest, the history, the settings. The move check is admin. A move (now
-//  or scheduled) is admin with the master password re-entered, which also keeps
-//  API tokens out (lib/roles.ts PLACEMENT_*). Checking bind-mount paths and
-//  reading corosync's log use node logins, so they are admin and audited.
-//  Home cluster only: a remote cluster's page gets a plain refusal.
+//  Reads are for anyone signed in, as the guest list is: the balance, the map,
+//  the advice, one guest, the move history, the plans, the settings and
+//  automatic balancing's settings. The move check is admin. A move (now or
+//  scheduled), running or scheduling a balancing plan, and saving automatic
+//  balancing (which can turn on applying automatically) are admin with the
+//  master password re-entered, and refused to API tokens outright
+//  (lib/roles.ts PLACEMENT_*, lib/api-tokens.ts). Stopping a plan and the
+//  emergency stop are admin and audited, without the password: stopping is
+//  always safe. Checking bind-mount paths and reading corosync's log use node
+//  logins, so they are admin and audited. Home cluster only.
+//
+//  The routes keep the /api/placement prefix (internal); the page is /balance.
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
@@ -32,12 +38,12 @@ const actor = () => ({ email: currentContext()?.email ?? 'unknown', role: String
 
 async function wrap(reply: FastifyReply, fn: () => Promise<unknown>) {
   try {
-    if (currentRemote()) throw new PlacementRefusal('The placement advisor works on the home cluster only for now.', 400, 'home-only')
+    if (currentRemote()) throw new PlacementRefusal('Load balancing works on the home cluster only for now.', 400, 'home-only')
     return { success: true, data: await fn() }
   } catch (e: any) {
     if (e instanceof PlacementRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: redactText(e.message), ...e.extra })
     if (e instanceof VaultLockedError || /HyperProx is locked/.test(String(e?.message))) {
-      return reply.status(423).send({ success: false, error: 'HyperProx is locked — sign in to see placement.' })
+      return reply.status(423).send({ success: false, error: 'HyperProx is locked — sign in to see load balancing.' })
     }
     return reply.status(502).send({ success: false, error: redactText(String(e?.message ?? e)) })
   }
@@ -69,7 +75,10 @@ export function placementService(prisma: any): PlacementService {
     // the approval counts), and the operator record a demotion to operator leaves.
     approverChanged: (email, sinceMs) => approverChanged(prisma, email, sinceMs),
     alert: async (title, lines) => {
-      await publish({ type: 'placement.move.stuck', severity: 'warning', title, lines, link: '/placement', where: 'Placement page', fingerprint: `placement:${title}` }).catch(() => undefined)
+      await publish({ type: 'placement.move.stuck', severity: 'warning', title, lines, link: '/balance', where: 'Load balancing page', fingerprint: `placement:${title}` }).catch(() => undefined)
+    },
+    notify: async (title, lines, fingerprint, severity = 'info') => {
+      await publish({ type: 'placement.balance', severity, title, lines, link: '/balance', where: 'Load balancing page', fingerprint }).catch(() => undefined)
     },
     nodeExec: async (node, command) => {
       const cred = await nodeCredential(node).catch(() => null)
@@ -135,6 +144,30 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
       const when = body.when === 'next-quiet' ? 'next-quiet' : 'now'
       return svc().move(guestSid(q.params), b.target, { when, anyway: body.anyway === true, bwlimitKiB: b.bwlimitKiB }, actor())
     }))
+
+    // Load balancing: the balance and its plan, plans, and automatic balancing.
+    const goalOf = (v: unknown) => (v === 'mem' || v === 'cpu' || v === 'both' ? v : undefined)
+    fastify.get<{ Querystring: { goal?: string } }>('/balance', async (q, r) => wrap(r, () => svc().balanceView(goalOf(q.query?.goal))))
+    fastify.get('/plans', async (_q, r) => wrap(r, () => svc().plans()))
+    fastify.get<{ Params: { id: string } }>('/plans/:id', async (q, r) => wrap(r, async () => {
+      const p = await svc().getPlan(q.params.id)
+      if (!p) throw new PlacementRefusal('No such plan.', 404, 'not-found')
+      return p
+    }))
+    fastify.post<{ Body: any }>('/plans', async (q, r) => wrap(r, async () => {
+      const b: any = q.body ?? {}
+      const expect = Array.isArray(b.expect) ? b.expect.slice(0, 20).map((x: any) => ({ sid: String(x?.sid ?? ''), to: String(x?.to ?? '') })) : null
+      if (!expect || !expect.length || expect.some((x: { sid: string; to: string }) => !/^(ct|vm):\d{1,9}$/.test(x.sid) || !NODE.test(x.to))) {
+        throw new PlacementRefusal('Send the moves you approved (expect: [{ sid, to }]), so the server runs exactly those.', 400, 'bad-plan')
+      }
+      if (b.when !== undefined && b.when !== 'now' && b.when !== 'next-quiet') throw new PlacementRefusal('when must be now or next-quiet.', 400, 'bad-when')
+      if (b.goal !== undefined && !goalOf(b.goal)) throw new PlacementRefusal('goal must be mem, cpu or both.', 400, 'bad-goal')
+      return svc().createPlan({ when: b.when ?? 'now', goal: goalOf(b.goal), expect }, actor())
+    }))
+    fastify.post<{ Params: { id: string } }>('/plans/:id/stop', async (q, r) => wrap(r, () => svc().stopPlan(q.params.id, actor())))
+    fastify.get('/auto', async (_q, r) => wrap(r, () => svc().autoSettings()))
+    fastify.put<{ Body: unknown }>('/auto', async (q, r) => wrap(r, () => svc().saveAuto(q.body, actor())))
+    fastify.post('/auto/stop', async (_q, r) => wrap(r, () => svc().autoStop(actor())))
 
     fastify.get<{ Querystring: { sid?: string } }>('/moves', async (q, r) => wrap(r, () => {
       const sid = q.query?.sid && /^(ct|vm):\d{1,9}$/.test(q.query.sid) ? q.query.sid : undefined

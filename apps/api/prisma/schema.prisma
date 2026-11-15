@@ -695,6 +695,35 @@ model PlacementMove {
   // cannot express here.
 }
 
+// --- Load balancing plans ---------------------------------------------------
+// A balancing plan: its moves in order, each run through the same safe move path (lib/placement/service.ts), with its
+// progress. Scheduled plans are rows too, so a restart does not lose them. Automatic balancing's own settings live in
+// PlacementSettings under the id "balance-auto".
+
+model PlacementPlan {
+  id            String    @id @default(cuid())
+  source        String    @default("manual")   // manual | auto
+  status        String                          // scheduled | running | done | stopped | failed | cancelled | skipped
+  by            String?
+  goal          String    @default("both")     // mem | cpu | both
+  scoreBefore   Float     @default(0)
+  scoreTarget   Float     @default(0)
+  steps         Json      @default("[]")
+  scheduledFor  DateTime?
+  startedAt     DateTime?
+  endedAt       DateTime?
+  error         String?
+  stopRequested Boolean   @default(false)
+  owner         String?
+  heartbeatAt   DateTime?
+  snapshot      Json?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status])
+  // One plan running at a time: a partial unique index in the migration, which Prisma cannot express here.
+}
+
 /// A long plug-in job (a Nextcloud update, a database repair): kept so a page finds it again after the API
 /// restarts, and so detached work in a guest is watched again on startup (lib/nextcloud/jobs.ts).
 model PluginJob {

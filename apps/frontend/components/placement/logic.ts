@@ -1,4 +1,4 @@
-// Pure display logic for the Placement page: what tone a guest gets, how full a node is, and how a move's cost reads.
+// Pure display logic for the Load balancing page's guest map: what tone a guest gets, how full a node is, and how a move's cost reads.
 // No React and no CSS, so it is tested on its own (test/placement.test.tsx).
 
 import type { GuestPlacement, MovePlan, MoveRecord, PlacementNode, QuietStatus } from './types'

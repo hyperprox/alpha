@@ -169,7 +169,7 @@ export function tzOffsetMin(tz: string, at: number): number {
  */
 export function suggestWindow(busy: BusyHoursLike[] | null, tz: string | null, now: number): { hour: number; why: string } {
   const ranges = (busy ?? []).map(b => ({ s: toMin(b.start), e: toMin(b.end) })).filter(r => r.s !== null && r.e !== null) as Array<{ s: number; e: number }>
-  if (!ranges.length || !tz) return { hour: 1, why: 'No busy hours are set in HyperProx (Placement settings), so the usual quiet default: 01:00 UTC.' }
+  if (!ranges.length || !tz) return { hour: 1, why: 'No busy hours are set in HyperProx (Load balancing settings), so the usual quiet default: 01:00 UTC.' }
   const inBusy = (min: number) => ranges.some(r => (r.s <= r.e ? min >= r.s && min < r.e : min >= r.s || min < r.e))
   const offset = tzOffsetMin(tz, now)
   for (const local of [2, 3, 1, 4, 0, 5, 23, 22, 6, 21, 7, 20, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]) {
@@ -177,9 +177,9 @@ export function suggestWindow(busy: BusyHoursLike[] | null, tz: string | null, n
     for (let m = local * 60; m < local * 60 + 240; m += 15) if (inBusy(m % 1440)) { clash = true; break }
     if (clash) continue
     const utc = (((local * 60 - offset) % 1440) + 1440) % 1440
-    return { hour: Math.floor(utc / 60), why: `Four hours from ${pad(local)}:00 ${tz} miss every busy range in HyperProx's Placement settings.` }
+    return { hour: Math.floor(utc / 60), why: `Four hours from ${pad(local)}:00 ${tz} miss every busy range in HyperProx's Load balancing settings.` }
   }
-  return { hour: 1, why: 'Every four-hour window overlaps a busy range in Placement settings, so the usual default: 01:00 UTC.' }
+  return { hour: 1, why: 'Every four-hour window overlaps a busy range in Load balancing settings, so the usual default: 01:00 UTC.' }
 }
 
 /** A few time zones to their country, for the region guess when no locale says it. */

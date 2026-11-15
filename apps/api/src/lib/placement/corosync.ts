@@ -1,5 +1,5 @@
 // =============================================================================
-//  HyperProx — placement advisor: what the heartbeat did around a move
+//  HyperProx — load balancing: what the heartbeat did around a move
 //
 //  The Proxmox API has no record of corosync retransmits or link flaps; only a
 //  node's journal does. With a node login HyperProx reads the corosync unit's

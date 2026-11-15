@@ -40,7 +40,7 @@ export const NAV: NavGroup[] = [
       { href: '/monitoring', label: 'Monitoring', keywords: 'grafana prometheus metrics alerts', icon: I('M3 12h4l3-8 4 16 3-8h4') },
       { href: '/updates', label: 'Updates', keywords: 'packages apt upgrade', icon: I('M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5') },
       { href: '/ha', label: 'High availability', keywords: 'ha failover rules', icon: I('M12 3 4 7v5c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V7zM9 12l2 2 4-4') },
-      { href: '/placement', label: 'Placement', keywords: 'balance load move migrate guests nodes where why advisor', icon: I('M4 4h6v6H4zM14 14h6v6h-6zM10 7h4a3 3 0 0 1 3 3v4M7 10v4a3 3 0 0 0 3 3h4') },
+      { href: '/balance', label: 'Load balancing', keywords: 'balance balancing load placement move migrate guests nodes where why plan uneven rebalance', icon: I('M4 4h6v6H4zM14 14h6v6h-6zM10 7h4a3 3 0 0 1 3 3v4M7 10v4a3 3 0 0 0 3 3h4') },
     ],
   },
   {
@@ -85,7 +85,7 @@ export const EXTRA_PAGES: Array<{ href: string; label: string; section: string; 
   { href: '/settings/naming', label: 'Naming & addresses', section: 'Settings', keywords: 'vmid ip range subnet dhcp vlan numbering convention' },
   { href: '/settings/notifications', label: 'Notifications', section: 'Settings', keywords: 'alerts email discord' },
   { href: '/settings/secrets', label: 'Secrets', section: 'Settings', keywords: 'vault passwords credentials' },
-  { href: '/settings/placement', label: 'Placement & quiet windows', section: 'Settings', keywords: 'quiet window busy hours backup bandwidth migrate move' },
+  { href: '/settings/balance', label: 'Load balancing & quiet windows', section: 'Settings', keywords: 'load balancing placement quiet window busy hours backup bandwidth migrate move plan' },
 ]
 
 export function isActive(pathname: string, href: string): boolean {

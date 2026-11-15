@@ -394,9 +394,9 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
     siteMetricsSource({ metrics: siteMetrics, sites: siteLites, role }),
     // Read-only: the Plex Clear-out page's lists (cached for ten minutes, as the page reads them).
     clearoutSource({ unlocked: isUnlocked, report: async () => clearoutService().report() }),
-    // Read-only: the placement engine's verdicts, and the imbalance advice (the Placement page's own answers).
+    // Read-only: the load balancing engine's verdicts, the balance and its plan (the Load balancing page's own answers).
     placementSource({ unlocked: isUnlocked, map: async () => (await placementService(prisma).map()).map, advice: () => placementService(prisma).advice() }),
-    balanceSource({ unlocked: isUnlocked, map: async () => (await placementService(prisma).map()).map, advice: () => placementService(prisma).advice() }),
+    balanceSource({ unlocked: isUnlocked, map: async () => (await placementService(prisma).map()).map, advice: () => placementService(prisma).advice(), balance: () => placementService(prisma).balanceView() }),
     // Read-only: the Updates page's target tree as last read (admin only); nothing is read from any machine.
     updatesSource({ role, tree: () => lastTargets(c.id) }),
   ]

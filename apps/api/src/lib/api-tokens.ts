@@ -130,6 +130,7 @@ export function bearerApiToken(headers: Record<string, any>): string | null {
  *   /api/terminal*     saved SSH logins, host keys and shells (the Deck)
  *   /ws, /ws/*         live status, update progress and terminal sockets
  *   /api/plugins/arrstack/queue/actions   Arr queue removal, blocklist, search, retry and prioritise
+ *   /api/placement moves, running a balancing plan, saving automatic balancing (it can turn on applying)
  * Requests that need a re-confirmation (lib/roles.ts needsReconfirm) are refused
  * by the gate as reconfirm_required: a token has no master password.
  */
@@ -142,6 +143,10 @@ export function tokenForbidden(method: string, path: string): boolean {
   // Local plug-ins are for a signed-in person only, reads included (lib/local-plugins.ts).
   if (p === '/api/local' || p.startsWith('/api/local/')) return true
   if (p === '/ws' || p.startsWith('/ws/')) return true
+  // Load balancing: moving a guest, running or scheduling a plan, and turning automatic balancing (or its applying) on
+  // are a signed-in admin's act, never a token's.
+  if (m === 'POST' && (p === '/api/placement/plans' || /^\/api\/placement\/guests\/(lxc|qemu)\/\d+\/move$/.test(p))) return true
+  if (m === 'PUT' && p === '/api/placement/auto') return true
   // Arr Stack queue actions (remove, blocklist, search, retry, prioritise): a signed-in admin's act, never a token's.
   if (/^\/api\/plugins\/arrstack\/queue\/actions$/.test(p)) return true
   // Nextcloud actions (fixes, updates, mail, 2FA): a signed-in admin's act, never a token's.

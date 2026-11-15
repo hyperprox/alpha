@@ -60,8 +60,8 @@ export function placementFixture(): Record<string, any> {
     ],
     '/cluster/backup': [{ id: 'nightly', type: 'vzdump', schedule: '02:00', enabled: 1 }],
     '/cluster/status': [
-      { type: 'cluster', name: 'lab' },
-      { type: 'node', name: 'node1', ip: '192.0.2.11' }, { type: 'node', name: 'node2', ip: '192.0.2.12' }, { type: 'node', name: 'node3', ip: '192.0.2.13' },
+      { type: 'cluster', name: 'lab', quorate: 1 },
+      { type: 'node', name: 'node1', ip: '192.0.2.11', online: 1 }, { type: 'node', name: 'node2', ip: '192.0.2.12', online: 1 }, { type: 'node', name: 'node3', ip: '192.0.2.13', online: 1 },
     ],
     '/nodes/node1/status': { cpuinfo: { model: 'AMD Example 24-thread CPU', vendor: 'AuthenticAMD', cpus: 24, flags: FLAGS_AMD } },
     '/nodes/node2/status': { cpuinfo: { model: 'Intel Example 4-thread CPU', vendor: 'GenuineIntel', cpus: 4, flags: FLAGS_INTEL } },

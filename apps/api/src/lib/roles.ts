@@ -145,14 +145,18 @@ const GUEST_CONFIG_APPLY = /^\/api\/infra\/guest-config\/(apply|guests\/[^/]+\/[
 const HA = /^\/api\/ha(\/|$)/
 const HA_READ = /^\/api\/ha\/(overview|badges|guests\/(lxc|qemu)\/\d+(\/preflight)?)$/
 const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pin)$/
-// Placement advisor (routes/placement.ts). Reads (the map, the advice, one guest, the history, the settings) are
-// viewer, as the guest list is. Everything else is admin: the move check, saving settings, checking bind-mount paths
-// and reading corosync's log (both over node logins), cancelling a scheduled move, resolving a stuck one. A move, now
-// or scheduled, and saving the settings (they decide when approved moves run) also need the master password
-// re-entered, which keeps API tokens out too.
+// Load balancing (routes/placement.ts, the /balance page). Reads (the balance, the map, the advice, one guest, the
+// history, the plans, the settings, automatic balancing's settings) are viewer, as the guest list is. Everything else
+// is admin: the move check, saving settings, checking bind-mount paths and reading corosync's log (both over node
+// logins), cancelling a scheduled move, resolving a stuck one, stopping a plan, the emergency stop. A move (now or
+// scheduled), running or scheduling a balancing plan, saving the settings (they decide when approved moves run) and
+// saving automatic balancing (it can turn on applying automatically) also need the master password re-entered, which
+// keeps API tokens out too (lib/api-tokens.ts refuses them those routes outright as well).
 const PLACEMENT = /^\/api\/placement(\/|$)/
-const PLACEMENT_READ = /^\/api\/placement\/(map|advice|settings|moves(\/[^/]+)?|guests\/(lxc|qemu)\/\d+)$/
+const PLACEMENT_READ = /^\/api\/placement\/(balance|map|advice|settings|auto|plans(\/[^/]+)?|moves(\/[^/]+)?|guests\/(lxc|qemu)\/\d+)$/
 const PLACEMENT_RECONFIRM = /^\/api\/placement\/guests\/(lxc|qemu)\/\d+\/move$/
+const PLACEMENT_PLAN_RUN = '/api/placement/plans'
+const PLACEMENT_AUTO = '/api/placement/auto'
 // Home Assistant control (routes/ha-control.ts). Everyday controls are operator; security controls (locks, alarms,
 // garage doors, protected devices) and every change to an instance are admin and re-confirmed, which keeps API
 // tokens off them too.
@@ -409,6 +413,8 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLACEMENT_RECONFIRM.test(p)) return true
   if (m === 'PUT' && p === '/api/placement/settings') return true
+  if (m === 'POST' && p === PLACEMENT_PLAN_RUN) return true
+  if (m === 'PUT' && p === PLACEMENT_AUTO) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && ASUS_RECONFIRM.test(p)) return true

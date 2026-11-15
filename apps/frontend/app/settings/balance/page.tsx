@@ -1,9 +1,11 @@
 'use client'
 
 // =============================================================================
-//  Settings → Placement & quiet windows
+//  Settings → Load balancing & quiet windows
 //
-//  When the placement advisor may move a guest without "move anyway": outside
+//  What a balancing plan evens out (RAM, CPU or both), when the cluster counts
+//  as uneven, the smallest gain worth a move and the most moves in one plan.
+//  When load balancing may move a guest without "move anyway": outside
 //  the cluster's backup jobs (read from its own backup schedules) and outside
 //  the hours you say the cluster is in use. Also the bandwidth limit for moves
 //  when they share corosync's network, and what counts as a busy node.
@@ -23,8 +25,9 @@ import { quietWords, seconds } from '@/components/placement/logic'
 import type { BusyHours, MapView, PlacementSettings } from '@/components/placement/types'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const GOALS: Array<[PlacementSettings['balanceGoal'], string]> = [['mem', 'RAM'], ['cpu', 'CPU'], ['both', 'CPU and RAM']]
 
-export default function PlacementSettingsPage() {
+export default function BalanceSettingsPage() {
   const [s, setS] = useState<PlacementSettings | null>(null)
   const [view, setView] = useState<MapView | null>(null)
   const [msg, setMsg] = useState<{ kind: 'error' | 'info'; text: string } | null>(null)
@@ -63,13 +66,30 @@ export default function PlacementSettingsPage() {
 
   return (
     <Page>
-      <HudHeader level={2} icon="check" eyebrow="Settings" title="Placement & quiet windows" label="Placement settings" />
+      <HudHeader level={2} icon="check" eyebrow="Settings" title="Load balancing & quiet windows" label="Load balancing settings" />
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void save() }} />}
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       {!s && !msg && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Reading…</p>}
       {s && (
         <>
-          <Panel title="Quiet windows" sub={view ? `cluster time: ${view.quiet.tz}` : undefined} href="/placement" linkLabel="Placement">
+          <Panel title="Balancing plans" href="/balance" linkLabel="Load balancing">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Balance by">
+                <span style={LABEL}>Balance by</span>
+                {GOALS.map(([g, w]) => (
+                  <button key={g} type="button" aria-pressed={s.balanceGoal === g} onClick={() => set('balanceGoal', g)} className="rounded px-2 py-1 text-xs"
+                    style={{ border: '1px solid var(--border-strong)', background: s.balanceGoal === g ? 'var(--accent)' : 'transparent', color: s.balanceGoal === g ? 'var(--accent-ink)' : 'var(--text-soft)' }}>{w}</button>
+                ))}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {num('unevenAbove', 'Uneven when the gap passes (points)', 100)}
+                {num('minGain', 'Smallest gain worth a move (points)', 1, 0.5)}
+                {num('maxPlanMoves', 'Moves in one plan, at most')}
+              </div>
+              <p className="text-xs" style={{ color: 'var(--text-dim)' }}>The balance score is 100 less the gap between the busiest and the least busy node, each measured as a share of its own capacity at the 95th percentile of the window. A plan never pushes a node over the busy line below, and never leaves the node a guest goes to busier than the one it left.</p>
+            </div>
+          </Panel>
+          <Panel title="Quiet windows" sub={view ? `cluster time: ${view.quiet.tz}` : undefined} href="/balance" linkLabel="Load balancing">
             <div className="space-y-4">
               {view && <p className="text-sm" style={{ color: 'var(--text-soft)' }}>{quietWords(view.quiet)}</p>}
               <Switch on={s.avoidBackups} onChange={v => set('avoidBackups', v)} label="Keep moves out of backup job windows" />
@@ -112,7 +132,7 @@ export default function PlacementSettingsPage() {
             </div>
             <p className="mt-2 text-xs" style={{ color: 'var(--text-dim)' }}>Used when moves share corosync&apos;s network. HA moves take only the datacenter&apos;s own limit.</p>
           </Panel>
-          <Panel title="What counts as busy">
+          <Panel title="What counts as busy" sub="also the line no plan pushes a node over">
             <div className="grid gap-3 sm:grid-cols-2">
               {num('cpuAbove', 'CPU above (%)', 100)}
               {num('memAbove', 'Memory above (%)', 100)}
@@ -121,7 +141,7 @@ export default function PlacementSettingsPage() {
             </div>
           </Panel>
           <div className="flex flex-wrap justify-end gap-2">
-            <Link href="/placement" className="text-sm underline" style={{ color: 'var(--accent)', alignSelf: 'center' }}>Back to Placement</Link>
+            <Link href="/balance" className="text-sm underline" style={{ color: 'var(--accent)', alignSelf: 'center' }}>Back to Load balancing</Link>
             <PrimaryButton type="button" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</PrimaryButton>
           </div>
         </>

@@ -1,22 +1,25 @@
 // =============================================================================
-//  HyperProx — the assistant's read-only view of guest placement
+//  HyperProx — the assistant's read-only view of load balancing
 //
 //  "Where should X run?", "Why is X on node2?", "Can X move?", "Is the cluster
-//  balanced?" are answered by the placement engine itself, with no model call:
-//  the same verdicts and reasons the Placement page shows. It never moves
-//  anything and offers no way to; moving is done on the Placement page.
+//  balanced?" are answered by the load balancing engine itself, with no model
+//  call: the same verdicts, score and plan the Load balancing page shows. It
+//  never moves anything and offers no way to; moving and running a balancing
+//  plan are done on the Load balancing page.
 // =============================================================================
 
 import type { AskSource, SourceSummary } from './ask'
-import type { Advice, GuestPlacement, PlacementMap } from '../placement/types'
+import type { Advice, BalancePlan, BalanceResult, GuestPlacement, PlacementMap } from '../placement/types'
 
 export interface PlacementSourceDeps {
   unlocked(): boolean
   map(): Promise<PlacementMap>
   advice(): Promise<Advice>
+  /** The balance and its plan; when given, "is it balanced?" is answered from it. */
+  balance?(): Promise<BalanceResult & { auto?: { settings: { enabled: boolean; apply: boolean } } }>
 }
 
-const MOVE_NOTE = 'Moving is done on the Placement page, after a check and your master password. I cannot move anything.'
+const MOVE_NOTE = 'Moving a guest, or running a balancing plan, is done on the Load balancing page, after a check and your master password. I cannot move anything.'
 
 /** The guest a question is about: by id, or by the longest name it mentions as a whole word. */
 export function guestIn(prompt: string, guests: GuestPlacement[]): GuestPlacement | null {
@@ -57,13 +60,13 @@ export function mapLines(map: PlacementMap): string[] {
 
 export function placementSource(d: PlacementSourceDeps): AskSource {
   return {
-    id: 'placement', title: 'Guest placement', blurb: 'which node each guest is on, why, and where it could move',
-    aliases: /\b(where should|where (does|do|is|can) .{1,40} (run|live|go)|why is .{1,40} on|placement|which node|run (it )?on|move (it|.{1,40}) to|can .{1,40} move|could .{1,40} (move|run))\b/i,
+    id: 'placement', title: 'Load balancing: guests', blurb: 'which node each guest is on, why, and where it could move',
+    aliases: /\b(where should|where (does|do|is|can) .{1,40} (run|live|go)|why is .{1,40} on|placement|load balancing|which node|run (it )?on|move (it|.{1,40}) to|can .{1,40} move|could .{1,40} (move|run))\b/i,
     load: async (): Promise<SourceSummary> => {
-      if (!d.unlocked()) return { headline: 'Guest placement: locked.', lines: [], locked: true }
+      if (!d.unlocked()) return { headline: 'Load balancing: locked.', lines: [], locked: true }
       const map = await d.map()
       const fixed = map.guests.filter(g => g.movable === 'no' && !g.template).length
-      return { headline: `Guest placement: ${map.guests.length} guests on ${map.nodes.length} nodes, ${fixed} tied to their node.`, lines: mapLines(map), data: map, unread: map.unread.length ? map.unread : undefined }
+      return { headline: `Load balancing: ${map.guests.length} guests on ${map.nodes.length} nodes, ${fixed} tied to their node.`, lines: mapLines(map), data: map, unread: map.unread.length ? map.unread : undefined }
     },
     answer: (prompt, s) => (s.data ? guestAnswer(prompt, s.data as PlacementMap) : null),
   }
@@ -81,15 +84,44 @@ export function adviceAnswer(a: Advice): string {
   return parts.join(' ')
 }
 
+/** The balancing plan in a few sentences: the score now and after, and each move. */
+export function planAnswer(p: BalancePlan): string[] {
+  const out: string[] = []
+  if (p.steps.length) {
+    out.push(`A balancing plan of ${p.steps.length} move${p.steps.length === 1 ? '' : 's'} would take the score from ${Math.round(p.score.score)} to ${Math.round(p.target.score)}:`)
+    for (const x of p.steps) out.push(`move ${x.name || x.sid} from ${x.from} to ${x.to}${x.downtimeSec ? ` (about ${x.downtimeSec} s offline)` : ''}.`)
+  } else out.push(`No balancing plan: ${p.left[0] ?? 'no move would even the load out.'}`)
+  for (const x of p.suggestions.slice(0, 2)) out.push(x.words)
+  for (const w of p.words.slice(0, 1)) out.push(w)
+  return out
+}
+
+export function balanceAnswer(b: BalanceResult & { auto?: { settings: { enabled: boolean; apply: boolean } } }): string {
+  const parts = [`${b.headline} Balance score: ${Math.round(b.score.score)} of 100.`]
+  if (b.uneven) parts.push(...planAnswer(b.plan))
+  if (b.auto) parts.push(!b.auto.settings.enabled ? 'Automatic balancing is off.' : b.auto.settings.apply ? 'Automatic balancing is on and applies moves for guests HA does not manage.' : 'Automatic balancing is on, notifying only.')
+  if (b.unread.length) parts.push(`(Could not read: ${b.unread.slice(0, 3).join(', ')}.)`)
+  if (b.plan.steps.length) parts.push(MOVE_NOTE)
+  return parts.join(' ')
+}
+
 export function balanceSource(d: PlacementSourceDeps): AskSource {
   return {
-    id: 'placement-balance', title: 'Cluster balance', blurb: 'whether a node has been busy for hours, and which guest could move',
-    aliases: /\b(balanced?|imbalance\w*|unbalanced|overloaded|over ?loaded|busiest node|which node is busy|rebalanc\w*|spread (the )?load)\b/i,
+    id: 'placement-balance', title: 'Load balancing', blurb: 'how evenly the load is spread across the nodes, and the plan that would even it out',
+    aliases: /\b(balanced?|balancing|imbalance\w*|unbalanced|uneven|overloaded|over ?loaded|busiest node|which node is busy|rebalanc\w*|spread (the )?load)\b/i,
     load: async (): Promise<SourceSummary> => {
-      if (!d.unlocked()) return { headline: 'Cluster balance: locked.', lines: [], locked: true }
+      if (!d.unlocked()) return { headline: 'Load balancing: locked.', lines: [], locked: true }
+      if (d.balance) {
+        const b = await d.balance()
+        return { headline: `Load balancing: ${b.headline}`, lines: [b.headline, ...planAnswer(b.plan), ...b.plan.left], data: { kind: 'balance', b }, unread: b.unread.length ? b.unread : undefined }
+      }
       const a = await d.advice()
-      return { headline: `Cluster balance: ${a.headline}`, lines: [a.headline, ...a.evidence, ...a.stuck], data: a }
+      return { headline: `Load balancing: ${a.headline}`, lines: [a.headline, ...a.evidence, ...a.stuck], data: { kind: 'advice', a } }
     },
-    answer: (_p, s) => (s.data ? adviceAnswer(s.data as Advice) : null),
+    answer: (_p, s) => {
+      const x = s.data as { kind: 'balance'; b: any } | { kind: 'advice'; a: Advice } | undefined
+      if (!x) return null
+      return x.kind === 'balance' ? balanceAnswer(x.b) : adviceAnswer(x.a)
+    },
   }
 }

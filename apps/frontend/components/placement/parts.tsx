@@ -1,4 +1,4 @@
-// The Placement page's visual pieces: node columns with capacity bars, guests as chips placed on them, a guest's
+// The Load balancing page's "why is each guest here" pieces: node columns with capacity bars, guests as chips placed on them, a guest's
 // per-node verdicts, a move's cost, a suggestion, a history row. This file stays free of styling imports (Tailwind
 // classes and the theme's CSS variables only), so each piece renders on its own in a test. Buttons come in from the page.
 

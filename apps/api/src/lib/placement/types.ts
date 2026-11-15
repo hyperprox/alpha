@@ -1,12 +1,13 @@
 // =============================================================================
-//  HyperProx — placement advisor: the shapes
+//  HyperProx — load balancing: the shapes
 //
-//  The advisor answers three questions for every guest on the cluster, HA or
-//  not: why is it where it is, could it run somewhere else, and should it.
-//  It never moves anything on its own. Proxmox's HA scheduler (CRS) already
-//  balances HA guests; a second balancer would fight it. A move happens only
-//  when a person asks for one, after a check, a confirmation and the master
-//  password.
+//  Load balancing answers, for the cluster as a whole, how evenly its load is
+//  spread, and for every guest, HA or not: why is it where it is, could it run
+//  somewhere else, and should it. A balancing plan is a short list of moves
+//  that evens the load out. Nothing moves unless a person runs a plan or a
+//  single move (with the master password), or turns on automatic balancing,
+//  which is off by default and moves only guests HA does not manage: for HA
+//  guests Proxmox's own scheduler (CRS) and HA rules have the last word.
 // =============================================================================
 
 import type { GuestType, HaSnapshot, Sid } from '../ha/types'
@@ -175,6 +176,14 @@ export interface PlacementSettings {
   memAbove:          number
   minHours:          number
   windowHours:       number
+  /** What a balancing plan evens out: memory, CPU, or both (their mean spread). */
+  balanceGoal:       BalanceGoal
+  /** The cluster is uneven when the spread between the busiest and the least busy node passes this (0..1). */
+  unevenAbove:       number
+  /** A move goes into a plan only when it improves the balance score by at least this many points. */
+  minGain:           number
+  /** At most this many moves in one plan. */
+  maxPlanMoves:      number
 }
 
 /** stuck: Proxmox's task outlived HyperProx's wait, or HA has not finished; HyperProx keeps watching and holds the lock. */
@@ -217,9 +226,176 @@ export interface MoveRecord {
 
 export interface MoveSnapshot {
   settings?: Partial<PlacementSettings>
+  /** The balancing plan this move belongs to, and whether automatic balancing started it. */
+  planId?:   string
+  auto?:     boolean
   /** Who approved a scheduled move, with the role they held when they did (re-confirmed with the master password). */
   approver?: { email: string; role: string; at: number }
   type?:     'lxc' | 'qemu'
   running?:  boolean
   localDisks?: boolean
+}
+
+// --- load balancing -------------------------------------------------------------------------------
+
+export type BalanceGoal = 'mem' | 'cpu' | 'both'
+
+/** One node's load over the history window, as shares of its own capacity (0..1). */
+export interface NodeLoad {
+  node:        string
+  online:      boolean
+  maintenance: boolean
+  /** Counted in the score: online, not in maintenance, with history. */
+  counted:     boolean
+  threads:     number
+  maxmem:      number
+  cpu:         { now: number; p95: number; mean: number }
+  mem:         { now: number; p95: number; mean: number }
+  /** Its share of the CPU work and of the memory in use across the counted nodes (p95), 0..1. */
+  cpuShare:    number
+  memShare:    number
+  /** Hourly means over the window, for the page's sparklines. */
+  history:     { cpu: Sample[]; mem: Sample[] }
+}
+
+export interface BalanceScore {
+  /** 100 is perfectly even; 100 less the spread in points. */
+  score:     number
+  /** The goal's spread between the busiest and the least busy node, 0..1 (for "both": the mean of the two). */
+  spread:    number
+  cpuSpread: number
+  memSpread: number
+  busiest:   string | null
+  idlest:    string | null
+}
+
+export interface NodeAfter { node: string; cpu: number; mem: number }
+
+export interface PlanStep {
+  n:        number
+  sid:      Sid
+  name:     string
+  type:     GuestType
+  ha:       boolean
+  from:     string
+  to:       string
+  method:   'ha' | 'migrate'
+  /** The guest's own p95 over the window: cores busy and memory bytes. */
+  load:     { cores: number; mem: number }
+  /** p95 shares of capacity on both nodes, before and after this move. */
+  before:   { from: { cpu: number; mem: number }; to: { cpu: number; mem: number } }
+  after:    { from: { cpu: number; mem: number }; to: { cpu: number; mem: number } }
+  /** Score points this move adds, and the score after it. */
+  gain:     number
+  scoreAfter: number
+  downtimeSec: number | null
+  copyBytes: number
+  copySec:  number
+  bwlimitKiB: number | null
+  why:      string[]
+}
+
+/** A change that would help but that the plan does not carry out itself. */
+export interface BalanceSuggestion {
+  kind:  'edit-rule' | 'ha-move'
+  sid:   Sid
+  name:  string
+  from:  string
+  to:    string
+  rule?: string
+  gain:  number
+  words: string
+}
+
+export interface BalancePlan {
+  goal:        BalanceGoal
+  score:       BalanceScore
+  target:      BalanceScore
+  steps:       PlanStep[]
+  suggestions: BalanceSuggestion[]
+  nodesAfter:  NodeAfter[]
+  /** The whole plan's estimated length, seconds (each move's outage and copy, plus a margin). */
+  needSec:     number
+  /** Why the plan stops where it does. */
+  left:        string[]
+  /** How it relates to Proxmox's own scheduler, and other things worth knowing. */
+  words:       string[]
+}
+
+export interface BalanceResult {
+  goal:     BalanceGoal
+  uneven:   boolean
+  headline: string
+  nodes:    NodeLoad[]
+  score:    BalanceScore
+  plan:     BalancePlan
+  /** Hours the cluster was uneven in the most recent stretch, for automatic balancing. */
+  recent:   { hours: number; covered: number }
+  unread:   string[]
+}
+
+export type PlanStatus = 'scheduled' | 'running' | 'done' | 'stopped' | 'failed' | 'cancelled' | 'skipped'
+export type PlanStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+
+export interface PlanStepRecord {
+  sid: Sid; name: string; from: string; to: string; method: 'ha' | 'migrate'
+  status: PlanStepStatus
+  moveId: string | null
+  error: string | null
+  startedAt: number | null
+  endedAt: number | null
+}
+
+export interface PlanSnapshot {
+  settings?: Partial<PlacementSettings>
+  /** Who approved it (with the master password just re-entered), with the role they held then. */
+  approver?: { email: string; role: string; at: number }
+  /** Ceph's health checks when it was approved: a check that was not there then stops the plan. Null: no Ceph status. */
+  ceph?:     { checks: string[] } | null
+  /** The nodes online when it was approved: one going down stops the plan. */
+  nodes?:    string[]
+  /** The plan's estimated length when approved, seconds: a scheduled plan needs a quiet window this long. */
+  needSec?:  number
+}
+
+export interface PlanRecord {
+  id:            string
+  source:        'manual' | 'auto'
+  status:        PlanStatus
+  by:            string | null
+  goal:          BalanceGoal
+  scoreBefore:   number
+  scoreTarget:   number
+  steps:         PlanStepRecord[]
+  scheduledFor:  number | null
+  startedAt:     number | null
+  endedAt:       number | null
+  error:         string | null
+  stopRequested: boolean
+  owner:         string | null
+  heartbeatAt:   number | null
+  snapshot:      PlanSnapshot | null
+}
+
+/** Automatic balancing: off by default; notify only unless "apply automatically" was turned on with a re-confirmation. */
+export interface AutoSettings {
+  enabled:         boolean
+  apply:           boolean
+  /** Uneven for at least this long before anything is proposed, hours. */
+  sustainHours:    number
+  checkEveryMin:   number
+  maxMovesPerDay:  number
+  minHoursBetween: number
+}
+
+export interface AutoState {
+  /** Who turned on "apply automatically", re-confirmed then; cleared when it is turned off. */
+  approver:     { email: string; role: string; at: number } | null
+  /** Ceph's health checks when apply was turned on: a new one stops automatic moves. */
+  cephBaseline: string[] | null
+  lastCheckAt:  number | null
+  lastWhy:      string | null
+  lastNotifiedAt: number | null
+  lastNotifiedSig: string | null
+  lastMoveAt:   number | null
 }

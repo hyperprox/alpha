@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const { execFileSync } = require('child_process')
 const { writeLocalRegistry } = require('./scripts/local-plugins')
+const movedPages = require('./redirects')
 
 // One version for the whole product: the root package.json, plus the commit the
 // bundle was built from. Both are baked in at build time, so the browser never
@@ -68,6 +69,9 @@ const nextConfig = {
   webpack(config) {
     config.resolve.alias = { ...(config.resolve.alias || {}), '@local-plugins$': localPlugins }
     return config
+  },
+  async redirects() {
+    return movedPages
   },
   async rewrites() {
     return [

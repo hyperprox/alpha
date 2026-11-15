@@ -808,37 +808,80 @@ Every change is previewed first, including what would move straight away. It is 
 has lost quorum or the HA setup changed since the preview, and it goes through Proxmox's own HA tools.
 Applying a change asks for your master password again.
 
-### Placement
+### Load balancing
 
-**Placement** is an advisor, not another balancer. Proxmox already moves HA guests when a node gets busy;
-HyperProx does not compete with it. What it adds:
+**Load balancing** shows how evenly your cluster's load is spread, and evens it out when you ask. Proxmox
+already moves HA guests when a node gets busy (if its scheduler's auto-rebalance is on); HyperProx does
+not compete with it. Open it from the rail, or go to `/balance` (old `/placement` links still work).
 
-- **Every guest on a map**, HA or not: each node as bars for CPU, memory and cores, with its guests on it.
-- **Why each guest is where it is**, and for every other node whether it could go there: a GPU or other
-  device, a folder mounted from the node, a disk on the node's own storage, an HA rule, more CPUs than the
-  smaller nodes have, a CPU type the other node cannot run live, a backup running now. Anything HyperProx
-  could not check (a folder on a node it has no login for) says "not checked", never a guess.
-- **Load over hours, not one reading.** A node counts as busy after hours above 80% CPU or 90% memory in
-  the last three days, with backup windows left out. Then it suggests which guest to move where, and what
-  that would do to both nodes, worked out from the guest's own usage. For an HA guest held by its own rule
-  it suggests changing the rule instead. When nothing is busy it says so, with the figures.
-- **A safe move**, only when you ask: the server checks it again, the confirmation shows the downtime (a
-  running container restarts), the data to copy and the network cost, and your master password is asked
-  for. HA guests move through HA. HyperProx waits for the move to finish and checks the guest really runs
-  on the new node. One move runs at a time. A move that Proxmox is still working on after the wait is shown
-  as "still running", never as failed: HyperProx keeps watching and starts nothing else until it ends. A guest
-  HyperProx could not fully read (its configuration, or the task log) is never moved.
+- **The balance first.** Every node as a column with CPU and RAM bars and a sparkline of the last three
+  days. The bars show the 95th percentile, not one reading, as a share of that node's own capacity, so a
+  small node at 80% counts as busier than a big one at 40%. Backup windows are left out. The **balance
+  score** is 100 minus the gap, in points, between the busiest and the least busy node. The headline says
+  "Balanced", or for example "Uneven: node1 carries 62% of the memory in use and runs at 85% of its own".
+  You choose what to balance: RAM, CPU, or both.
+- **A balancing plan.** HyperProx works out the fewest moves for the most gain, up to 5 by default, from
+  each guest's own measured usage over the same window. It shows the score after the plan. Each move is
+  drawn as the guest travelling between nodes, with both nodes' bars before and after, and shows the
+  downtime (a running container restarts), the data to copy and the network cost. A plan:
+  - only moves guests the checks below say can move;
+  - never pushes a node over the busy line (80% CPU or 90% memory by default);
+  - never leaves the node a guest goes to busier than the one it left;
+  - skips moves that gain fewer points than you set (3 by default), because a tiny gain is not worth a
+    restart.
+
+  For an HA guest held by its own preferred-node rule, the plan suggests changing the rule instead. When
+  Proxmox's auto-rebalance is on, HA guests are left to it and the page says so. Moves that finished
+  recently are counted on their new node, so the page shows the cluster as it is now.
+- **Run the plan** now, in a quiet window, or schedule it for the next one. You enter your master
+  password once for the whole plan. The moves run one at a time, each through the same safe path as a
+  single move, and each is recorded in the audit log. Before every move HyperProx checks again that the
+  cluster has not changed: quorum, every node that was online, Ceph (a warning that was not there when you
+  approved stops the plan), and where the guest is. It also checks that the move still evens out the load.
+  A failed move or any change stops the plan, and the page shows its progress. You can stop a plan at any
+  time; the move under way finishes first, because a migration is never cut off.
+- **Automatic balancing, off by default.** When you turn it on, it checks every hour. If the cluster has
+  been uneven for 6 hours in a row, outside your busy hours and backups, it sends a notification with the
+  plan. **Apply automatically** also runs the moves:
+  - it needs your master password to turn on, and records who approved it;
+  - one move at a time, at most 2 a day and at least 6 hours apart by default, only in quiet windows;
+  - only guests HA does not manage. For HA guests it suggests a move or a rule change, and you decide;
+  - never a guest with disks to copy over the network;
+  - always under the bandwidth limit when moves share the cluster heartbeat's network;
+  - never a guest whose measured load would push the other node over the busy line. Moving a busy guest
+    onto a small node can starve the cluster heartbeat (corosync) and drop its links.
+
+  If the approver's role is lowered, applying turns itself off. **Emergency stop** turns applying off at
+  once and stops any plan after the move under way.
+- **Why each guest is where it is**, HA or not, and for every other node whether it could go there: a GPU
+  or other device, a folder mounted from the node, a disk on the node's own storage, an HA rule, more CPUs
+  than the smaller nodes have, a CPU type the other node cannot run live, a backup running now. Anything
+  HyperProx could not check (a folder on a node it has no login for) says "not checked", never a guess.
+  A node that has been busy for hours shows which guest would relieve it.
+- **A single safe move**, when you ask: the server checks it again, and the confirmation shows the
+  downtime, the data to copy and the network cost. Your master password is asked for. HA guests move
+  through HA. HyperProx waits for the move to finish and checks the guest really runs on the new node. One
+  move runs at a time. A move that Proxmox is still working on after the wait shows as "still running",
+  never as failed: HyperProx keeps watching and starts nothing else until it ends. A guest HyperProx could
+  not fully read (its configuration, or the task log) is never moved.
 - **Quiet windows.** Moves keep out of backup jobs (read from your backup schedules) and the busy hours you
-  set in Settings. The whole move has to fit in the quiet window, and a backup schedule HyperProx cannot
-  read means no window is quiet. Outside a quiet window you can move anyway, or let HyperProx move it in the
-  next one. A scheduled move is checked again before it runs, under the stricter of the settings it was
-  approved with and today's, only if the person who approved it is still an admin, and it expires after 7 days. Saving these settings asks for your master password.
+  set in Settings → Load balancing. The whole move, or the whole plan, has to fit in the quiet window. If
+  HyperProx cannot read a backup schedule, no window counts as quiet. Outside a quiet window you can move
+  a single guest anyway, or let HyperProx move it in the next window. A scheduled move or plan is checked
+  again before it runs, under the stricter of the settings it was approved with and today's. It runs only
+  if the person who approved it is still an admin, and it expires after 7 days. Saving these settings asks
+  for your master password.
 - **Network cost.** When moves share the network corosync (the cluster heartbeat) uses, HyperProx says so
   and limits the move's bandwidth (an HA move only follows the cluster's own migration limit).
-- **History.** Every move, HyperProx's and the ones Proxmox did, with what corosync did around it when a
-  node login lets HyperProx read the node's log.
+- **History.** Every plan and every move, HyperProx's and the ones Proxmox did, with what corosync did
+  around each move when a node login lets HyperProx read the node's log.
 
-The AI assistant answers "where should this run?" and "why is it on that node?" from the same checks.
+Reading the page needs only a sign-in. Moving, running a plan and turning on automatic balancing are for
+admins, need the master password, and are refused to API tokens. Stopping a plan, and the emergency
+stop, need the admin role but no password.
+
+The AI assistant answers "is the cluster balanced?", "where should this run?" and "why is it on that
+node?" from the same checks. It never moves anything.
 
 ### Terminal (the Deck)
 
@@ -2400,7 +2443,7 @@ The page opens with a health ring and counts of errors, warnings and notes, then
 - **Version**: the running version, the available one, how it is installed, and **Check and update**.
 - **Setup checks**: every warning as a card, grouped Errors, Warnings, Notes, each with its action:
   - *one-click fixes*, each behind a confirm that says what changes: the maintenance window (suggested
-    from the busy hours in Placement settings, else 01:00 UTC; pick another hour), the default phone region
+    from the busy hours in Load balancing settings, else 01:00 UTC; pick another hour), the default phone region
     (a country list, the suggestion from Nextcloud's locale or the cluster's time zone), the server id,
     the missing database indices (with the missing columns and primary keys), the mimetype migrations
     (`occ maintenance:repair --include-expensive`, in the background with its output), turning AppAPI off

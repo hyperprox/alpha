@@ -1,8 +1,9 @@
 // =============================================================================
-//  HyperProx — placement advisor: the service
+//  HyperProx — load balancing: the service
 //
-//  Reads (the map, the advice, one guest), the move check, the move itself,
-//  the history and the scheduler for moves held until the next quiet window.
+//  Reads (the map, the advice, the balance, one guest), the move check, the
+//  move itself, balancing plans, automatic balancing, the history and the
+//  scheduler for moves and plans held until the next quiet window.
 //
 //  A move, in order:
 //    1. the slot: one move at a time, taken synchronously in this process before
@@ -38,19 +39,42 @@
 //  Each process has an owner id and beats a heartbeat on the moves it watches.
 //  A move whose heartbeat went stale (its process died) is taken over by an
 //  atomic claim and watched to its end; a live one is never touched.
+//
+//  A balancing plan is a list of moves approved once (the master password),
+//  run one at a time, each through move() above: its own audit row, its own
+//  server-side check, its own quiet-window check. Before each move the plan
+//  checks again that the cluster has not changed since it was approved
+//  (quorum, every node that was online still online, no Ceph warning that was
+//  not there then, the approver still an admin), that the guest is still where
+//  the plan found it, and that the move still evens the load out against the
+//  history with the plan's finished moves replayed. Anything else stops the
+//  plan; a failed or stuck move stops it too. A plan whose process died is
+//  stopped, never resumed: the move it was on is watched to its end as above.
+//
+//  Automatic balancing is off by default. On, it checks every so often; when
+//  the cluster has been uneven for a sustained time, in a quiet window, it
+//  notifies. With "apply automatically" (turned on with the master password,
+//  which records who approved it) it also runs one move at a time as a
+//  one-move plan: only guests HA does not manage, never one with disks to copy,
+//  within its own limits (moves per day, hours between moves). Emergency stop
+//  turns applying off and stops any plan after the move under way.
 // =============================================================================
 
 import { parseSid, sidOf } from '../ha/parse'
 import type { HaPve } from '../ha/read'
 import type { Sid } from '../ha/types'
 import { advise } from './advice'
+import { balance, checkStep, planSignature, type BalanceInput } from './balance'
 import { corosyncAround, corosyncWords } from './corosync'
 import { checkablePaths, placementMap, type EngineInput } from './engine'
 import { copySeconds } from './network'
 import { readCluster, readHistory, taskRunning, type ClusterRead, type PromRange } from './read'
-import { DEFAULT_SETTINGS, IN_FLIGHT, MoveSlotTaken, mergeSettings, stricterSettings, type PlacementStore } from './store'
+import { DEFAULT_SETTINGS, IN_FLIGHT, MoveSlotTaken, PlanSlotTaken, mergeAuto, mergeSettings, stricterSettings, type PlacementStore } from './store'
 import { backupMask, quietStatus, type QuietStatus } from './windows'
-import type { Advice, GuestPlacement, MoveRecord, NetworkCost, PlacementMap, PlacementSettings } from './types'
+import type {
+  Advice, AutoSettings, AutoState, BalanceGoal, BalanceResult, GuestPlacement, MoveRecord, NetworkCost, PlacementMap, PlacementSettings,
+  PlanRecord, PlanSnapshot, PlanStatus, PlanStepRecord,
+} from './types'
 
 export interface Actor { email: string; role?: string }
 
@@ -74,6 +98,8 @@ export interface PlacementDeps {
   approverChanged?(email: string, sinceMs: number): Promise<string | null>
   /** Tells people something needs a look (a stuck move). Never throws. */
   alert?(title: string, lines: string[]): Promise<void>
+  /** Tells people about balancing (a plan proposed, run or stopped), through the notification channels. Never throws. */
+  notify?(title: string, lines: string[], fingerprint: string, severity?: 'info' | 'warning'): Promise<void>
   /** This process's id for the owner column. */
   ownerId?:   string
   now?():     number
@@ -122,6 +148,23 @@ const SYNC_EVERY_MS = 10 * 60_000
 /** A scheduled move expires this long after it was approved. */
 export const SCHEDULE_TTL_MS = 7 * 24 * 3600_000
 
+/** What a plan's move gets on top of a plain move: its plan, where the guest must still be, the settings it runs under. */
+export interface MoveContext { planId: string; step: number; expectFrom: string; auto?: boolean; settings?: PlacementSettings }
+
+export interface BalanceView extends BalanceResult {
+  quiet:    QuietStatus
+  crs:      PlacementMap['crs']
+  network:  NetworkCost
+  window:   { hours: number; stepSec: number }
+  settings: Pick<PlacementSettings, 'balanceGoal' | 'unevenAbove' | 'minGain' | 'maxPlanMoves' | 'cpuAbove' | 'memAbove'>
+  auto:     { settings: AutoSettings; state: AutoState }
+  running:  PlanRecord | null
+  plans:    PlanRecord[]
+}
+
+const APPROVER_ROLES = new Set(['admin', 'owner'])
+const DAY_MS = 24 * 3600_000
+
 export class PlacementService {
   private cache: { at: number; read: Promise<ClusterRead> } | null = null
   private pathChecks: Record<Sid, Record<string, Record<string, boolean | null>>> = {}
@@ -132,6 +175,11 @@ export class PlacementService {
   private lastSync = 0
   private beats = new Map<string, number>()
   private timer: ReturnType<typeof setInterval> | null = null
+  /** Moves started here, until they settle: a plan waits on its move through this. */
+  private runs = new Map<string, Promise<void>>()
+  /** The plan slot in this process, as `slot` is for moves. */
+  private planSlot: string | null = null
+  private planBeats = new Map<string, number>()
   readonly owner: string
   constructor(private d: PlacementDeps) {
     this.owner = d.ownerId ?? `${process.pid}@${Date.now()}`
@@ -298,7 +346,7 @@ export class PlacementService {
   }
 
   /** Start (or schedule) a move. The slot is taken before anything is awaited; the audit row comes before Proxmox. */
-  async move(sid: Sid, to: string, opts: { when?: 'now' | 'next-quiet'; anyway?: boolean; bwlimitKiB?: number }, actor: Actor): Promise<MoveRecord> {
+  async move(sid: Sid, to: string, opts: { when?: 'now' | 'next-quiet'; anyway?: boolean; bwlimitKiB?: number }, actor: Actor, ctx?: MoveContext): Promise<MoveRecord> {
     // Synchronous: a second request in this process sees the slot taken before either has awaited anything.
     if (this.slot) throw new PlacementRefusal('Another move is running. One at a time: wait for it to finish.', 409, 'busy')
     const token = `pending:${Math.random().toString(36).slice(2)}`
@@ -307,8 +355,11 @@ export class PlacementService {
     try {
       if (!this.d.isUnlocked()) throw new PlacementRefusal('HyperProx is locked. Sign in to move a guest.', 423, 'locked')
       if ((await this.d.store.list({ status: IN_FLIGHT, limit: 1 })).length) throw new PlacementRefusal('Another move is running. One at a time: wait for it to finish.', 409, 'busy')
-      const plan = await this.plan(sid, to, { bwlimitKiB: opts.bwlimitKiB })
+      // A plan's move runs now, in a quiet window, never "anyway": the plan was approved for a quiet window.
+      if (ctx && (opts.when === 'next-quiet' || opts.anyway)) throw new PlacementRefusal('A plan runs its moves now, in a quiet window.', 400, 'bad-plan-move')
+      const plan = await this.plan(sid, to, { bwlimitKiB: opts.bwlimitKiB, settings: ctx?.settings })
       if (!plan.allowed) throw new PlacementRefusal(`Not moved: ${plan.refusals.join(' ')}`, 409, 'refused', { refusals: plan.refusals })
+      if (ctx && plan.from !== ctx.expectFrom) throw new PlacementRefusal(`Not moved: it is on ${plan.from} now, not ${ctx.expectFrom} where the plan found it.`, 409, 'changed')
       const when = opts.when ?? 'now'
       if (when === 'now' && !plan.quiet.quietNow && !opts.anyway) {
         throw new PlacementRefusal(`Not a quiet window: ${plan.quiet.nowWhy.join('; ')}. Move anyway, or schedule it for the next quiet window.`, 409, 'not-quiet',
@@ -321,9 +372,10 @@ export class PlacementService {
         throw new PlacementRefusal(`There is no known quiet window to schedule it in${plan.quiet.nowWhy.length ? ` (${plan.quiet.nowWhy[0]})` : ''}. Move anyway, or try later.`, 409, 'no-window')
       }
       // The audit row first: no row, no move.
-      await this.d.audit(at ? 'placement.move.schedule' : 'placement.move', sid, {
+      await this.d.audit(ctx ? (ctx.auto ? 'placement.auto.move' : 'placement.plan.move') : at ? 'placement.move.schedule' : 'placement.move', sid, {
         by: actor.email, from: plan.from, to, method: plan.method, anyway: !!opts.anyway && !plan.quiet.quietNow, scheduledFor: at ? new Date(at).toISOString() : null,
         bwlimitKiB: plan.bwlimitKiB, copyBytes: plan.copyBytes, downtimeSec: plan.downtimeSec,
+        ...(ctx ? { planId: ctx.planId, step: ctx.step } : {}),
       })
       let rec: MoveRecord
       try {
@@ -332,13 +384,19 @@ export class PlacementService {
           by: actor.email, scheduledFor: at, startedAt: at ? null : this.now(), bwlimitKiB: plan.bwlimitKiB,
           owner: at ? null : this.owner, heartbeatAt: at ? null : this.now(),
           snapshot: { settings: plan.settings, type: plan.type, running: plan.running, localDisks: plan.localDisks,
-            ...(at ? { approver: { email: actor.email, role: String(actor.role), at: this.now() } } : {}) },
+            ...(at ? { approver: { email: actor.email, role: String(actor.role), at: this.now() } } : {}),
+            ...(ctx ? { planId: ctx.planId, ...(ctx.auto ? { auto: true } : {}) } : {}) },
         })
       } catch (e) {
         if (e instanceof MoveSlotTaken) throw new PlacementRefusal(e.message, 409, 'busy')
         throw e
       }
-      if (!at) { this.slot = rec.id; handedOver = true; void this.run(rec.id, plan) }
+      if (!at) {
+        this.slot = rec.id; handedOver = true
+        const p = this.run(rec.id, plan)
+        this.runs.set(rec.id, p)
+        void p.finally(() => this.runs.delete(rec.id))
+      }
       return rec
     } finally {
       if (!handedOver && this.slot === token) this.slot = null
@@ -673,6 +731,423 @@ export class PlacementService {
     return plan
   }
 
+  // --- load balancing -------------------------------------------------------------------------------
+
+  /** Finished moves inside the window, oldest first: replayed onto the history so the score is the cluster as it is now. */
+  private async pastMoves(sinceSec: number): Promise<BalanceInput['past']> {
+    const rows = await this.d.store.list({ status: ['done'], limit: 500 }).catch(() => [] as MoveRecord[])
+    return rows.filter(m => m.endedAt && m.endedAt / 1000 >= sinceSec && m.fromNode && m.toNode && m.fromNode !== m.toNode)
+      .sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0))
+      .map(m => ({ sid: m.sid, from: m.fromNode, to: m.toNode, at: Math.floor((m.endedAt ?? 0) / 1000) }))
+  }
+
+  /** The cluster, its history and the balance worked out from them. Throws when Prometheus cannot be read. */
+  private async balanceRead(opts: { goal?: BalanceGoal; auto?: boolean; fresh?: boolean; settings?: PlacementSettings; recentHours?: number } = {}) {
+    const s = opts.settings ?? await this.d.store.settings()
+    const r = await this.read(opts.fresh)
+    const map = placementMap(this.engineInput(r, s))
+    const hist = await readHistory(this.d.prom, { hours: s.windowHours, now: this.now(), guests: map.guests.map(g => g.sid) })
+    // Backup windows are always left out of the history, whatever the move setting says: a nightly backup is not imbalance.
+    const mask = backupMask({ tz: r.tz, jobs: r.jobs, backupHours: s.backupHours })
+    const memo = new Map<number, boolean>()
+    const masked = (t: number) => { let v = memo.get(t); if (v === undefined) { v = mask(t); memo.set(t, v) } return v }
+    const input: BalanceInput = {
+      map, nodes: hist.nodes, guests: hist.guests, masked, stepSec: hist.stepSec, settings: s, goal: opts.goal,
+      past: await this.pastMoves(hist.start), auto: opts.auto, recentHours: opts.recentHours, endSec: hist.end,
+    }
+    return { s, r, map, hist, input, result: balance(input) }
+  }
+
+  /** The balance page: load per node, the score, the plan that would even it out, and what is running. */
+  async balanceView(goal?: BalanceGoal): Promise<BalanceView> {
+    const s = await this.d.store.settings()
+    const auto = await this.d.store.auto()
+    const plans = await this.d.store.listPlans({ limit: 10 })
+    const running = plans.find(p => p.status === 'running') ?? null
+    let b: Awaited<ReturnType<PlacementService['balanceRead']>> | null = null
+    let unreadHistory: string | null = null
+    try { b = await this.balanceRead({ goal, settings: s }) }
+    catch (e: any) { if (e instanceof PlacementRefusal) throw e; unreadHistory = String(e?.message ?? e).slice(0, 80) }
+    const r = b?.r ?? await this.read()
+    const map = b?.map ?? placementMap(this.engineInput(r, s))
+    const result: BalanceResult = b?.result ?? balance({
+      map, nodes: [], guests: [], masked: () => false, stepSec: 300, settings: s, goal,
+    })
+    if (unreadHistory) result.unread.unshift(`Prometheus (${unreadHistory})`)
+    for (const u of map.unread) if (!result.unread.includes(u)) result.unread.push(u)
+    const quiet = quietStatus({ now: this.now(), tz: r.tz, jobs: r.jobs, settings: s, needSec: result.plan.needSec || 600, jobsRead: r.jobsRead })
+    return {
+      ...result, quiet, crs: map.crs, network: map.network, window: { hours: s.windowHours, stepSec: b?.hist.stepSec ?? 0 },
+      settings: { balanceGoal: s.balanceGoal, unevenAbove: s.unevenAbove, minGain: s.minGain, maxPlanMoves: s.maxPlanMoves, cpuAbove: s.cpuAbove, memAbove: s.memAbove },
+      auto, running, plans,
+    }
+  }
+
+  async plans(): Promise<PlanRecord[]> { return this.d.store.listPlans({ limit: 50 }) }
+  async getPlan(id: string): Promise<PlanRecord | null> { return this.d.store.getPlan(id) }
+
+  /** Ceph's health now, or null when there is no Ceph status to read. */
+  private async cephNow(): Promise<{ status: string; checks: string[]; down: number } | null> {
+    const st = await this.d.pve().fetchStrict<any>('/cluster/ceph/status').catch(() => null)
+    if (!st?.health?.status) return null
+    return { status: String(st.health.status), checks: Object.keys(st.health.checks ?? {}).sort(), down: Math.max(0, Number(st.osdmap?.num_osds ?? 0) - Number(st.osdmap?.num_up_osds ?? 0)) }
+  }
+
+  /** Has the cluster changed since the plan was approved? Null when it has not; otherwise why, in words. */
+  async gate(snap: PlanSnapshot | null): Promise<string | null> {
+    const st = await this.d.pve().fetchStrict<any[]>('/cluster/status').catch(() => null)
+    if (!Array.isArray(st)) return 'the cluster status could not be read'
+    const c = st.find(x => x?.type === 'cluster')
+    if (c && Number(c.quorate) !== 1) return 'the cluster has lost quorum'
+    for (const n of snap?.nodes ?? []) {
+      const e = st.find(x => x?.type === 'node' && String(x.name) === n)
+      if (!e || Number(e.online) !== 1) return `${n} is offline`
+    }
+    if (snap?.ceph) {
+      const h = await this.cephNow()
+      if (!h) return 'Ceph health could not be read'
+      if (h.status === 'HEALTH_ERR') return 'Ceph is in HEALTH_ERR'
+      if (h.down > 0) return `${h.down} Ceph OSD${h.down === 1 ? ' is' : 's are'} down`
+      const fresh = h.checks.filter(x => !snap.ceph!.checks.includes(x))
+      if (fresh.length) return `Ceph has a warning it did not have when the plan was approved (${fresh.join(', ')})`
+    }
+    return null
+  }
+
+  private async moveInFlight(): Promise<boolean> {
+    return !!this.slot || (await this.d.store.list({ status: IN_FLIGHT, limit: 1 })).length > 0
+  }
+
+  /**
+   * Approve and start (or schedule) a balancing plan. The server works the plan out again and refuses when it differs
+   * from the one the person saw (`expect`): what runs is what was approved. Audited before anything is stored.
+   */
+  async createPlan(opts: { when?: 'now' | 'next-quiet'; goal?: BalanceGoal; expect: Array<{ sid: string; to: string }> }, actor: Actor): Promise<PlanRecord> {
+    if (this.planSlot) throw new PlacementRefusal('Another balancing plan is running. One at a time: wait for it, or stop it.', 409, 'busy')
+    const token = `pending:${Math.random().toString(36).slice(2)}`
+    this.planSlot = token
+    let handedOver = false
+    try {
+      if (!this.d.isUnlocked()) throw new PlacementRefusal('HyperProx is locked. Sign in to balance the cluster.', 423, 'locked')
+      if (!APPROVER_ROLES.has(String(actor.role))) throw new PlacementRefusal('Only an admin can run a balancing plan.', 403, 'forbidden')
+      if ((await this.d.store.listPlans({ status: ['running'], limit: 1 })).length) throw new PlacementRefusal('Another balancing plan is running. One at a time: wait for it, or stop it.', 409, 'busy')
+      if (await this.moveInFlight()) throw new PlacementRefusal('A move is running. Wait for it to finish, then run the plan.', 409, 'busy')
+      let b: Awaited<ReturnType<PlacementService['balanceRead']>>
+      try { b = await this.balanceRead({ goal: opts.goal, fresh: true }) }
+      catch (e: any) { throw new PlacementRefusal(`No history: Prometheus could not be read (${String(e?.message ?? e).slice(0, 80)}), so HyperProx cannot work out a plan.`, 502, 'no-history') }
+      const plan = b.result.plan
+      if (!plan.steps.length) throw new PlacementRefusal(`Nothing to run: ${plan.left[0] ?? 'no move would even the load out.'}`, 409, 'nothing')
+      if (planSignature(plan.steps) !== planSignature(opts.expect ?? [])) {
+        throw new PlacementRefusal('The plan changed since you looked at it. Look at the new one and run that.', 409, 'changed', { plan })
+      }
+      const quiet = quietStatus({ now: this.now(), tz: b.r.tz, jobs: b.r.jobs, settings: b.s, needSec: plan.needSec, jobsRead: b.r.jobsRead })
+      const when = opts.when ?? 'now'
+      if (when === 'now' && !quiet.quietNow) {
+        throw new PlacementRefusal(`Not a quiet window for the whole plan: ${quiet.nowWhy.join('; ')}. Schedule it for the next quiet window instead.`, 409, 'not-quiet', { nextQuiet: quiet.nextQuiet })
+      }
+      const at = when === 'next-quiet' && !quiet.quietNow ? quiet.nextQuiet?.start ?? null : null
+      if (when === 'next-quiet' && !quiet.quietNow && !at) throw new PlacementRefusal(`There is no known quiet window long enough for the plan${quiet.nowWhy.length ? ` (${quiet.nowWhy[0]})` : ''}.`, 409, 'no-window')
+      if (at && at - this.now() > SCHEDULE_TTL_MS) throw new PlacementRefusal('The next quiet window is more than 7 days away, and scheduled plans expire after 7 days.', 409, 'no-window')
+      const ceph = await this.cephNow()
+      const snapshot: PlanSnapshot = {
+        settings: b.s, approver: { email: actor.email, role: String(actor.role), at: this.now() },
+        ceph: ceph ? { checks: ceph.checks } : null, nodes: b.map.nodes.filter(n => n.online && !n.maintenance).map(n => n.node), needSec: plan.needSec,
+      }
+      // The audit row first: no row, no plan.
+      await this.d.audit(at ? 'placement.plan.schedule' : 'placement.plan.create', 'balance', {
+        by: actor.email, goal: plan.goal, scoreBefore: Math.round(plan.score.score), scoreTarget: Math.round(plan.target.score),
+        moves: plan.steps.map(x => `${x.sid} ${x.from}>${x.to}`), scheduledFor: at ? new Date(at).toISOString() : null,
+      })
+      let rec: PlanRecord
+      try {
+        rec = await this.d.store.createPlan({
+          source: 'manual', status: at ? 'scheduled' : 'running', by: actor.email, goal: plan.goal,
+          scoreBefore: plan.score.score, scoreTarget: plan.target.score, steps: plan.steps.map(stepRecord),
+          scheduledFor: at, startedAt: at ? null : this.now(), owner: at ? null : this.owner, heartbeatAt: at ? null : this.now(), snapshot,
+        })
+      } catch (e) {
+        if (e instanceof PlanSlotTaken) throw new PlacementRefusal(e.message, 409, 'busy')
+        throw e
+      }
+      if (!at) { this.planSlot = rec.id; handedOver = true; void this.runPlan(rec.id) }
+      return rec
+    } finally {
+      if (!handedOver && this.planSlot === token) this.planSlot = null
+    }
+  }
+
+  /** Stops a plan: a scheduled one is cancelled; a running one stops after the move under way (a migration is never cut off). */
+  async stopPlan(id: string, actor: Actor): Promise<PlanRecord> {
+    const p = await this.d.store.getPlan(id)
+    if (!p) throw new PlacementRefusal('No such plan.', 404, 'not-found')
+    await this.d.audit('placement.plan.stop', 'balance', { by: actor.email, id, status: p.status })
+    const done = p.status === 'scheduled'
+      ? await this.d.store.transitionPlan(id, { status: ['scheduled'] }, { status: 'cancelled', endedAt: this.now(), error: `Cancelled by ${actor.email}.` })
+      : p.status === 'running' ? await this.d.store.transitionPlan(id, { status: ['running'] }, { stopRequested: true }) : null
+    if (!done) throw new PlacementRefusal(`It is ${p.status}; only a scheduled or running plan can be stopped.`, 409, 'not-running')
+    return done
+  }
+
+  private async beatPlan(id: string, force = false): Promise<void> {
+    const last = this.planBeats.get(id) ?? 0
+    if (!force && this.now() - last < HEARTBEAT_EVERY_MS) return
+    this.planBeats.set(id, this.now())
+    await this.d.store.transitionPlan(id, { status: ['running'], owner: this.owner }, { heartbeatAt: this.now() }).catch(() => null)
+  }
+
+  /** Waits for a move started here to settle, beating the plan's heartbeat meanwhile; then the row as it ended. */
+  private async waitMove(moveId: string, planId: string): Promise<MoveRecord | null> {
+    const p = this.runs.get(moveId)
+    if (p) {
+      let settled = false
+      void p.finally(() => { settled = true })
+      while (!settled) { await Promise.race([p, this.sleep(HEARTBEAT_EVERY_MS)]); await this.beatPlan(planId) }
+    }
+    return this.d.store.get(moveId)
+  }
+
+  private async runPlan(id: string): Promise<void> {
+    try { await this.executePlan(id) }
+    catch (e: any) { await this.finishPlan(id, 'failed', `The plan stopped on an error: ${String(e?.message ?? e).slice(0, 300)}`).catch(() => undefined) }
+    finally { this.planBeats.delete(id); if (this.planSlot === id) this.planSlot = null }
+  }
+
+  private async finishPlan(id: string, status: PlanStatus, error: string | null, steps?: PlanStepRecord[]): Promise<PlanRecord | null> {
+    const done = await this.d.store.transitionPlan(id, { status: ['running'], owner: this.owner }, { status, endedAt: this.now(), error, ...(steps ? { steps } : {}) })
+    if (!done) return null
+    await this.d.audit('placement.plan.result', 'balance', { id, status, error, source: done.source }).catch(() => undefined)
+    const moved = done.steps.filter(x => x.status === 'done')
+    const what = moved.length ? `Moved: ${moved.map(x => `${x.name || x.sid} ${x.from} → ${x.to}`).join('; ')}.` : 'Nothing was moved.'
+    if (status !== 'done' || done.source === 'auto') {
+      await this.d.notify?.(
+        status === 'done' ? 'Automatic balancing moved a guest' : `A balancing plan ${status === 'failed' ? 'failed' : 'stopped'}`,
+        [what, ...(error ? [error] : []), ...(done.source === 'auto' ? ['Automatic balancing moves only guests HA does not manage, one at a time, within its limits.'] : [])],
+        `placement:plan:${id}:${status}`, status === 'done' ? 'info' : 'warning',
+      ).catch(() => undefined)
+    }
+    return done
+  }
+
+  /** Runs a claimed plan's moves in order, one at a time; any change, refusal or failed move stops it. Exposed for tests. */
+  async executePlan(id: string): Promise<PlanRecord | null> {
+    const first = await this.d.store.getPlan(id)
+    if (!first) return null
+    const steps = first.steps.map(x => ({ ...x }))
+    const save = () => this.d.store.transitionPlan(id, { status: ['running'], owner: this.owner }, { steps, heartbeatAt: this.now() })
+    const skipRest = (from: number, why: string) => { for (let j = from; j < steps.length; j++) if (steps[j].status === 'pending') { steps[j].status = 'skipped'; steps[j].error = why } }
+    const stop = (i: number, status: PlanStatus, why: string) => { skipRest(i, why); return this.finishPlan(id, status, why, steps) }
+    for (let i = 0; i < steps.length; i++) {
+      const row = await this.d.store.getPlan(id)
+      if (!row || row.status !== 'running' || row.owner !== this.owner) return row
+      const step = steps[i]
+      if (step.status === 'done') continue
+      if (row.stopRequested) return stop(i, 'stopped', `Stopped on request before move ${i + 1}.`)
+      const ap = row.snapshot?.approver
+      if (!ap || !APPROVER_ROLES.has(ap.role)) return stop(i, 'stopped', 'No admin approval is recorded for it.')
+      const changed = this.d.approverChanged ? await this.d.approverChanged(ap.email, ap.at).catch(() => 'their role could not be checked') : null
+      if (changed) return stop(i, 'stopped', `Stopped before move ${i + 1}: ${ap.email} ${changed}.`)
+      if (!this.d.isUnlocked()) return stop(i, 'stopped', `Stopped before move ${i + 1}: HyperProx was locked.`)
+      const why = await this.gate(row.snapshot)
+      if (why) return stop(i, 'stopped', `Stopped before move ${i + 1}: ${why}.`)
+      const settings = stricterSettings(row.snapshot?.settings, await this.d.store.settings())
+      let b: Awaited<ReturnType<PlacementService['balanceRead']>>
+      try { b = await this.balanceRead({ goal: row.goal, fresh: true, auto: row.source === 'auto', settings }) }
+      catch (e: any) { return stop(i, 'stopped', `Stopped before move ${i + 1}: the history could not be read (${String(e?.message ?? e).slice(0, 80)}).`) }
+      const g = b.map.guests.find(x => x.sid === step.sid)
+      if (!g || g.node !== step.from) return stop(i, 'stopped', `Stopped before move ${i + 1}: ${step.name || step.sid} is ${g ? `on ${g.node} now` : 'gone'}, not on ${step.from} where the plan found it.`)
+      const c = checkStep(b.input, step.sid, step.to)
+      if (!c.ok) return stop(i, 'stopped', `Stopped before move ${i + 1}: the cluster changed (${c.why}).`)
+      step.status = 'running'; step.startedAt = this.now(); step.error = null
+      await save()
+      let rec: MoveRecord
+      try {
+        rec = await this.move(step.sid, step.to, { when: 'now' }, { email: ap.email, role: ap.role },
+          { planId: id, step: i + 1, expectFrom: step.from, auto: row.source === 'auto', settings })
+      } catch (e: any) {
+        step.status = 'failed'; step.endedAt = this.now(); step.error = String(e?.message ?? e).slice(0, 400)
+        return stop(i + 1, 'stopped', `Move ${i + 1} (${step.name || step.sid}) was not started: ${step.error}`)
+      }
+      step.moveId = rec.id
+      await save()
+      const end = await this.waitMove(rec.id, id)
+      step.endedAt = this.now()
+      if (!end || end.status !== 'done') {
+        step.status = 'failed'; step.error = end?.error ?? `it is ${end?.status ?? 'gone'}`
+        return stop(i + 1, 'failed', `Move ${i + 1} (${step.name || step.sid}) ${end?.status === 'stuck' ? 'is still running in Proxmox' : 'failed'}: ${step.error}. The rest of the plan did not run.`)
+      }
+      step.status = 'done'
+      await save()
+      if (row.source === 'auto') {
+        const a = await this.d.store.auto()
+        await this.d.store.saveAuto(a.settings, { ...a.state, lastMoveAt: this.now() }, 'automatic balancing').catch(() => undefined)
+      }
+    }
+    return this.finishPlan(id, 'done', null, steps)
+  }
+
+  // --- automatic balancing --------------------------------------------------------------------------
+
+  async autoSettings(): Promise<{ settings: AutoSettings; state: AutoState }> { return this.d.store.auto() }
+
+  /** Saves automatic balancing. Turning "apply automatically" on records who approved it (re-confirmed) and Ceph's health then. */
+  async saveAuto(body: unknown, actor: Actor): Promise<{ settings: AutoSettings; state: AutoState }> {
+    const cur = await this.d.store.auto()
+    const { settings, problems } = mergeAuto(cur.settings, body)
+    if (problems.length) throw new PlacementRefusal(problems.join(' '), 400, 'invalid')
+    const state: AutoState = { ...cur.state }
+    if (settings.apply && (!cur.settings.apply || !state.approver)) {
+      if (!APPROVER_ROLES.has(String(actor.role))) throw new PlacementRefusal('Only an admin can turn on applying automatically.', 403, 'forbidden')
+      if (!this.d.isUnlocked()) throw new PlacementRefusal('HyperProx is locked. Sign in first.', 423, 'locked')
+      const ceph = await this.cephNow()
+      state.approver = { email: actor.email, role: String(actor.role), at: this.now() }
+      state.cephBaseline = ceph ? ceph.checks : null
+    }
+    if (!settings.apply) { state.approver = null; state.cephBaseline = null }
+    await this.d.audit('placement.auto.settings', 'balance', {
+      by: actor.email, enabled: settings.enabled, apply: settings.apply, sustainHours: settings.sustainHours,
+      maxMovesPerDay: settings.maxMovesPerDay, minHoursBetween: settings.minHoursBetween, checkEveryMin: settings.checkEveryMin,
+    })
+    await this.d.store.saveAuto(settings, state, actor.email)
+    return { settings, state }
+  }
+
+  /** The emergency stop: applying turns off, scheduled plans are cancelled, running ones stop after the move under way. */
+  async autoStop(actor: Actor): Promise<{ settings: AutoSettings; state: AutoState; stopped: number }> {
+    await this.d.audit('placement.auto.stop', 'balance', { by: actor.email })
+    const cur = await this.d.store.auto()
+    const settings: AutoSettings = { ...cur.settings, apply: false }
+    const state: AutoState = { ...cur.state, approver: null, cephBaseline: null, lastWhy: `Emergency stop by ${actor.email}.` }
+    await this.d.store.saveAuto(settings, state, actor.email)
+    let stopped = 0
+    for (const p of await this.d.store.listPlans({ status: ['running', 'scheduled'], limit: 50 })) {
+      const r = p.status === 'scheduled'
+        ? await this.d.store.transitionPlan(p.id, { status: ['scheduled'] }, { status: 'cancelled', endedAt: this.now(), error: `Emergency stop by ${actor.email}.` })
+        : await this.d.store.transitionPlan(p.id, { status: ['running'] }, { stopRequested: true })
+      if (r) stopped++
+    }
+    return { settings, state, stopped }
+  }
+
+  /** One automatic check, when it is due. Exposed for tests. */
+  async autoTick(): Promise<void> {
+    const { settings: a, state: st0 } = await this.d.store.auto()
+    if (!a.enabled) return
+    if (st0.lastCheckAt && this.now() - st0.lastCheckAt < a.checkEveryMin * 60_000) return
+    const state: AutoState = { ...st0, lastCheckAt: this.now() }
+    let settings = a
+    const done = async (why: string) => { state.lastWhy = why; await this.d.store.saveAuto(settings, state, 'automatic balancing') }
+    if (!this.d.isUnlocked()) return done('HyperProx is locked: nothing is read or moved until someone signs in.')
+    let b: Awaited<ReturnType<PlacementService['balanceRead']>>
+    try { b = await this.balanceRead({ fresh: true, auto: true, recentHours: a.sustainHours }) }
+    catch (e: any) { return done(`The history could not be read (${String(e?.message ?? e).slice(0, 80)}).`) }
+    const r = b.result
+    if (!r.uneven) return done(`${r.headline.replace(/\.$/, '')} (score ${Math.round(r.score.score)}).`)
+    const sustained = r.recent.covered >= a.sustainHours * 0.5 && r.recent.hours >= r.recent.covered * 0.9
+    if (!sustained) return done(`Uneven now, but not for ${a.sustainHours} h in a row yet (${Math.round(r.recent.hours * 10) / 10} h of the last ${Math.round(r.recent.covered * 10) / 10} h).`)
+    const plan = r.plan
+    const need = plan.steps[0] ? (plan.steps[0].downtimeSec ?? 0) + plan.steps[0].copySec + 120 : 600
+    const quiet = quietStatus({ now: this.now(), tz: b.r.tz, jobs: b.r.jobs, settings: b.s, needSec: need, jobsRead: b.r.jobsRead })
+    if (!quiet.quietNow) return done(`Uneven, but not a quiet window (${quiet.nowWhy.join('; ')}).`)
+    if (!plan.steps.length && !plan.suggestions.length) return done(`Uneven, but nothing can usefully move. ${plan.left[0] ?? ''}`.trim())
+    const sig = `${planSignature(plan.steps)}|${plan.suggestions.map(x => `${x.kind}:${x.sid}>${x.to}`).join(',')}`
+    const lines = [
+      r.headline,
+      ...plan.steps.map(x => `Move ${x.name || x.sid} from ${x.from} to ${x.to} (+${Math.round(x.gain)} points${x.downtimeSec ? `, about ${x.downtimeSec} s offline` : ''}).`),
+      ...plan.suggestions.map(x => x.words),
+      `Score ${Math.round(plan.score.score)} now, ${Math.round(plan.target.score)} after.`,
+      'Automatic balancing applies only to guests HA does not manage; for HA guests it suggests a move or a rule change.',
+    ]
+    const notifyOnce = async (title: string) => {
+      if (state.lastNotifiedSig === sig && state.lastNotifiedAt && this.now() - state.lastNotifiedAt < DAY_MS) return
+      await this.d.notify?.(title, lines, `placement:auto:${sig}`, 'info').catch(() => undefined)
+      state.lastNotifiedSig = sig; state.lastNotifiedAt = this.now()
+    }
+    if (!a.apply || !plan.steps.length) {
+      await notifyOnce('The cluster has been uneven: a balancing plan is ready')
+      return done(a.apply ? 'Uneven: only suggestions for HA guests, nothing to apply.' : 'Uneven: a plan was proposed (notify only).')
+    }
+    // Applying: its own limits, then one move as a one-move plan.
+    if (this.planSlot || (await this.d.store.listPlans({ status: ['running'], limit: 1 })).length || await this.moveInFlight()) return done('Uneven, but a move or a plan is running.')
+    const today = (await this.d.store.listPlans({ source: 'auto', limit: 100 }))
+      .filter(p => (p.startedAt ?? 0) > this.now() - DAY_MS)
+      .reduce((n, p) => n + p.steps.filter(x => x.status === 'done' || x.status === 'running' || x.status === 'failed').length, 0)
+    if (today >= a.maxMovesPerDay) { await notifyOnce('The cluster is uneven: automatic balancing reached its daily limit'); return done(`Uneven, but ${today} automatic move${today === 1 ? '' : 's'} in the last 24 h is the limit.`) }
+    if (state.lastMoveAt && this.now() - state.lastMoveAt < a.minHoursBetween * 3600_000) return done(`Uneven, but the last automatic move was less than ${a.minHoursBetween} h ago.`)
+    const ap = state.approver
+    const changed = !ap || !APPROVER_ROLES.has(ap.role) ? 'no admin approval is recorded'
+      : this.d.approverChanged ? await this.d.approverChanged(ap.email, ap.at).catch(() => 'their role could not be checked') : null
+    if (changed) {
+      settings = { ...a, apply: false }
+      state.approver = null; state.cephBaseline = null
+      await this.d.notify?.('Automatic balancing stopped applying', [`Applying automatically was turned off: ${ap ? `${ap.email} ${changed}` : changed}. It notifies only until an admin turns applying on again.`], 'placement:auto:approver', 'warning').catch(() => undefined)
+      return done(`Applying was turned off: ${ap ? `${ap.email} ${changed}` : changed}.`)
+    }
+    const nodes = b.map.nodes.filter(n => n.online && !n.maintenance).map(n => n.node)
+    const why = await this.gate({ ceph: state.cephBaseline ? { checks: state.cephBaseline } : null, nodes })
+    if (why) return done(`Uneven, but not now: ${why}.`)
+    const step = plan.steps[0]
+    // The network cost: a move that shares corosync's network runs under the bandwidth limit, or not at all.
+    if (b.map.network.shared !== false && step.method === 'migrate' && !step.bwlimitKiB) return done('Uneven, but the move would run without a bandwidth limit on the network corosync uses.')
+    try {
+      await this.d.audit('placement.auto.plan', 'balance', { approver: ap!.email, sid: step.sid, from: step.from, to: step.to, scoreBefore: Math.round(plan.score.score), scoreAfter: Math.round(step.scoreAfter) })
+    } catch { return done('Uneven, but the audit row could not be written, so nothing moved.') }
+    if (this.planSlot) return done('Uneven, but a plan is running.')
+    this.planSlot = 'auto'
+    let rec: PlanRecord
+    try {
+      rec = await this.d.store.createPlan({
+        source: 'auto', status: 'running', by: ap!.email, goal: plan.goal, scoreBefore: plan.score.score, scoreTarget: step.scoreAfter,
+        steps: [stepRecord(step)], startedAt: this.now(), owner: this.owner, heartbeatAt: this.now(),
+        snapshot: { settings: b.s, approver: ap!, ceph: state.cephBaseline ? { checks: state.cephBaseline } : null, nodes },
+      })
+    } catch (e: any) { if (this.planSlot === 'auto') this.planSlot = null; return done(`Uneven, but the plan could not be stored (${String(e?.message ?? e).slice(0, 80)}).`) }
+    this.planSlot = rec.id
+    state.lastMoveAt = this.now()
+    await done(`Moving ${step.name || step.sid} from ${step.from} to ${step.to}.`)
+    void this.runPlan(rec.id)
+  }
+
+  /** Scheduled plans whose time has come, and running plans whose process died (stopped, never resumed). */
+  async planTick(): Promise<void> {
+    for (const p of await this.d.store.listPlans({ status: ['running'], limit: 20 })) {
+      if (p.owner === this.owner || this.planSlot === p.id) continue
+      if (p.heartbeatAt !== null && this.now() - p.heartbeatAt < HEARTBEAT_STALE_MS) continue
+      const steps = p.steps.map(x => (x.status === 'pending' ? { ...x, status: 'skipped' as const, error: 'HyperProx restarted during the plan.' } : x))
+      const done = await this.d.store.transitionPlan(p.id, { status: ['running'], heartbeatBefore: this.now() - HEARTBEAT_STALE_MS }, {
+        status: 'stopped', endedAt: this.now(), steps,
+        error: 'HyperProx stopped while this plan was running (a restart). The moves that had not started did not run; a move under way is watched to its end in the move history.',
+      })
+      if (done) await this.d.notify?.('A balancing plan stopped', [done.error!], `placement:plan:${p.id}:stale`, 'warning').catch(() => undefined)
+    }
+    const due = (await this.d.store.listPlans({ status: ['scheduled'], limit: 20 })).filter(p => (p.scheduledFor ?? Infinity) <= this.now())
+    for (const p0 of due) {
+      const p = await this.d.store.getPlan(p0.id)
+      if (!p || p.status !== 'scheduled') continue
+      const skip = (error: string) => this.d.store.transitionPlan(p.id, { status: ['scheduled'] }, { status: 'skipped', endedAt: this.now(), error })
+      if (this.now() - (p.scheduledFor ?? 0) > 30 * 60_000) { await skip('Its quiet window passed without it running (HyperProx was locked or restarting). Run it again.'); continue }
+      if (!this.d.isUnlocked() || this.planSlot || this.slot) continue
+      const ap = p.snapshot?.approver
+      if (!ap || !APPROVER_ROLES.has(ap.role)) { await skip('Not run: no admin approval is recorded for it.'); continue }
+      if (this.now() - ap.at > SCHEDULE_TTL_MS) { await skip('Not run: it was approved more than 7 days ago, and scheduled plans expire after 7 days.'); continue }
+      const changed = this.d.approverChanged ? await this.d.approverChanged(ap.email, ap.at).catch(() => 'their role could not be checked') : null
+      if (changed) { await skip(`Not run: ${ap.email} ${changed}.`); continue }
+      const r = await this.read(true).catch(() => null)
+      if (!r) continue
+      const s = stricterSettings(p.snapshot?.settings, await this.d.store.settings())
+      const needSec = Number(p.snapshot?.needSec) || 600
+      const quiet = quietStatus({ now: this.now(), tz: r.tz, jobs: r.jobs, settings: s, needSec, jobsRead: r.jobsRead })
+      if (!quiet.quietNow) { await skip(`Not run: it is not a quiet window for the whole plan (${quiet.nowWhy.join('; ')}).`); continue }
+      try { await this.d.audit('placement.plan.scheduled-run', 'balance', { id: p.id, by: p.by }) }
+      catch { await skip('Not run: the audit row could not be written.'); continue }
+      if (this.planSlot) continue
+      this.planSlot = p.id
+      const claimed = await this.d.store.transitionPlan(p.id, { status: ['scheduled'] }, { status: 'running', startedAt: this.now(), owner: this.owner, heartbeatAt: this.now() })
+      if (!claimed) { if (this.planSlot === p.id) this.planSlot = null; continue }
+      void this.runPlan(p.id)
+      break
+    }
+  }
+
   /** One pass of the scheduler. Never overlaps itself. Exposed for tests. */
   async tick(): Promise<void> {
     if (this.ticking) return
@@ -713,6 +1188,8 @@ export class PlacementService {
         void this.run(m.id, plan)
         break
       }
+      await this.planTick().catch(() => undefined)
+      await this.autoTick().catch(() => undefined)
     } finally {
       this.ticking = false
     }
@@ -725,6 +1202,11 @@ export class PlacementService {
     ;(this.timer as any).unref?.()
     return () => { if (this.timer) clearInterval(this.timer); this.timer = null }
   }
+}
+
+/** A plan step as stored, from the step as planned. */
+function stepRecord(x: { sid: string; name: string; from: string; to: string; method: 'ha' | 'migrate' }): PlanStepRecord {
+  return { sid: x.sid, name: x.name, from: x.from, to: x.to, method: x.method, status: 'pending', moveId: null, error: null, startedAt: null, endedAt: null }
 }
 
 /** The watch ran out with the task still going: the row says stuck, and so it stays. */

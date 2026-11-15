@@ -1,5 +1,5 @@
 // =============================================================================
-//  HyperProx — placement advisor: reading the cluster
+//  HyperProx — load balancing: reading the cluster
 //
 //  Everything the engine needs, in as few Proxmox calls as the facts allow:
 //  the HA snapshot (with every guest's config, not only HA guests'), each

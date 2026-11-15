@@ -1,5 +1,5 @@
 // =============================================================================
-//  HyperProx — placement advisor: real imbalance, over hours, not a snapshot
+//  HyperProx — load balancing: real imbalance, over hours, not a snapshot
 //
 //  A node is busy when it spent at least `minHours` of the last `windowHours`
 //  above the CPU or memory threshold, with backup windows left out (a backup
@@ -26,14 +26,14 @@ type Settings = Pick<PlacementSettings, 'cpuAbove' | 'memAbove' | 'minHours' | '
 const pct = (v: number) => `${Math.round(v * 100)}%`
 const hrs = (h: number) => (h >= 10 ? `${Math.round(h)}` : `${Math.round(h * 10) / 10}`)
 
-function p95(vs: number[]): number {
+export function p95(vs: number[]): number {
   if (!vs.length) return 0
   const s = [...vs].sort((a, b) => a - b)
   return s[Math.min(s.length - 1, Math.floor(s.length * 0.95))]
 }
 
 /** Samples outside the backup windows, as a time → value map. */
-function keep(samples: Sample[], masked: (sec: number) => boolean): Map<number, number> {
+export function keep(samples: Sample[], masked: (sec: number) => boolean): Map<number, number> {
   const m = new Map<number, number>()
   for (const [t, v] of samples) if (Number.isFinite(v) && !masked(t)) m.set(t, v)
   return m
@@ -58,7 +58,7 @@ export function pressureOf(node: string, cpu: Map<number, number>, mem: Map<numb
 }
 
 /** The node's series with a guest's usage added (sign 1) or taken away (sign -1), as a share of the node. */
-function shifted(base: Map<number, number>, guest: Map<number, number>, capacity: number, sign: 1 | -1): Map<number, number> {
+export function shifted(base: Map<number, number>, guest: Map<number, number>, capacity: number, sign: 1 | -1): Map<number, number> {
   const out = new Map<number, number>()
   for (const [t, v] of base) {
     // The range queries share one start and step, so the times line up; the nearest reading covers a gap.
@@ -69,7 +69,7 @@ function shifted(base: Map<number, number>, guest: Map<number, number>, capacity
 }
 
 /** The guest's reading nearest to t (series are scraped on their own clocks). */
-function guestAt(m: Map<number, number>, t: number): number {
+export function guestAt(m: Map<number, number>, t: number): number {
   let best = 0, gap = Infinity
   for (const [k, v] of m) { const d = Math.abs(k - t); if (d < gap) { gap = d; best = v } }
   return gap <= 600 ? best : 0

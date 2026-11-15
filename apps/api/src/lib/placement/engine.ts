@@ -1,5 +1,5 @@
 // =============================================================================
-//  HyperProx — placement advisor: the engine
+//  HyperProx — load balancing: the engine
 //
 //  For every guest (HA or not) and every other node: could it run there, and
 //  if not, why not, in plain words. The facts come from the guest's config

@@ -1,4 +1,4 @@
-// The Placement page's pieces, rendered to HTML: nodes as capacity bars with their guests on them, each guest's
+// The Load balancing page's "why is each guest here" pieces, rendered to HTML: nodes as capacity bars with their guests on them, each guest's
 // verdict in words (never colour alone), a guest's per-node reasons, a move's cost (downtime, data, network), a
 // suggestion with its effect, a history row with corosync. Plus the pure logic behind them.
 //   cd apps/frontend && node ../api/node_modules/tsx/dist/cli.mjs --tsconfig test/tsconfig.json --test test/*.test.tsx
@@ -121,9 +121,14 @@ test('a history row: who, where, and what corosync did, or that it could not be 
   assert.match(renderToStaticMarkup(<MoveRow m={{ ...m, source: 'proxmox', status: 'failed', error: 'migration aborted', corosync: null }} />), /seen in Proxmox[\s\S]*migration aborted/)
 })
 
-test('the page is in the rail and its settings in the palette', () => {
-  assert.ok(NAV.flatMap(g => g.items).some(i => i.href === '/placement'))
-  assert.ok(EXTRA_PAGES.some(p => p.href === '/settings/placement'))
+test('the page is in the rail as Load balancing and its settings in the palette; "placement" still finds both', () => {
+  const item = NAV.flatMap(g => g.items).find(i => i.href === '/balance')
+  assert.equal(item?.label, 'Load balancing')
+  assert.match(item!.keywords ?? '', /placement/)
+  assert.ok(!NAV.flatMap(g => g.items).some(i => i.href === '/placement'), 'the old address is a redirect, not a page')
+  const settings = EXTRA_PAGES.find(p => p.href === '/settings/balance')
+  assert.equal(settings?.label, 'Load balancing & quiet windows')
+  assert.match(settings!.keywords ?? '', /placement/)
 })
 
 test('a stuck move says it is still running in Proxmox, never "failed"', () => {

@@ -1,5 +1,5 @@
 // =============================================================================
-//  HyperProx — placement advisor: quiet windows
+//  HyperProx — load balancing: quiet windows
 //
 //  A move is safest when nothing else is leaning on the network and nobody is
 //  using what moves: outside backup jobs (read from the cluster's own backup

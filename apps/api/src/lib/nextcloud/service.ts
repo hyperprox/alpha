@@ -59,7 +59,7 @@ export interface ServiceDeps {
   exec: (g: GuestRef, script: string, o?: { timeoutMs?: number; onData?: (chunk: string) => void }) => Promise<{ code: number; output: string; timedOut: boolean }>
   guests: () => Promise<GuestRow[]>
   ocs: (l: { url: string; user: string; appPassword: string }) => OcsGet
-  /** HyperProx's busy hours (Placement settings) and the cluster's time zone, or null. */
+  /** HyperProx's busy hours (Load balancing settings) and the cluster's time zone, or null. */
   quietHours: () => Promise<{ busy: BusyHoursLike[]; tz: string | null } | null>
   /** A backup task (vzdump) of this guest running now: true, false, or null when it cannot be told. */
   backupRunning: (g: GuestRef) => Promise<boolean | null>

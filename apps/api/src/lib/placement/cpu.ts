@@ -1,5 +1,5 @@
 // =============================================================================
-//  HyperProx — placement advisor: can a running VM live-migrate to that CPU?
+//  HyperProx — load balancing: can a running VM live-migrate to that CPU?
 //
 //  A VM sees the CPU model in its config. "host" passes the node's own CPU
 //  through, so a live migration to a different model can crash the guest the

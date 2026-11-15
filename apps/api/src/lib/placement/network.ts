@@ -1,5 +1,5 @@
 // =============================================================================
-//  HyperProx — placement advisor: does a move compete with the heartbeat?
+//  HyperProx — load balancing: does a move compete with the heartbeat?
 //
 //  Corosync is the cluster's heartbeat. With HA fencing armed, a node that
 //  misses it for too long is fenced (rebooted). A migration copies memory and

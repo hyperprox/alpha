@@ -1,4 +1,4 @@
-// The placement advisor's shapes as the API sends them (apps/api/src/lib/placement/types.ts).
+// Load balancing's shapes as the API sends them (apps/api/src/lib/placement/types.ts).
 
 export type ReasonLevel = 'block' | 'unknown' | 'warn' | 'info'
 export interface Reason { code: string; level: ReasonLevel; words: string }
@@ -30,6 +30,7 @@ export interface BusyHours { days: number[]; start: string; end: string; label?:
 export interface PlacementSettings {
   avoidBackups: boolean; backupHours: number; backupMarginMin: number; busyHours: BusyHours[]; bwlimitKiB: number; linkMbps: number
   cpuAbove: number; memAbove: number; minHours: number; windowHours: number
+  balanceGoal: BalanceGoal; unevenAbove: number; minGain: number; maxPlanMoves: number
 }
 
 export interface MapView {
@@ -62,4 +63,49 @@ export interface MovePlan {
   refusals: string[]; warnings: string[]; running: boolean; downtimeSec: number | null; copyBytes: number; copySec: number
   localDisks: boolean; bwlimitKiB: number | null; network: NetworkCost; quiet: QuietStatus; needsAnyway: boolean; call: string
   lastMove: { at: number; from: string; to: string; words: string } | null
+}
+
+// --- load balancing (apps/api/src/lib/placement/types.ts, service.ts BalanceView) ---
+
+export type BalanceGoal = 'mem' | 'cpu' | 'both'
+export type Sample = [number, number]
+export interface NodeLoad {
+  node: string; online: boolean; maintenance: boolean; counted: boolean; threads: number; maxmem: number
+  cpu: { now: number; p95: number; mean: number }; mem: { now: number; p95: number; mean: number }
+  cpuShare: number; memShare: number; history: { cpu: Sample[]; mem: Sample[] }
+}
+export interface BalanceScore { score: number; spread: number; cpuSpread: number; memSpread: number; busiest: string | null; idlest: string | null }
+export interface PlanStep {
+  n: number; sid: string; name: string; type: 'lxc' | 'qemu'; ha: boolean; from: string; to: string; method: 'ha' | 'migrate'
+  load: { cores: number; mem: number }
+  before: { from: { cpu: number; mem: number }; to: { cpu: number; mem: number } }
+  after: { from: { cpu: number; mem: number }; to: { cpu: number; mem: number } }
+  gain: number; scoreAfter: number; downtimeSec: number | null; copyBytes: number; copySec: number; bwlimitKiB: number | null; why: string[]
+}
+export interface BalanceSuggestion { kind: 'edit-rule' | 'ha-move'; sid: string; name: string; from: string; to: string; rule?: string; gain: number; words: string }
+export interface BalancePlan {
+  goal: BalanceGoal; score: BalanceScore; target: BalanceScore; steps: PlanStep[]; suggestions: BalanceSuggestion[]
+  nodesAfter: Array<{ node: string; cpu: number; mem: number }>; needSec: number; left: string[]; words: string[]
+}
+export type PlanStatus = 'scheduled' | 'running' | 'done' | 'stopped' | 'failed' | 'cancelled' | 'skipped'
+export interface PlanStepRecord {
+  sid: string; name: string; from: string; to: string; method: 'ha' | 'migrate'
+  status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; moveId: string | null; error: string | null; startedAt: number | null; endedAt: number | null
+}
+export interface PlanRecord {
+  id: string; source: 'manual' | 'auto'; status: PlanStatus; by: string | null; goal: BalanceGoal; scoreBefore: number; scoreTarget: number
+  steps: PlanStepRecord[]; scheduledFor: number | null; startedAt: number | null; endedAt: number | null; error: string | null; stopRequested: boolean
+}
+export interface AutoSettings { enabled: boolean; apply: boolean; sustainHours: number; checkEveryMin: number; maxMovesPerDay: number; minHoursBetween: number }
+export interface AutoState {
+  approver: { email: string; role: string; at: number } | null; cephBaseline: string[] | null
+  lastCheckAt: number | null; lastWhy: string | null; lastNotifiedAt: number | null; lastNotifiedSig: string | null; lastMoveAt: number | null
+}
+export interface BalanceView {
+  goal: BalanceGoal; uneven: boolean; headline: string; nodes: NodeLoad[]; score: BalanceScore; plan: BalancePlan
+  recent: { hours: number; covered: number }; unread: string[]
+  quiet: QuietStatus; crs: { mode: string; autoRebalance: boolean }; network: NetworkCost; window: { hours: number; stepSec: number }
+  settings: { balanceGoal: BalanceGoal; unevenAbove: number; minGain: number; maxPlanMoves: number; cpuAbove: number; memAbove: number }
+  auto: { settings: AutoSettings; state: AutoState }
+  running: PlanRecord | null; plans: PlanRecord[]
 }

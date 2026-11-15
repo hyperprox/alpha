@@ -50,7 +50,7 @@ const AREAS: Array<{ href: string; label: string; icon: string; sub: string }> =
   { href: '/settings/secrets',         label: 'Secrets',         icon: 'lock',   sub: 'What the vault holds. Revealing one may ask for your master password again.' },
   { href: '/settings/api-tokens',      label: 'API tokens',      icon: 'plug',   sub: 'Bearer tokens for scripts and agents.' },
   { href: '/settings/notifications',   label: 'Notifications',   icon: 'alarm',  sub: 'Where HyperProx tells you something needs attention.' },
-  { href: '/settings/placement',       label: 'Placement & quiet windows', icon: 'check', sub: 'When guests may be moved: outside backups and your busy hours. Bandwidth for moves.' },
+  { href: '/settings/balance',         label: 'Load balancing & quiet windows', icon: 'check', sub: 'What a balancing plan evens out, and when guests may be moved: outside backups and your busy hours. Bandwidth for moves.' },
   { href: '/settings/naming',          label: 'Naming & addresses', icon: 'network', sub: 'The network, address range, ID scheme and DHCP policy for new guests.' },
   { href: '/catalogue/settings',       label: 'Container ID rule', icon: 'plugin', sub: 'The older ID pattern, used only when Naming & addresses is not saved.' },
   { href: '/updates#hyperprox',        label: 'HyperProx updates', icon: 'check', sub: 'This version, the update channel, and installing a newer HyperProx.' },
