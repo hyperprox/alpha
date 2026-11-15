@@ -207,7 +207,7 @@ export default function ApiTokensPage() {
   const [revoking, setRevoking] = useState<TokenRow | null>(null)
   const [askConfirm, setAskConfirm] = useState<null | { then: () => void }>(null)
   const [toast, setToast] = useState('')
-  const toastTimer = useRef<ReturnType<typeof setTimeout>>()
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const load = useCallback(async () => {
     const r = await apiJson<{ data: TokenRow[] }>('/api/auth/tokens')

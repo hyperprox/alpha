@@ -237,7 +237,7 @@ export default function SecretsPage() {
   const [generating, setGenerating] = useState(false)
   const [deleteFor, setDeleteFor] = useState<SecretRow | null>(null)
   const [toast, setToast] = useState('')
-  const toastTimer = useRef<ReturnType<typeof setTimeout>>()
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const load = useCallback(async () => {
     const r = await apiJson('/api/secrets')

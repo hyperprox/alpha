@@ -7,6 +7,7 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: false
   prisma: true
+  sharp: false
   unrs-resolver: false
 # Security fixes for transitive dependencies (pre-beta review): proxy-addr GHSA-jqcg-44mw-7w3h (IPv4-mapped
 # IPv6 trust), and @fastify/jwt 8's fast-jwt 4 (several JWT validation advisories, fixed in 6.3.x; @fastify/jwt 9+
