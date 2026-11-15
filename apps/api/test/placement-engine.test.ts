@@ -180,7 +180,7 @@ test('quiet windows: a backup job and the margin before it are not quiet; the ne
   const settings = { avoidBackups: true, backupHours: 1, backupMarginMin: 30, busyHours: [] }
   const jobs = [{ id: 'nightly', schedule: '02:00', enabled: true }]
   const at = (h: number, m = 0) => Date.UTC(2026, 5, 15, h, m)
-  assert.equal(quietStatus({ now: at(1, 0), tz: 'UTC', jobs, settings, needSec: 600 }).quietNow, true)
+  assert.equal(quietStatus({ now: at(0, 30), tz: 'UTC', jobs, settings, needSec: 600 }).quietNow, true)
   const before = quietStatus({ now: at(1, 45), tz: 'UTC', jobs, settings, needSec: 600 })
   assert.equal(before.quietNow, false)
   assert.match(before.nowWhy[0], /starts at 02:00/)
@@ -251,4 +251,90 @@ test('the assistant: "why is X on node1" and "where should X run" come from the 
   assert.match(where, /could run on node2, node3/)
   assert.match(where, /I cannot move anything/)
   assert.equal(guestAnswer('where should nothing-here run', map), null)
+})
+
+test('quiet means quiet for the whole move: a 10-minute move at 01:25 runs into the half hour kept before a 02:00 backup', () => {
+  const settings = { avoidBackups: true, backupHours: 1, backupMarginMin: 30, busyHours: [] }
+  const jobs = [{ id: 'nightly', schedule: '02:00', enabled: true }]
+  const at = (h: number, m = 0) => Date.UTC(2026, 5, 15, h, m)
+  const q = quietStatus({ now: at(1, 25), tz: 'UTC', jobs, settings, needSec: 600 })
+  assert.equal(q.quietNow, false, 'now itself is clear (the margin starts at 01:30); the move is not')
+  assert.match(q.nowWhy[0], /within the move's estimated 10 min/)
+  assert.equal(quietStatus({ now: at(1, 25), tz: 'UTC', jobs, settings, needSec: 60 }).quietNow, true, 'a one-minute move ends before the margin')
+  assert.equal(quietStatus({ now: at(1, 15), tz: 'UTC', jobs, settings, needSec: 600 }).quietNow, true, 'ends at 01:25, clear of 01:30')
+  // The next quiet stretch is long enough for the move: it starts after the backup, not in a gap too short for it.
+  assert.equal(q.nextQuiet!.start, at(3, 1))
+  // Busy hours that begin during the move count too.
+  const busy = { ...settings, busyHours: [{ days: [0, 1, 2, 3, 4, 5, 6], start: '12:20', end: '13:00' }] }
+  assert.equal(quietStatus({ now: at(12, 0), tz: 'UTC', jobs: [], settings: busy, needSec: 30 * 60 }).quietNow, false)
+  assert.equal(quietStatus({ now: at(12, 0), tz: 'UTC', jobs: [], settings: busy, needSec: 5 * 60 }).quietNow, true)
+})
+
+test('an unreadable backup schedule, or a job list that was not read, is never quiet and offers no window to schedule into', () => {
+  const settings = { avoidBackups: true, backupHours: 1, backupMarginMin: 30, busyHours: [] }
+  const at = Date.UTC(2026, 5, 15, 12, 0)
+  const odd = quietStatus({ now: at, tz: 'UTC', jobs: [{ id: 'x', schedule: '2026-12-24 02:00', enabled: true }, { id: 'n', schedule: '02:00', enabled: true }], settings })
+  assert.equal(odd.quietNow, false)
+  assert.match(odd.nowWhy[0], /cannot read backup schedule .* so when it runs is unknown/)
+  assert.equal(odd.nextQuiet, null)
+  const unread = quietStatus({ now: at, tz: 'UTC', jobs: [], settings, jobsRead: false })
+  assert.equal(unread.quietNow, false)
+  assert.match(unread.nowWhy[0], /backup jobs could not be read/)
+  assert.equal(unread.nextQuiet, null)
+  assert.ok(unread.unread.includes('the backup jobs'))
+  // A disabled job with an odd schedule does not matter; nor does any of it when backups are not avoided.
+  assert.equal(quietStatus({ now: at, tz: 'UTC', jobs: [{ id: 'x', schedule: '2026-12-24 02:00', enabled: false }], settings }).quietNow, true)
+  assert.equal(quietStatus({ now: at, tz: 'UTC', jobs: [], settings: { ...settings, avoidBackups: false }, jobsRead: false }).quietNow, true)
+})
+
+test('a guest whose config cannot be read is "unknown" everywhere, never "can move"', async () => {
+  const f = placementFixture()
+  delete f['/nodes/node1/lxc/107/config']
+  const { svc } = service(f)
+  const { map } = await svc.map()
+  const g = map.guests.find(x => x.sid === 'ct:107')!
+  assert.equal(g.movable, 'unknown')
+  assert.ok(g.targets.every(t => t.verdict === 'unknown'), JSON.stringify(g.targets))
+  assert.ok(g.everywhere.some(r => r.code === 'unread' && /configuration could not be read/.test(r.words)))
+  assert.ok(map.unread.includes('the config of ct:107'))
+  // A guest blocked for another reason stays "no".
+  delete f['/nodes/node3/qemu/106/config']
+  const t = (await service(f).svc.map()).map.guests.find(x => x.sid === 'vm:106')!
+  assert.notEqual(t.movable, 'yes')
+})
+
+test('an unread task log makes every move "unknown": a backup or another move may be running', async () => {
+  const f = placementFixture()
+  delete f['/cluster/tasks']
+  const { svc } = service(f)
+  const { map } = await svc.map()
+  const g = map.guests.find(x => x.sid === 'ct:107')!
+  assert.equal(g.movable, 'unknown')
+  assert.ok(g.everywhere.some(r => /task log could not be read/.test(r.words)))
+})
+
+test("a target whose memory cannot be read is unknown, not skipped", async () => {
+  const f = placementFixture()
+  ;(f['/nodes'] as any[]).find(n => n.node === 'node2').maxmem = 0
+  const { svc } = service(f)
+  const g = await guest(svc, 'ct:107')
+  const t = target(g, 'node2')
+  assert.equal(t.verdict, 'unknown')
+  assert.match(t.reasons.find((r: any) => r.code === 'memory').words, /memory could not be read/)
+  assert.equal(target(g, 'node3').verdict, 'ok')
+})
+
+test('a path check expires after ten minutes, and the verdict is unknown again', async () => {
+  let clock = NOW
+  const pve = fakePve(placementFixture())
+  const svc = new PlacementService({
+    pve: () => pve, prom: async () => [], store: new MemoryPlacementStore(), audit: async () => {}, isUnlocked: () => true, now: () => clock, cacheMs: 0,
+    nodeExec: async () => ({ code: 0, output: 'present\n' }),
+  })
+  await svc.checkPaths('ct:105', { email: 'a@example.com' })
+  assert.equal(target(await guest(svc, 'ct:105'), 'node1').verdict, 'ok')
+  clock += 9 * 60_000
+  assert.equal(target(await guest(svc, 'ct:105'), 'node1').verdict, 'ok')
+  clock += 2 * 60_000
+  assert.equal(target(await guest(svc, 'ct:105'), 'node1').verdict, 'unknown')
 })

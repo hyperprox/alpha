@@ -10,7 +10,9 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
-import { currentContext } from '../lib/auth'
+import { allSessions, currentContext } from '../lib/auth'
+import { getBroker } from '../lib/vault/broker'
+import { publish } from '../lib/notify'
 import { VaultLockedError } from '../lib/credentials'
 import { currentRemote } from '../lib/clusters/context'
 import { sidOf } from '../lib/ha/parse'
@@ -61,6 +63,18 @@ export function placementService(prisma: any): PlacementService {
     store: prismaPlacementStore(prisma),
     audit: (action, resource, details) => auditOrThrow(action, resource, details),
     isUnlocked,
+    // The scheduling admin's role now, from the vault's member list (read through any signed-in session).
+    approverRole: async email => {
+      const b: any = getBroker()
+      const sid = allSessions().map(x => x.sid).find(Boolean)
+      if (!sid || typeof b.members !== 'function') return 'unverifiable'
+      const list: Array<{ email: string; role: string; status: string }> = await b.members(sid)
+      const m = list.find(x => x.email.toLowerCase() === email.toLowerCase())
+      return m && m.status === 'confirmed' ? m.role : m ? `not confirmed (${m.status})` : null
+    },
+    alert: async (title, lines) => {
+      await publish({ type: 'placement.move.stuck', severity: 'warning', title, lines, link: '/placement', where: 'Placement page', fingerprint: `placement:${title}` }).catch(() => undefined)
+    },
     nodeExec: async (node, command) => {
       const cred = await nodeCredential(node).catch(() => null)
       if (!cred) return null
@@ -115,6 +129,7 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
       return m
     }))
     fastify.post<{ Params: { id: string } }>('/moves/:id/cancel', async (q, r) => wrap(r, () => svc().cancel(q.params.id, actor())))
+    fastify.post<{ Params: { id: string } }>('/moves/:id/resolve', async (q, r) => wrap(r, () => svc().resolve(q.params.id, actor())))
     fastify.post<{ Params: { id: string } }>('/moves/:id/corosync', async (q, r) => wrap(r, () => svc().corosyncFor(q.params.id, actor())))
   }
 }

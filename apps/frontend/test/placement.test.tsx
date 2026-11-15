@@ -125,3 +125,12 @@ test('the page is in the rail and its settings in the palette', () => {
   assert.ok(NAV.flatMap(g => g.items).some(i => i.href === '/placement'))
   assert.ok(EXTRA_PAGES.some(p => p.href === '/settings/placement'))
 })
+
+test('a stuck move says it is still running in Proxmox, never "failed"', () => {
+  const m: MoveRecord = { id: 'mv2', sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'stuck', upid: null, by: null,
+    scheduledFor: null, startedAt: Date.UTC(2026, 5, 15, 12), endedAt: null, error: "Proxmox's task is still running after 120 min.", bwlimitKiB: null, corosync: null }
+  const html = renderToStaticMarkup(<MoveRow m={m} action={<button>Resolve</button>} />)
+  assert.match(html, /worker: node1 → node2 · still running in Proxmox/)
+  assert.doesNotMatch(html, /failed/)
+  assert.match(html, /Resolve/)
+})

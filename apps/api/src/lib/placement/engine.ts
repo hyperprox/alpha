@@ -35,6 +35,8 @@ export interface EngineInput {
   pathChecks?: Record<Sid, Record<string, Record<string, boolean | null>>>
   network:  NetworkCost
   settings: { linkMbps: number; bwlimitKiB: number }
+  /** False when the cluster task log could not be read: whether a backup or a move is running is unknown. */
+  tasksRead?: boolean
   /** Seconds the guest's last restart-move took, from the task log, when known. */
   lastMoveSec?: Record<Sid, number>
   unread?:  string[]
@@ -59,6 +61,9 @@ function volumeSize(config: Record<string, unknown> | null, key: string): number
 /** The reasons that hold wherever the guest would go. */
 function everywhereReasons(g: HaGuest, hw: GuestHardware, input: EngineInput, ha: boolean): Reason[] {
   const out: Reason[] = []
+  // Facts that could not be read make every verdict unknown: no hardware seen is not the same as no hardware.
+  if (input.configs[g.sid] === null || input.configs[g.sid] === undefined) out.push({ code: 'unread', level: 'unknown', words: "Its configuration could not be read, so its devices, mounts, disks and CPU type are unknown. HyperProx does not move a guest it cannot see." })
+  if (input.tasksRead === false) out.push({ code: 'unread', level: 'unknown', words: 'The cluster task log could not be read, so whether a backup or another move is running now is unknown.' })
   if (g.template) out.push({ code: 'template', level: 'block', words: 'It is a template: it never runs, so where it sits does not change any load. Clone it where you need it.' })
   for (const b of hw.bindMounts) out.push({ code: 'bind-mount', level: 'block', words: `A bind mount (${b.path}) without shared=1: Proxmox refuses to migrate it. If HA recovers it on another node after a failure, it cannot come back by a migration.` })
   if (input.migrating.includes(g.sid)) out.push({ code: 'migrating', level: 'block', words: 'It is being moved right now.' })
@@ -146,7 +151,9 @@ function targetCheck(g: HaGuest, hw: GuestHardware, to: PlacementNode, input: En
     if (r) add(r)
   }
   // Memory: what it uses must fit now; its limit should.
-  if (n && n.maxmem) {
+  if (!n || !(n.maxmem > 0)) {
+    if (to.online) add({ code: 'memory', level: 'unknown', words: `${to.node}'s memory could not be read, so whether it has room is unknown.` })
+  } else {
     const free = Math.max(0, n.maxmem - n.mem)
     const used = input.usage[g.sid]?.mem ?? 0
     const need = g.status === 'running' ? used : 0
@@ -210,11 +217,15 @@ export function placementMap(input: EngineInput): PlacementMap {
     const hw: GuestHardware = g.hardware ?? { bindMounts: [], sharedMounts: [], devices: [], localVolumes: [] }
     const ha = haSids.has(g.sid)
     const everywhere = everywhereReasons(g, hw, input, ha)
-    // A reason that holds everywhere (a template, a plain bind mount) makes every target a no.
+    // A reason that holds everywhere (a template, a plain bind mount) makes every target a no; one that could not
+    // be checked anywhere (an unread config, an unread task log) makes every target at best unknown.
     const blocks = everywhere.filter(r => r.level === 'block')
+    const unknowns = everywhere.filter(r => r.level === 'unknown')
     const targets = nodes.filter(n => n.node !== g.node).map(n => {
       const t = targetCheck(g, hw, n, input, rules)
-      return blocks.length ? { ...t, verdict: 'no' as const, reasons: dedupe([...blocks, ...t.reasons]) } : t
+      if (blocks.length) return { ...t, verdict: 'no' as const, reasons: dedupe([...blocks, ...unknowns, ...t.reasons]) }
+      if (unknowns.length) return { ...t, verdict: t.verdict === 'no' ? 'no' as const : 'unknown' as const, reasons: dedupe([...unknowns, ...t.reasons]) }
+      return t
     })
     const blockedEverywhere = everywhere.some(r => r.level === 'block')
     const ok = blockedEverywhere ? [] : targets.filter(t => t.verdict === 'ok').map(t => t.node)

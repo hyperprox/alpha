@@ -824,9 +824,14 @@ HyperProx does not compete with it. What it adds:
 - **A safe move**, only when you ask: the server checks it again, the confirmation shows the downtime (a
   running container restarts), the data to copy and the network cost, and your master password is asked
   for. HA guests move through HA. HyperProx waits for the move to finish and checks the guest really runs
-  on the new node.
+  on the new node. One move runs at a time. A move that Proxmox is still working on after the wait is shown
+  as "still running", never as failed: HyperProx keeps watching and starts nothing else until it ends. A guest
+  HyperProx could not fully read (its configuration, or the task log) is never moved.
 - **Quiet windows.** Moves keep out of backup jobs (read from your backup schedules) and the busy hours you
-  set in Settings. Outside a quiet window you can move anyway, or let HyperProx move it in the next one.
+  set in Settings. The whole move has to fit in the quiet window, and a backup schedule HyperProx cannot
+  read means no window is quiet. Outside a quiet window you can move anyway, or let HyperProx move it in the
+  next one. A scheduled move is checked again before it runs, under the settings it was approved with, and
+  only if the person who approved it is still an admin. Saving these settings asks for your master password.
 - **Network cost.** When moves share the network corosync (the cluster heartbeat) uses, HyperProx says so
   and limits the move's bandwidth (an HA move only follows the cluster's own migration limit).
 - **History.** Every move, HyperProx's and the ones Proxmox did, with what corosync did around it when a

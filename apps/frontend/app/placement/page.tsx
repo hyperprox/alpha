@@ -66,6 +66,7 @@ export default function PlacementPage() {
     if (!r.ok) setNote(r.error ?? 'Could not read corosync.')
     void load()
   }
+  const resolve = async (id: string) => { setBusy(true); const r = await apiJson(`/api/placement/moves/${encodeURIComponent(id)}/resolve`, 'POST', {}); setBusy(false); setNote(r.ok ? 'Resolved: read back from Proxmox.' : r.error ?? 'Not resolved.'); void load() }
   const cancel = async (id: string) => { const r = await apiJson(`/api/placement/moves/${encodeURIComponent(id)}/cancel`, 'POST', {}); if (!r.ok) setNote(r.error ?? 'Not cancelled.'); void load() }
 
   return (
@@ -153,6 +154,7 @@ export default function PlacementPage() {
             {moves.slice(0, 40).map(m => (
               <MoveRow key={m.id} m={m} action={admin ? (
                 m.status === 'scheduled' ? <Btn small onClick={() => cancel(m.id)}>Cancel</Btn>
+                  : m.status === 'stuck' ? <Btn small disabled={busy} onClick={() => resolve(m.id)} title="Once Proxmox shows it finished: read it back and settle it">Resolve</Btn>
                   : (m.status === 'done' || m.status === 'failed') && !m.corosync?.checked?.length ? <Btn small disabled={busy} onClick={() => corosync(m.id)}>Check corosync</Btn> : null
               ) : null} />
             ))}

@@ -195,6 +195,8 @@ export function quietStatus(input: {
   now: number; tz: string; jobs: BackupJob[]; settings: Pick<PlacementSettings, 'avoidBackups' | 'backupHours' | 'backupMarginMin' | 'busyHours'>
   /** The quiet stretch has to last this long (the move's estimate). */
   needSec?: number
+  /** False when the backup job list could not be read: no window is then known to be quiet. */
+  jobsRead?: boolean
   horizonDays?: number
 }): QuietStatus {
   const { now, tz, settings } = input
@@ -212,7 +214,7 @@ export function quietStatus(input: {
   const t0 = Math.floor(now / MIN) * MIN
   // One pass over every minute from the longest backup's length before now to the horizon: which minute starts
   // a backup, and which is in busy hours. Then each minute's state is a lookup.
-  const from = -maxDur, to = horizon + need + margin
+  const from = -maxDur, to = horizon + 2 * (need + margin)
   const busy: Array<string | null> = []
   const starts: Array<string[]> = []
   for (let i = from; i <= to; i++) {
@@ -234,11 +236,25 @@ export function quietStatus(input: {
     return null
   }
   const why = (i: number): string | null => backupAt(i) ?? busy[idx(i)]
+  // A move is quiet only if the whole of it is: every minute from now to its estimated end. Each minute's backup check
+  // already reaches `margin` minutes ahead (backupAt), so this is the span [now, end + margin] against the backup
+  // windows themselves; adding the margin again here would count it twice.
+  const span = need
   const nowWhy = [backupAt(0), busy[idx(0)]].filter((x): x is string => !!x)
+  if (!nowWhy.length) {
+    for (let i = 1; i <= span; i++) {
+      const w = why(i)
+      if (w) { nowWhy.push(`${w.startsWith('a backup job starts') ? w : `${w} begins at ${clock(t0 + i * MIN, tz)}`}, within the move's estimated ${need} min`); break }
+    }
+  }
+  // Backups that cannot be placed in time make every window unknown, so none is called quiet and none is offered.
+  const unknown = settings.avoidBackups && (input.jobsRead === false || unread.length > 0)
+  if (unknown) nowWhy.unshift(input.jobsRead === false ? 'the backup jobs could not be read, so when they run is unknown' : `HyperProx cannot read ${unread.join(', ')}, so when it runs is unknown`)
+  if (input.jobsRead === false) unread.push('the backup jobs')
   let nextQuiet: QuietStatus['nextQuiet'] = null
   let run = 0
-  for (let i = 0; i <= horizon; i++) {
-    if (why(i) === null) { run++; if (run >= need) { const s = i - need + 1; let e = i; while (e < horizon && why(e + 1) === null) e++; nextQuiet = { start: t0 + s * MIN, end: t0 + (e + 1) * MIN }; break } }
+  for (let i = 0; !unknown && i <= horizon; i++) {
+    if (why(i) === null) { run++; if (run >= span) { const s = i - span + 1; let e = i; while (e < horizon && why(e + 1) === null) e++; nextQuiet = { start: t0 + s * MIN, end: t0 + (e + 1) * MIN }; break } }
     else run = 0
   }
   const upcoming: QuietWindow[] = []

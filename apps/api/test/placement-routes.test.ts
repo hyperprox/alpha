@@ -30,6 +30,8 @@ const tokens = new MemoryApiTokenStore()
 let clock = Date.UTC(2026, 5, 15, 12, 0)   // noon UTC: quiet (the fixture's backup job is at 02:00)
 const audits: Array<{ action: string; resource: string; details?: Record<string, unknown> }> = []
 let failAudit = false
+const alerts: string[] = []
+const roles: Record<string, string | null> = { 'admin@example.com': 'admin' }
 let fixture = placementFixture()
 let pve = makePve()
 let store = new MemoryPlacementStore()
@@ -63,7 +65,9 @@ function newService() {
   return new PlacementService({
     pve: () => pve, prom: async () => [], store,
     audit: async (action, resource, details) => { if (failAudit) throw new Error('db down'); audits.push({ action, resource, details }) },
-    isUnlocked: () => true, nodeExec: async () => null, now: () => clock, sleep: async () => {}, pollMs: 1, cacheMs: 0,
+    isUnlocked: () => true, nodeExec: async () => null, now: () => clock, sleep: () => new Promise(r => setImmediate(r)), pollMs: 1, cacheMs: 0, taskTimeoutMs: 50,
+    approverRole: async email => (email in roles ? roles[email] : null),
+    alert: async (title) => { alerts.push(title) },
   })
 }
 
@@ -84,10 +88,12 @@ after(async () => { setApiTokenStore(null); setAuditSink(null); if (isUnlocked()
 
 function reset() {
   fixture = placementFixture(); pve = makePve(); store = new MemoryPlacementStore(); svc = newService()
-  audits.length = 0; failAudit = false; clock = Date.UTC(2026, 5, 15, 12, 0)
+  audits.length = 0; alerts.length = 0; failAudit = false; clock = Date.UTC(2026, 5, 15, 12, 0)
+  for (const k of Object.keys(roles)) delete roles[k]
+  roles['admin@example.com'] = 'admin'
 }
 const settle = async (id: string) => {
-  for (let i = 0; i < 200; i++) { const m = await store.get(id); if (m && m.status !== 'running') return m; await new Promise(r => setImmediate(r)) }
+  for (let i = 0; i < 2000; i++) { const m = await store.get(id); if (m && m.status !== 'running' && m.status !== 'stuck') return m; await new Promise(r => setImmediate(r)) }
   return store.get(id)
 }
 const B = '/api/placement'
@@ -281,17 +287,97 @@ test('a scheduled move is skipped, with the reason, when it no longer fits or it
   assert.match((await store.get(r2.id))!.error!, /window passed/)
 })
 
-test('a scheduled move can be cancelled; a restart fails moves left running, and says why', async () => {
+test('a scheduled move can be cancelled, atomically: once cancelled the scheduler never runs it, and a claimed one cannot be cancelled', async () => {
   reset()
-  const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock + 3600_000 })
+  const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com' })
   const cookie = await admin()
   const c = await app.inject({ method: 'POST', url: `${B}/moves/${r.id}/cancel`, headers: { cookie } })
   assert.equal(c.statusCode, 200, c.body)
   assert.equal((await store.get(r.id))!.status, 'cancelled')
-  const left = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'running', startedAt: clock })
-  const stop = await svc.start()
-  stop()
-  assert.match((await store.get(left.id))!.error!, /restarted while/)
+  await svc.tick()
+  assert.equal(pve.writes.length, 0, 'a cancelled move never runs')
+  assert.equal((await store.get(r.id))!.status, 'cancelled')
+  // Claimed by the scheduler (scheduled -> running): the cancel loses, and says what it is now.
+  const r2 = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock + 3600_000 })
+  assert.ok(await store.transition(r2.id, { status: ['scheduled'] }, { status: 'running' }))
+  assert.equal(await store.transition(r2.id, { status: ['scheduled'] }, { status: 'running' }), null, 'a second claim gets nothing')
+  const c2 = await app.inject({ method: 'POST', url: `${B}/moves/${r2.id}/cancel`, headers: { cookie } })
+  assert.equal(c2.statusCode, 409)
+  assert.match(c2.json().error, /It is running/)
+})
+
+test('the scheduler never overlaps itself: two ticks at once run a due move once', async () => {
+  reset()
+  const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com' })
+  await Promise.all([svc.tick(), svc.tick(), svc.tick()])
+  assert.equal((await settle(r.id))!.status, 'done')
+  assert.equal(pve.writes.length, 1)
+})
+
+test('restarts and second processes: a live watcher is left alone; a stale one with a task is taken over and watched to its end; one without a task is stuck', async () => {
+  reset()
+  // Another process, beating: untouched.
+  const live = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'running', startedAt: clock, owner: 'other@1', heartbeatAt: clock - 60_000, upid: 'UPID:node1:1:1:1:vzmigrate:107:root@pam:' })
+  await svc.tick()
+  assert.equal((await store.get(live.id))!.owner, 'other@1')
+  assert.equal((await store.get(live.id))!.status, 'running')
+  // Its heartbeat goes stale: claimed, watched (no new Proxmox call), read back.
+  ;(fixture['/cluster/resources?type=vm'] as any[]).find(v => v.vmid === 107).node = 'node2'
+  clock += 10 * 60_000
+  await svc.tick()
+  const m = await settle(live.id)
+  assert.equal(m!.status, 'done', m!.error ?? '')
+  assert.equal(m!.owner, svc.owner)
+  assert.equal(pve.writes.length, 0, 'taking over never repeats the migrate')
+  // Stale and no task id: nobody can know where it got to, so it is stuck, with an alert.
+  reset()
+  const lost = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'running', startedAt: clock - 3600_000, owner: 'dead@1', heartbeatAt: clock - 3600_000 })
+  await svc.tick()
+  const l = await store.get(lost.id)
+  assert.equal(l!.status, 'stuck')
+  assert.match(l!.error!, /Resolve/)
+  assert.equal(alerts.length, 1)
+})
+
+test('a task that outlives the wait is stuck, not failed: the slot stays held and an alert goes out until Proxmox shows it stopped', async () => {
+  reset()
+  const cookie = await reconfirmed()
+  let release = false
+  const key = '/nodes/node1/tasks/UPID%3Anode1%3A0000AAAA%3A0000BBBB%3A6AF89939%3Avzmigrate%3A107%3Aroot%40pam!hyperprox%3A/status'
+  Object.defineProperty(fixture, key, { get: () => (release ? { status: 'stopped', exitstatus: 'OK' } : { status: 'running' }), configurable: true, enumerable: true })
+  const r = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2' } })
+  assert.equal(r.statusCode, 200, r.body)
+  const id = r.json().data.id
+  for (let i = 0; i < 2000 && (await store.get(id))!.status !== 'stuck'; i++) await new Promise(res => setImmediate(res))
+  assert.equal((await store.get(id))!.status, 'stuck')
+  assert.match((await store.get(id))!.error!, /still running after/)
+  assert.equal(alerts.length, 1)
+  const second = await app.inject({ method: 'POST', url: `${B}/guests/lxc/108/move`, headers: { cookie }, payload: { target: 'node3' } })
+  assert.equal(second.statusCode, 409, 'no other move while one may still be running')
+  assert.equal(second.json().code, 'busy')
+  release = true
+  const m = await settle(id)
+  assert.equal(m!.status, 'done', m!.error ?? '')
+  const third = await app.inject({ method: 'POST', url: `${B}/guests/lxc/108/move`, headers: { cookie }, payload: { target: 'node3' } })
+  assert.equal(third.statusCode, 200, third.body)
+})
+
+test('resolve: a stuck move is settled by hand only once Proxmox shows its task stopped', async () => {
+  reset()
+  const upid = 'UPID:node1:7:7:7:vzmigrate:107:root@pam:'
+  const key = `/nodes/node1/tasks/${encodeURIComponent(upid)}/status`
+  fixture[key] = { status: 'running' }
+  const s = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'stuck', upid, owner: 'dead@1', heartbeatAt: clock, startedAt: clock, snapshot: { running: true, type: 'lxc' } })
+  const cookie = await admin()
+  const early = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
+  assert.equal(early.statusCode, 409)
+  assert.match(early.json().error, /still running/)
+  fixture[key] = { status: 'stopped', exitstatus: 'OK' }
+  ;(fixture['/cluster/resources?type=vm'] as any[]).find(v => v.vmid === 107).node = 'node2'
+  const ok = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal((await store.get(s.id))!.status, 'done')
+  assert.ok(audits.some(a => a.action === 'placement.move.resolve'))
 })
 
 test('history: Proxmox migrations from the task log are kept, with the target read from the task log', async () => {
@@ -299,6 +385,11 @@ test('history: Proxmox migrations from the task log are kept, with the target re
   ;(fixture['/cluster/tasks'] as any[]).push({ type: 'vzmigrate', id: '107', node: 'node1', starttime: 1_790_000_000, endtime: 1_790_000_030, status: 'OK', user: 'root@pam', upid: 'UPID:node1:5:6:7:vzmigrate:107:root@pam:' })
   fixture['/nodes/node1/tasks/UPID%3Anode1%3A5%3A6%3A7%3Avzmigrate%3A107%3Aroot%40pam%3A/log?limit=40'] = [{ t: "starting migration of CT 107 to node 'node3' (192.0.2.13)" }]
   const cookie = await admin()
+  // A read never syncs: no task logs fetched, nothing written.
+  const before = await app.inject({ method: 'GET', url: `${B}/moves`, headers: { cookie } })
+  assert.deepEqual(before.json().data, [])
+  assert.ok(!pve.reads.some(r => r.includes('/log')), 'no per-task fan-out on a viewer read')
+  await svc.tick()
   const h = await app.inject({ method: 'GET', url: `${B}/moves`, headers: { cookie } })
   assert.equal(h.statusCode, 200, h.body)
   const rows = h.json().data
@@ -306,13 +397,19 @@ test('history: Proxmox migrations from the task log are kept, with the target re
   assert.deepEqual([rows[0].source, rows[0].fromNode, rows[0].toNode, rows[0].status], ['proxmox', 'node1', 'node3', 'done'])
   const g = await app.inject({ method: 'GET', url: `${B}/guests/lxc/107`, headers: { cookie } })
   assert.match(g.json().data.lastMove.words, /Corosync around this move has not been checked/)
-  await app.inject({ method: 'GET', url: `${B}/moves`, headers: { cookie } })
+  clock += 11 * 60_000
+  await svc.tick()
   assert.equal((await store.list()).length, 1, 'once per task')
 })
 
-test('settings: checked field by field, unknown fields refused, saved and audited', async () => {
+test('settings: the master password is needed to save; checked field by field, unknown fields refused, saved and audited', async () => {
   reset()
-  const cookie = await admin()
+  assert.equal(needsReconfirm('PUT', `${B}/settings`), true)
+  const plain = await admin()
+  const no = await app.inject({ method: 'PUT', url: `${B}/settings`, headers: { cookie: plain }, payload: { bwlimitKiB: 30720 } })
+  assert.equal(no.statusCode, 403)
+  assert.equal(no.json().code, 'reconfirm_required')
+  const cookie = await reconfirmed()
   const bad = await app.inject({ method: 'PUT', url: `${B}/settings`, headers: { cookie }, payload: { cpuAbove: 5, nonsense: 1 } })
   assert.equal(bad.statusCode, 400)
   assert.match(bad.json().error, /Unknown setting: nonsense/)
@@ -326,4 +423,115 @@ test('migrate parameters: a running VM moves online with its local disks; a stop
   assert.equal(migrateParams({ type: 'qemu', status: 'running', local: true }, 'n2', 20480).toString(), 'target=n2&online=1&with-local-disks=1&bwlimit=20480')
   assert.equal(migrateParams({ type: 'qemu', status: 'stopped' }, 'n2', null).toString(), 'target=n2')
   assert.equal(migrateParams({ type: 'lxc', status: 'stopped' }, 'n2', null).toString(), 'target=n2')
+})
+
+test('one move at a time: two requests at once start one move; a running row from another process blocks too', async () => {
+  reset()
+  const cookie = await reconfirmed()
+  // Two calls in the same turn: the first takes the slot before it awaits anything, so the second is refused at once.
+  const actor = { email: 'admin@example.com' }
+  const [a, b] = await Promise.allSettled([svc.move('ct:107', 'node2', {}, actor), svc.move('ct:108', 'node3', {}, actor)])
+  assert.equal(a.status, 'fulfilled')
+  assert.equal(b.status, 'rejected')
+  assert.equal((b as PromiseRejectedResult).reason.code, 'busy')
+  await settle((a as PromiseFulfilledResult<any>).value.id)
+  assert.equal(pve.writes.length, 1)
+  void cookie
+  // The database's own claim: another process holds a running row.
+  reset()
+  await store.create({ sid: 'ct:108', name: 'hafree', fromNode: 'node2', toNode: 'node3', source: 'hyperprox', method: 'ha', status: 'running', owner: 'other@1', heartbeatAt: clock })
+  const c2 = await reconfirmed()
+  const r = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie: c2 }, payload: { target: 'node2' } })
+  assert.equal(r.statusCode, 409)
+  assert.equal(pve.writes.length, 0)
+  // And the store itself refuses a second in-flight row, whatever the caller checked first.
+  await assert.rejects(() => store.create({ sid: 'ct:107', name: 'w', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'running' }), /One at a time/)
+})
+
+test('a refused move frees the slot: the next request is checked normally', async () => {
+  reset()
+  const cookie = await reconfirmed()
+  const no = await app.inject({ method: 'POST', url: `${B}/guests/lxc/101/move`, headers: { cookie }, payload: { target: 'node2' } })
+  assert.equal(no.statusCode, 409)
+  assert.equal(no.json().code, 'refused')
+  const yes = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2' } })
+  assert.equal(yes.statusCode, 200, yes.body)
+  await settle(yes.json().data.id)
+})
+
+test('a guest whose config cannot be read is refused, and an unread task log refuses every move', async () => {
+  reset()
+  delete fixture['/nodes/node1/lxc/107/config']
+  const cookie = await reconfirmed()
+  const r = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2' } })
+  assert.equal(r.statusCode, 409)
+  assert.match(r.json().error, /configuration could not be read/)
+  reset()
+  delete fixture['/cluster/tasks']
+  const c2 = await reconfirmed()
+  const r2 = await app.inject({ method: 'POST', url: `${B}/guests/lxc/108/move`, headers: { cookie: c2 }, payload: { target: 'node3' } })
+  assert.equal(r2.statusCode, 409)
+  assert.match(r2.json().error, /task log could not be read/)
+  assert.equal(pve.writes.length, 0)
+})
+
+test('an unread backup job list: no "now" without anyway, and nothing to schedule into', async () => {
+  reset()
+  delete fixture['/cluster/backup']
+  const cookie = await reconfirmed()
+  const r = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2' } })
+  assert.equal(r.json().code, 'not-quiet')
+  const s = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2', when: 'next-quiet' } })
+  assert.equal(s.json().code, 'no-window')
+  const any = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2', anyway: true } })
+  assert.equal(any.statusCode, 200, any.body)
+  await settle(any.json().data.id)
+})
+
+test('a scheduled move runs under the settings it was approved with, not ones changed after', async () => {
+  reset()
+  clock = Date.UTC(2026, 5, 15, 1, 50)
+  const cookie = await reconfirmed()
+  const s = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2', when: 'next-quiet' } })
+  const rec = s.json().data
+  assert.equal(rec.snapshot.settings.bwlimitKiB, 51200)
+  // Changed afterwards: a busy-hours block over the whole day, and a far higher bandwidth limit.
+  await store.saveSettings({ ...(await store.settings()), bwlimitKiB: 900_000, busyHours: [{ days: [0, 1, 2, 3, 4, 5, 6], start: '00:00', end: '23:59' }] }, 'x')
+  clock = rec.scheduledFor + 60_000
+  await svc.tick()
+  const done = await settle(rec.id)
+  assert.equal(done!.status, 'done', done!.error ?? '')
+  assert.match(pve.writes[0].body, /bwlimit=51200/)
+})
+
+test('a scheduled run is audited or it does not run; and only while its approver is still an admin', async () => {
+  for (const [who, role, want] of [['admin@example.com', 'operator', /is now operator, not admin/], ['admin@example.com', null, /no longer a member/]] as const) {
+    reset()
+    roles[who] = role
+    const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: who })
+    await svc.tick()
+    const m = await store.get(r.id)
+    assert.equal(m!.status, 'skipped')
+    assert.match(m!.error!, want)
+    assert.equal(pve.writes.length, 0)
+  }
+  reset()
+  const r = await store.create({ sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'hyperprox', method: 'migrate', status: 'scheduled', scheduledFor: clock - 60_000, by: 'admin@example.com' })
+  failAudit = true
+  await svc.tick()
+  assert.match((await store.get(r.id))!.error!, /audit row could not be written/)
+  assert.equal(pve.writes.length, 0)
+})
+
+test('the task id race: a copy the history sync saved first is replaced by the move\'s own row, never left as a duplicate', async () => {
+  reset()
+  const upid = 'UPID:node1:0000AAAA:0000BBBB:6AF89939:vzmigrate:107:root@pam!hyperprox:'
+  await store.upsertSeen({ upid, sid: 'ct:107', name: 'worker', fromNode: 'node1', toNode: 'node2', source: 'proxmox', method: null, status: 'done' })
+  const cookie = await reconfirmed()
+  const r = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2' } })
+  const m = await settle(r.json().data.id)
+  assert.equal(m!.status, 'done', m!.error ?? '')
+  const rows = (await store.list()).filter(x => x.upid === upid)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].source, 'hyperprox')
 })

@@ -17,7 +17,7 @@ export type ReasonLevel = 'block' | 'unknown' | 'warn' | 'info'
 export type ReasonCode =
   | 'template' | 'gpu' | 'device' | 'bind-mount' | 'shared-mount' | 'local-disk' | 'strict-rule' | 'prefer-rule'
   | 'apart-rule' | 'together-rule' | 'cores' | 'cpu-type' | 'restart' | 'backup-running' | 'offline' | 'maintenance'
-  | 'memory' | 'ha' | 'crs' | 'stopped' | 'migrating'
+  | 'memory' | 'ha' | 'crs' | 'stopped' | 'migrating' | 'unread'
 
 export interface Reason { code: ReasonCode; level: ReasonLevel; words: string }
 
@@ -177,7 +177,8 @@ export interface PlacementSettings {
   windowHours:       number
 }
 
-export type MoveStatus = 'scheduled' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'
+/** stuck: Proxmox's task outlived HyperProx's wait, or HA has not finished; HyperProx keeps watching and holds the lock. */
+export type MoveStatus = 'scheduled' | 'running' | 'stuck' | 'done' | 'failed' | 'skipped' | 'cancelled'
 
 export interface CorosyncCount {
   checked:    string[]
@@ -207,4 +208,16 @@ export interface MoveRecord {
   error:       string | null
   bwlimitKiB:  number | null
   corosync:    CorosyncCount | null
+  /** The process watching it ("pid@start"), and when it last said so: a stale heartbeat can be taken over. */
+  owner:       string | null
+  heartbeatAt: number | null
+  /** What was approved: the settings in force then (a scheduled move runs under them), and the guest's state. */
+  snapshot:    MoveSnapshot | null
+}
+
+export interface MoveSnapshot {
+  settings?: PlacementSettings
+  type?:     'lxc' | 'qemu'
+  running?:  boolean
+  localDisks?: boolean
 }

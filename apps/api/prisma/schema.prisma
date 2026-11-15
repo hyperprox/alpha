@@ -683,9 +683,14 @@ model PlacementMove {
   error        String?
   bwlimitKiB   Int?
   corosync     Json?
+  owner        String?                           // the process watching it: "pid@start"
+  heartbeatAt  DateTime?                         // a stale heartbeat lets another process take it over
+  snapshot     Json?                             // the approved settings and the guest's state, run under at its time
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   @@index([sid])
   @@index([status])
+  // One move in flight at a time: a partial unique index in the migration (status running or stuck), which Prisma
+  // cannot express here.
 }

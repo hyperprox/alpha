@@ -7,7 +7,9 @@
 //  the cluster's backup jobs (read from its own backup schedules) and outside
 //  the hours you say the cluster is in use. Also the bandwidth limit for moves
 //  when they share corosync's network, and what counts as a busy node.
-//  Times are the cluster's local time. Admin; the API checks every field.
+//  Times are the cluster's local time. Admin, with the master password re-entered
+//  to save; the API checks every field. A move already scheduled keeps the
+//  settings it was approved with.
 // =============================================================================
 
 import { useEffect, useState } from 'react'
@@ -16,6 +18,7 @@ import { apiJson } from '@/lib/api'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Page, Panel } from '@/components/visual/kit'
 import { Switch } from '@/components/ha/ui'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { quietWords, seconds } from '@/components/placement/logic'
 import type { BusyHours, MapView, PlacementSettings } from '@/components/placement/types'
 
@@ -26,6 +29,7 @@ export default function PlacementSettingsPage() {
   const [view, setView] = useState<MapView | null>(null)
   const [msg, setMsg] = useState<{ kind: 'error' | 'info'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [reconfirm, setReconfirm] = useState(false)
 
   useEffect(() => {
     void (async () => {
@@ -44,6 +48,8 @@ export default function PlacementSettingsPage() {
     setBusy(true); setMsg(null)
     const r = await apiJson<{ data: PlacementSettings }>('/api/placement/settings', 'PUT', s)
     setBusy(false)
+    // Saving changes when approved moves may run, so the server asks for the master password again.
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(true); return }
     if (r.ok && r.body) { setS(r.body.data); setMsg({ kind: 'info', text: 'Saved.' }) } else setMsg({ kind: 'error', text: r.error ?? 'Not saved.' })
   }
 
@@ -58,6 +64,7 @@ export default function PlacementSettingsPage() {
   return (
     <Page>
       <HudHeader level={2} icon="check" eyebrow="Settings" title="Placement & quiet windows" label="Placement settings" />
+      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void save() }} />}
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       {!s && !msg && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Reading…</p>}
       {s && (
@@ -94,7 +101,7 @@ export default function PlacementSettingsPage() {
                   </div>
                 ))}
                 <GhostButton type="button" onClick={() => set('busyHours', [...s.busyHours, { days: [0, 1, 2, 3, 4, 5, 6], start: '19:00', end: '01:00', label: '' }])}>Add busy hours</GhostButton>
-                <p className="text-xs" style={{ color: 'var(--text-dim)' }}>An end before the start runs past midnight. A move outside a quiet window needs &quot;move anyway&quot;, or it can wait for the next quiet window.</p>
+                <p className="text-xs" style={{ color: 'var(--text-dim)' }}>An end before the start runs past midnight. A move outside a quiet window needs &quot;move anyway&quot;, or it can wait for the next quiet window. A move already scheduled keeps the settings it was approved with. Saving asks for your master password.</p>
               </div>
             </div>
           </Panel>

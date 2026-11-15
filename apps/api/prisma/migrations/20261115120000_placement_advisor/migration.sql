@@ -24,6 +24,9 @@ CREATE TABLE "PlacementMove" (
     "error" TEXT,
     "bwlimitKiB" INTEGER,
     "corosync" JSONB,
+    "owner" TEXT,
+    "heartbeatAt" TIMESTAMP(3),
+    "snapshot" JSONB,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     CONSTRAINT "PlacementMove_pkey" PRIMARY KEY ("id")
@@ -32,3 +35,6 @@ CREATE TABLE "PlacementMove" (
 CREATE UNIQUE INDEX "PlacementMove_upid_key" ON "PlacementMove"("upid");
 CREATE INDEX "PlacementMove_sid_idx" ON "PlacementMove"("sid");
 CREATE INDEX "PlacementMove_status_idx" ON "PlacementMove"("status");
+
+-- One move in flight cluster-wide: at most one row may be running or stuck, whichever process writes it.
+CREATE UNIQUE INDEX "PlacementMove_one_in_flight" ON "PlacementMove" ((1)) WHERE "status" IN ('running', 'stuck');

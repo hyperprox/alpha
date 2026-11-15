@@ -52,7 +52,7 @@ export interface Advice {
 export interface CorosyncCount { checked: string[]; retransmits: number; linkDown: number; tokenLost: number; membership: number; unavailable?: string }
 export interface MoveRecord {
   id: string; sid: string; name: string; fromNode: string; toNode: string; source: 'hyperprox' | 'proxmox'; method: 'ha' | 'migrate' | null
-  status: 'scheduled' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'; upid: string | null; by: string | null
+  status: 'scheduled' | 'running' | 'stuck' | 'done' | 'failed' | 'skipped' | 'cancelled'; upid: string | null; by: string | null
   scheduledFor: number | null; startedAt: number | null; endedAt: number | null; error: string | null; bwlimitKiB: number | null
   corosync: CorosyncCount | null
 }

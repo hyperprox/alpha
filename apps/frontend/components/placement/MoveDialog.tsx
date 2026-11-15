@@ -39,7 +39,7 @@ export function MoveDialog({ sid, name, to, onClose, onDone }: { sid: string; na
   const follow = useCallback(async (id: string) => {
     for (let i = 0; i < 3600 && alive.current; i++) {
       const r = await apiJson<{ data: MoveRecord }>(`/api/placement/moves/${encodeURIComponent(id)}`)
-      if (r.ok && r.body) { setMove(r.body.data); if (r.body.data.status !== 'running') { onDone?.(r.body.data); return } }
+      if (r.ok && r.body) { setMove(r.body.data); if (r.body.data.status !== 'running' && r.body.data.status !== 'stuck') { onDone?.(r.body.data); return } }
       await new Promise(res => setTimeout(res, 2000))
     }
   }, [onDone])
@@ -57,7 +57,7 @@ export function MoveDialog({ sid, name, to, onClose, onDone }: { sid: string; na
   }, [base, to, bw, plan, follow, onDone])
 
   const choices = plan ? moveChoices(plan) : []
-  const finished = move && move.status !== 'running'
+  const finished = move && move.status !== 'running' && move.status !== 'stuck'
   return (
     <Dialog title={`Move ${name || sid} to ${to}`} onClose={onClose} wide>
       {!plan && !error && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Checking the move with Proxmox…</p>}
@@ -80,6 +80,7 @@ export function MoveDialog({ sid, name, to, onClose, onDone }: { sid: string; na
         <Note tone={move.status === 'failed' || move.status === 'skipped' ? 'crit' : move.status === 'done' ? 'good' : 'info'}>
           {move.status === 'scheduled' && move.scheduledFor ? `Scheduled for ${whenText(move.scheduledFor, plan?.quiet.tz)}. It is checked again before it runs, and skipped (with the reason) if anything changed or HyperProx is locked then.`
             : move.status === 'running' ? `Moving ${name || sid} to ${to}… HyperProx waits for Proxmox's task, then checks it really runs there.`
+            : move.status === 'stuck' ? `Still running in Proxmox: ${move.error ?? ''} HyperProx keeps watching and starts no other move until it finishes.`
             : move.status === 'done' ? `Moved: ${name || sid} runs on ${to}.` : `${STATUS_WORD[move.status]}: ${move.error ?? 'see the history'}`}
         </Note>
       )}

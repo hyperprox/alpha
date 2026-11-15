@@ -83,7 +83,7 @@ export function quietWords(q: QuietStatus): string {
 }
 
 export const STATUS_WORD: Record<MoveRecord['status'], string> = {
-  scheduled: 'scheduled', running: 'moving', done: 'moved', failed: 'failed', skipped: 'skipped', cancelled: 'cancelled',
+  scheduled: 'scheduled', running: 'moving', stuck: 'still running in Proxmox', done: 'moved', failed: 'failed', skipped: 'skipped', cancelled: 'cancelled',
 }
 
 export function moveTitle(m: MoveRecord): string {

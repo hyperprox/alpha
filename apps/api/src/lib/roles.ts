@@ -147,8 +147,9 @@ const HA_READ = /^\/api\/ha\/(overview|badges|guests\/(lxc|qemu)\/\d+(\/prefligh
 const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pin)$/
 // Placement advisor (routes/placement.ts). Reads (the map, the advice, one guest, the history, the settings) are
 // viewer, as the guest list is. Everything else is admin: the move check, saving settings, checking bind-mount paths
-// and reading corosync's log (both over node logins), cancelling a scheduled move. A move, now or scheduled, also
-// needs the master password re-entered, which keeps API tokens out too.
+// and reading corosync's log (both over node logins), cancelling a scheduled move, resolving a stuck one. A move, now
+// or scheduled, and saving the settings (they decide when approved moves run) also need the master password
+// re-entered, which keeps API tokens out too.
 const PLACEMENT = /^\/api\/placement(\/|$)/
 const PLACEMENT_READ = /^\/api\/placement\/(map|advice|settings|moves(\/[^/]+)?|guests\/(lxc|qemu)\/\d+)$/
 const PLACEMENT_RECONFIRM = /^\/api\/placement\/guests\/(lxc|qemu)\/\d+\/move$/
@@ -390,6 +391,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLACEMENT_RECONFIRM.test(p)) return true
+  if (m === 'PUT' && p === '/api/placement/settings') return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && ASUS_RECONFIRM.test(p)) return true

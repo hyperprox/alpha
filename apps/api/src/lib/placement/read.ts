@@ -26,6 +26,8 @@ export interface ClusterRead {
   input:   Omit<EngineInput, 'network' | 'settings'>
   network: NetworkCost
   jobs:    BackupJob[]
+  /** False when /cluster/backup could not be read: quiet windows are then unknown. */
+  jobsRead: boolean
   tz:      string
   tasks:   any[]
 }
@@ -35,17 +37,22 @@ export const taskRunning = (t: any) => !t?.endtime && (!t?.status || t.status ==
 
 export async function readCluster(pve: HaPve, opts: { suggestedBwlimit?: number; now?: number } = {}): Promise<ClusterRead> {
   const unread: string[] = []
+  let tasksRead = true, jobsRead = true
   const vms = await pve.fetchStrict<any[]>('/cluster/resources?type=vm')
   const sids = (vms ?? []).filter(v => v.type === 'lxc' || v.type === 'qemu').map(v => sidOf(v.type, v.vmid))
   const [raw, tasks, corosyncNodes, backups] = await Promise.all([
     readRaw(pve, { configs: 'ha', extra: sids }),
-    pve.fetchStrict<any[]>('/cluster/tasks').catch(() => { unread.push('the cluster task log'); return [] as any[] }),
+    pve.fetchStrict<any[]>('/cluster/tasks').catch(() => { unread.push('the cluster task log'); tasksRead = false; return [] as any[] }),
     pve.fetchStrict<any[]>('/cluster/config/nodes').catch(() => { unread.push('the corosync node list'); return null }),
-    pve.fetchStrict<any[]>('/cluster/backup').catch(() => { unread.push('the backup jobs'); return [] as any[] }),
+    pve.fetchStrict<any[]>('/cluster/backup').catch(() => { unread.push('the backup jobs'); jobsRead = false; return [] as any[] }),
   ])
   const snap: HaSnapshot = buildSnapshot(raw)
   const configs: Record<Sid, Record<string, unknown> | null> = { ...(raw.configs ?? {}) }
-  for (const sid of sids) if (configs[sid] === null) unread.push(`the config of ${sid}`)
+  for (const sid of sids) {
+    // Not read (the node did not answer): null, so the engine says "unknown" for it instead of seeing no hardware.
+    if (configs[sid] === undefined) configs[sid] = null
+    if (configs[sid] === null) unread.push(`the config of ${sid}`)
+  }
 
   const online = snap.nodes.filter(n => n.online).map(n => n.node)
   const nodeCpu: Record<string, NodeCpu> = {}
@@ -98,8 +105,8 @@ export async function readCluster(pve: HaPve, opts: { suggestedBwlimit?: number;
 
   const network = networkCost({ corosyncNodes, options: raw.options ?? null, suggestedBwlimit: opts.suggestedBwlimit })
   return {
-    input: { snap, configs, nodeCpu, storageNodes, usage, backupsRunning, migrating: Array.from(new Set(migrating)), lastMoveSec, unread, now: opts.now },
-    network, jobs, tz, tasks: tasks ?? [],
+    input: { snap, configs, nodeCpu, storageNodes, usage, backupsRunning, migrating: Array.from(new Set(migrating)), lastMoveSec, unread, tasksRead, now: opts.now },
+    network, jobs, jobsRead, tz, tasks: tasks ?? [],
   }
 }
 
