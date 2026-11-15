@@ -22,9 +22,12 @@ export type SecurityAction =
 export const SECURITY_EVENT_WINDOW_MS = 60_000
 const MAX_KEYS = 5000
 const recent = new Map<string, { at: number; held: number }>()
+/** Rows a minute from one address, whatever emails it tries (the email is part of the key above). */
+export const SECURITY_EVENTS_PER_IP_PER_MINUTE = 60
+const perIp = new Map<string, { at: number; n: number }>()
 
 /** For tests. */
-export function resetSecurityEventThrottle(): void { recent.clear() }
+export function resetSecurityEventThrottle(): void { recent.clear(); perIp.clear() }
 
 export function securityEvent(
   req: FastifyRequest, action: SecurityAction, reason: string, who?: string, extra: Record<string, string | number | boolean> = {},
@@ -35,6 +38,14 @@ export function securityEvent(
   const t = now()
   const seen = recent.get(key)
   if (seen && t - seen.at < SECURITY_EVENT_WINDOW_MS) { seen.held++; return }
+  const ip = String(req.ip ?? '')
+  const win = perIp.get(ip)
+  if (win && t - win.at < SECURITY_EVENT_WINDOW_MS) {
+    if (++win.n > SECURITY_EVENTS_PER_IP_PER_MINUTE) return
+  } else {
+    if (perIp.size >= MAX_KEYS) perIp.clear()
+    perIp.set(ip, { at: t, n: 1 })
+  }
   if (recent.size >= MAX_KEYS) {
     for (const [k, v] of recent) if (t - v.at >= SECURITY_EVENT_WINDOW_MS) recent.delete(k)
     if (recent.size >= MAX_KEYS) recent.delete(recent.keys().next().value as string)
