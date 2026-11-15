@@ -26,6 +26,8 @@
 import type { SecretItem } from '../vault/broker'
 import type { VaultChoice } from './vault-match'
 import { appLog, createLogOnce } from '../log-once'
+import { inCidrs, invalidCidrs, parseIPv4, splitCidrList } from '../net/ip'
+import { guestExcluded } from '../guest-guard'
 
 export const SYSTEM_ACTOR = 'system (auto-connect)'
 export const AUTO_TICK_MS = 5 * 60_000
@@ -313,63 +315,27 @@ export interface RunResult { waited: 'locked' | 'exclusions' | 'subnets' | null;
 
 // ── shared checks ───────────────────────────────────────────────────────────
 
-const ipv4 = (s: string): number | null => {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s)
-  if (!m || m.slice(1).some(x => Number(x) > 255)) return null
-  return ((Number(m[1]) << 24) >>> 0) + (Number(m[2]) << 16) + (Number(m[3]) << 8) + Number(m[4])
-}
+/** The host of an address as an IPv4, when it is one: an IPv4-mapped IPv6 (::ffff:a.b.c.d) counts as its IPv4 (lib/net/ip.ts). */
+export const hostIPv4 = parseIPv4
 
-/** The host of an address as an IPv4, when it is one: an IPv4-mapped IPv6 (::ffff:a.b.c.d) counts as its IPv4. */
-export function hostIPv4(address: string): number | null {
-  const a = String(address ?? '').trim()
-  let host = a
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(a)) { try { host = new URL(a).hostname } catch { return null } }
-  else if (/^\[[^\]]+\](:\d+)?$/.test(a)) host = a.slice(1, a.indexOf(']'))
-  else if (/^[^:]+:\d+$/.test(a)) host = a.slice(0, a.indexOf(':'))
-  host = host.replace(/^\[|\]$/g, '').toLowerCase()
-  const mapped = /^(?:0{0,4}:){0,5}:?ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(host)
-  if (mapped) return ipv4(mapped[1])
-  const hex = /^(?:0{0,4}:){0,5}:?ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host)
-  if (hex) return ((parseInt(hex[1], 16) << 16) >>> 0) + parseInt(hex[2], 16)
-  return ipv4(host)
-}
-
-/** Is this address (a URL, host:port or bare IP) inside one of these CIDRs? A name (not an IP) is never inside. */
-export function inSubnets(address: string, cidrs: string[]): boolean {
-  const ip = hostIPv4(address)
-  if (ip === null) return false
-  return cidrs.some(c => {
-    const m = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/.exec(c.trim())
-    if (!m) return false
-    const base = ipv4(m[1]); const bits = Number(m[2])
-    if (base === null || bits > 32) return false
-    const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0
-    return ((ip & mask) >>> 0) === ((base & mask) >>> 0)
-  })
-}
+/** Is this address (a URL, host:port or bare IP) inside one of these CIDRs? A name (not an IP) is never inside (lib/net/ip.ts). */
+export const inSubnets = inCidrs
 
 /**
  * The CIDRs auto-connect never connects into (HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS, separated by commas, semicolons
  * or spaces). Fails closed: one entry that is not a valid IPv4 CIDR throws, and auto-connect does not run at all.
  */
 export function envExcludedSubnets(env: NodeJS.ProcessEnv = process.env): string[] {
-  const raw = String(env.HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS ?? '')
-  const list = raw.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean)
-  const bad = list.filter(c => {
-    const m = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/.exec(c)
-    return !m || ipv4(m[1]) === null || Number(m[2]) > 32
-  })
+  const list = splitCidrList(env.HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS)
+  const bad = invalidCidrs(list, { v4Only: true })
   if (bad.length) throw new Error(`HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS has entries that are not IPv4 CIDRs (${bad.slice(0, 5).join(', ')}); auto-connect does not run until it is fixed.`)
   if (list.length > 256) throw new Error('HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS has more than 256 entries.')
   return list
 }
 
-/** Why a guest or address must be left alone, or null. */
+/** Why a guest or address must be left alone, or null (lib/guest-guard.ts: the one rule). */
 export function exclusionOf(ctx: Pick<AdapterContext, 'excludedMachines' | 'excludedSubnets'>, o: { machineId?: string | null; tags?: string[]; addresses?: Array<string | null | undefined> }): string | null {
-  if (o.tags?.includes('hyperprox-ignore')) return 'the hyperprox-ignore tag'
-  if (o.machineId && ctx.excludedMachines.has(o.machineId)) return 'Remote access\'s exclusion list'
-  if ((o.addresses ?? []).some(a => a && inSubnets(a, ctx.excludedSubnets))) return 'an excluded subnet'
-  return null
+  return guestExcluded({ id: o.machineId, tags: o.tags, addresses: o.addresses }, ctx)
 }
 
 /**

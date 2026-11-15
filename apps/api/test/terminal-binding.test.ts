@@ -177,6 +177,7 @@ test('the remote-access executor still gets Terminal logins: shared for a VM, it
   const ex = productionRemoteExecutor(pve, {
     ssh, loadCredential, nodeCredential: async () => null,
     listManualHosts: async () => [], listHostAddresses: async () => ({ 'qemu-202': '192.0.2.202' }),
+    exclusions: async () => [], guestTags: async () => [],
   } as any)
   await asOwner(async () => {
     await ex.run({ id: 'qemu-202', kind: 'qemu', name: 'vm', node: 'node-a', vmid: 202, running: true } as any, 'true')

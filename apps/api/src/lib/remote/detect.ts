@@ -14,6 +14,7 @@
 
 import { TS_PREFS_READBACK, NB_FLAGS_READBACK, parseNetbirdFlags, parseTailscalePrefs } from './scripts'
 import type { Machine, ProviderId } from './types'
+import { guestExcluded } from '../guest-guard'
 
 export interface DetectedClient {
   installed: boolean
@@ -230,7 +231,7 @@ export class ClientDetector {
     // An excluded guest is never sent anything, not even this read-only probe.
     const machines: Machine[] = []
     for (const m of listed) {
-      let out = m.tags?.includes('hyperprox-ignore') ?? false
+      let out = !!guestExcluded(m)
       if (!out && this.d.excluded) { try { out = await this.d.excluded(m) } catch { out = true } }
       if (!out) machines.push(m)
     }

@@ -11,6 +11,7 @@
 import { isIP } from 'node:net'
 import type { Machine, MachineKind, ProviderId, RoutingRequest } from './types'
 import { osSupport, type NetMode, type OsFacts, type Support } from './scripts'
+import { cidrContains, cidrOverlaps, validCidr } from '../net/ip'
 
 export function safeHostname(raw: string): string {
   const h = raw.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/, '')
@@ -222,61 +223,8 @@ export function tunFix(config: Record<string, unknown>, vmid: number): TunFix {
 
 // ── Address arithmetic, IPv4 and IPv6 ───────────────────────────────────────
 
-function toBig(ip: string): { v: 4 | 6; n: bigint } | null {
-  const ver = isIP(ip)
-  if (ver === 4) return { v: 4, n: ip.split('.').reduce((a, o) => (a << 8n) + BigInt(Number(o)), 0n) }
-  if (ver === 6) {
-    let s = ip.toLowerCase().split('%')[0]
-    if (s.includes('.')) {   // ::ffff:192.0.2.1
-      const i = s.lastIndexOf(':'); const v4 = toBig(s.slice(i + 1))
-      if (!v4) return null
-      s = `${s.slice(0, i)}:${((v4.n >> 16n) & 0xffffn).toString(16)}:${(v4.n & 0xffffn).toString(16)}`
-    }
-    const [h, t] = s.split('::')
-    const head = h ? h.split(':') : []
-    const tail = t !== undefined ? (t ? t.split(':') : []) : []
-    const groups = t !== undefined ? [...head, ...Array(8 - head.length - tail.length).fill('0'), ...tail] : head
-    if (groups.length !== 8) return null
-    return { v: 6, n: groups.reduce((a, g) => (a << 16n) + BigInt(parseInt(g || '0', 16)), 0n) }
-  }
-  return null
-}
-
-interface Net { v: 4 | 6; base: bigint; bits: number }
-
-function parseCidr(c: string): Net | null {
-  const m = /^([^/]+)\/(\d{1,3})$/.exec(c.trim())
-  const addr = m ? m[1] : c.trim()
-  const a = toBig(addr)
-  if (!a) return null
-  const max = a.v === 4 ? 32 : 128
-  const bits = m ? Number(m[2]) : max
-  if (bits < 0 || bits > max) return null
-  const mask = bits === 0 ? 0n : ((1n << BigInt(bits)) - 1n) << BigInt(max - bits)
-  return { v: a.v, base: a.n & mask, bits }
-}
-
-/** Do two networks share any address? */
-export function cidrOverlaps(a: string, b: string): boolean {
-  const x = parseCidr(a), y = parseCidr(b)
-  if (!x || !y || x.v !== y.v) return false
-  const max = x.v === 4 ? 32 : 128
-  const bits = Math.min(x.bits, y.bits)
-  const mask = bits === 0 ? 0n : ((1n << BigInt(bits)) - 1n) << BigInt(max - bits)
-  return (x.base & mask) === (y.base & mask)
-}
-
-/** Does IPv4 or IPv6 `cidr` contain `ip`? */
-export function cidrContains(cidr: string, ip: string): boolean {
-  return isIP(ip) !== 0 && cidrOverlaps(cidr, ip)
-}
-
-function validCidr(c: string): boolean {
-  const m = /^([^/]+)\/(\d{1,3})$/.exec(c)
-  if (!m) return false
-  const v = isIP(m[1]); const bits = Number(m[2])
-  return (v === 4 && bits >= 1 && bits <= 32) || (v === 6 && bits >= 1 && bits <= 128)
-}
+/** Do two networks share any address? Is an address inside a network? (lib/net/ip.ts, IPv4 and IPv6.) */
+export { cidrOverlaps, cidrContains }
 
 export const ROUTING_WARNING =
   'Cluster traffic (corosync, Ceph, migration) must stay on the LAN. Advertising a subnet that contains the ' +
@@ -291,7 +239,7 @@ export function checkRouting(m: Machine, r: RoutingRequest, acknowledged: boolea
   if (m.kind === 'node' && r.exitNode) return 'A Proxmox node is never made an exit node: it would forward and masquerade other devices\' internet traffic on the hypervisor.'
   if (turningOn && !acknowledged) return `Routing through ${m.name} must be acknowledged: ${ROUTING_WARNING}`
   if (r.subnets.length > 32) return 'At most 32 subnets'
-  for (const s of r.subnets) if (!validCidr(s)) return `${s} is not a subnet (expected something like 198.51.100.0/24)`
+  for (const s of r.subnets) if (!validCidr(s, { minBits: 1 })) return `${s} is not a subnet (expected something like 198.51.100.0/24)`
   const nets = [...clusterNets, ...(m.address ? [m.address] : [])]
   for (const s of r.subnets) {
     const hit = nets.find(n => cidrOverlaps(s, n))

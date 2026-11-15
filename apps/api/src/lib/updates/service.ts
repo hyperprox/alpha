@@ -23,6 +23,7 @@ import type { AppEnv } from './apps'
 import type { NotifyEventInput } from '../notify/types'
 import { HOME_ID, clusterRow } from '../clusters/registry'
 import { connectionKey } from '../pve-env'
+import type { GuardContext } from './targets'
 
 export interface ClusterUpdates {
   ref:        UpdatesClusterRef
@@ -55,6 +56,8 @@ export interface UpdatesServicesDeps {
   log?:        (msg: string) => void
   /** How HyperProx reaches a remote now (lib/pve-env.ts connectionKey). */
   connection?: (id: string) => string
+  /** What the plug-ins say about home guests (lib/updates/guards.ts). Default: read live. */
+  guards?:     () => Promise<GuardContext>
 }
 
 /** The cluster as the registry names it now (a rename shows up without a restart). */
@@ -114,6 +117,7 @@ export class UpdatesServices {
       cluster: ref,
       remote,
       checkJob: store.checkJob,
+      guards: remote ? undefined : d.guards,
       // The compose projects running in each guest are found too, so each can be chosen on its own: home and remote
       // alike, through that cluster's executor (a remote's: its pinned logins and the script guard). Only where the
       // policy turns docker on, unless a person asks; `docker: none`, exclusions and hyperprox-ignore always win.

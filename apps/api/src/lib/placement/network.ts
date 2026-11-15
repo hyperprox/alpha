@@ -12,6 +12,7 @@
 // =============================================================================
 
 import type { NetworkCost } from './types'
+import { inCidrs, parseCidr, parseIP } from '../net/ip'
 
 /** A conservative default: about 400 Mbit/s, leaving most of a 1 Gbit link to everything else. */
 export const DEFAULT_BWLIMIT_KIB = 51_200
@@ -26,25 +27,15 @@ function kv(v: unknown): Record<string, string> {
   return out
 }
 
-function ipv4(a: string): number | null {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a.trim())
-  if (!m) return null
-  const p = m.slice(1).map(Number)
-  if (p.some(x => x > 255)) return null
-  return ((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3]
-}
-
 /** True when the IPv4 address is inside the CIDR; null when either cannot be read (a hostname, IPv6). */
 export function inCidr(addr: string, cidr: string): boolean | null {
-  const [net, bitsRaw] = cidr.split('/')
-  const a = ipv4(addr), n = ipv4(net ?? '')
-  const bits = Number(bitsRaw ?? 32)
-  if (a === null || n === null || !Number.isInteger(bits) || bits < 0 || bits > 32) {
+  const [net] = cidr.split('/')
+  const a = parseIP(addr), n = parseCidr(cidr)
+  if (!a || !n || a.v !== 4 || n.v !== 4) {
     // IPv6 or a name: only an exact match can be told apart.
     return addr.trim() === (net ?? '').trim() ? true : null
   }
-  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0
-  return ((a & mask) >>> 0) === ((n & mask) >>> 0)
+  return inCidrs(addr, [cidr])
 }
 
 export function networkCost(input: {

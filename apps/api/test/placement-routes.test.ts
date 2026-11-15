@@ -697,3 +697,21 @@ test('resolve an HA move: refused while HA still moves it, even with its task st
   const ok = await app.inject({ method: 'POST', url: `${B}/moves/${s.id}/resolve`, headers: { cookie } })
   assert.equal(ok.statusCode, 200, ok.body)
 })
+
+test('an admin action taken with an API token audits the token by name; a person\'s own carries none', async () => {
+  reset()
+  await admin()
+  const t = (await createApiToken({ name: 'nightly-stop', role: 'admin' }, 'test', tokens)).token
+  const r = await app.inject({ method: 'POST', url: `${B}/auto/stop`, headers: { authorization: `Bearer ${t}` } })
+  assert.equal(r.statusCode, 200, r.body)
+  const row = audits.find(a => a.action === 'placement.auto.stop')!
+  assert.ok(row, 'audited')
+  assert.equal(row.details!.token, 'nightly-stop')
+  assert.equal(typeof row.details!.by, 'string')
+  audits.length = 0
+  const cookie = await admin()
+  assert.equal((await app.inject({ method: 'POST', url: `${B}/auto/stop`, headers: { cookie } })).statusCode, 200)
+  const own = audits.find(a => a.action === 'placement.auto.stop')!
+  assert.equal(own.details!.by, 'admin@example.com')
+  assert.equal('token' in own.details!, false)
+})

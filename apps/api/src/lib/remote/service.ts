@@ -18,6 +18,7 @@
 // =============================================================================
 
 import { randomUUID } from 'node:crypto'
+import { IGNORE_TAG, exclusionReason, guestExcluded } from '../guest-guard'
 import type { NotifyEventInput } from '../notify/types'
 import type { RemoteExecutor } from './executor'
 import type { Inflight, RemoteRecord, RemoteRecordInput, RemoteStore } from './store'
@@ -177,8 +178,8 @@ export interface RemoteDeps {
   selfId?: () => Promise<string | null>
 }
 
-/** The Proxmox tag that keeps HyperProx out of a guest. */
-export const IGNORE_TAG = 'hyperprox-ignore'
+/** The Proxmox tag that keeps HyperProx out of a guest (lib/guest-guard.ts). */
+export { IGNORE_TAG }
 const GUEST_ID = /^(lxc|qemu)-\d{1,9}$/
 /** The least time between two Refresh probes. */
 export const REFRESH_MIN_MS = 60_000
@@ -453,8 +454,9 @@ export class RemoteAccessService {
     const excludedIds = new Set(await this.d.store.listExclusions())
     const rows: RemoteMachineRow[] = machines.map(m => {
       const cells = {} as Record<ProviderId, RemoteCell>
-      const byTag = !!m.tags?.includes(IGNORE_TAG)
-      if (byTag || excludedIds.has(m.id)) {
+      const why = exclusionReason(m, { excludedMachines: excludedIds })
+      const byTag = why === 'tag'
+      if (why) {
         for (const id of PROVIDER_IDS) cells[id] = emptyCell('excluded')
         return { ...m, cells, self: false, excluded: true, excludedBy: byTag ? 'tag' as const : 'setting' as const }
       }
@@ -565,13 +567,13 @@ export class RemoteAccessService {
 
   /** Is this guest one HyperProx never looks inside? By the tag, or by the list. */
   async isExcluded(m: Machine): Promise<boolean> {
-    if (m.tags?.includes(IGNORE_TAG)) return true
-    return (await this.d.store.listExclusions()).includes(m.id)
+    if (guestExcluded(m)) return true
+    return !!guestExcluded(m, { excludedMachines: await this.d.store.listExclusions() })
   }
 
   private async refuseExcluded(m: Machine): Promise<void> {
     if (await this.isExcluded(m)) {
-      throw new Error(`${m.name} is excluded from VPN work (${m.tags?.includes(IGNORE_TAG) ? `Proxmox tag ${IGNORE_TAG}` : 'the VPN page\'s exclusions'}); HyperProx never looks inside it or changes it.`)
+      throw new Error(`${m.name} is excluded from VPN work (${guestExcluded(m) ? `Proxmox tag ${IGNORE_TAG}` : 'the VPN page\'s exclusions'}); HyperProx never looks inside it or changes it.`)
     }
   }
 

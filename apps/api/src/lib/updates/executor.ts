@@ -17,6 +17,7 @@ import { remoteNodeAddress } from '../clusters/nodes'
 import { runPluginMetrics } from '../plugin-host'
 import { plexPlugin } from '../../plugins/plex'
 import { parsePveAptList } from './commands'
+import { parseTags } from '../guest-guard'
 
 export type { ExecResult }
 
@@ -232,7 +233,7 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
         .map((r: any) => ({
           vmid: Number(r.vmid), type: r.type, node: String(r.node), name: String(r.name ?? ''),
           running: r.status === 'running', template: r.template === 1,
-          tags: String(r.tags ?? '').split(/[;, ]+/).map((t: string) => t.trim().toLowerCase()).filter(Boolean),
+          tags: parseTags(r.tags),
         }))
     },
 

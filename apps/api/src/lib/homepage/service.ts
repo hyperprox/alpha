@@ -40,6 +40,8 @@ import {
   KEY_FILE, backupsScript, composeUpScript, locateScript, sq, parseLocate, parseRead, parseVerify, parseWrite, purgeBackupsScript, readScript,
   safeContainer, safePath, stampOf, verifyScript, writeScript, type Located, type ReadFile, type VerifyResult,
 } from './remote'
+import { IGNORE_TAG, exclusionReason, guestExcluded } from '../guest-guard'
+import { invalidCidrs } from '../net/ip'
 import { SYSTEM_ACTOR, exclusionOf, type AdapterContext, type Outcome } from '../auto-connect/core'
 import { MANAGED_MARK } from './generate'
 import {
@@ -138,7 +140,6 @@ export const PLAN_TTL_MS = 10 * 60_000
 export const AUTO_MIN_GAP_MS = 10 * 60_000
 export const AUTO_TICK_MS = 5 * 60_000
 const READ_FILES = ['services.yaml', 'widgets.yaml'] as const
-const CIDR = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/
 /** Proxmox's answer for a token that is not there (deleted by hand, or its user removed). */
 const TOKEN_GONE = /no such (token|user)|does not exist|not found|HTTP 404/i
 
@@ -218,7 +219,7 @@ export class HomepageService {
     const out = new Map<number, Detected>()
     for (const s of sightings) {
       const m = machines.find(x => (x.kind === 'lxc' || x.kind === 'qemu') && x.vmid === s.vmid)
-      if (!m || m.tags?.includes('hyperprox-ignore') || excluded.has(m.id)) continue
+      if (!m || guestExcluded(m, { excludedMachines: excluded })) continue
       const d = out.get(s.vmid) ?? { machineId: m.id, kind: m.kind as 'lxc' | 'qemu', vmid: s.vmid, node: m.node!, name: m.name, url: null, via: [], running: m.running, connected: null }
       if (!d.via.includes(s.via)) d.via.push(s.via)
       if (s.url && (!d.url || s.via === 'proxy')) d.url = s.url
@@ -245,8 +246,9 @@ export class HomepageService {
     const [machines, excluded] = await Promise.all([this.d.exec.listMachines(), this.excludedIds()])
     const m = machines.find(x => x.id === i.machineId)
     if (!m) throw new HomepageRefusal('gone', `${i.name} is not on the cluster any more.`, 409)
-    if (m.tags?.includes('hyperprox-ignore')) throw new HomepageRefusal('excluded', `${m.name} carries the hyperprox-ignore tag, so HyperProx does not look inside it.`, 409)
-    if (excluded.has(m.id)) throw new HomepageRefusal('excluded', `${m.name} is on Remote access's "never look inside" list, so HyperProx does not contact it.`, 409)
+    const why = exclusionReason(m, { excludedMachines: excluded })
+    if (why === 'tag') throw new HomepageRefusal('excluded', `${m.name} carries the ${IGNORE_TAG} tag, so HyperProx does not look inside it.`, 409)
+    if (why) throw new HomepageRefusal('excluded', `${m.name} is on Remote access's "never look inside" list, so HyperProx does not contact it.`, 409)
     if (!m.running) throw new HomepageRefusal('stopped', `${m.name} is not running.`, 409)
     return m
   }
@@ -423,7 +425,7 @@ export class HomepageService {
       const o = { ...i.options }
       if (body.excludeSubnets !== undefined) {
         const list = Array.isArray(body.excludeSubnets) ? body.excludeSubnets.map(String).map(s => s.trim()).filter(Boolean) : null
-        if (!list || list.length > 32 || list.some(c => { const m = CIDR.exec(c); return !m || m.slice(1, 5).some(x => Number(x) > 255) || Number(m[5]) < 8 || Number(m[5]) > 32 })) {
+        if (!list || list.length > 32 || invalidCidrs(list, { v4Only: true, minBits: 8 }).length) {
           throw new HomepageRefusal('bad_input', 'Excluded subnets are written like 192.0.2.0/24, at most 32 of them.')
         }
         o.excludeSubnets = [...new Set(list)]

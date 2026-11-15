@@ -72,12 +72,14 @@ import { readCluster, readHistory, taskRunning, type ClusterRead, type PromRange
 import { DEFAULT_SETTINGS, IN_FLIGHT, MoveSlotTaken, PlanSlotTaken, mergeAuto, mergeSettings, stricterAuto, stricterSettings, type PlacementStore } from './store'
 import { backupMask, quietStatus, type QuietStatus } from './windows'
 import { appLog, createLogOnce, type LogLike, type LogOnce } from '../log-once'
+import { auditBy } from '../http/request-actor'
 import type {
   Advice, AutoSettings, AutoState, BalanceGoal, BalanceResult, GuestPlacement, MoveRecord, NetworkCost, PlacementMap, PlacementSettings,
   AutoConfig, PlanRecord, PlanSnapshot, PlanStatus, PlanStepRecord,
 } from './types'
 
-export interface Actor { email: string; role?: string }
+/** Who asked. `token`: the API token's name when the request used one; every audit row then names it. */
+export interface Actor { email: string; role?: string; token?: string | null }
 
 export class PlacementRefusal extends Error {
   constructor(message: string, public status = 409, public code = 'refused', public extra: Record<string, unknown> = {}) { super(message) }
@@ -232,7 +234,7 @@ export class PlacementService {
   async saveSettings(body: unknown, actor: Actor): Promise<PlacementSettings> {
     const { settings, problems } = mergeSettings(await this.d.store.settings(), body)
     if (problems.length) throw new PlacementRefusal(problems.join(' '), 400, 'invalid')
-    await this.d.audit('placement.settings', 'placement', { by: actor.email, avoidBackups: settings.avoidBackups, busyHours: settings.busyHours.length, bwlimitKiB: settings.bwlimitKiB })
+    await this.d.audit('placement.settings', 'placement', { ...auditBy(actor), avoidBackups: settings.avoidBackups, busyHours: settings.busyHours.length, bwlimitKiB: settings.bwlimitKiB })
     await this.d.store.saveSettings(settings, actor.email)
     this.cache = null
     return settings
@@ -295,7 +297,7 @@ export class PlacementService {
         out[n.node][p] = !res || res.code !== 0 ? null : /present/.test(res.output) ? true : /absent/.test(res.output) ? false : null
       }
     }
-    await this.d.audit('placement.path-check', sid, { by: actor.email, paths: paths.length, nodes: Object.keys(out) })
+    await this.d.audit('placement.path-check', sid, { ...auditBy(actor), paths: paths.length, nodes: Object.keys(out) })
     this.pathChecks[sid] = out
     this.pathCheckedAt[sid] = this.now()
     return out
@@ -393,7 +395,7 @@ export class PlacementService {
       await halt()
       // The audit row first: no row, no move.
       await this.d.audit(ctx ? (ctx.auto ? 'placement.auto.move' : 'placement.plan.move') : at ? 'placement.move.schedule' : 'placement.move', sid, {
-        by: actor.email, from: plan.from, to, method: plan.method, anyway: !!opts.anyway && !plan.quiet.quietNow, scheduledFor: at ? new Date(at).toISOString() : null,
+        ...auditBy(actor), from: plan.from, to, method: plan.method, anyway: !!opts.anyway && !plan.quiet.quietNow, scheduledFor: at ? new Date(at).toISOString() : null,
         bwlimitKiB: plan.bwlimitKiB, copyBytes: plan.copyBytes, downtimeSec: plan.downtimeSec,
         ...(ctx ? { planId: ctx.planId, step: ctx.step } : {}),
       })
@@ -617,7 +619,7 @@ export class PlacementService {
     const m = await this.d.store.get(id)
     if (!m) throw new PlacementRefusal('No such move.', 404, 'not-found')
     if (!m.startedAt) throw new PlacementRefusal('That move has not run.', 409, 'not-run')
-    await this.d.audit('placement.corosync-read', m.sid, { by: actor.email, nodes: [m.fromNode, m.toNode] })
+    await this.d.audit('placement.corosync-read', m.sid, { ...auditBy(actor), nodes: [m.fromNode, m.toNode] })
     const r = await this.recordCorosync(id, [m.fromNode, m.toNode].filter(Boolean), Math.floor(m.startedAt / 1000), Math.floor((m.endedAt ?? m.startedAt + 60_000) / 1000))
     return r!
   }
@@ -626,7 +628,7 @@ export class PlacementService {
   async cancel(id: string, actor: Actor): Promise<MoveRecord> {
     const m = await this.d.store.get(id)
     if (!m) throw new PlacementRefusal('No such move.', 404, 'not-found')
-    await this.d.audit('placement.move.cancel', m.sid, { by: actor.email, id })
+    await this.d.audit('placement.move.cancel', m.sid, { ...auditBy(actor), id })
     const done = await this.d.store.transition(id, { status: ['scheduled'] }, { status: 'cancelled', endedAt: this.now() })
     if (!done) {
       const now = await this.d.store.get(id)
@@ -731,7 +733,7 @@ export class PlacementService {
     }
     // An HA move is over only when HA says so too, task or no task.
     if ((m.method === 'ha' || !m.upid) && await this.haBusy(m.sid)) throw new PlacementRefusal('HA is still moving it.', 409, 'still-running')
-    await this.d.audit('placement.move.resolve', m.sid, { by: actor.email, id })
+    await this.d.audit('placement.move.resolve', m.sid, { ...auditBy(actor), id })
     const ok = await this.verify(this.resumePlan(m), false)
     const done = await this.d.store.transition(id, { status: ['stuck'] }, { status: ok.ok ? 'done' : 'failed', endedAt: this.now(), error: ok.ok ? null : ok.why })
     if (!done) throw new PlacementRefusal('It changed while being resolved; read it again.', 409, 'changed')
@@ -895,7 +897,7 @@ export class PlacementService {
       }
       // The audit row first: no row, no plan.
       await this.d.audit(at ? 'placement.plan.schedule' : 'placement.plan.create', 'balance', {
-        by: actor.email, goal: plan.goal, scoreBefore: Math.round(plan.score.score), scoreTarget: Math.round(plan.target.score),
+        ...auditBy(actor), goal: plan.goal, scoreBefore: Math.round(plan.score.score), scoreTarget: Math.round(plan.target.score),
         moves: plan.steps.map(x => `${x.sid} ${x.from}>${x.to}`), scheduledFor: at ? new Date(at).toISOString() : null,
       })
       let rec: PlanRecord
@@ -920,7 +922,7 @@ export class PlacementService {
   async stopPlan(id: string, actor: Actor): Promise<PlanRecord> {
     const p = await this.d.store.getPlan(id)
     if (!p) throw new PlacementRefusal('No such plan.', 404, 'not-found')
-    await this.d.audit('placement.plan.stop', 'balance', { by: actor.email, id, status: p.status })
+    await this.d.audit('placement.plan.stop', 'balance', { ...auditBy(actor), id, status: p.status })
     const done = await this.stopOne(p, `Cancelled by ${actor.email}.`)
     if (!done) {
       const now = await this.d.store.getPlan(id)
@@ -1095,7 +1097,7 @@ export class PlacementService {
     const changedMeanwhile = async () => (await this.d.store.auto()).epoch !== cur.epoch
     if (await changedMeanwhile()) throw new PlacementRefusal('Automatic balancing was stopped or changed while saving. Read it again, then save.', 409, 'changed')
     await this.d.audit('placement.auto.settings', 'balance', {
-      by: actor.email, enabled: settings.enabled, apply: settings.apply, sustainHours: settings.sustainHours,
+      ...auditBy(actor), enabled: settings.enabled, apply: settings.apply, sustainHours: settings.sustainHours,
       maxMovesPerDay: settings.maxMovesPerDay, minHoursBetween: settings.minHoursBetween, checkEveryMin: settings.checkEveryMin,
     })
     if (await changedMeanwhile()) throw new PlacementRefusal('Automatic balancing was stopped or changed while saving. Read it again, then save.', 409, 'changed')
@@ -1108,7 +1110,7 @@ export class PlacementService {
    * scheduled single moves are cancelled, running plans stop after the move under way.
    */
   async autoStop(actor: Actor): Promise<AutoConfig & { state: AutoState; stopped: number; cancelledMoves: number; notCancelled: Array<{ id: string; sid: string; name: string; status: string }> }> {
-    await this.d.audit('placement.auto.stop', 'balance', { by: actor.email })
+    await this.d.audit('placement.auto.stop', 'balance', { ...auditBy(actor) })
     const cur = await this.d.store.auto()
     await this.d.store.saveAutoConfig({ settings: { ...cur.settings, apply: false }, approval: null, epoch: cur.epoch + 1 }, actor.email)
     await this.d.store.patchAutoState({ lastWhy: `Emergency stop by ${actor.email}.` })

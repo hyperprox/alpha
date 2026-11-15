@@ -7,9 +7,8 @@ import { FastifyPluginAsync } from 'fastify'
 import { livePve }            from '../lib/pve-env'
 import { maskConfig }         from '../lib/guest-config/secrets'
 import { sendFailure } from '../lib/failure'
+import { hasIgnoreTag } from '../lib/guest-guard'
 
-/** The Proxmox tag that keeps HyperProx out of a guest (lib/remote/service.ts IGNORE_TAG). */
-const IGNORE_TAG = 'hyperprox-ignore'
 
 
 const wrap = async (reply: any, fn: () => Promise<any>) => {
@@ -53,8 +52,7 @@ export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
     const { node, vmid, type } = req.params
     return wrap(r, async () => {
       const cfg = (await pve.getVMConfig(node, Number(vmid), type)) as Record<string, any>
-      const tags = String(cfg?.tags ?? '').split(/[;,\s]+/).filter(Boolean)
-      if (tags.includes(IGNORE_TAG)) return { tags: cfg.tags, ignored: true }
+      if (hasIgnoreTag(cfg?.tags)) return { tags: cfg.tags, ignored: true }
       return maskConfig(cfg as any)
     })
   })

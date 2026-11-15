@@ -22,7 +22,8 @@
 
 import { createHash } from 'node:crypto'
 import { GROUPS, appFromName, knownApp, type GroupName, type KnownApp } from './catalog'
-import { parseCidr, sameSubnet } from '../wizard-placement'
+import { hostPort, inCidrs } from '../net/ip'
+import { IGNORE_TAG, guestExcluded } from '../guest-guard'
 import {
   type Entry, type GenerateOptions, type Inventory, type InvService, type ManagedState, type MergeNotes, type MergeResult, type GuestRef,
 } from './types'
@@ -31,29 +32,17 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 export const yaml = require('js-yaml') as { load(src: string, o?: Record<string, unknown>): unknown; dump(v: unknown, o?: Record<string, unknown>): string; DEFAULT_SCHEMA: unknown }
 
-export const IGNORE_TAG = 'hyperprox-ignore'
+export { IGNORE_TAG }
 export const MANAGED_MARK = '# managed by HyperProx'
 
-// ── addresses ────────────────────────────────────────────────────────────────
+// ── addresses (lib/net/ip.ts) ────────────────────────────────────────────────
 
-/** host and port of a URL (default port by scheme); null when it is not one. */
-export function hostPort(url: string | null | undefined): { scheme: string; host: string; port: number } | null {
-  if (!url) return null
-  try {
-    const u = new URL(url)
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
-    const port = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80
-    return { scheme: u.protocol.slice(0, -1), host: u.hostname.replace(/^\[|\]$/g, '').toLowerCase(), port }
-  } catch { return null }
-}
+export { hostPort }
 
 const key = (host: string, port: number) => `${host.toLowerCase()}:${port}`
 
-/** Is this IPv4 address inside one of these CIDRs? Names and malformed CIDRs never match. */
-export function inSubnets(host: string, cidrs: string[]): boolean {
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false
-  return cidrs.some(c => { const p = parseCidr(c); return !!p && sameSubnet(host, p.ip, p.prefix) })
-}
+/** Is this address inside one of these CIDRs? Names and malformed CIDRs never match; an IPv4-mapped IPv6 counts as its IPv4. */
+export const inSubnets = (host: string, cidrs: string[]): boolean => inCidrs(host, cidrs)
 
 // ── exclusion ────────────────────────────────────────────────────────────────
 
@@ -64,8 +53,7 @@ export function exclusionOf(inv: Inventory, subnets: string[]): Exclusion {
   const guests = new Set<number>(), addresses = new Set<string>()
   const ids = new Set(inv.excludedMachineIds)
   for (const g of inv.guests) {
-    const tagged = g.tags.map(t => t.toLowerCase()).includes(IGNORE_TAG)
-    if (tagged || ids.has(g.machineId) || g.addresses.some(a => inSubnets(a, subnets))) {
+    if (guestExcluded({ id: g.machineId, tags: g.tags, addresses: g.addresses }, { excludedMachines: ids, excludedSubnets: subnets })) {
       guests.add(g.vmid)
       for (const a of g.addresses) addresses.add(a.toLowerCase())
     }

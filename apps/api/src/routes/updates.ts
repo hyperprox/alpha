@@ -40,7 +40,10 @@ import { setCheckSummarySource } from '../lib/updates/check-summary'
 import { currentClusterId } from '../lib/clusters/context'
 import { HOME_ID, clusterRow, listClusters, setRenameGuard } from '../lib/clusters/registry'
 import { selfVmidOf } from '../lib/updates/inventory'
-import { buildTargets, buildSelectedPlan, parseTargetId, MAX_SELECTION } from '../lib/updates/targets'
+import { buildTargets, buildSelectedPlan, parseTargetId, MAX_SELECTION, type GuardContext } from '../lib/updates/targets'
+import { guardsFrom, homeGuards } from '../lib/updates/guards'
+import { lastComposeOwnership } from '../lib/compose-owners'
+import { busyJobs } from '../lib/long-jobs'
 import { setTargetsSource } from '../lib/updates/targets-summary'
 import { jobLog } from '../lib/log-once'
 
@@ -74,6 +77,8 @@ export interface UpdatesRouteDeps {
   onServices?: (services: UpdatesServices, checker: UpdatesChecker) => void
   /** The notification bus; default the installed one (a no-op until it is installed). */
   publish?:    (e: NotifyEventInput) => Promise<void>
+  /** What the plug-ins say about home guests (lib/updates/guards.ts); default read live. Tests set it. */
+  guards?:     () => Promise<GuardContext>
 }
 
 // Sockets on /ws/updates, each opened by an admin. The general /ws channel is viewer-level, and
@@ -166,7 +171,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       store, exec: deps.exec, remoteExec: deps.remoteExec, loadPolicy,
       hostname: deps.hostname, timing: deps.timing, apps,
       publish: deps.publish ?? publish, emit: broadcast,
-      log: jobLog(fastify.log), connection: deps.connection,
+      log: jobLog(fastify.log), connection: deps.connection, guards: deps.guards,
     })
     const home = services.get(HOME_ID)
     const runner = home.runner
@@ -264,11 +269,16 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       } catch (e) { return sendError(reply, e) }
     })
 
+    /** What the plug-ins say about home guests now: the compose projects their pages manage, their long jobs. */
+    const guardsFor = async (s: ClusterUpdates): Promise<GuardContext> => (s.remote ? {} : (deps.guards ?? homeGuards)())
+    /** The same, from what was read last, for callers that cannot wait (the assistant's summary). */
+    const lastGuards = (s: ClusterUpdates): GuardContext => (s.remote ? {} : guardsFrom(lastComposeOwnership(), busyJobs()))
+
     /** What the tree is built from, for one cluster: the cached inventory, its policy and HyperProx's own guest. */
-    const treeFor = (s: ClusterUpdates, inv: UpdatesInventory) => {
+    const treeFor = (s: ClusterUpdates, inv: UpdatesInventory, guards: GuardContext = lastGuards(s)) => {
       const load = s.loadPolicy()
       const selfVmid = s.remote ? null : selfVmidOf(inv, load.policy, deps.hostname)
-      return { load, selfVmid, targets: buildTargets(inv, load.policy, { selfVmid, remote: s.remote }) }
+      return { load, selfVmid, guards, targets: buildTargets(inv, load.policy, { selfVmid, remote: s.remote, ...guards }) }
     }
     // The assistant answers "what updates does X have" from what was last read, never by reading.
     setTargetsSource(id => {
@@ -279,13 +289,26 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     })
 
     // Everything that can be updated, as a tree, each row with its own count, preview and whether it can be chosen.
-    // Read-only, like the inventory it is built from. `discover=1`: also look for compose projects in every guest
-    // (`docker compose ls` and registry reads), not only where the policy turns docker on.
+    // Read-only, like the inventory it is built from.
     fastify.get<{ Querystring: { refresh?: string; discover?: string } }>('/targets', async (req, reply) => {
+      // Looking in every guest runs commands in each of them: an admin's act, on its own route (below).
+      if (req.query.discover !== undefined) return reply.status(400).send({ error: 'Looking for compose projects in every guest is POST /api/updates/targets/discover (admin).' })
       try {
         const s = svc()
-        const inv = await s.inventory(req.query.refresh === '1' || req.query.refresh === 'true', req.query.discover === '1')
-        return { refreshedAt: inv.refreshedAt, cluster: { ...s.ref }, targets: treeFor(s, inv).targets }
+        const inv = await s.inventory(req.query.refresh === '1' || req.query.refresh === 'true')
+        return { refreshedAt: inv.refreshedAt, cluster: { ...s.ref }, targets: treeFor(s, inv, await guardsFor(s)).targets }
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    // The tree again, after looking for compose projects in every guest (`docker compose ls` and registry reads in
+    // each), not only where the policy turns docker on. Admin (lib/roles.ts: a POST is admin unless listed): it runs
+    // commands inside every guest, which a viewer's read must never cause.
+    fastify.post('/targets/discover', async (req, reply) => {
+      if (!hasRole(req.session?.role ?? 'viewer', 'admin')) return reply.status(403).send({ error: 'Looking inside every guest is for admins.' })
+      try {
+        const s = svc()
+        const inv = await s.inventory(false, true)
+        return { refreshedAt: inv.refreshedAt, cluster: { ...s.ref }, targets: treeFor(s, inv, await guardsFor(s)).targets }
       } catch (e) { return sendError(reply, e) }
     })
 
@@ -301,9 +324,9 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       try {
         const s = svc()
         const inv = await s.inventory(false)
-        const { load, selfVmid } = treeFor(s, inv)
+        const { load, selfVmid, guards } = treeFor(s, inv, await guardsFor(s))
         const plan = buildSelectedPlan(inv, load.policy, {
-          selection: select, approvals: approve as string[], selfVmid, remote: s.remote || undefined,
+          ...guards, selection: select, approvals: approve as string[], selfVmid, remote: s.remote || undefined,
           policyNote: load.loaded ? undefined : `${load.error ?? 'No policy file'} — runs are refused until the policy file loads.`,
         })
         const out = { ...plan, cluster: { ...s.ref } }
@@ -331,8 +354,8 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
         // Refused before anything starts when nothing chosen could run (a held kernel package, unknown holds...).
         try {
           const inv = await s.inventory(false)
-          const { load, selfVmid } = treeFor(s, inv)
-          const pv = buildSelectedPlan(inv, load.policy, { selection: select, approvals: approve as string[], selfVmid, remote: s.remote || undefined })
+          const { load, selfVmid, guards } = treeFor(s, inv, await guardsFor(s))
+          const pv = buildSelectedPlan(inv, load.policy, { ...guards, selection: select, approvals: approve as string[], selfVmid, remote: s.remote || undefined })
           if (!pv.steps.length) return reply.status(400).send({ error: 'Nothing chosen can be updated', refused: pv.refused ?? [] })
         } catch (e) { return sendError(reply, e) }
       }

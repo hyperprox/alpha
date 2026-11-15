@@ -19,6 +19,7 @@
 // =============================================================================
 
 import type { SecretItem } from '../vault/broker'
+import { originParts } from '../net/ip'
 
 const ITEM_PREFIX = 'hyperprox:'
 
@@ -33,22 +34,8 @@ export type VaultMatch =
 
 const DEFAULT_PORT: Record<string, string> = { 'http:': '80', 'https:': '443' }
 
-interface Origin { scheme: string; host: string; port: string }
-
-/** scheme, host and port of an address; a bare host or host:port is read without a scheme. */
-export function originParts(v: string): (Origin & { schemeGiven: boolean; portGiven: boolean }) | null {
-  const s = String(v ?? '').trim()
-  if (!s) return null
-  const schemeGiven = /^[a-z][a-z0-9+.-]*:\/\//i.test(s)
-  let u: URL
-  try { u = new URL(schemeGiven ? s : `http://${s}`) } catch { return null }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
-  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (!host) return null
-  // URL drops a port that is the scheme's default; it was still given when the text names it.
-  const portGiven = !!u.port || /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:\[[^\]]*\]|[^/:?#]+):\d+/i.test(s)
-  return { scheme: u.protocol, host, port: u.port || DEFAULT_PORT[u.protocol], schemeGiven, portGiven }
-}
+/** scheme, host and port of an address (lib/net/ip.ts). */
+export { originParts }
 
 /**
  * Whether a vault URI is for this address. Always the same host. The same scheme when the URI names one. The same

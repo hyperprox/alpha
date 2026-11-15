@@ -13,9 +13,12 @@
 import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { PrismaRemoteStore } from '../lib/remote/store'
+import { setGuestExclusionSource } from '../lib/guest-guard'
+import { actorOf, actorWords } from '../lib/http/request-actor'
 import { AutoConnectError, autoConnect, onUnlock, setAutoConnectExclusionSource } from '../lib/auto-connect'
 
-const by = (req: FastifyRequest) => req.apiToken ? `${req.session?.email ?? 'unknown'} (API token ${req.apiToken.name})` : (req.session?.email ?? 'unknown')
+/** Who asked, naming the API token whenever one was used (lib/http/request-actor.ts). */
+const by = (req: FastifyRequest) => actorWords(actorOf(req))
 const PLUGIN = /^[a-z][a-z0-9-]{0,40}$/
 const KEY = /^[A-Za-z0-9_.:@*#/[\]-]{1,200}$/
 
@@ -27,7 +30,12 @@ function fail(reply: FastifyReply, e: any) {
 
 export const autoConnectRoutes: FastifyPluginAsync = async (fastify) => {
   const prisma = (fastify as any).prisma
-  if (prisma) setAutoConnectExclusionSource(() => new PrismaRemoteStore(prisma).listExclusions())
+  if (prisma) {
+    const list = () => new PrismaRemoteStore(prisma).listExclusions()
+    setAutoConnectExclusionSource(list)
+    // The same list guards every command into a guest (lib/remote/executor.ts).
+    setGuestExclusionSource(list)
+  }
   const stop = autoConnect().start(cb => onUnlock(() => cb()))
   fastify.addHook('onClose', async () => { stop() })
 

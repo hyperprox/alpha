@@ -7,33 +7,41 @@
 //
 //  Scripts reach the guest the way the VPN page's do (lib/remote/executor.ts):
 //  the node's own login, then pct exec (a container) or the guest agent (a
-//  VM), the script on stdin. A guest tagged hyperprox-ignore is never entered.
+//  VM), the script on stdin. A guest HyperProx must leave alone (the
+//  hyperprox-ignore tag, or Remote access's "never look inside" list:
+//  lib/guest-guard.ts) is never entered; the executor refuses it as well.
 // =============================================================================
 
 import { setPluginTransport } from '../plugin-host'
 import { getCredential, setCredential, deleteProviderCredentials } from '../credentials'
 import { auditOrThrow } from '../audit'
 import { livePve } from '../pve-env'
-import { productionRemoteExecutor } from '../remote/executor'
-import { IGNORE_TAG } from '../remote/service'
+import { productionRemoteExecutor, type RemoteExecutor } from '../remote/executor'
+import { GuestExcludedRefusal, IGNORE_TAG, excludedMachineIds, guestExcluded } from '../guest-guard'
 import type { Machine } from '../remote/types'
 import { prismaPlacementStore } from '../placement/store'
 import { NcInstanceStore } from './instances'
-import { NextcloudService, type GuestRow } from './service'
+import { NextcloudService, type GuestRow, type ServiceDeps } from './service'
 import { ocsClient } from './ocs'
 import { prismaJobStore } from './jobs'
 import { sharedServiceScan } from '../service-scan'
 import { wizardStore } from '../catalogue-store'
 import { installStillOwns } from '../auto-connect/core'
 import { publish } from '../notify'
-import type { GuestRef } from './types'
+import type { GuestRef, NcMeta } from './types'
+import { registerComposeOwner } from '../compose-owners'
 
-async function guestRows(): Promise<GuestRow[]> {
+/**
+ * The guests, each marked `ignored` when HyperProx must leave it alone. `excluded`: Remote access's list, or null when
+ * it could not be read (then only the tag marks a row; nothing is entered anyway, see exec below).
+ */
+async function guestRows(excluded?: string[] | null): Promise<GuestRow[]> {
   const rows = await livePve().fetchStrict<any[]>('/cluster/resources?type=vm')
-  return (rows ?? []).filter(r => (r.type === 'lxc' || r.type === 'qemu') && r.template !== 1).map(r => ({
-    kind: r.type, vmid: Number(r.vmid), name: String(r.name ?? r.vmid), node: String(r.node), running: r.status === 'running',
-    ignored: String(r.tags ?? '').split(/[;,\s]+/).map(t => t.trim().toLowerCase()).includes(IGNORE_TAG),
-  }))
+  const ids = excluded === undefined ? await excludedMachineIds().catch(() => null) : excluded
+  return (rows ?? []).filter(r => (r.type === 'lxc' || r.type === 'qemu') && r.template !== 1).map(r => {
+    const why = guestExcluded({ kind: r.type, vmid: Number(r.vmid), tags: r.tags }, { excludedMachines: ids ?? [] })
+    return { kind: r.type, vmid: Number(r.vmid), name: String(r.name ?? r.vmid), node: String(r.node), running: r.status === 'running', ignored: !!why, excludedBy: why }
+  })
 }
 
 /** A running vzdump of this guest (or a node-wide one that has not named its guest yet). Null when unreadable. */
@@ -78,20 +86,32 @@ export async function sightings(): Promise<Array<{ guest: GuestRef; url: string 
   return out
 }
 
+/**
+ * How the plug-in runs a script in a guest: the guest list and Remote access's list read every time, failing closed,
+ * so a person's detect, add or action never enters a guest HyperProx must leave alone (the executor refuses it too).
+ */
+export function nextcloudExec(d: {
+  guests: (excluded: string[] | null) => Promise<GuestRow[]>
+  exclusions: () => Promise<string[]>
+  executor: Pick<RemoteExecutor, 'run'>
+}): ServiceDeps['exec'] {
+  return async (g, script, o = {}) => {
+    const row = (await d.guests(await d.exclusions())).find(r => r.kind === g.kind && r.vmid === g.vmid)
+    if (!row) throw new Error(`${g.kind === 'lxc' ? 'Container' : 'VM'} ${g.vmid} was not found.`)
+    if (row.ignored) throw new GuestExcludedRefusal(row.name, row.excludedBy ?? `the ${IGNORE_TAG} tag`)
+    if (!row.running) throw new Error(`${row.name} is not running.`)
+    const m: Machine = { id: `${g.kind}-${g.vmid}`, kind: g.kind, name: row.name, node: row.node, vmid: g.vmid, running: true }
+    return d.executor.run(m, script, { timeoutMs: o.timeoutMs, onData: o.onData, maxOutputBytes: 8_000_000 })
+  }
+}
+
 export function productionNextcloud(prisma?: unknown): NextcloudService {
   const executor = productionRemoteExecutor()
   return new NextcloudService({
     store: new NcInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials }),
     audit: (action, resource, details) => auditOrThrow(action, resource, details),
-    guests: guestRows,
-    exec: async (g, script, o = {}) => {
-      const row = (await guestRows()).find(r => r.kind === g.kind && r.vmid === g.vmid)
-      if (!row) throw new Error(`${g.kind === 'lxc' ? 'Container' : 'VM'} ${g.vmid} was not found.`)
-      if (row.ignored) throw new Error(`${row.name} has the Proxmox tag ${IGNORE_TAG}; HyperProx never looks inside it.`)
-      if (!row.running) throw new Error(`${row.name} is not running.`)
-      const m: Machine = { id: `${g.kind}-${g.vmid}`, kind: g.kind, name: row.name, node: row.node, vmid: g.vmid, running: true }
-      return executor.run(m, script, { timeoutMs: o.timeoutMs, onData: o.onData, maxOutputBytes: 8_000_000 })
-    },
+    guests: () => guestRows(),
+    exec: nextcloudExec({ guests: guestRows, exclusions: excludedMachineIds, executor }),
     ocs: l => ocsClient(l),
     quietHours: async () => {
       if (!prisma) return null
@@ -147,3 +167,25 @@ export function installNextcloudPluginTransport(): void {
 }
 
 installNextcloudPluginTransport()
+
+/**
+ * The compose projects the Nextcloud page manages (lib/compose-owners.ts): Updates leaves them to its guarded update
+ * (dump, maintenance mode, one major version at a time). An instance not detected yet covers its whole guest.
+ */
+export function nextcloudComposeProjects(list: () => Promise<NcMeta[]>) {
+  return async () => (await list()).flatMap(m => {
+    const d = m.deployment
+    if (!d) return [{ vmid: m.guest.vmid, project: null, dir: null }]
+    if (d.kind !== 'compose') return []
+    const out = [{ vmid: m.guest.vmid, project: d.app?.project ?? null, dir: d.app?.workdir ?? null }]
+    if (d.signaling?.project || d.signaling?.workdir) out.push({ vmid: m.guest.vmid, project: d.signaling.project ?? null, dir: d.signaling.workdir ?? null })
+    // A compose deployment whose project could not be read: the whole guest, never nothing.
+    return out.map(e => (e.project || e.dir ? e : { vmid: m.guest.vmid, project: null, dir: null }))
+  })
+}
+
+/** Tell Updates which compose projects are the Nextcloud page's (the routes call it; returns the undo). */
+export function registerNextcloudComposeOwner(): () => void {
+  return registerComposeOwner('nextcloud', 'the Nextcloud page',
+    nextcloudComposeProjects(() => new NcInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials }).list()))
+}

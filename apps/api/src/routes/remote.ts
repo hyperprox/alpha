@@ -31,6 +31,7 @@ import { publish } from '../lib/notify'
 import type { VpnPrefs } from '../lib/remote/planner'
 import type { RemoteOverview, RemoteMachineRow } from '../lib/remote/service'
 import { ProviderError, isProviderId } from '../lib/remote/types'
+import { IGNORE_TAG, setGuestExclusionSource } from '../lib/guest-guard'
 
 export interface RemoteRouteDeps {
   service?: RemoteAccessService
@@ -91,6 +92,9 @@ function params(req: FastifyRequest<{ Params: MachineParams }>): { id: string; p
 
 export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsync {
   return async (fastify) => {
+    // Remote access owns the "never look inside" list; it guards every command into a guest (lib/remote/executor.ts).
+    const prisma = (fastify as any).prisma
+    if (prisma) setGuestExclusionSource(() => new PrismaRemoteStore(prisma).listExclusions())
     const exec = productionRemoteExecutor(livePve())
     // Which guest is HyperProx itself, by its MACs and addresses against the guest configs: asked once, at start-up.
     let selfOnce: Promise<string | null> | null = null
@@ -143,10 +147,10 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
 
     // Guests HyperProx must never look inside. Admin; changing the list is re-confirmed (lib/roles.ts).
     fastify.get('/exclusions', { preHandler: adminOnly }, async (_req, reply) => {
-      try { return { machineIds: await service.getExclusions(), tag: 'hyperprox-ignore' } } catch (e) { return sendError(reply, e) }
+      try { return { machineIds: await service.getExclusions(), tag: IGNORE_TAG } } catch (e) { return sendError(reply, e) }
     })
     fastify.put<{ Body: { machineIds?: unknown } }>('/exclusions', { preHandler: adminOnly }, async (req, reply) => {
-      try { return { machineIds: await service.setExclusions(req.body?.machineIds as string[], by(req)), tag: 'hyperprox-ignore' } }
+      try { return { machineIds: await service.setExclusions(req.body?.machineIds as string[], by(req)), tag: IGNORE_TAG } }
       catch (e) { return sendError(reply, e) }
     })
 

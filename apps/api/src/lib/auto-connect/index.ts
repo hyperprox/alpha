@@ -17,6 +17,7 @@ import { homePve } from '../pve-env'
 import { EMPTY, Reconciler, envExcludedSubnets, type AutoConnectAdapter, type AutoConnectState, type StateStore } from './core'
 import { settingsAdapter } from './settings-adapter'
 import { appLog } from '../log-once'
+import { parseTags } from '../guest-guard'
 
 export * from './core'
 
@@ -50,7 +51,7 @@ function adapters(): AutoConnectAdapter[] {
       .map(f => ({ key: f.key, address: f.address, guest: f.guest ? { vmid: Number(f.guest.vmid), type: f.guest.type, name: f.guest.name } : null })),
     tags: async () => {
       const rows = ((await homePve().getClusterResources('vm')) ?? []) as any[]
-      return new Map(rows.map(r => [`${r.type}-${r.vmid}`, String(r.tags ?? '').split(/[;,\s]+/).map((t: string) => t.trim().toLowerCase()).filter(Boolean)]))
+      return new Map(rows.map(r => [`${r.type}-${r.vmid}`, parseTags(r.tags)]))
     },
     manifest: (id: string) => manifests?.get(id),
     settings: (id: string) => getSettings(id),

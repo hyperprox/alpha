@@ -114,7 +114,7 @@ export default function UpdatesPage() {
   const [discovering, setDiscovering] = useState(false)
   const discoverCompose = async () => {
     setDiscovering(true)
-    const t = await apiJson<UpdatesTargetTree>('/api/updates/targets?discover=1')
+    const t = await apiJson<UpdatesTargetTree>('/api/updates/targets/discover', 'POST')
     if (t.ok && t.body) { setTree(t.body); setTreeErr(null) } else setTreeErr(apiError(t, 'the compose projects'))
     setDiscovering(false)
   }

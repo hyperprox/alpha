@@ -9,7 +9,9 @@
 //  So such work registers here while it runs. Each one is a small JSON file in
 //  /run/hyperprox-busy (HYPERPROX_BUSY_DIR), which deploy.sh reads before it
 //  restarts anything and the in-app updater checks before it starts:
-//    { "id", "owner", "label", "pid", "detached", "at" }
+//    { "id", "owner", "label", "pid", "detached", "at", "guest"? }
+//  `guest` names the guest the work runs in, when it runs in one: the Updates
+//  runner leaves that guest alone while the work is busy.
 //  `detached` work runs outside this process (in a guest) and stays busy across
 //  an API restart until its owner sees it finish. Work that runs in this
 //  process is busy only while that process (`pid`) is alive, so a crash never
@@ -21,7 +23,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-export interface LongJob { id: string; owner: string; label: string; pid: number; detached: boolean; at: string }
+export interface LongJobGuest { kind: 'lxc' | 'qemu'; vmid: number }
+export interface LongJob { id: string; owner: string; label: string; pid: number; detached: boolean; at: string; guest?: LongJobGuest }
+
+const cleanGuest = (g: unknown): LongJobGuest | undefined => {
+  const x = g as Partial<LongJobGuest> | null | undefined
+  return x && (x.kind === 'lxc' || x.kind === 'qemu') && Number.isInteger(x.vmid) && Number(x.vmid) > 0 ? { kind: x.kind, vmid: Number(x.vmid) } : undefined
+}
 
 const ID_RE = /^[A-Za-z0-9_.-]{1,80}$/
 
@@ -33,11 +41,13 @@ function alive(pid: number): boolean {
 }
 
 /** Mark work as running. Throws when the marker cannot be written: a long job must not run unguarded. */
-export function registerLongJob(j: { id: string; owner: string; label: string; detached: boolean }): void {
+export function registerLongJob(j: { id: string; owner: string; label: string; detached: boolean; guest?: LongJobGuest | null }): void {
   if (!ID_RE.test(j.id) || !ID_RE.test(j.owner)) throw new Error('Bad long-job id.')
   const dir = busyDir()
   fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
   const rec: LongJob = { id: j.id, owner: j.owner, label: j.label.replace(/[\u0000-\u001f"\\]/g, ' ').slice(0, 200), pid: process.pid, detached: j.detached, at: new Date().toISOString() }
+  const guest = cleanGuest(j.guest)
+  if (guest) rec.guest = guest
   const file = path.join(dir, `${j.id}.json`)
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(rec), { mode: 0o644 })
   fs.renameSync(`${file}.tmp`, file)
@@ -59,6 +69,7 @@ export function busyJobs(owner?: string): LongJob[] {
     try { j = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { continue }
     if (!j || typeof j.id !== 'string') continue
     if (!j.detached && !alive(Number(j.pid))) { try { fs.unlinkSync(file) } catch { /* raced */ } continue }
+    if (j.guest !== undefined) { const g = cleanGuest(j.guest); if (g) j.guest = g; else delete j.guest }
     if (!owner || j.owner === owner) out.push(j)
   }
   return out
@@ -67,4 +78,9 @@ export function busyJobs(owner?: string): LongJob[] {
 /** For the in-app updater's refusal and for anyone who asks: what is running, in words. */
 export function busyWords(jobs: LongJob[]): string {
   return jobs.map(j => j.label).join('; ')
+}
+
+/** Busy work running in this guest (by VMID), or an empty list. */
+export function busyInGuest(jobs: LongJob[], vmid: number): LongJob[] {
+  return jobs.filter(j => j.guest?.vmid === vmid)
 }

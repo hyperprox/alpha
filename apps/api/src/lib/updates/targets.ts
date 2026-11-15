@@ -155,7 +155,15 @@ function projectsOf(policy: Policy, g: UpdatesGuest): NonNullable<UpdatesGuest['
 
 // --- The tree ---------------------------------------------------------------------------------
 
-export interface TargetContext {
+/** What the plug-ins and their long jobs say about guests (home cluster): lib/compose-owners.ts, lib/long-jobs.ts. */
+export interface GuardContext {
+  /** Why this compose project is left to a plug-in's page ("Managed by the Nextcloud page — update it there"), or null. */
+  composeOwner?: (vmid: number, project: { name?: string; dir: string }) => string | null
+  /** Why nothing in this guest is touched now (a plug-in's long job runs in it), or null. */
+  guestBusy?:    (vmid: number) => string | null
+}
+
+export interface TargetContext extends GuardContext {
   selfVmid?: number | null
   remote?:   boolean
 }
@@ -241,11 +249,12 @@ export function buildTargets(inv: UpdatesInventory, policy: Policy, ctx: TargetC
     const gid = targetId.guest(g.vmid)
     const isSelf = g.vmid === ctx.selfVmid
     const parent = inv.nodes.some(n => n.node === g.node) ? targetId.node(g.node) : null
-    const all = guestRefusal(g)
-    const apt = guestAptRefusal(policy, g)
+    const busy = ctx.guestBusy?.(g.vmid) ?? null
+    const all = guestRefusal(g) ?? busy
+    const apt = busy ?? guestAptRefusal(policy, g)
     const noSnap = Boolean(ctx.remote && g.managed && !g.snapshotCapable)
     const projects = all ? [] : projectsOf(policy, g)
-    const apps = all && g.unmanagedReason !== 'no-apt' ? [] : (g.apps ?? [])
+    const apps = busy || (all && g.unmanagedReason !== 'no-apt') ? [] : (g.apps ?? [])
     const appsNewer = apps.filter(newer)
     const imagesNewer = projects.reduce((k, p) => k + p.images.filter(imgNewer).length, 0)
     const notes: string[] = []
@@ -279,7 +288,7 @@ export function buildTargets(inv: UpdatesInventory, policy: Policy, ctx: TargetC
     }
     for (const c of projects) {
       const fresh = c.images.filter(imgNewer).length
-      const pw = isSelf ? "HyperProx's own images are updated by deploying HyperProx" : undefined
+      const pw = isSelf ? "HyperProx's own images are updated by deploying HyperProx" : ctx.composeOwner?.(g.vmid, c) ?? undefined
       const pol = guestPolicy(policy, g.vmid)
       out.push({
         id: targetId.compose(g.vmid, composeKey(c)), kind: 'compose', parent: gid, vmid: g.vmid, node: g.node,
@@ -329,7 +338,7 @@ export function everythingSelection(targets: UpdatesTarget[]): string[] {
 
 // --- Plans for a selection ----------------------------------------------------------------------
 
-export interface SelectionContext extends PlanContext {
+export interface SelectionContext extends PlanContext, GuardContext {
   selection: string[]
 }
 
@@ -398,7 +407,7 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
     const sel = byGuest.get(vmid)!
     const g = guests.get(vmid)
     if (!g) { refuse(sel.map(s => s.id), `no guest ${vmid} in the inventory`); continue }
-    const all = guestRefusal(g)
+    const all = guestRefusal(g) ?? ctx.guestBusy?.(vmid) ?? null
     if (all) { refuse(sel.map(s => s.id), all); continue }
     const pol = guestPolicy(policy, vmid)
     const isSelf = vmid === ctx.selfVmid
@@ -430,7 +439,8 @@ export function buildSelectedPlan(inv: UpdatesInventory, policy: Policy, ctx: Se
       const proj = projects.find(p => composeKey(p) === key)
       const why = isSelf ? "HyperProx's own images are updated by deploying HyperProx, not by this run"
         : policy.guests[String(vmid)]?.docker === 'none' ? `docker is off for ${vmid} in the policy`
-        : !proj ? `${key} is not a compose project HyperProx found in ${vmid}` : null
+        : !proj ? `${key} is not a compose project HyperProx found in ${vmid}`
+        : ctx.composeOwner?.(vmid, proj) ?? null
       if (why) refuse([s.id], why); else composeSel.push({ id: s.id, key, label: proj!.name ?? proj!.dir })
     }
     const fixSel: { id: string; detail: string; label: string }[] = []

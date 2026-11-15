@@ -107,7 +107,7 @@ const homeOnly = (body: string) => /home cluster only|home_only/.test(body)
 
 test('the tree and the preview are open to a remote cluster; HyperProx\'s own update stays home-only', () => {
   assert.ok(remoteRouteAllowed('GET', '/api/updates/targets'))
-  assert.ok(remoteRouteAllowed('GET', '/api/updates/targets?discover=1'))
+  assert.ok(remoteRouteAllowed('POST', '/api/updates/targets/discover'))
   assert.ok(remoteRouteAllowed('POST', '/api/updates/preview'))
   assert.ok(!remoteRouteAllowed('POST', '/api/self-update/install'), 'HyperProx updates itself, never a remote')
   assert.ok(!remoteRouteAllowed('GET', '/api/self-update/status'))
@@ -126,7 +126,7 @@ test('without discovery nothing is looked for: the remote defaults keep docker o
 test('"Find compose projects in every guest" on a remote: through the remote executor only, exclusions, docker: none and the ignore tag win', async () => {
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const homeCalls = home.calls.length
-  const r = await app.inject({ method: 'GET', url: '/api/updates/targets?discover=1', headers: { cookie, ...H } })
+  const r = await app.inject({ method: 'POST', url: '/api/updates/targets/discover', headers: { cookie, ...H } })
   assert.equal(r.statusCode, 200, r.body)
   assert.ok(!homeOnly(r.body), 'no "home only" answer for a supported feature')
   assert.equal(home.calls.length, homeCalls, 'nothing was read from home')
@@ -188,7 +188,7 @@ test('the node protections hold on a remote: a held kernel is never offered, and
 test('a chosen compose project on a remote: master password again, -p and every -f from docker compose ls at run time, audited, one failure isolated', async () => {
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const select = ['guest:101:compose:web', 'guest:105:compose:api']
-  await app.inject({ method: 'GET', url: '/api/updates/targets?discover=1', headers: { cookie, ...H } })
+  await app.inject({ method: 'POST', url: '/api/updates/targets/discover', headers: { cookie, ...H } })
   const first = await app.inject({ method: 'POST', url: '/api/updates/jobs', headers: { cookie, ...H }, payload: { mode: 'run', select, approve: ['nosnap:101'] } })
   assert.equal(first.statusCode, 403)
   assert.equal(first.json().code, 'reconfirm_required')
@@ -232,7 +232,7 @@ test('a chosen compose project on a remote: master password again, -p and every 
 test('a project that is gone by run time is refused, not guessed at', async () => {
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
-  await app.inject({ method: 'GET', url: '/api/updates/targets?discover=1', headers: { cookie, ...H } })
+  await app.inject({ method: 'POST', url: '/api/updates/targets/discover', headers: { cookie, ...H } })
   const g = remote.guests.find(x => x.vmid === 105)!
   const saved = g.compose
   // Between the plan and the run, Docker stops listing it (renamed, removed).

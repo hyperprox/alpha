@@ -12,6 +12,11 @@
 //    host   the Terminal's saved login for a manual host    bash -s (sudo -n when not root)
 //
 //  Host keys are the Terminal's pins (execOnNode checks them).
+//
+//  A guest HyperProx must leave alone (lib/guest-guard.ts: the hyperprox-ignore
+//  tag, read live from Proxmox, or Remote access's "never look inside" list) is
+//  refused here, before any login is used, whichever feature asked. When the
+//  list or the guest's tags cannot be read, no guest is entered.
 // =============================================================================
 
 import { livePve } from '../pve-env'
@@ -20,6 +25,7 @@ import { execOnNode, nodeCredential, pinHostKey, pinnedHostKey, probeHostKey, ty
 import { loadCredential, type TerminalCredential } from '../ssh-broker'
 import { listManualHosts, listHostAddresses } from '../terminal-hosts'
 import type { Machine } from './types'
+import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, parseTags } from '../guest-guard'
 
 export type { ExecResult }
 
@@ -68,6 +74,10 @@ export interface TransportDeps {
   loadCredential:    typeof loadCredential
   listManualHosts:   typeof listManualHosts
   listHostAddresses: typeof listHostAddresses
+  /** Remote access's "never look inside" list. Default: lib/guest-guard.ts excludedMachineIds (throws when unknown). */
+  exclusions?:       () => Promise<string[]>
+  /** A guest's Proxmox tags now. Default: read from /cluster/resources. */
+  guestTags?:        (m: Machine) => Promise<string[]>
 }
 
 const realTransport: TransportDeps = { ssh: execOnNode, nodeCredential, loadCredential, listManualHosts, listHostAddresses, probeHostKey, pinnedHostKey,
@@ -110,6 +120,29 @@ export function productionRemoteExecutor(
     return execOnNode({ host: address, port: c.port || 22, cred: c, command: asRoot(c), input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true, maxOutputBytes: o.maxOutputBytes })
   }
 
+  async function liveTags(m: Machine): Promise<string[]> {
+    const rows = await pve.fetchStrict<any[]>('/cluster/resources?type=vm')
+    const row = (rows ?? []).find(r => r?.type === m.kind && Number(r.vmid) === Number(m.vmid))
+    if (!row) throw new TransportError(`${m.name} is not on the cluster any more.`)
+    return parseTags(row.tags)
+  }
+
+  /** The one rule, at the one place every script into a guest passes. Nodes and hand-added hosts are not guests. */
+  async function refuseExcluded(m: Machine): Promise<void> {
+    if (m.kind !== 'lxc' && m.kind !== 'qemu') return
+    let tags: string[]
+    try { tags = await (t.guestTags ?? liveTags)(m) }
+    catch (e) {
+      if (e instanceof TransportError) throw e
+      // Proxmox did not answer: the tags the caller read are used when it read them, otherwise nothing is entered.
+      if (m.tags === undefined) throw new ExclusionsUnknownRefusal()
+      tags = []
+    }
+    const ids = await (t.exclusions ?? excludedMachineIds)().catch(() => { throw new ExclusionsUnknownRefusal() })
+    const why = guestExcluded({ id: m.id, kind: m.kind, vmid: m.vmid, tags: [...tags, ...(m.tags ?? [])] }, { excludedMachines: ids })
+    if (why) throw new GuestExcludedRefusal(m.name, why)
+  }
+
   return {
     async listMachines() {
       const [status, resources, manual] = await Promise.all([
@@ -126,7 +159,7 @@ export function productionRemoteExecutor(
         out.push({
           id: `${g.type}-${g.vmid}`, kind: g.type, name: String(g.name ?? g.vmid), node: String(g.node), vmid: Number(g.vmid),
           running: g.status === 'running', ostype: undefined,
-          tags: String(g.tags ?? '').split(/[;,\s]+/).map(t => t.trim().toLowerCase()).filter(Boolean),
+          tags: parseTags(g.tags),
         })
       }
       for (const h of manual) out.push({ id: `host-${h.id}`, kind: 'host', name: h.name, running: true, address: h.address })
@@ -140,6 +173,7 @@ export function productionRemoteExecutor(
     },
 
     async run(m, script, o = {}) {
+      await refuseExcluded(m)
       if (m.kind === 'node') {
         return execOnNode({ host: await nodeHost(m.node!), cred: await nodeCred(m.node!), command: 'bash -s', input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true, maxOutputBytes: o.maxOutputBytes })
       }

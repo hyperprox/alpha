@@ -39,14 +39,20 @@ import {
   type HpbPlan, type RunIO, type UpdatePlan,
 } from './update'
 import { MemoryJobStore, type JobStore } from './jobs'
-import { SYSTEM_ACTOR, exclusionOf, hostIPv4, inSubnets, type AdapterContext, type Outcome } from '../auto-connect/core'
+import { SYSTEM_ACTOR, exclusionOf, type AdapterContext, type Outcome } from '../auto-connect/core'
+import { inCidrs, parseIPv4 } from '../net/ip'
+import { EXCLUSION_WORDS, IGNORE_TAG } from '../guest-guard'
 import { matchVault, pickVault, type VaultChoice } from '../auto-connect/vault-match'
 import { NcRefusal, type Actor, type BusyHoursLike, type CheckView, type GuestRef, type Job, type JobStep, type NcMeta, type Reading } from './types'
 
-export interface GuestRow { kind: 'lxc' | 'qemu'; vmid: number; name: string; node: string; running: boolean; ignored: boolean }
+export interface GuestRow {
+  kind: 'lxc' | 'qemu'; vmid: number; name: string; node: string; running: boolean
+  /** HyperProx must leave it alone (lib/guest-guard.ts); `excludedBy` says why, in words. */
+  ignored: boolean; excludedBy?: string | null
+}
 
 export interface LongJobRegistry {
-  register(j: { id: string; owner: string; label: string; detached: boolean }): void
+  register(j: { id: string; owner: string; label: string; detached: boolean; guest?: GuestRef | null }): void
   end(id: string): void
   list(owner?: string): LongJob[]
 }
@@ -170,7 +176,7 @@ export class NextcloudService {
     const g = cleanGuest(guest)
     const row = (await this.d.guests()).find(x => x.kind === g.kind && x.vmid === g.vmid)
     if (!row) throw new NcRefusal('no_guest', `There is no ${g.kind === 'lxc' ? 'container' : 'VM'} ${g.vmid}.`, 404)
-    if (row.ignored) throw new NcRefusal('ignored', `${row.name} has the Proxmox tag hyperprox-ignore, so HyperProx never looks inside it.`, 403)
+    if (row.ignored) throw new NcRefusal('ignored', `${row.name} is left alone (${row.excludedBy ?? 'the hyperprox-ignore tag'}), so HyperProx never looks inside it.`, 403)
     if (!row.running) throw new NcRefusal('not_running', `${row.name} is not running.`, 409)
     return this.detectIn(g, row.name)
   }
@@ -350,7 +356,8 @@ export class NextcloudService {
    * before anything is run in the guest, for a new guest and for one added already alike.
    */
   private autoExcluded(ctx: AdapterContext, key: string, row: GuestRow | undefined, s: { urls: string[]; ips: string[] }): string | null {
-    return exclusionOf(ctx, { machineId: key, tags: row?.ignored ? ['hyperprox-ignore'] : [], addresses: [...s.urls, ...s.ips] })
+    return exclusionOf(ctx, { machineId: key, tags: row?.ignored && (!row.excludedBy || row.excludedBy === EXCLUSION_WORDS.tag) ? [IGNORE_TAG] : [], addresses: [...s.urls, ...s.ips] })
+      ?? (row?.ignored ? row.excludedBy ?? EXCLUSION_WORDS.tag : null)
   }
 
   /** When the background pass may try the web login again: never before the persisted time (it survives a restart). */
@@ -458,9 +465,9 @@ export class NextcloudService {
   private observedUrls(seen: string[], ctx: AdapterContext): string[] {
     const out: string[] = []
     for (const u of seen) {
-      try { const c = cleanUrl(u); if (!out.includes(c) && !inSubnets(c, ctx.excludedSubnets)) out.push(c) } catch { /* not usable */ }
+      try { const c = cleanUrl(u); if (!out.includes(c) && !inCidrs(c, ctx.excludedSubnets)) out.push(c) } catch { /* not usable */ }
     }
-    return out.sort((a, b) => Number(hostIPv4(a) !== null) - Number(hostIPv4(b) !== null))
+    return out.sort((a, b) => Number(parseIPv4(a) !== null) - Number(parseIPv4(b) !== null))
   }
 
   /**
@@ -1080,7 +1087,7 @@ export class NextcloudService {
   /** Work run from HyperProx itself (it ends with this process; deploy.sh waits for it while it runs). */
   private async startJob(m: NcMeta, action: ActionId, actor: Actor, audit: Record<string, unknown>, work: (io: RunIO) => Promise<{ message: string; rollback?: string }>, rollback: string | null = null): Promise<{ message: string; jobId: string }> {
     const job = this.newJob(m, action, actor, rollback, null)
-    this.long.register({ id: job.id, owner: 'nextcloud', label: `Nextcloud ${m.name}: ${ACTIONS[action].label.toLowerCase()}`, detached: false })
+    this.long.register({ id: job.id, owner: 'nextcloud', label: `Nextcloud ${m.name}: ${ACTIONS[action].label.toLowerCase()}`, detached: false, guest: m.guest })
     this.jobs.set(job.id, job)
     this.busy.add(m.id)
     await this.persist(job)
@@ -1128,7 +1135,7 @@ export class NextcloudService {
       if (j.detached) {
         this.jobs.set(j.id, j)
         this.busy.add(j.instanceId)
-        try { this.long.register({ id: j.id, owner: 'nextcloud', label: `Nextcloud update (${j.instanceId})`, detached: true }) } catch { /* the marker dir is gone; the watch still runs */ }
+        try { this.long.register({ id: j.id, owner: 'nextcloud', label: `Nextcloud update (${j.instanceId})`, detached: true, guest: j.detached.guest }) } catch { /* the marker dir is gone; the watch still runs */ }
         void this.watch(j)
       } else {
         j.state = 'failed'
@@ -1353,7 +1360,7 @@ export class NextcloudService {
     await this.d.audit('nextcloud.action.update', `nextcloud:${m.id}`, { by: actor.email, via: 'session', from: plan.from, offered: plan.offered, source: plan.source, backupDir: plan.backupDir })
     const job = this.newJob(m, 'update', actor, rollbackWords(plan, null), { guest: m.guest, backupDir: plan.backupDir })
     // Registered before it starts: from here until it is seen to finish, no deploy restarts the API.
-    this.long.register({ id: job.id, owner: 'nextcloud', label: `Nextcloud ${m.name}: update ${plan.from} to ${plan.offered}`, detached: true })
+    this.long.register({ id: job.id, owner: 'nextcloud', label: `Nextcloud ${m.name}: update ${plan.from} to ${plan.offered}`, detached: true, guest: m.guest })
     this.jobs.set(job.id, job)
     this.busy.add(m.id)
     job.steps.find(s => s.key === 'preflight')!.state = 'done'

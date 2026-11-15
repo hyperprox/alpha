@@ -14,18 +14,19 @@
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
-import { hasRole } from '../lib/roles'
-import { nextcloudService } from '../lib/nextcloud'
+import { actorOf, isAdmin } from '../lib/http/request-actor'
+import { nextcloudService, registerNextcloudComposeOwner } from '../lib/nextcloud'
 import { NcRefusal, type Actor, type Reading } from '../lib/nextcloud/types'
 import { OccRefusal } from '../lib/nextcloud/occ'
 import { UpdateRefusal } from '../lib/nextcloud/update'
+import { PrismaRemoteStore } from '../lib/remote/store'
+import { setGuestExclusionSource } from '../lib/guest-guard'
 
+/** Who asked, with the API token's name whenever one was used (lib/http/request-actor.ts). */
 function actor(req: FastifyRequest): Actor {
-  const s = req.session!
-  return { sid: s.sid, email: s.email, role: s.role, token: req.apiToken?.name ?? null }
+  const a = actorOf(req)
+  return { sid: a.sid, email: a.email, role: a.role, token: a.token }
 }
-
-const isAdmin = (req: FastifyRequest) => hasRole(req.session?.role ?? 'viewer', 'admin')
 
 function fail(reply: FastifyReply, e: any) {
   if (e instanceof NcRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, ...e.extra })
@@ -65,6 +66,11 @@ type P = { Params: { iid: string } }
 
 export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
   const svc = () => nextcloudService((fastify as any).prisma)
+  // Remote access's "never look inside" list: a detect, add or action never enters a guest on it (lib/guest-guard.ts).
+  if ((fastify as any).prisma) setGuestExclusionSource(() => new PrismaRemoteStore((fastify as any).prisma).listExclusions())
+  // Updates leaves the compose projects of every Nextcloud here to this page's guarded update (lib/compose-owners.ts).
+  const offOwner = registerNextcloudComposeOwner()
+  fastify.addHook('onClose', async () => { offOwner() })
   // Created now (not at the first request), so a detached update from before a restart is watched again at once.
   if ((fastify as any).prisma) svc()
 

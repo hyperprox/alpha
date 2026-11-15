@@ -6,7 +6,7 @@ import { productionRemoteExecutor, type TransportDeps } from '../src/lib/remote/
 
 const SCRIPT = "HP_KEY='tskey-auth-SECRET'\necho hi"
 
-function setup(o: { agent?: boolean; vmLogin?: { username: string; port: number } | null } = {}) {
+function setup(o: { agent?: boolean; vmLogin?: { username: string; port: number } | null; excluded?: string[] | null; tags101?: string } = {}) {
   const calls: Array<{ host: string; port?: number; user: string; command: string; input?: string; requirePin?: boolean }> = []
   const pveCalls: Array<{ path: string; method?: string; body?: string }> = []
   const pve: any = {
@@ -14,7 +14,7 @@ function setup(o: { agent?: boolean; vmLogin?: { username: string; port: number 
       pveCalls.push({ path, method, body })
       if (path === '/cluster/status') return [{ type: 'cluster', quorate: 1 }, { type: 'node', name: 'pve-a', ip: '192.0.2.11', online: 1 }]
       if (path.startsWith('/cluster/resources')) return [
-        { type: 'lxc', vmid: 101, name: 'web', node: 'pve-a', status: 'running' },
+        { type: 'lxc', vmid: 101, name: 'web', node: 'pve-a', status: 'running', ...(o.tags101 ? { tags: o.tags101 } : {}) },
         { type: 'qemu', vmid: 102, name: 'app', node: 'pve-a', status: 'running' },
         { type: 'qemu', vmid: 9000, name: 'tpl', node: 'pve-a', status: 'stopped', template: 1 },
       ]
@@ -35,6 +35,7 @@ function setup(o: { agent?: boolean; vmLogin?: { username: string; port: number 
     loadCredential: (async (id: string) => (id === 'qemu-102' && o.vmLogin !== null ? { username: o.vmLogin?.username ?? 'admin', port: o.vmLogin?.port ?? 2222, password: 'y' } : id === 'ssh-nas' ? { username: 'root', port: 22, password: 'z' } : null)) as any,
     listManualHosts: (async () => [{ id: 'ssh-nas', name: 'nas', address: '192.0.2.50', port: 22 }]) as any,
     listHostAddresses: (async () => ({ 'qemu-102': '192.0.2.102' })) as any,
+    exclusions: async () => { if (o.excluded === null) throw new Error('database down'); return o.excluded ?? [] },
   }
   return { ex: productionRemoteExecutor(pve, t), calls, pveCalls }
 }
@@ -120,4 +121,45 @@ test('the config PUT carries the digest from the GET; firewall state and rules g
   const post = pveCalls.at(-1)!
   assert.equal(post.path, '/nodes/pve-a/firewall/rules'); assert.equal(post.method, 'POST')
   assert.match(post.body ?? '', /iface=tailscale0/); assert.match(post.body ?? '', /dport=22%2C8006/)
+})
+
+// ── the one exclusion rule, at the chokepoint ────────────────────────────────
+
+test('a guest on the "never look inside" list is refused before any login is used', async () => {
+  const { ex, calls } = setup({ excluded: ['lxc-101'] })
+  const m = (await ex.listMachines()).find(x => x.id === 'lxc-101')!
+  await assert.rejects(ex.run(m, SCRIPT), (e: any) => e.name === 'GuestExcludedRefusal' && /exclusion list/.test(e.message))
+  assert.equal(calls.length, 0)
+  // Another guest, a node and a hand-added host still run.
+  for (const id of ['node-pve-a', 'qemu-102', 'host-ssh-nas']) await ex.run((await ex.listMachines()).find(x => x.id === id)!, SCRIPT)
+  assert.equal(calls.length, 3)
+})
+
+test('the ignore tag is read live: mixed case and semicolons count, even when the caller passed no tags', async () => {
+  const { ex, calls } = setup({ tags101: 'web;HyperProx-Ignore' })
+  const bare = { id: 'lxc-101', kind: 'lxc' as const, name: 'web', node: 'pve-a', vmid: 101, running: true }
+  await assert.rejects(ex.run(bare, SCRIPT), (e: any) => e.name === 'GuestExcludedRefusal' && /hyperprox-ignore tag/.test(e.message))
+  assert.equal(calls.length, 0)
+})
+
+test('when the list cannot be read, no guest is entered (fail closed); nodes still are', async () => {
+  const { ex, calls } = setup({ excluded: null })
+  const ms = await ex.listMachines()
+  await assert.rejects(ex.run(ms.find(x => x.id === 'lxc-101')!, SCRIPT), (e: any) => e.name === 'ExclusionsUnknownRefusal')
+  await assert.rejects(ex.run(ms.find(x => x.id === 'qemu-102')!, SCRIPT), (e: any) => e.name === 'ExclusionsUnknownRefusal')
+  assert.equal(calls.length, 0)
+  await ex.run(ms.find(x => x.id === 'node-pve-a')!, SCRIPT)
+  assert.equal(calls.length, 1)
+})
+
+test('with no list source set at all, the production default refuses every guest', async () => {
+  const { setGuestExclusionSource } = await import('../src/lib/guest-guard')
+  setGuestExclusionSource(null)
+  const pve: any = { fetchStrict: async (path: string) => path.startsWith('/cluster/resources') ? [{ type: 'lxc', vmid: 101, name: 'web', node: 'pve-a' }] : [{ type: 'node', name: 'pve-a', ip: '192.0.2.11' }] }
+  let sent = 0
+  const ex = productionRemoteExecutor(pve, { ssh: (async () => { sent++; return { code: 0, output: '', timedOut: false } }) as any,
+    nodeCredential: (async () => ({ username: 'root', port: 22 })) as any, loadCredential: (async () => null) as any,
+    listManualHosts: (async () => []) as any, listHostAddresses: (async () => ({})) as any })
+  await assert.rejects(ex.run({ id: 'lxc-101', kind: 'lxc', name: 'web', node: 'pve-a', vmid: 101, running: true }, 'true'), /exclusion list could not be read/)
+  assert.equal(sent, 0)
 })

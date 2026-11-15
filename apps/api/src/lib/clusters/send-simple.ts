@@ -33,6 +33,7 @@ import { pinnedKey, pinSource, isConfirmedSource, confirmPin } from '../hostkey-
 import { probeHostKey } from '../node-exec'
 import { auditCredentialUse } from '../audit'
 import { currentContext } from '../auth'
+import { IGNORE_TAG } from '../guest-guard'
 import {
   q, rootFor, containmentScript, parseContainment, CONTAINMENT_LINE, liveNodeRunner, sendKey, setupSending, previewCopy, startCopy, jobStore, kickCopies,
   fmtDuration, plexScan, privateAddress, type NodeRunner, type JobRow, type SendKey,
@@ -107,8 +108,8 @@ const PLEX_GET_FN = [
   '}',
 ].join('\n')
 
-/** A container tagged hyperprox-ignore is never entered (checked on the node, from its config). */
-const IGNORED_TAG = `grep -qE '^tags:.*hyperprox-ignore'`
+/** A container tagged hyperprox-ignore (any case) is never entered (checked on the node, from its config; lib/guest-guard.ts). */
+const IGNORED_TAG = `grep -qiE '^tags:.*${IGNORE_TAG}'`
 
 /**
  * Everything discovery needs from one node, read-only. `reach` lists addresses to test on port 22 from here.
@@ -840,7 +841,7 @@ export async function scanLibraryAfterCopy(job: JobRow, runner: NodeRunner = liv
     const r = await runner.run(job.dstCluster, String(lib.node || job.dstNode), plexScanScript(String(lib.ct), String(lib.sectionKey), lib.containerPath ? `${lib.containerPath}/${item}` : null), 60_000)
     const code = /PLEX-HTTP (\d{3})/.exec(r.output)?.[1]
     if (code && /^2/.test(code)) return `Added to ${name}.`
-    if (/PLEX-IGNORED/.test(r.output)) return `Copied into ${name}. Plex's container is tagged hyperprox-ignore, so it was not asked to scan.`
+    if (/PLEX-IGNORED/.test(r.output)) return `Copied into ${name}. Plex's container is tagged ${IGNORE_TAG}, so it was not asked to scan.`
     if (/PLEX-NOTOKEN/.test(r.output)) return `Copied into ${name}. Plex there is not signed in, so it was not asked to scan; it will find the files at its next scan.`
     if (/PLEX-GONE/.test(r.output)) return `Copied into ${name}. Plex was not found in its container any more, so it was not asked to scan.`
     return `Copied into ${name}. Plex did not take the scan request${code ? ` (it answered ${code})` : ''}; it will find the files at its next scan.`

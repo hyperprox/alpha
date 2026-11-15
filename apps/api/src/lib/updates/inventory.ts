@@ -19,6 +19,7 @@ import {
   type NodeFacts,
 } from './commands'
 import { type AppEnv, readGuestApps } from './apps'
+import { IGNORE_TAG, hasIgnoreTag } from '../guest-guard'
 
 export interface InventoryOptions {
   /** Nodes whose reboot an earlier run deferred. */
@@ -62,8 +63,8 @@ export interface InventoryOptions {
   discoverCompose?: 'policy' | 'all' | Set<number>
 }
 
-/** The Proxmox tag that keeps HyperProx out of a guest: it is never read or updated. */
-export const IGNORE_TAG = 'hyperprox-ignore'
+/** The Proxmox tag that keeps HyperProx out of a guest: it is never read or updated (lib/guest-guard.ts). */
+export { IGNORE_TAG }
 
 /** The approval that says "update this guest even though it cannot be snapshotted first". */
 export const noSnapshotAckId = (vmid: number) => `nosnap:${vmid}`
@@ -226,7 +227,7 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
     snapshotCapable: false, docker: pol.docker,
   }
   if (pol.excluded) { out.unmanagedReason = 'excluded'; return out }
-  if (g.tags?.includes(IGNORE_TAG)) { out.unmanagedReason = 'ignored'; return out }
+  if (hasIgnoreTag(g.tags)) { out.unmanagedReason = 'ignored'; return out }
   if (!g.running)   { out.unmanagedReason = 'not-running'; return out }
 
   let config: Record<string, any> = {}

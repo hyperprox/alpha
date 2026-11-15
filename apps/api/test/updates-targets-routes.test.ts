@@ -136,3 +136,21 @@ test('a held kernel package alone is refused before any job exists', async () =>
   assert.equal(store.audits.length, before)
   assert.equal((await app.inject({ method: 'POST', url: '/api/updates/jobs', headers: { cookie }, payload: { mode: 'run', select: [] } })).statusCode, 400)
 })
+
+test('looking inside every guest for compose projects is an admin POST; a viewer never causes it, and a GET no longer can', async () => {
+  const composeLs = () => fake.calls.filter(c => c.cmd === 'guest:compose-ls').length
+  const before = composeLs()
+  const v = await signIn(app, 'viewer@example.com', 'viewer master password')
+  const denied = await app.inject({ method: 'POST', url: '/api/updates/targets/discover', headers: { cookie: v.cookie } })
+  assert.equal(denied.statusCode, 403, denied.body)
+  assert.equal((await app.inject({ method: 'GET', url: '/api/updates/targets?discover=1', headers: { cookie: v.cookie } })).statusCode, 403)
+  assert.equal(composeLs(), before, 'nothing was run in any guest for the viewer')
+  const a = await signIn(app, 'admin@example.com', 'admin master password')
+  const old = await app.inject({ method: 'GET', url: '/api/updates/targets?discover=1', headers: { cookie: a.cookie } })
+  assert.equal(old.statusCode, 400, 'discovery is not a GET any more')
+  assert.equal(composeLs(), before)
+  const ok = await app.inject({ method: 'POST', url: '/api/updates/targets/discover', headers: { cookie: a.cookie } })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.ok(Array.isArray(ok.json().targets))
+  assert.ok(composeLs() > before, 'the admin\'s request looked in the guests')
+})

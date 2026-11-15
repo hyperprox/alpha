@@ -15,9 +15,9 @@
 //  The routes keep the /api/placement prefix (internal); the page is /balance.
 // =============================================================================
 
-import type { FastifyPluginAsync, FastifyReply } from 'fastify'
-import { allSessions, currentContext } from '../lib/auth'
-import { memberRoles } from '../lib/users/roles'
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
+import { approverChanged } from '../lib/users/approvals'
+import { actorOf } from '../lib/http/request-actor'
 import { publish } from '../lib/notify'
 import { VaultLockedError } from '../lib/credentials'
 import { currentRemote } from '../lib/clusters/context'
@@ -29,13 +29,14 @@ import { auditOrThrow } from '../lib/audit'
 import { isUnlocked } from '../lib/vault/state'
 import { execOnNode, nodeCredential } from '../lib/node-exec'
 import { prometheusBase } from '../lib/service-health'
-import { PlacementRefusal, PlacementService } from '../lib/placement/service'
+import { PlacementRefusal, PlacementService, type Actor } from '../lib/placement/service'
 import type { LogLike } from '../lib/log-once'
 import { livePromRange } from '../lib/placement/read'
 import { prismaPlacementStore } from '../lib/placement/store'
 import type { HaPve } from '../lib/ha/read'
 
-const actor = () => ({ email: currentContext()?.email ?? 'unknown', role: String(currentContext()?.role ?? 'viewer') })
+/** Who asked, with the API token's name whenever one was used (lib/http/request-actor.ts), so every audit row says so. */
+const actor = (req: FastifyRequest): Actor => { const a = actorOf(req); return { email: a.email, role: a.role, token: a.token } }
 
 async function wrap(reply: FastifyReply, fn: () => Promise<unknown>) {
   try {
@@ -91,35 +92,8 @@ export function placementService(prisma: any, log?: LogLike): PlacementService {
   return production
 }
 
-/** Exported for tests. */
-export async function approverChanged(prisma: any, email: string, sinceMs: number, sessions = allSessions, recorded = (e: string) => memberRoles().get(e)): Promise<string | null> {
-  const e = email.toLowerCase()
-  const own = sessions().find(x => String(x.email).toLowerCase() === e)
-  if (own && own.role !== 'admin' && own.role !== 'owner') return `is now ${own.role}, not admin`
-  let rec: string | null = null
-  try { rec = recorded(e) } catch { rec = null }
-  if (rec && rec !== 'admin') return `is now ${rec}, not admin`
-  if (!prisma?.auditLog) return null
-  const since = new Date(sinceMs)
-  // Every removal and role change since the approval, oldest first, page by page: none is missed however many there
-  // are. More than the pages allow is "could not check", never "nothing changed".
-  const PAGE = 200, PAGES = 25
-  for (let page = 0; page < PAGES; page++) {
-    const rows: any[] = await prisma.auditLog.findMany({
-      where: { action: { in: ['users.remove', 'users.role'] }, createdAt: { gte: since } },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], skip: page * PAGE, take: PAGE,
-    })
-    for (const r of rows) {
-      const d = (r.details ?? {}) as Record<string, unknown>
-      if (r.action === 'users.remove' && String(d.email ?? '').toLowerCase() === e) return 'was removed after approving it'
-      if (r.action === 'users.role' && d.role !== 'admin' && !(own && (own.role === 'admin' || own.role === 'owner'))) {
-        return 'may have been demoted: a role was lowered after the approval, and HyperProx cannot tell whose'
-      }
-    }
-    if (rows.length < PAGE) return null
-  }
-  return 'could not be checked: too many role changes since the approval'
-}
+/** Exported for tests (lib/users/approvals.ts: an owner counts as an admin). */
+export { approverChanged }
 
 export function buildPlacementRoutes(deps: { service?: () => PlacementService; startScheduler?: boolean } = {}): FastifyPluginAsync {
   return async (fastify) => {
@@ -133,9 +107,9 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
     fastify.get('/map', async (_q, r) => wrap(r, () => svc().map()))
     fastify.get('/advice', async (_q, r) => wrap(r, () => svc().advice()))
     fastify.get('/settings', async (_q, r) => wrap(r, () => svc().settings()))
-    fastify.put<{ Body: unknown }>('/settings', async (q, r) => wrap(r, () => svc().saveSettings(q.body, actor())))
+    fastify.put<{ Body: unknown }>('/settings', async (q, r) => wrap(r, () => svc().saveSettings(q.body, actor(q))))
     fastify.get<{ Params: { type: string; vmid: string } }>('/guests/:type/:vmid', async (q, r) => wrap(r, () => svc().guest(guestSid(q.params))))
-    fastify.post<{ Params: { type: string; vmid: string } }>('/guests/:type/:vmid/paths', async (q, r) => wrap(r, () => svc().checkPaths(guestSid(q.params), actor())))
+    fastify.post<{ Params: { type: string; vmid: string } }>('/guests/:type/:vmid/paths', async (q, r) => wrap(r, () => svc().checkPaths(guestSid(q.params), actor(q))))
 
     const moveBody = (b: any) => {
       const target = String(b?.target ?? '')
@@ -152,7 +126,7 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
       const body: any = q.body ?? {}
       const b = moveBody(body)
       const when = body.when === 'next-quiet' ? 'next-quiet' : 'now'
-      return svc().move(guestSid(q.params), b.target, { when, anyway: body.anyway === true, bwlimitKiB: b.bwlimitKiB }, actor())
+      return svc().move(guestSid(q.params), b.target, { when, anyway: body.anyway === true, bwlimitKiB: b.bwlimitKiB }, actor(q))
     }))
 
     // Load balancing: the balance and its plan, plans, and automatic balancing.
@@ -172,12 +146,12 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
       }
       if (b.when !== undefined && b.when !== 'now' && b.when !== 'next-quiet') throw new PlacementRefusal('when must be now or next-quiet.', 400, 'bad-when')
       if (b.goal !== undefined && !goalOf(b.goal)) throw new PlacementRefusal('goal must be mem, cpu or both.', 400, 'bad-goal')
-      return svc().createPlan({ when: b.when ?? 'now', goal: goalOf(b.goal), expect }, actor())
+      return svc().createPlan({ when: b.when ?? 'now', goal: goalOf(b.goal), expect }, actor(q))
     }))
-    fastify.post<{ Params: { id: string } }>('/plans/:id/stop', async (q, r) => wrap(r, () => svc().stopPlan(q.params.id, actor())))
+    fastify.post<{ Params: { id: string } }>('/plans/:id/stop', async (q, r) => wrap(r, () => svc().stopPlan(q.params.id, actor(q))))
     fastify.get('/auto', async (_q, r) => wrap(r, () => svc().autoSettings()))
-    fastify.put<{ Body: unknown }>('/auto', async (q, r) => wrap(r, () => svc().saveAuto(q.body, actor())))
-    fastify.post('/auto/stop', async (_q, r) => wrap(r, () => svc().autoStop(actor())))
+    fastify.put<{ Body: unknown }>('/auto', async (q, r) => wrap(r, () => svc().saveAuto(q.body, actor(q))))
+    fastify.post('/auto/stop', async (q, r) => wrap(r, () => svc().autoStop(actor(q))))
 
     fastify.get<{ Querystring: { sid?: string } }>('/moves', async (q, r) => wrap(r, () => {
       const sid = q.query?.sid && /^(ct|vm):\d{1,9}$/.test(q.query.sid) ? q.query.sid : undefined
@@ -188,9 +162,9 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
       if (!m) throw new PlacementRefusal('No such move.', 404, 'not-found')
       return m
     }))
-    fastify.post<{ Params: { id: string } }>('/moves/:id/cancel', async (q, r) => wrap(r, () => svc().cancel(q.params.id, actor())))
-    fastify.post<{ Params: { id: string } }>('/moves/:id/resolve', async (q, r) => wrap(r, () => svc().resolve(q.params.id, actor())))
-    fastify.post<{ Params: { id: string } }>('/moves/:id/corosync', async (q, r) => wrap(r, () => svc().corosyncFor(q.params.id, actor())))
+    fastify.post<{ Params: { id: string } }>('/moves/:id/cancel', async (q, r) => wrap(r, () => svc().cancel(q.params.id, actor(q))))
+    fastify.post<{ Params: { id: string } }>('/moves/:id/resolve', async (q, r) => wrap(r, () => svc().resolve(q.params.id, actor(q))))
+    fastify.post<{ Params: { id: string } }>('/moves/:id/corosync', async (q, r) => wrap(r, () => svc().corosyncFor(q.params.id, actor(q))))
   }
 }
 

@@ -16,6 +16,8 @@
 import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { PrismaRemoteStore } from '../lib/remote/store'
+import { setGuestExclusionSource } from '../lib/guest-guard'
+import { actorOf } from '../lib/http/request-actor'
 import { onInstallCompleted } from '../lib/catalogue-installer'
 import {
   HomepageRefusal, homepageService, homepageInventoryChanged, setHomepageExclusionSource, type Actor, type HomepageInstance, type Plan,
@@ -25,8 +27,10 @@ import { UnsafeValueError } from '../lib/homepage/remote'
 
 const svc = () => homepageService()
 
+/** Who asked, with the API token's name whenever one was used (lib/http/request-actor.ts). */
 function actor(req: FastifyRequest): Actor {
-  return { email: req.session?.email ?? 'unknown', token: req.apiToken?.name ?? null }
+  const a = actorOf(req)
+  return { email: a.email, token: a.token }
 }
 
 function fail(reply: FastifyReply, e: any) {
@@ -64,7 +68,12 @@ type P = { Params: { iid: string } }
 
 export const homepageRoutes: FastifyPluginAsync = async (fastify) => {
   const prisma = (fastify as any).prisma
-  if (prisma) setHomepageExclusionSource(() => new PrismaRemoteStore(prisma).listExclusions())
+  if (prisma) {
+    const list = () => new PrismaRemoteStore(prisma).listExclusions()
+    setHomepageExclusionSource(list)
+    // The same list guards every command into a guest (lib/remote/executor.ts).
+    setGuestExclusionSource(list)
+  }
   // A finished Catalogue install changes what is on the cluster: auto-sync (when on) looks again.
   const offInstall = onInstallCompleted(() => homepageInventoryChanged())
   const stopAuto = svc().start()

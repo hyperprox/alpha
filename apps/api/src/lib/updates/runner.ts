@@ -41,9 +41,10 @@ import {
   nodePackagesCommand, nodePackagesSimulateCommand, guestPackagesScript, isGuardedKernelPackage, PKG_NAME,
   COMPOSE_LS_SCRIPT, parseComposeLs, composeProjectScript,
 } from './commands'
-import { IGNORE_TAG } from './inventory'
+import { hasIgnoreTag } from '../guest-guard'
+import { homeGuards } from './guards'
 import {
-  buildSelectedPlan, parseTargetId, packagesOf, composeKeyOf, DEPENDS_ON, MAX_SELECTION, nodeGuarded,
+  buildSelectedPlan, parseTargetId, packagesOf, composeKeyOf, DEPENDS_ON, MAX_SELECTION, nodeGuarded, type GuardContext,
 } from './targets'
 import { handoffNodeOf, handoffTag, readHandoff, selfGuestScript, selfNodeRebootScript, startHandoff } from './handoff'
 import { type AppEnv, APPROVAL_ID, runAppStep } from './apps'
@@ -118,6 +119,11 @@ export interface RunnerDeps {
    * own (production, home and remote). Every other guest is looked at only when a person asks for it (inventory `discover`).
    */
   discoverCompose?: boolean
+  /**
+   * What the plug-ins say about guests (lib/updates/guards.ts): compose projects a plug-in's page manages, guests a
+   * plug-in's long job is busy in. Home only. Default: read live (homeGuards).
+   */
+  guards?: () => Promise<GuardContext>
 }
 
 type Outcome =
@@ -182,6 +188,11 @@ export class UpdatesRunner {
   idle(): Promise<void> { return this.driving }
 
   private get remote(): boolean { return !!this.deps.remote }
+  /** Read fresh every time it is asked: a plug-in's job may have started, or a project been added, since the plan. */
+  private async guardContext(): Promise<GuardContext> {
+    if (this.remote) return {}
+    return (this.deps.guards ?? homeGuards)()
+  }
   get cluster(): UpdatesClusterRef { return this.deps.cluster ?? { id: 'home', name: 'Home cluster', kind: 'home' } }
 
   /** The plan context every buildPlan here uses. */
@@ -410,6 +421,7 @@ export class UpdatesRunner {
   private async prepare(jobId: string, mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule', scope: 'all' | 'guests' = 'all', approvals: string[] = [],
                         selection?: string[]): Promise<void> {
     const appPlan = { approvals, appProviders: this.deps.apps?.providers.map(r => r.provider.id) }
+    const guards = await this.guardContext()
     // A run of chosen targets: only the nodes it names are checked node by node, refreshed and planned.
     const chosen = selection ? selection.map(parseTargetId).filter((t): t is NonNullable<typeof t> => !!t) : null
     const allNodes = chosen?.some(t => t.kind === 'ceph') ?? true
@@ -419,7 +431,7 @@ export class UpdatesRunner {
     const composeFor = new Set(chosen ? chosen.flatMap(t => (t.kind === 'compose' ? [t.vmid] : [])) : [])
     const readInv = () => this.inventory(policy, composeFor.size ? composeFor : undefined)
     const makePlan = (inv: InventoryResult, extra: { policyNote?: string }) => selection
-      ? buildSelectedPlan(inv.inventory, policy, { ...this.planContext(inv, policy, { ...extra, ...appPlan }), selection })
+      ? buildSelectedPlan(inv.inventory, policy, { ...this.planContext(inv, policy, { ...extra, ...appPlan }), ...guards, selection })
       : buildPlan(inv.inventory, policy, this.planContext(inv, policy, { ...extra, scope, ...appPlan }))
     const load = this.deps.loadPolicy()
     const policy = load.policy
@@ -534,8 +546,11 @@ export class UpdatesRunner {
         const mine = guestSteps.filter(s => s.target === t)
         const guest = guests.get(Number(t))
         // Checked again now, whatever the plan said: a guest excluded or tagged hyperprox-ignore since is not touched.
-        const off = guest && (guest.tags?.includes(IGNORE_TAG) ? 'tagged hyperprox-ignore' : guestPolicy(policy, guest.vmid).excluded ? 'excluded in the Updates policy' : null)
+        const off = guest && (hasIgnoreTag(guest.tags) ? 'tagged hyperprox-ignore' : guestPolicy(policy, guest.vmid).excluded ? 'excluded in the Updates policy' : null)
         if (off) { for (const s of mine) await this.setStep(s, { status: 'skipped', reason: `not run: ${t} is ${off}` }); return }
+        // A plug-in's long job in this guest (a Nextcloud update, a database repair): left alone, and Resume tries again.
+        const busyWhy = guest ? (await this.guardContext()).guestBusy?.(guest.vmid) : null
+        if (busyWhy) { for (const s of mine) await this.setStep(s, { status: 'skipped', reason: `not run: ${busyWhy}` }); return }
         if (items.active && guest) {
           // Backups first: a guest being backed up right now is left alone (and Resume tries it again).
           const busy = await this.backupBusy(guest.node, guest.vmid)
@@ -675,11 +690,20 @@ export class UpdatesRunner {
             if (key !== undefined) {
               const proj = await this.composeProjectNow(guest, policy, key)
               if (typeof proj === 'string') return { status: 'failed', reason: proj }
+              // A project a plug-in's page manages has its own guarded update: refused here too, whatever the plan said.
+              const owned = (await this.guardContext()).composeOwner?.(guest.vmid, proj)
+              if (owned) return { status: 'skipped', reason: `${owned}; nothing was pulled` }
               const r = await this.exec.guestExec(guest, composeProjectScript(proj), log, 30 * 60_000)
               return r.code === 0 ? { status: 'ok', output: tail(r.output) } : { status: 'failed', reason: `containers not healthy${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
             }
-            const dirs = guestPolicy(policy, guest.vmid).composeDirs
+            const g = await this.guardContext()
+            const all = guestPolicy(policy, guest.vmid).composeDirs
+            const left = all.filter(dir => !g.composeOwner?.(guest.vmid, { dir }))
+            const kept = all.filter(dir => !left.includes(dir)).map(dir => `${dir}: ${g.composeOwner!(guest.vmid, { dir })}`)
+            if (kept.length && !left.length) return { status: 'skipped', reason: `${kept.join('; ')}; nothing was pulled` }
+            const dirs = left
             const r = await this.exec.guestExec(guest, guestDockerScript(dirs), log, 30 * 60_000)
+            if (r.code === 0 && kept.length) return { status: 'ok', output: `${tail(r.output)}\nleft alone: ${kept.join('; ')}` }
             return r.code === 0 ? { status: 'ok', output: tail(r.output) } : { status: 'failed', reason: `containers not healthy${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
           }
           case 'app':
