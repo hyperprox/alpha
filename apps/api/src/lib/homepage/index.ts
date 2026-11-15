@@ -92,7 +92,9 @@ export function liveSources(): InventorySources {
     plugins: async () => {
       const out: RawPlugin[] = []
       for (const p of await lazy.plugins()) {
-        const stored = await getSettings(p.manifest.id).catch(() => ({} as Record<string, string>))
+        // A vault that cannot be read, or a settings read that fails, is the plug-ins source failing (buildInventory
+        // records it), never "this plug-in has no settings".
+        const stored = await getSettings(p.manifest.id)
         const secret = new Set(p.manifest.settings.filter(s => s.type === 'secret').map(s => s.key))
         const settings = Object.fromEntries(Object.entries(stored).filter(([k]) => !secret.has(k)))
         const addressSettings = [

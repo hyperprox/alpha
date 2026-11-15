@@ -210,6 +210,7 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
   const [subnets, setSubnets] = useState(i.options.excludeSubnets.join(', '))
   const [disconnecting, setDisconnecting] = useState(false)
   const [anyway, setAnyway] = useState(false)
+  const [forceWidgets, setForceWidgets] = useState(false)
   const sync = syncWords(i)
 
   const secure = async (r: ApiResult, again: () => void): Promise<boolean> => {
@@ -256,9 +257,15 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
     void saveSettings({ hiddenEntries: hidden })
   }
 
-  const saveWidgets = async (): Promise<void> => {
-    const r = await apiJson(`${API}/instances/${i.id}/widgets`, 'PUT', { entries: chosen })
-    if (!(await secure(r, () => void saveWidgets()))) return
+  const saveWidgets = async (force = false): Promise<void> => {
+    const r = await apiJson(`${API}/instances/${i.id}/widgets`, 'PUT', { entries: chosen, force })
+    if (!(await secure(r, () => void saveWidgets(force)))) return
+    if (r.code === 'keys_remain') {
+      setNote({ text: r.error ?? 'The keys could not be taken off the guest.', ok: false })
+      setForceWidgets(true)
+      return
+    }
+    setForceWidgets(false)
     setNote(r.ok ? { text: 'Widgets saved. Write their keys to the guest, then preview and apply.', ok: true } : { text: r.error ?? 'Not saved.', ok: false })
     if (r.ok) { await onChanged(); void loadPreview(); void loadProblems() }
   }
@@ -293,6 +300,20 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
     void loadProblems()
   }
 
+  const purgeBackups = async (): Promise<void> => {
+    setLoading('key_backups')
+    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${i.id}/purge-key-backups`, 'POST', {})
+    setLoading(null)
+    if (!(await secure(r, () => void purgeBackups()))) return
+    setNote(r.ok ? { text: r.body!.data.message, ok: true } : { text: r.error ?? 'Nothing was deleted.', ok: false })
+    void loadProblems()
+  }
+
+  const manageAgain = async (g: string) => {
+    await saveSettings({ manageAgain: g })
+    setNote({ ok: true, text: `HyperProx manages ${g} again from the next write. Entries in it that are exactly HyperProx's are taken back; the rest stay yours.` })
+  }
+
   const takeOver = async (g: string) => {
     await saveSettings({ takeOver: g })
     setNote({ ok: true, text: `${g} is yours now: HyperProx will not write it again.` })
@@ -301,8 +322,9 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
   const fix = async (p: Problem): Promise<void> => {
     if (p.fix?.id === 'export_keys') return exportKeys()
     if (p.fix?.id === 'wire_env') return wireEnv()
+    if (p.fix?.id === 'purge_key_backups') return purgeBackups()
     setLoading(p.id)
-    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${i.id}/fix`, 'POST', { fix: p.fix!.id })
+    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${i.id}/fix`, 'POST', { fix: p.fix!.id, applyAnyway: anyway })
     setLoading(null)
     setNote(r.ok ? { text: r.body!.data.message, ok: true } : { text: r.error ?? 'The fix did not work.', ok: false })
     await onChanged(); void loadProblems(); void loadPreview()
@@ -405,6 +427,7 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
           <WidgetList entries={preview?.entries ?? []} chosen={chosen} onChange={setChosen} />
           <div className={h.toolbar}>
             <GhostButton type="button" disabled={chosen.join(',') === i.options.widgets.join(',')} onClick={() => void saveWidgets()}>Save widget choice</GhostButton>
+            {forceWidgets && <GhostButton type="button" onClick={() => void saveWidgets(true)}>Save anyway and leave those keys on the guest</GhostButton>}
             <PrimaryButton type="button" disabled={!i.options.widgets.length || loading === 'keys'} onClick={() => void exportKeys()}>{loading === 'keys' ? 'Writing keys…' : 'Write the keys to the guest'}</PrimaryButton>
           </div>
           <p className="text-xs" style={{ color: 'var(--text-dimmer)' }}>
@@ -421,7 +444,13 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
       </Panel>
 
       <Panel title="Connection">
-        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Container <b>{i.container}</b>, config at <code>{i.configDir}</code>{i.composeDir ? <>, compose in <code>{i.composeDir}</code></> : null}. HyperProx owns the groups {i.managedGroups.length ? i.managedGroups.join(', ') : '(none yet)'}.{i.releasedGroups?.length ? ` Yours now (never written again): ${i.releasedGroups.join(', ')}.` : ''}</p>
+        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Container <b>{i.container}</b>, config at <code>{i.configDir}</code>{i.composeDir ? <>, compose in <code>{i.composeDir}</code></> : null}. HyperProx owns the groups {i.managedGroups.length ? i.managedGroups.join(', ') : '(none yet)'}.</p>
+        {i.releasedGroups?.length > 0 && (
+          <div className={h.toolbar}>
+            <small>Yours now, never written by HyperProx:</small>
+            {i.releasedGroups.map(g => <GhostButton key={g} type="button" onClick={() => void manageAgain(g)}>Let HyperProx manage {g} again</GhostButton>)}
+          </div>
+        )}
         {i.managedGroups.length > 0 && (
           <div className={h.toolbar}>
             <small>Make a group yours, and HyperProx leaves it alone from then on:</small>

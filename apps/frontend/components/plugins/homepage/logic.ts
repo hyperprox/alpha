@@ -27,7 +27,7 @@ export interface PreviewEntry {
 export interface DiffLine { op: ' ' | '+' | '-'; text: string }
 export interface Preview {
   planId: string; expiresAt: number; counts: Record<string, number>; errors: string[]; failed: string[]; changed: boolean
-  notes: { keptUserGroups: string[]; keptUserEntries: string[]; keptEdits: string[]; userRemovedGroups: string[]; renamed: Array<{ from: string; to: string }>; droppedSamples: boolean; adopted: string[]; handedOver: string[] }
+  notes: { keptUserGroups: string[]; keptUserEntries: string[]; keptEdits: string[]; userRemovedGroups: string[]; renamed: Array<{ from: string; to: string }>; droppedSamples: boolean; adopted: string[] }
   entries: PreviewEntry[]
   files: Array<{ name: string; changed: boolean; diff: DiffLine[] }>
 }
@@ -79,7 +79,6 @@ export function keptWords(n: Preview['notes']): string[] {
   if (n.keptEdits.length) out.push(`Entries you edited are left as you edited them: ${n.keptEdits.join(', ')}.`)
   if (n.userRemovedGroups.length) out.push(`Groups you deleted are not put back: ${n.userRemovedGroups.join(', ')}.`)
   for (const r of n.renamed) out.push(`You already have a group called ${r.from}, so HyperProx's is called ${r.to}.`)
-  if (n.handedOver?.length) out.push(`These groups now hold only entries you added, so they are yours from now on: ${n.handedOver.join(', ')}.`)
   return out
 }
 

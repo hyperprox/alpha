@@ -179,7 +179,7 @@ test('merge: the person\'s groups and entries are kept, their edits to ours left
   assert.deepEqual(next.notes.keptUserGroups, ['My Stuff'])
   assert.deepEqual(next.notes.keptUserEntries, ['Media / Kids TV'])
   assert.deepEqual(next.notes.keptEdits, ['Downloads / Sonarr'])
-  assert.equal(next.state.written.Downloads.Sonarr, undefined, 'an edited entry is no longer ours')
+  assert.equal(next.state.written.Downloads.Sonarr, first.state.written.Downloads.Sonarr, 'an edited entry is still HyperProx\'s, remembered by the hash of what HyperProx wrote')
 })
 
 test('merge: a group the person deleted is not put back; a name the person already uses is not taken', () => {
@@ -360,37 +360,78 @@ test('B3: a group left with only the person\'s edit stays HyperProx\'s; no "X (H
   const sonarrOnly = (): Inventory => ({ ...fixture(), services: fixture().services.filter(s => s.key === 'sonarr'), proxyHosts: [], sites: [] })
   const es = buildEntries(sonarrOnly(), opts())
   const a = mergeServices('', es, EMPTY_STATE)
-  // The person edits HyperProx's only entry in Downloads.
   const doc = parseServices(a.text) as any[]
   doc.find(x => x.Downloads).Downloads[0].Sonarr.description = 'mine'
-  const b = mergeServices(yaml.dump(doc), es, a.state)
-  assert.deepEqual(b.notes.handedOver, [], 'an edit alone does not hand the group over')
-  assert.ok(b.state.managedGroups.includes('Downloads'))
-  const c = mergeServices(b.text, es, b.state)
-  const back = parseServices(c.text) as any[]
+  let text = yaml.dump(doc), state = a.state
+  for (let run = 0; run < 3; run++) {
+    const r = mergeServices(text, es, state)
+    assert.ok(r.state.managedGroups.includes('Downloads'), `run ${run}: still HyperProx's`)
+    assert.deepEqual(r.notes.keptUserEntries, [], `run ${run}: an edit never counts as an entry the person added`)
+    assert.deepEqual(r.notes.keptEdits, ['Downloads / Sonarr'])
+    text = r.text; state = r.state
+  }
+  const back = parseServices(text) as any[]
   assert.ok(!back.some(x => x['Downloads (HyperProx)']), 'no twin group')
   const all = back.flatMap(x => (Object.values(x)[0] as any[]).map(e => Object.keys(e)[0]))
   assert.equal(all.filter(n => n === 'Sonarr').length, 1, 'never two copies of an entry')
   assert.equal(back.find(x => x.Downloads).Downloads[0].Sonarr.description, 'mine')
+  assert.deepEqual(state.released, [], 'nothing is released by itself')
 })
 
-test('B3: a group left with only entries the person added is handed over for good: released, never recreated as a twin', () => {
-  const inv = fixture()
-  const es = buildEntries(inv, opts())
-  const a = mergeServices('', es, EMPTY_STATE)
+test('B3 case T: Gitea\'s guest stopped for one sync, then back: Dev stays HyperProx\'s and Gitea returns', () => {
+  const withGitea = (): Inventory => ({ ...fixture(), proxyHosts: [], sites: [], services: [{ key: 'gitea', url: 'http://10.0.0.19:3000', guest: { vmid: 109, name: 'git', node: 'node1', type: 'lxc' }, source: 'install' }] })
+  const a = mergeServices('', buildEntries(withGitea(), opts()), EMPTY_STATE)
+  assert.deepEqual(a.state.managedGroups, ['Dev'])
+  // One sync with the guest stopped: Gitea is not in the inventory.
+  const b = mergeServices(a.text, buildEntries({ ...withGitea(), services: [] }, opts()), a.state)
+  assert.ok(b.state.managedGroups.includes('Dev'), 'still HyperProx\'s')
+  assert.deepEqual(b.state.parked, ['Dev'])
+  assert.deepEqual(b.notes.userRemovedGroups, [])
+  // Back.
+  const c = mergeServices(b.text, buildEntries(withGitea(), opts()), b.state)
+  assert.deepEqual(c.notes.userRemovedGroups, [], 'a parked group is not "deleted by the person"')
+  assert.ok(c.state.managedGroups.includes('Dev'))
+  assert.deepEqual((parseServices(c.text) as any[]).find(x => x.Dev).Dev.map((x: any) => Object.keys(x)[0]), ['Gitea'])
+  // And with an entry of the person's beside it: the group stays, Gitea comes back into it.
   const doc = parseServices(a.text) as any[]
   doc.find(x => x.Dev).Dev.push({ 'My Repo': { href: 'http://10.0.0.80' } })
-  // GitLab goes away: Dev now holds only the person's entry.
-  const gone = { ...inv, proxyHosts: inv.proxyHosts.filter(p => !p.domains[0].startsWith('gitlab')) }
-  const b = mergeServices(yaml.dump(doc), buildEntries(gone, opts()), a.state)
-  assert.deepEqual(b.notes.handedOver, ['Dev'])
-  assert.ok((b.state.released ?? []).includes('Dev'))
-  assert.ok(!b.state.managedGroups.includes('Dev'))
-  // GitLab comes back: it is not written into their group, nor as a twin.
-  const c = mergeServices(b.text, es, b.state)
-  const back = parseServices(c.text) as any[]
-  assert.deepEqual(back.find(x => x.Dev).Dev, [{ 'My Repo': { href: 'http://10.0.0.80' } }])
-  assert.ok(!back.some(x => x['Dev (HyperProx)']))
+  const d = mergeServices(yaml.dump(doc), buildEntries({ ...withGitea(), services: [] }, opts()), a.state)
+  assert.ok(d.state.managedGroups.includes('Dev'), 'not handed over')
+  const e = mergeServices(d.text, buildEntries(withGitea(), opts()), d.state)
+  assert.deepEqual((parseServices(e.text) as any[]).find(x => x.Dev).Dev.map((x: any) => Object.keys(x)[0]), ['Gitea', 'My Repo'])
+  assert.ok(!(parseServices(e.text) as any[]).some(x => x['Dev (HyperProx)']))
+})
+
+test('B3 case S: the person edits the only Media entry; a new Jellyfin still appears in Media', () => {
+  const inv = fixture()
+  const a = mergeServices('', buildEntries(inv, opts()), EMPTY_STATE)
+  const doc = parseServices(a.text) as any[]
+  assert.deepEqual(doc.find(x => x.Media).Media.map((x: any) => Object.keys(x)[0]), ['Plex'])
+  doc.find(x => x.Media).Media[0].Plex.description = 'our films'
+  const b = mergeServices(yaml.dump(doc), buildEntries(inv, opts()), a.state)
+  inv.services.push({ key: 'jellyfin', url: 'http://10.0.0.21:8096', guest: null, source: 'scan' })
+  const c = mergeServices(b.text, buildEntries(inv, opts()), b.state)
+  const media = (parseServices(c.text) as any[]).find(x => x.Media).Media
+  assert.deepEqual(media.map((x: any) => Object.keys(x)[0]).sort(), ['Jellyfin', 'Plex'])
+  assert.equal(media.find((x: any) => x.Plex).Plex.description, 'our films')
+  assert.ok(!(parseServices(c.text) as any[]).some(x => x['Media (HyperProx)']))
+})
+
+test('B3: only "Make a group yours" releases a group; "manage it again" takes back exactly HyperProx\'s entries', () => {
+  const es = buildEntries(fixture(), opts())
+  const a = mergeServices('', es, EMPTY_STATE)
+  const st = { ...a.state, managedGroups: a.state.managedGroups.filter(g => g !== 'Media'), released: ['Media'] }
+  const doc = parseServices(a.text) as any[]
+  doc.find(x => x.Media).Media.push({ Mine: { href: 'http://10.0.0.70' } })
+  const b = mergeServices(yaml.dump(doc), es, st)
+  assert.ok(!b.state.managedGroups.includes('Media'))
+  assert.ok(!(parseServices(b.text) as any[]).some(x => x['Media (HyperProx)']), 'released: no twin')
+  // Handed back: Plex (exactly HyperProx's) is claimed again, Mine stays the person's.
+  const c = mergeServices(b.text, es, { ...b.state, released: [], reclaim: ['Media'] })
+  assert.ok(c.state.managedGroups.includes('Media'))
+  assert.ok(c.state.written.Media.Plex && c.state.written.Media.Mine === undefined)
+  assert.deepEqual(c.notes.keptUserEntries, ['Media / Mine'])
+  assert.deepEqual(c.state.reclaim, [])
 })
 
 test('B3: a twin beside the person\'s own group never repeats an entry they already have there', () => {

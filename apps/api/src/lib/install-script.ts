@@ -88,6 +88,11 @@ export function installScript(r: CatalogueRecipe, distro: Distro, env: Record<st
     lines.push('HP_ENV')
     lines.push('umask 022')
   }
+  for (const f of r.privateFiles ?? []) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(f)) throw new Error(`Invalid private file name "${f}"`)
+    // Empty, owned by root, 0600 from the moment it exists; an existing one (a reinstall) is kept as it is.
+    lines.push(`[ -e ${f} ] || ( umask 077 && : > ${f} )`)
+  }
   lines.push(`cat > docker-compose.yml <<'HP_COMPOSE'`, r.install.compose, 'HP_COMPOSE')
   // --quiet-pull keeps progress bars out of the output, so a failure's last lines are the error.
   lines.push('docker compose up -d --quiet-pull')
@@ -105,6 +110,7 @@ export function manualCommands(r: CatalogueRecipe, distro: Distro): string[] {
   out.push(`apt-get update -qq && apt-get install -y ${pkgs.join(' ')}`)
   out.push('systemctl enable --now docker')
   out.push(`mkdir -p ${r.install.dir} && cd ${r.install.dir}`)
+  for (const f of r.privateFiles ?? []) out.push(`[ -e ${f} ] || ( umask 077 && : > ${f} )`)
   out.push(`cat > docker-compose.yml << 'EOF'`, r.install.compose, 'EOF')
   if (r.firstRun.kind === 'env-admin') out.push(`# Choose an admin password and export ${r.firstRun.passwordEnv} before the next line.`)
   if (r.allowedHostsEnv) out.push(`# export ${r.allowedHostsEnv}=<this container's address>:${r.port} (add the public name after a comma) before the next line.`)

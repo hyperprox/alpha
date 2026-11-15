@@ -119,13 +119,17 @@ export interface ManagedState {
   /** Per managed group, the entries HyperProx wrote and a hash of exactly what it wrote. */
   written: Record<string, Record<string, string>>
   /**
-   * Groups (base names) handed to the person: they were left holding only entries the person added, or the person
-   * took them over. HyperProx never writes that group again, under its own name or as "X (HyperProx)".
+   * Groups (base names) the person made theirs ("Make a group yours"): HyperProx never writes that group again, under
+   * its own name or as "X (HyperProx)", until they hand it back. Nothing releases a group by itself.
    */
   released?: string[]
+  /** Groups HyperProx owns that are not in the file right now: it had nothing to put in them this time. */
+  parked?: string[]
+  /** Groups (base names) the person handed back with "Let HyperProx manage it again", taken back on the next write. */
+  reclaim?: string[]
 }
 
-export const EMPTY_STATE: ManagedState = { managedGroups: [], written: {}, released: [] }
+export const EMPTY_STATE: ManagedState = { managedGroups: [], written: {}, released: [], parked: [], reclaim: [] }
 
 export interface MergeNotes {
   keptUserGroups: string[]
@@ -138,8 +142,6 @@ export interface MergeNotes {
   /** A HyperProx group renamed because the person already has a group of that name. */
   renamed: Array<{ from: string; to: string }>
   droppedSamples: boolean
-  /** Groups handed to the person in this run (only their own entries were left in them). */
-  handedOver: string[]
   /** Groups taken back from the file's header because HyperProx had no record of them. */
   adopted: string[]
 }

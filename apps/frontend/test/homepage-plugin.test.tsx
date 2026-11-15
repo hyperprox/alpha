@@ -74,9 +74,8 @@ test('logic: grouping, monograms, kept-words, sync words, subnets', () => {
   assert.equal(monogram('Nginx Proxy Manager'), 'NP')
   assert.equal(monogram('Unmanic (worker-2)'), 'UN')
   assert.equal(monogram('plex'), 'PL')
-  const words = keptWords({ keptUserGroups: ['Mine'], keptUserEntries: [], keptEdits: ['Media / Plex'], userRemovedGroups: ['Dev'], renamed: [{ from: 'Media', to: 'Media (HyperProx)' }], droppedSamples: true, adopted: [], handedOver: ['Dev'] })
-  assert.equal(words.length, 6)
-  assert.match(words.join(' '), /yours from now on: Dev/)
+  const words = keptWords({ keptUserGroups: ['Mine'], keptUserEntries: [], keptEdits: ['Media / Plex'], userRemovedGroups: ['Dev'], renamed: [{ from: 'Media', to: 'Media (HyperProx)' }], droppedSamples: true, adopted: [] })
+  assert.equal(words.length, 5)
   assert.match(words.join(' '), /Your groups stay as they are: Mine/)
   const base = { id: 'i', machineId: 'lxc-1', kind: 'lxc' as const, vmid: 1, node: 'n', name: 'h', container: 'c', configDir: '/c', composeDir: null, url: null,
     options: { excludeSubnets: [], includeBareGuests: false, hiddenGroups: [], hiddenEntries: [], widgets: [] }, autoSync: false, managedGroups: [], exportedVars: [], releasedGroups: [], proxmoxToken: null }

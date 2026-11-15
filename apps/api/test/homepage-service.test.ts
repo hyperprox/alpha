@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { HomepageService, HomepageRefusal, composeReadsEnv, wireEnv, AUTO_MIN_GAP_MS, type HomepageDeps, type HomepageInstance, type RecordStore } from '../src/lib/homepage/service'
+import { HomepageService, HomepageRefusal, composeReadsEnv, wireEnv, wireEnvText, WIRE_SNIPPET, AUTO_MIN_GAP_MS, type HomepageDeps, type HomepageInstance, type RecordStore } from '../src/lib/homepage/service'
 import {
   locateScript, readScript, writeScript, verifyScript, composeUpScript, parseLocate, safePath, safeContainer, sha256, UnsafeValueError,
 } from '../src/lib/homepage/remote'
@@ -248,16 +248,22 @@ test('quoting: values are checked and single-quoted, file contents travel as bas
   assert.throws(() => writeScript({ dir: '/opt/app/config', file: '.env' as any, content: '', expectSha: null, mode: '0600', stamp: '20260101-000000' }), UnsafeValueError, 'the shared .env is never written')
   assert.throws(() => writeScript({ dir: '/opt/app/config', file: 'services.yaml', content: '', expectSha: '$(id)', mode: '0644', stamp: '20260101-000000' }), UnsafeValueError)
   assert.throws(() => readScript('/opt/app', ['a b']), UnsafeValueError)
-  assert.throws(() => composeUpScript('/opt/app', null, 'a;b'), UnsafeValueError)
+  assert.throws(() => composeUpScript('/opt/app', [], 'a;b'), UnsafeValueError)
+  assert.throws(() => composeUpScript('/opt/app', ["/opt/x'y.yml"], 'homepage'), UnsafeValueError)
   // A config path or container name with shell characters in docker's answer is dropped, not used.
   const r = parseLocate("HPX_CONTAINER good-1\nHPX_CONFIG good-1 /opt/x'y\nHPX_CONTAINER bad;name\nHPX_DONE\n")
   assert.deepEqual(r.found.map(f => [f.container, f.configDir]), [['good-1', null]])
-  for (const sc of [locateScript(), readScript('/opt/app', ['homepage.env']), verifyScript('c1', 3000), composeUpScript('/opt/app', '/opt/app/docker-compose.yml', 'homepage'), s]) {
+  for (const sc of [locateScript(), readScript('/opt/app', ['homepage.env']), verifyScript('c1', 3000), composeUpScript('/opt/app', ['/opt/app/docker-compose.yml'], 'homepage'), s]) {
     assertSafeScript(sc)
     assert.equal(spawnSync('bash', ['-n'], { input: sc }).status, 0, 'valid bash')
     assert.ok(!/\/tmp\/\.hyperprox|\$\$/.test(sc), 'no predictable temporary name')
   }
-  assert.match(composeUpScript('/opt/app', null, 'homepage'), /up -d 'homepage'/, 'only the Homepage service is recreated')
+  assert.match(composeUpScript('/opt/app', [], 'homepage'), /up -d 'homepage'/, 'only the Homepage service is recreated')
+  assert.match(composeUpScript('/opt/app', ['/opt/app/docker-compose.yml', '/opt/app/override.yml'], 'homepage'),
+    /compose -f '\/opt\/app\/docker-compose\.yml' -f '\/opt\/app\/override\.yml' up -d 'homepage'/, 'every file the project was started with, in order')
+  const loc = parseLocate('HPX_CONTAINER c1\nHPX_COMPOSE_FILES c1 /opt/app/a.yml,/opt/app/b.yml\nHPX_DONE\n').found[0]
+  assert.deepEqual(loc.composeFiles, ['/opt/app/a.yml', '/opt/app/b.yml'])
+  assert.deepEqual(parseLocate("HPX_CONTAINER c1\nHPX_COMPOSE_FILES c1 /opt/app/a.yml,/opt/x'y.yml\nHPX_DONE\n").found[0].composeFiles, [], 'one unsafe path: none used')
 })
 
 test('B9: writes never follow a symbolic link: not the file, not its backup, not the folder; temporary files come from mktemp', async () => {
@@ -309,7 +315,7 @@ test('widget keys: opt-in, never for an API token, into homepage.env (0600) as H
   assert.equal(p.entries.find(e => e.id === SONARR)!.offer!.pending, true)
   assert.ok(!p.files[0].after.includes('widget'))
   const keys = await t.svc.widgetKeys(i.id)
-  assert.deepEqual(keys[0].vars, [{ field: 'key', name: varName(SONARR, 'key'), held: true, exported: false, stale: false }])
+  assert.deepEqual(keys[0].vars, [{ field: 'key', name: varName(SONARR, 'key'), held: true, unknown: false, exported: false, stale: false }])
   assert.ok(!JSON.stringify(keys).includes('abc123secret'), 'the key list never carries a value')
   await assert.rejects(() => t.svc.exportKeys(i.id, { email: 'bot', token: 'ci' }), (e: any) => e.code === 'token_forbidden')
   const r = await t.svc.exportKeys(i.id, me)
@@ -365,7 +371,11 @@ test('turning a widget off, and disconnecting, take its key off the guest; old k
   const probs = await t.svc.problems(i.id)
   const bak = probs.find(x => x.id === 'key_backups')!
   assert.ok(bak && bak.fix!.id === 'purge_key_backups' && bak.fix!.confirm, 'old copies with keys are pointed out, with a confirm')
-  assert.match((await t.svc.fix(i.id, 'purge_key_backups', me)).message, /Deleted 1 old copy/)
+  assert.equal(bak.fix!.secure, true)
+  await assert.rejects(() => t.svc.fix(i.id, 'purge_key_backups', me), /master password/, 'not through the plain fix route')
+  await assert.rejects(() => t.svc.purgeKeyBackups(i.id, { email: 'bot', token: 'ci' }), (e: any) => e.code === 'token_forbidden')
+  assert.match((await t.svc.purgeKeyBackups(i.id, me)).message, /Deleted 1 old copy/)
+  assert.equal(needsReconfirm('POST', '/api/plugins/homepage/instances/x/purge-key-backups'), true)
   assert.ok(!fs.readdirSync(t.guest.compose).some(n => n.startsWith('homepage.env.bak-hyperprox-')))
   await t.svc.setWidgets(i.id, [], me)
   assert.equal(t.keyFile(), '', 'the key is gone from the key file')
@@ -656,4 +666,81 @@ test('the gallery card: not configured, in sync, needs a look', () => {
   assert.equal(ok.tone, 'good'); assert.equal(ok.headline, '12 entries, auto-sync on')
   const bad = tileOf([{ id: 'a', name: 'homepage', url: null, autoSync: false, entries: 0, lastSync: { at: 1, ok: false, message: 'services.yaml: changed' } }])
   assert.equal(bad.tone, 'bad')
+})
+
+test('B1: neither apply nor "start it fresh" writes without the guest list, "apply anyway" or not; the rest needs "apply anyway"', async () => {
+  const t = setup()
+  const i = await t.svc.connect('lxc-130', me)
+  t.setInv(() => inventory({ failed: ['guests'], errors: ['Proxmox guests: down'] }))
+  const p = await t.svc.preview(i.id, me)
+  assert.ok(!p.entries.some(e => e.guest), 'without the guest list nothing tied to a guest is shown')
+  await assert.rejects(() => t.svc.apply(i.id, p.id, me, { applyAnyway: true }), (e: any) => e.code === 'exclusions_unknown')
+  fs.writeFileSync(path.join(t.guest.config, 'services.yaml'), '- a: [unclosed\n')
+  for (const failed of [['guests'], ['exclusions']] as const) {
+    t.setInv(() => inventory({ failed: [...failed], errors: ['down'] }))
+    await assert.rejects(() => t.svc.fix(i.id, 'reset_services', me, { applyAnyway: true }), (e: any) => e.code === 'exclusions_unknown', failed[0])
+  }
+  t.setInv(() => inventory({ failed: ['plugins'], errors: ['Plug-ins: vault locked'] }))
+  await assert.rejects(() => t.svc.fix(i.id, 'reset_services', me), (e: any) => e.code === 'partial_inventory')
+  assert.equal(t.read('services.yaml'), '- a: [unclosed\n', 'nothing written')
+  assert.match((await t.svc.fix(i.id, 'reset_services', me, { applyAnyway: true })).message, /started fresh/)
+})
+
+test('an unreadable vault is "unknown", not a rotated key: the widget stays, and no key is written from it', async () => {
+  const t = setup({ secrets: { 'arrstack:sonarr_key': 'k1' } })
+  const i = await t.svc.connect('lxc-130', me)
+  await t.svc.setWidgets(i.id, [SONARR], me)
+  await t.svc.exportKeys(i.id, me)
+  const realSecret = (t.svc as any).d.secret
+  ;(t.svc as any).d.secret = async () => { throw new Error('VaultLockedError') }
+  try {
+    const p = await t.svc.preview(i.id, me)
+    assert.ok(p.entries.find(e => e.id === SONARR)!.widget, 'still written: the key on the guest is taken as it was')
+    assert.ok(!(await t.svc.problems(i.id)).some(x => x.id === 'key_mismatch'))
+    await assert.rejects(() => t.svc.exportKeys(i.id, me), (e: any) => e.code === 'vault_unreadable')
+    assert.match(t.keyFile()!, /'k1'/)
+  } finally { (t.svc as any).d.secret = realSecret }
+})
+
+test('turning a widget off: its key comes off first; a guest that cannot be reached keeps the old choice unless forced', async () => {
+  const t = setup({ secrets: { 'arrstack:sonarr_key': 'k1' } })
+  const i = await t.svc.connect('lxc-130', me)
+  await t.svc.setWidgets(i.id, [SONARR], me)
+  await t.svc.exportKeys(i.id, me)
+  machine.running = false
+  try {
+    await assert.rejects(() => t.svc.setWidgets(i.id, [], me), (e: any) => e.code === 'keys_remain')
+    assert.deepEqual((await t.store.get(i.id))!.options.widgets, [SONARR], 'nothing was changed')
+    const r = await t.svc.setWidgets(i.id, [], me, true)
+    assert.deepEqual(r.options.widgets, [])
+    assert.deepEqual(r.exported, {})
+  } finally { machine.running = true }
+  assert.match(t.keyFile()!, /'k1'/, 'forced: the key was left there, as the answer said')
+})
+
+test('wiring: a one-line text edit that keeps every other byte; anything not simple is refused with the line to add', () => {
+  const cmt = '# my stack\nservices:\n  # the dashboard\n  homepage:\n    image: "ghcr.io/gethomepage/homepage:latest"   # pinned later\n    ports: ["3000:3000"]\n  other:\n    image: nginx\n'
+  const out = wireEnvText(cmt, 'homepage')!
+  assert.equal(out, cmt.replace('  homepage:\n', '  homepage:\n    env_file: [homepage.env]\n'), 'exactly one line added')
+  assert.equal(composeReadsEnv(out, 'app-homepage-1'), true)
+  assert.equal(wireEnvText(out, 'homepage'), null)
+  for (const odd of [
+    'services: { homepage: { image: ghcr.io/gethomepage/homepage } }\n',
+    'services:\n  homepage:\n    image: x\n    env_file: [.env]\n',
+    'x: &a\n  image: ghcr.io/gethomepage/homepage\nservices:\n  homepage: *a\n',
+  ]) assert.throws(() => wireEnvText(odd, 'homepage'), (e: any) => e.code === 'manual_edit' && e.message.includes(WIRE_SNIPPET), odd)
+})
+
+test('the Catalogue recipe: plain env_file (any Compose version), the key file created empty at 0600 before start', async () => {
+  const { findRecipe } = await import('../src/lib/catalogue')
+  const { installScript } = await import('../src/lib/install-script')
+  const r = findRecipe('homepage')!
+  assert.match((r.install as any).compose, /env_file: \[homepage\.env\]/)
+  assert.ok(!/required:/.test((r.install as any).compose))
+  const sc = installScript(r, 'debian', { HOMEPAGE_ALLOWED_HOSTS: '10.0.0.30:3000' } as any)
+  assert.ok(sc.indexOf('[ -e homepage.env ] || ( umask 077 && : > homepage.env )') < sc.indexOf('docker compose up -d'))
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-pf-'))
+  spawnSync('bash', ['-c', '[ -e homepage.env ] || ( umask 077 && : > homepage.env )'], { cwd: d })
+  assert.equal(fs.statSync(path.join(d, 'homepage.env')).mode & 0o777, 0o600)
+  assert.equal(fs.statSync(path.join(d, 'homepage.env')).size, 0)
 })

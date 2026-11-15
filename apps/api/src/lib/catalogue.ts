@@ -120,6 +120,11 @@ export interface CatalogueRecipe {
    */
   allowedHostsEnv?: string
   /**
+   * Files the compose install creates empty beside the compose file, mode 0600, before it starts: a key file the
+   * compose file names in env_file (plain form, so it works on every Compose version) must exist.
+   */
+  privateFiles?: string[]
+  /**
    * How to tell this app is already running somewhere (lib/catalogue-detect.ts): read-only GETs of a path only
    * it answers that way. Without one (or a kind site discovery reads), the catalogue cannot see an install.
    */
@@ -774,6 +779,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     // Current images answer only a Host listed in HOMEPAGE_ALLOWED_HOSTS; anything else, the health
     // check included, gets an error page.
     allowedHostsEnv: 'HOMEPAGE_ALLOWED_HOSTS',
+    privateFiles: ['homepage.env'],
     install: { kind: 'compose', dir: '/opt/app', compose: `services:
   homepage:
     image: ghcr.io/gethomepage/homepage:latest
@@ -781,10 +787,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     ports: ["3000:3000"]
     volumes: ["./config:/app/config"]
     # The Homepage plug-in puts widget keys in its own key file, homepage.env (HOMEPAGE_VAR_ values, mode 0600), never in
-    # the shared .env; it may not exist yet, so it is optional.
-    env_file:
-      - path: ./homepage.env
-        required: false
+    # the shared .env. The installer creates it empty (privateFiles), so the plain form works on any Compose version.
+    env_file: [homepage.env]
     environment:
       - HOMEPAGE_ALLOWED_HOSTS=\${HOMEPAGE_ALLOWED_HOSTS:?the installer sets this}` },
   },

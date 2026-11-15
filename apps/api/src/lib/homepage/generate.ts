@@ -274,7 +274,10 @@ export function buildEntries(inv: Inventory, given: GenerateOptions): Entry[] {
     out.push(d.e)
   }
   const gi = (g: string) => GROUPS.indexOf(g as GroupName)
-  return out.sort((a, b) => gi(a.group) - gi(b.group) || a.name.localeCompare(b.name))
+  // Without the guest list the exclusions cannot be applied (they are found by walking it): nothing tied to a guest
+  // goes on the dashboard. Writing is refused anyway (lib/homepage/service.ts); the preview shows what is left.
+  const guestsKnown = !(inv.failed ?? []).includes('guests')
+  return out.filter(e => guestsKnown || !e.guest).sort((a, b) => gi(a.group) - gi(b.group) || a.name.localeCompare(b.name))
 }
 
 /** What was installed or configured outranks what a scan guessed: a recipe's own record names it best. */
@@ -369,6 +372,22 @@ export function header(managed: string[]): string {
 export const baseGroup = (g: string) => g.replace(/ \(HyperProx\)$/, '')
 
 /**
+ * Entries of one group in the file that are exactly what HyperProx would write there now (same name, same value):
+ * the only ones HyperProx may claim without a record of having written them.
+ */
+function claimable(it: Item, g: string, entries: Entry[]): Record<string, string> {
+  const ours = new Map(entries.filter(e => e.group === baseGroup(g)).map(e => [e.name, valueHash(entryValue(e))]))
+  const claimed: Record<string, string> = {}
+  for (const raw of Array.isArray(it[g]) ? it[g] as unknown[] : []) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const n = Object.keys(raw)[0]
+    const h = valueHash((raw as Item)[n])
+    if (ours.get(n) === h) claimed[n] = h
+  }
+  return claimed
+}
+
+/**
  * HyperProx has no record of this file (its database was reset, or another HyperProx wrote it) but the file's
  * header names HyperProx's groups: take those groups back. An entry is HyperProx's only when it is exactly what
  * HyperProx would write there now (same name, same value); anything else is the person's (an edit or their own) and
@@ -382,14 +401,7 @@ export function adoptFromHeader(text: string, items: Item[], entries: Entry[]): 
   for (const it of items) {
     const g = nameOf(it)
     if (!listed.includes(g)) continue
-    const ours = new Map(entries.filter(e => e.group === baseGroup(g)).map(e => [e.name, valueHash(entryValue(e))]))
-    const claimed: Record<string, string> = {}
-    for (const raw of Array.isArray(it[g]) ? it[g] as unknown[] : []) {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
-      const n = Object.keys(raw)[0]
-      const h = valueHash((raw as Item)[n])
-      if (ours.get(n) === h) claimed[n] = h
-    }
+    const claimed = claimable(it, g, entries)
     if (!Object.keys(claimed).length) continue
     managedGroups.push(g)
     written[g] = claimed
@@ -410,23 +422,35 @@ function dumpItem(it: Item, managed: boolean): string {
  */
 export function mergeServices(currentText: string, entries: Entry[], prev: ManagedState, opts: Pick<GenerateOptions, 'hiddenGroups'> = { hiddenGroups: [] }): MergeResult {
   let items = parseServices(currentText)
-  const notes: MergeNotes = { keptUserGroups: [], keptUserEntries: [], keptEdits: [], userRemovedGroups: [], renamed: [], droppedSamples: false, adopted: [], handedOver: [] }
+  const notes: MergeNotes = { keptUserGroups: [], keptUserEntries: [], keptEdits: [], userRemovedGroups: [], renamed: [], droppedSamples: false, adopted: [] }
   if (isSampleConfig(items)) { items = []; notes.droppedSamples = true }
-  if (!prev.managedGroups.length && !(prev.released ?? []).length) {
+  if (!prev.managedGroups.length && !(prev.released ?? []).length && !(prev.parked ?? []).length) {
     prev = adoptFromHeader(currentText, items, entries)
     notes.adopted = prev.managedGroups
   }
+  // Groups the person made theirs ("Make a group yours"). Only that action releases a group; nothing here does.
   const released = new Set(prev.released ?? [])
+  // A group the person handed back ("Let HyperProx manage it again"): taken back with only the entries that are
+  // exactly what HyperProx writes; everything else in it stays theirs.
+  const reclaimed = new Set(prev.reclaim ?? [])
+  const prevWritten: ManagedState['written'] = { ...prev.written }
+  const managedBefore = new Set(prev.managedGroups)
+  for (const it of items) {
+    const g = nameOf(it)
+    if (reclaimed.has(baseGroup(g)) && !managedBefore.has(g) && !released.has(baseGroup(g))) { managedBefore.add(g); prevWritten[g] = claimable(it, g, entries) }
+  }
+  // Groups HyperProx owns but had nothing to put in for a while (its only entries' guests were stopped, a source
+  // was not read): not in the file, still HyperProx's, and not "deleted by the person".
+  const parked = new Set(prev.parked ?? [])
 
   const present = new Set(items.map(nameOf))
-  const managedBefore = new Set(prev.managedGroups)
-  for (const g of prev.managedGroups) if (!present.has(g) && !opts.hiddenGroups.includes(baseGroup(g))) notes.userRemovedGroups.push(g)
+  for (const g of managedBefore) if (!present.has(g) && !parked.has(g) && !opts.hiddenGroups.includes(baseGroup(g))) notes.userRemovedGroups.push(g)
   const removed = new Set(notes.userRemovedGroups)
 
   // Our group's name in the file: the plain name, unless the person already has a group called that.
   const userNames = new Set(items.map(nameOf).filter(n => !managedBefore.has(n)))
   const fileName = (g: string): string => {
-    if (managedBefore.has(g) || !userNames.has(g)) return g
+    if (managedBefore.has(g) || parked.has(g) || !userNames.has(g)) return g
     const alt = `${g} (HyperProx)`
     notes.renamed.push({ from: g, to: alt })
     return alt
@@ -434,7 +458,6 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
 
   const want = new Map<string, Entry[]>()
   for (const { group, entries: list } of groupsOf(entries, opts.hiddenGroups)) {
-    // A group handed to the person is theirs: HyperProx writes it neither under its name nor as a twin.
     if (released.has(group)) continue
     const name = fileName(group)
     if (removed.has(name) || removed.has(group)) continue
@@ -445,27 +468,30 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
 
   const written: ManagedState['written'] = {}
   const managed: string[] = []
+  const parkedNow: string[] = []
   const out: Array<{ item: Item; managed: boolean }> = []
 
-  const userAdded = new Map<string, number>()
+  /** A managed group rebuilt: ours replaced, the person's entries and edits kept. Edits keep HyperProx's hash. */
   const build = (name: string, existing: unknown[]): Item | null => {
     const mine = want.get(name) ?? []
-    const before = prev.written[name] ?? {}
+    const before = prevWritten[name] ?? {}
     const keep: unknown[] = []
-    const edited = new Set<string>()
+    const edits: Record<string, string> = {}
     for (const raw of existing) {
       const n = raw && typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length === 1 ? Object.keys(raw)[0] : null
       if (n === null) { keep.push(raw); continue }
       const val = (raw as Item)[n]
-      if (before[n] === undefined) { keep.push(raw); notes.keptUserEntries.push(`${name} / ${n}`); userAdded.set(name, (userAdded.get(name) ?? 0) + 1); continue }
-      if (valueHash(val) !== before[n]) { keep.push(raw); edited.add(n); notes.keptEdits.push(`${name} / ${n}`) }
-      // Otherwise it is HyperProx's own, unchanged: rebuilt below (or dropped when it is gone).
+      if (before[n] === undefined) { keep.push(raw); notes.keptUserEntries.push(`${name} / ${n}`); continue }
+      // HyperProx's entry, changed by the person: left as they changed it, and still remembered as HyperProx's (by
+      // the hash of what HyperProx wrote), so an edit never turns into "an entry the person added".
+      if (valueHash(val) !== before[n]) { keep.push(raw); edits[n] = before[n]; notes.keptEdits.push(`${name} / ${n}`) }
+      // Otherwise it is HyperProx's own, unchanged: rebuilt below, or left out while it is missing (it comes back
+      // when it reappears).
     }
-    const ours = mine.filter(e => !edited.has(e.name) && !keep.some(k => k && typeof k === 'object' && Object.keys(k as object)[0] === e.name))
+    const ours = mine.filter(e => edits[e.name] === undefined && !keep.some(k => k && typeof k === 'object' && Object.keys(k as object)[0] === e.name))
+    written[name] = { ...edits, ...Object.fromEntries(ours.map(e => [e.name, valueHash(entryValue(e))])) }
     const list = [...ours.map(e => ({ [e.name]: entryValue(e) })), ...keep]
-    if (!list.length) return null
-    written[name] = Object.fromEntries(ours.map(e => [e.name, valueHash(entryValue(e))]))
-    return { [name]: list }
+    return list.length ? { [name]: list } : null
   }
 
   for (const it of items) {
@@ -474,34 +500,24 @@ export function mergeServices(currentText: string, entries: Entry[], prev: Manag
     const existing = Array.isArray(it[n]) ? it[n] as unknown[] : []
     const rebuilt = build(n, existing)
     want.delete(n)
-    if (!rebuilt) continue
-    // Left holding none of HyperProx's entries but some the person added: it is theirs now, for good (released, so
-    // no "X (HyperProx)" twin is made next time). Holding only the person's edits of HyperProx's entries, it stays
-    // HyperProx's group and nothing in it is written over.
-    if (!Object.keys(written[n] ?? {}).length && (userAdded.get(n) ?? 0) > 0) {
-      delete written[n]
-      released.add(baseGroup(n))
-      notes.handedOver.push(n)
-      out.push({ item: rebuilt, managed: false })
-      continue
-    }
-    written[n] ??= {}
     managed.push(n)
-    out.push({ item: rebuilt, managed: true })
+    if (rebuilt) out.push({ item: rebuilt, managed: true }); else parkedNow.push(n)
   }
   for (const [n] of want) {
     const rebuilt = build(n, [])
-    if (!rebuilt) continue
     managed.push(n)
-    out.push({ item: rebuilt, managed: true })
+    if (rebuilt) out.push({ item: rebuilt, managed: true }); else parkedNow.push(n)
   }
+  // A parked group still with nothing to show stays parked (and HyperProx's).
+  for (const g of parked) if (!managed.includes(g) && !removed.has(g) && !released.has(baseGroup(g))) { managed.push(g); parkedNow.push(g); written[g] = prevWritten[g] ?? {} }
 
+  const inFile = managed.filter(g => !parkedNow.includes(g))
   const body = out.map(o => dumpItem(o.item, o.managed)).join('\n')
-  const text = `${header(managed)}${body.length ? `\n${body}` : '[]\n'}`
+  const text = `${header(inFile)}${body.length ? `\n${body}` : '[]\n'}`
   // Read back exactly what was meant, or nothing is offered.
   const back = parseServices(text)
   if (JSON.stringify(back) !== JSON.stringify(out.map(o => o.item))) throw new YamlProblem('The generated services.yaml did not read back as written.', 'roundtrip')
-  const state: ManagedState = { managedGroups: managed, written, released: [...released] }
+  const state: ManagedState = { managedGroups: managed, written, released: [...released], parked: [...new Set(parkedNow)], reclaim: [] }
   return { text, state, notes, changed: text !== currentText }
 }
 

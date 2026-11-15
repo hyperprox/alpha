@@ -108,8 +108,8 @@ export const homepageRoutes: FastifyPluginAsync = async (fastify) => {
     catch (e) { return fail(reply, e) }
   })
 
-  fastify.post<P & { Body: { fix?: unknown } }>('/instances/:iid/fix', async (req, reply) => {
-    try { return { success: true, data: await svc().fix(req.params.iid, req.body?.fix, actor(req)) } }
+  fastify.post<P & { Body: { fix?: unknown; applyAnyway?: unknown } }>('/instances/:iid/fix', async (req, reply) => {
+    try { return { success: true, data: await svc().fix(req.params.iid, req.body?.fix, actor(req), { applyAnyway: req.body?.applyAnyway === true }) } }
     catch (e) { return fail(reply, e) }
   })
 
@@ -119,8 +119,8 @@ export const homepageRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   // Re-confirmed (lib/roles.ts): turning a widget on is what later puts its key on the guest.
-  fastify.put<P & { Body: { entries?: unknown } }>('/instances/:iid/widgets', async (req, reply) => {
-    try { return { success: true, data: instanceView(await svc().setWidgets(req.params.iid, req.body?.entries, actor(req))) } }
+  fastify.put<P & { Body: { entries?: unknown; force?: unknown } }>('/instances/:iid/widgets', async (req, reply) => {
+    try { return { success: true, data: instanceView(await svc().setWidgets(req.params.iid, req.body?.entries, actor(req), req.body?.force === true)) } }
     catch (e) { return fail(reply, e) }
   })
 
@@ -138,6 +138,12 @@ export const homepageRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.delete<P>('/instances/:iid/proxmox-token', async (req, reply) => {
     try { return { success: true, data: await svc().revokeProxmoxToken(req.params.iid, actor(req)) } }
+    catch (e) { return fail(reply, e) }
+  })
+
+  // Re-confirmed: deletes files on the guest (the key file's dated backups, which hold old keys).
+  fastify.post<P>('/instances/:iid/purge-key-backups', async (req, reply) => {
+    try { return { success: true, data: await svc().purgeKeyBackups(req.params.iid, actor(req)) } }
     catch (e) { return fail(reply, e) }
   })
 

@@ -69,6 +69,8 @@ export interface Located {
   configDir: string | null
   composeDir: string | null
   composeFile: string | null
+  /** Every file compose was started with (com.docker.compose.project.config_files), in order. */
+  composeFiles: string[]
   port: number | null
 }
 
@@ -82,14 +84,19 @@ export function parseLocate(out: string): { ok: boolean; error?: 'no_docker' | '
     const m = /^HPX_(CONTAINER|STATE|CONFIG|COMPOSE|COMPOSE_FILES|PORT) (\S+)(?: (.*))?$/.exec(line.trim())
     if (!m || !SAFE_CONTAINER.test(m[2])) continue
     const [, kind, c, rest = ''] = m
-    if (kind === 'CONTAINER') { byName.set(c, { container: c, state: 'unknown', configDir: null, composeDir: null, composeFile: null, port: null }); continue }
+    if (kind === 'CONTAINER') { byName.set(c, { container: c, state: 'unknown', configDir: null, composeDir: null, composeFile: null, composeFiles: [], port: null }); continue }
     const l = get(c)
     if (!l) continue
     const okPath = (p: string) => { try { return safePath(p.trim()) } catch { return null } }
     if (kind === 'STATE') l.state = /^[a-z]{1,20}$/.test(rest.trim()) ? rest.trim() : 'unknown'
     if (kind === 'CONFIG') l.configDir = okPath(rest)
     if (kind === 'COMPOSE') l.composeDir = okPath(rest)
-    if (kind === 'COMPOSE_FILES') l.composeFile = okPath(rest.split(',')[0] ?? '')
+    if (kind === 'COMPOSE_FILES') {
+      const all = rest.split(',').map(x => okPath(x))
+      // One file HyperProx cannot name safely and none of them is used: compose would not be given the same set.
+      l.composeFiles = all.every((x): x is string => !!x) ? all as string[] : []
+      l.composeFile = l.composeFiles[0] ?? null
+    }
     if (kind === 'PORT') { const n = Number(rest.trim()); l.port = Number.isInteger(n) && n > 0 && n < 65536 ? n : null }
   }
   return { ok: true, found: [...byName.values()] }
@@ -294,15 +301,17 @@ export function parseVerify(out: string, expect: Array<{ group: string; name: st
  * Recreate the Homepage service, and only it, so a changed key file reaches it (compose recreates it only when its
  * config changed). The output goes to a fresh mktemp file, never a name someone could have placed in /tmp.
  */
-export function composeUpScript(composeDir: string, composeFile: string | null, service: string): string {
+export function composeUpScript(composeDir: string, composeFiles: string[], service: string): string {
   const d = safePath(composeDir)
-  const f = composeFile ? safePath(composeFile) : null
+  const files = composeFiles.map(safePath)
   if (!SAFE_SERVICE.test(service)) throw new UnsafeValueError('the compose service name')
+  // Every file the project was started with, in the same order, or compose would see a different project.
+  const f = files.map(x => `-f ${sq(x)} `).join('')
   return `set -u
 export LC_ALL=C
 cd ${sq(d)} || { echo 'HPX_ERR no_dir'; exit 0; }
 log=$(mktemp) || { echo 'HPX_UP failed'; exit 0; }
-if docker compose ${f ? `-f ${sq(f)} ` : ''}up -d ${sq(service)} >"$log" 2>&1; then echo 'HPX_UP ok'; else echo 'HPX_UP failed'; tail -n 5 "$log" | sed 's/^/HPX_LOG /'; fi
+if docker compose ${f}up -d ${sq(service)} >"$log" 2>&1; then echo 'HPX_UP ok'; else echo 'HPX_UP failed'; tail -n 5 "$log" | sed 's/^/HPX_LOG /'; fi
 rm -f -- "$log"
 `
 }
