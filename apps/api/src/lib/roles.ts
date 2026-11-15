@@ -145,6 +145,13 @@ const GUEST_CONFIG_APPLY = /^\/api\/infra\/guest-config\/(apply|guests\/[^/]+\/[
 const HA = /^\/api\/ha(\/|$)/
 const HA_READ = /^\/api\/ha\/(overview|badges|guests\/(lxc|qemu)\/\d+(\/preflight)?)$/
 const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pin)$/
+// Placement advisor (routes/placement.ts). Reads (the map, the advice, one guest, the history, the settings) are
+// viewer, as the guest list is. Everything else is admin: the move check, saving settings, checking bind-mount paths
+// and reading corosync's log (both over node logins), cancelling a scheduled move. A move, now or scheduled, also
+// needs the master password re-entered, which keeps API tokens out too.
+const PLACEMENT = /^\/api\/placement(\/|$)/
+const PLACEMENT_READ = /^\/api\/placement\/(map|advice|settings|moves(\/[^/]+)?|guests\/(lxc|qemu)\/\d+)$/
+const PLACEMENT_RECONFIRM = /^\/api\/placement\/guests\/(lxc|qemu)\/\d+\/move$/
 // Home Assistant control (routes/ha-control.ts). Everyday controls are operator; security controls (locks, alarms,
 // garage doors, protected devices) and every change to an instance are admin and re-confirmed, which keeps API
 // tokens off them too.
@@ -319,6 +326,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (SETUP_CHECKLIST.test(p)) return 'admin'
   if (ASUS_DIAGNOSTICS.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
+  if (PLACEMENT.test(p)) return (m === 'GET' || m === 'HEAD') && PLACEMENT_READ.test(p) ? 'viewer' : 'admin'
   if (SELF_UPDATE.test(p)) return (m === 'GET' || m === 'HEAD') && p === SELF_UPDATE_SUMMARY ? 'viewer' : 'admin'
   if (CLUSTERS.test(p)) {
     if (m === 'GET' || m === 'HEAD') return CLUSTERS_VIEW.test(p) ? 'viewer' : 'admin'
@@ -381,6 +389,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   for (const [sm, re] of SITE_METRICS_RECONFIRM) if (m === sm && re.test(p)) return true
   if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
+  if (m === 'POST' && PLACEMENT_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && ASUS_RECONFIRM.test(p)) return true

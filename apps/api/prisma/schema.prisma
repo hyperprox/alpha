@@ -654,3 +654,38 @@ model SiteMetricState {
   data      Json     @default("{}")
   updatedAt DateTime @updatedAt
 }
+
+// --- Placement advisor -------------------------------------------------------
+// Quiet windows and thresholds (lib/placement/store.ts), and every move: HyperProx's own (scheduled ones
+// included, so a restart does not lose them) and Proxmox migrations seen in the cluster task log.
+
+model PlacementSettings {
+  id        String   @id @default("singleton")
+  data      Json     @default("{}")
+  updatedBy String   @default("")
+  updatedAt DateTime @updatedAt
+}
+
+model PlacementMove {
+  id           String    @id @default(cuid())
+  sid          String
+  name         String    @default("")
+  fromNode     String
+  toNode       String
+  source       String    @default("hyperprox")   // hyperprox | proxmox
+  method       String?                           // ha | migrate
+  status       String                            // scheduled | running | done | failed | skipped | cancelled
+  upid         String?   @unique
+  by           String?
+  scheduledFor DateTime?
+  startedAt    DateTime?
+  endedAt      DateTime?
+  error        String?
+  bwlimitKiB   Int?
+  corosync     Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([sid])
+  @@index([status])
+}

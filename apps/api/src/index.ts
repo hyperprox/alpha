@@ -54,6 +54,7 @@ import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { selfUpdateRoutes }     from './routes/self-update'
 import { certsRoutes }            from './routes/certs'
 import { haRoutes }               from './routes/ha'
+import { placementRoutes }        from './routes/placement'
 import { notifyRoutes }           from './routes/notify'
 import { remoteRoutes }           from './routes/remote'
 import { vpnRoutes }              from './routes/vpn'
@@ -182,6 +183,7 @@ async function main() {
   await server.register(selfUpdateRoutes,     { prefix: '/api/self-update' })
   await server.register(certsRoutes,          { prefix: '/api/certs' })
   await server.register(haRoutes,             { prefix: '/api/ha' })
+  await server.register(placementRoutes,      { prefix: '/api/placement' })
   await server.register(notifyRoutes,         { prefix: '/api/settings/notifications' })
   await server.register(remoteRoutes,         { prefix: '/api/remote' })
   await server.register(vpnRoutes,            { prefix: '/api/vpn' })

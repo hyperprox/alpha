@@ -807,6 +807,33 @@ Every change is previewed first, including what would move straight away. It is 
 has lost quorum or the HA setup changed since the preview, and it goes through Proxmox's own HA tools.
 Applying a change asks for your master password again.
 
+### Placement
+
+**Placement** is an advisor, not another balancer. Proxmox already moves HA guests when a node gets busy;
+HyperProx does not compete with it. What it adds:
+
+- **Every guest on a map**, HA or not: each node as bars for CPU, memory and cores, with its guests on it.
+- **Why each guest is where it is**, and for every other node whether it could go there: a GPU or other
+  device, a folder mounted from the node, a disk on the node's own storage, an HA rule, more CPUs than the
+  smaller nodes have, a CPU type the other node cannot run live, a backup running now. Anything HyperProx
+  could not check (a folder on a node it has no login for) says "not checked", never a guess.
+- **Load over hours, not one reading.** A node counts as busy after hours above 80% CPU or 90% memory in
+  the last three days, with backup windows left out. Then it suggests which guest to move where, and what
+  that would do to both nodes, worked out from the guest's own usage. For an HA guest held by its own rule
+  it suggests changing the rule instead. When nothing is busy it says so, with the figures.
+- **A safe move**, only when you ask: the server checks it again, the confirmation shows the downtime (a
+  running container restarts), the data to copy and the network cost, and your master password is asked
+  for. HA guests move through HA. HyperProx waits for the move to finish and checks the guest really runs
+  on the new node.
+- **Quiet windows.** Moves keep out of backup jobs (read from your backup schedules) and the busy hours you
+  set in Settings. Outside a quiet window you can move anyway, or let HyperProx move it in the next one.
+- **Network cost.** When moves share the network corosync (the cluster heartbeat) uses, HyperProx says so
+  and limits the move's bandwidth (an HA move only follows the cluster's own migration limit).
+- **History.** Every move, HyperProx's and the ones Proxmox did, with what corosync did around it when a
+  node login lets HyperProx read the node's log.
+
+The AI assistant answers "where should this run?" and "why is it on that node?" from the same checks.
+
 ### Terminal (the Deck)
 
 SSH in the browser to every guest (addresses come from Proxmox) and to hosts you add by hand, such as
