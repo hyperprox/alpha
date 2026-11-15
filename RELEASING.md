@@ -52,6 +52,11 @@ Mark a release as a pre-release on GitHub (the script does it for versions like 
 
 Write them for the person updating: what changes for them and anything they have to do.
 
+The Updates page does not show release notes or commit messages: it shows the plain-English entries of
+[CHANGELOG.md](CHANGELOG.md) in the offered version (breaking lines are only counted there). So before you cut a
+release, make sure CHANGELOG.md has an entry for everything in it, dated, with "Before you update" for anything a
+person has to know or do first. The format is described at the top of CHANGELOG.md.
+
 ### Signed releases
 
 `--sign` (or `git config tag.gpgSign true`) makes a signed tag with your GPG or SSH signing key instead of a plain

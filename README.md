@@ -25,6 +25,9 @@ through its API.
 
 **Website:** [hyperprox.dev](https://hyperprox.dev) has the tour, screenshots, the comparison with other tools and the roadmap.
 
+**What's new:** [CHANGELOG.md](CHANGELOG.md) lists every change in plain English, newest first (also at
+[hyperprox.dev/changelog.html](https://hyperprox.dev/changelog.html), with an [RSS feed](https://hyperprox.dev/feed.xml)).
+
 ## Screenshots
 
 <table>
@@ -433,9 +436,13 @@ is. HyperProx checks every 6 hours, and when you press **Check now**.
   run (never an older one, whatever its tag says). Pre-releases are included while **Include pre-releases** is
   on, which it is by default because every HyperProx release is an `-alpha` for now. *Alpha* follows every
   commit on `main` (or on the branch the install came from, `HYPERPROX_UPDATE_BRANCH`), and only ever offers a
-  commit newer than yours. Before you install you see the version, its date, the release notes (or, on alpha, the
-  commits since yours in plain words), and flags for breaking changes, database migrations, and a keyholder
-  change (which locks HyperProx once, so you sign in again).
+  commit newer than yours. Before you install you see the version, its date, **what's new** (the plain-English
+  [CHANGELOG.md](CHANGELOG.md) entries of the version on offer that you do not have yet, with "Before you update"
+  first; "No notes for this update yet" and the number of changes when there are none), and flags for breaking
+  changes, database migrations, and a keyholder change (which locks HyperProx once, so you sign in again). The
+  notes are read from the offered version itself, and commit messages are never shown. After an update, the page
+  shows what's new in the version you are running once, until you dismiss it. The top-bar chip's tooltip names
+  the new entries too.
 - **Install.** Admins only, with your master password re-entered; an API token can never do it. **Preview**
   lists what will happen and anything that stops it. The update runs in a process of its own, so it carries on
   while HyperProx restarts, and the page picks the progress up again when it comes back:
@@ -2879,6 +2886,10 @@ The full table, with ProxMenux, Runtipi and Cockpit, and a source link for every
 
 Bug reports, ideas and pull requests are welcome through
 [GitHub Issues](https://github.com/hyperprox/alpha/issues).
+
+Keep [CHANGELOG.md](CHANGELOG.md) updated: a change people will notice gets a plain-English line under today's
+entry (New, Improved, Fixed, or Before you update), written by hand, with any technical detail indented under it.
+The website, the RSS feed and the in-app update page show only the plain lines.
 
 HyperProx is free software under the [GNU AGPL v3](https://www.gnu.org/licenses/agpl-3.0).
 
