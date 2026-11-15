@@ -56,6 +56,8 @@ const localPlugins = writeLocalRegistry()
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  // Nothing here uses next/image, so the built-in image optimizer (an extra public endpoint) is switched off.
+  images: { unoptimized: true },
   // The demo (scripts/demo.sh) builds into its own folder and talks to its own API port; a normal build
   // leaves both unset and gets .next and 3002, as before.
   distDir: process.env.HYPERPROX_NEXT_DIST || '.next',

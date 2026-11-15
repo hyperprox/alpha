@@ -21,6 +21,12 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-15 — Security updates to the software HyperProx is built on
+
+### Fixed
+- **Security fixes in the software HyperProx is built on.** Several libraries were updated to versions that close known weaknesses, and a feature HyperProx never used was switched off.
+  - Technical: axios 1.21.1, js-yaml 4.3.2; overrides for node-forge 1.4.3, ws 8.21.0, multer 2.5.0, uuid 11.1.1, follow-redirects 1.16.2, form-data 4.0.6, fast-uri 2.4.8 / 3.1.9, and fast-jwt pinned exactly at 6.3.6. The Next.js image optimizer is off (`images.unoptimized`), as nothing uses `next/image`, so `/_next/image` no longer exists. pnpm is pinned (`packageManager`, and `install.sh` installs that exact version), and the optional Ollama image is pinned to its digest.
+
 ## 2026-11-15 — Plug-ins connect what they find by themselves
 
 ### New

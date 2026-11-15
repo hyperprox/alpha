@@ -2,6 +2,7 @@
   "name": "hyperprox",
   "version": "0.2.0-alpha",
   "private": true,
+  "packageManager": "pnpm@10.33.0",
   "description": "Your Proxmox infrastructure, hypercharged.",
   "scripts": {
     "dev":       "pnpm --parallel --filter './apps/*' dev",
