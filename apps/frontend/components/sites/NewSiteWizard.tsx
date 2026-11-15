@@ -19,6 +19,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { ModalFrame } from '@/components/layout/ModalFrame'
 import { ConfirmOverride, NamingCallout, confirmNeeded, useProposal, type NamingSettingsView, type Proposal } from '@/components/catalogue/NamingProposal'
 import { FlowPipeline, Pill, Tiles, styles } from '@/components/visual/kit'
+import { RunSteps, HORIZONTAL_MAX } from '@/components/visual/RunSteps'
 import type { RecipeOption, WizardRecipe } from '@/components/catalogue/InstallWizard'
 
 export interface SiteRecipe extends WizardRecipe {
@@ -549,14 +550,8 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
 
           {step === 5 && job && (
             <div className="space-y-4">
-              <FlowPipeline label="Install steps" stages={job.steps.map(s => ({
-                key: s.id, label: s.label, value: s.status === 'done' ? '✓' : s.status === 'failed' ? '✕' : s.status === 'running' ? '…' : '·',
-                sub: s.detail, state: s.status === 'done' ? 'done' : s.status === 'failed' ? 'bad' : s.status === 'running' ? 'ok' : undefined,
-              }))} />
-              <ul className="space-y-1">{job.steps.filter(s => s.detail).map(s => (
-                <li key={s.id} className="text-[13px]" style={{ color: s.status === 'failed' ? 'var(--crit-soft)' : 'var(--text-muted)' }}>{s.label}: {s.detail}</li>
-              ))}</ul>
-              {job.status === 'running' && <p className={styles.empty}>installing… this takes a few minutes</p>}
+              <RunSteps label="Install steps" steps={job.steps} />
+              {job.status === 'running' && job.steps.length <= HORIZONTAL_MAX && <p className={styles.empty}>installing… this takes a few minutes</p>}
               {job.status === 'completed' && (
                 <div className={styles.card} style={{ borderColor: 'var(--good)' }}>
                   <Pill tone="good">live</Pill>

@@ -17,7 +17,8 @@ import { alpha } from '@/lib/theme'
 import { apiJson } from '@/lib/api'
 import { InstallWizard, type WizardRecipe } from '@/components/catalogue/InstallWizard'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
-import { Page, HudHeader, Panel, Pill, Tiles, FlowPipeline, styles } from '@/components/visual/kit'
+import { Page, HudHeader, Panel, Pill, Tiles, styles } from '@/components/visual/kit'
+import { RunSteps, HORIZONTAL_MAX } from '@/components/visual/RunSteps'
 import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
 
 const ACCENT = 'var(--accent)'
@@ -233,16 +234,9 @@ export default function CataloguePage() {
           sub={job.status}
           actions={job.status !== 'running' ? <button onClick={() => setJob(null)} className={`${styles.btn} ${styles.btnGhost}`}>close</button> : undefined}>
           <div style={{ marginBottom: 14 }}>
-            <FlowPipeline label="Install steps" stages={job.steps.map((s, i) => ({
-              key: s.id,
-              label: s.label,
-              value: s.status === 'done' ? '✓' : s.status === 'failed' ? '!' : i + 1,
-              sub: s.detail,
-              state: s.status === 'done' ? 'done' : s.status === 'failed' ? 'bad' : s.status === 'running' ? 'warn' : 'ok',
-              status: s.status,
-            }))} />
+            <RunSteps label="Install steps" steps={job.steps} />
           </div>
-          <ul className={styles.feed} style={{ marginBottom: 12 }} aria-label="Install step detail">
+          {job.steps.length <= HORIZONTAL_MAX && <ul className={styles.feed} style={{ marginBottom: 12 }} aria-label="Install step detail">
             {job.steps.map(s => (
               <li key={s.id} data-tone={s.status === 'done' ? 'ok' : s.status === 'failed' ? 'bad' : s.status === 'running' ? 'warn' : 'off'}>
                 <span style={{ color: s.status === 'pending' ? 'var(--text-dim)' : 'var(--text)' }}>
@@ -251,7 +245,7 @@ export default function CataloguePage() {
                 </span>
               </li>
             ))}
-          </ul>
+          </ul>}
           {job.error && (
             <div className={styles.callout} role="alert"
               style={{ marginBottom: 12, borderStyle: 'solid', borderColor: alpha('var(--crit)', 45), background: alpha('var(--crit)', 8), color: 'var(--crit-soft)' }}>
