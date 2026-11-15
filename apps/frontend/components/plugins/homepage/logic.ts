@@ -16,6 +16,8 @@ export interface Instance {
   autoSync: boolean; managedGroups: string[]; exportedVars: string[]; releasedGroups: string[]
   proxmoxToken: { tokenId: string; createdAt: number; createdBy: string } | null
   lastSync: { at: number; by: string; ok: boolean; message: string; wrote: string[]; counts: Record<string, number>; backups: string[] } | null
+  /** Connected by HyperProx itself (auto-connect), with its first fill when one was decided. */
+  autoConnected?: { at: number; evidence: string[]; firstFill: { at: number; reason: string; ok: boolean; message: string } | null } | null
 }
 
 export interface PreviewEntry {

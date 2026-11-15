@@ -43,6 +43,7 @@ export function instanceView(i: HomepageInstance) {
     id: i.id, machineId: i.machineId, kind: i.kind, vmid: i.vmid, node: i.node, name: i.name, container: i.container, configDir: i.configDir,
     composeDir: i.composeDir, url: i.url, options: i.options, autoSync: i.autoSync, managedGroups: i.state.managedGroups,
     exportedVars: Object.keys(i.exported ?? {}), releasedGroups: i.state.released ?? [], proxmoxToken: i.proxmoxToken, lastSync: i.lastSync, addedBy: i.addedBy, addedAt: i.addedAt,
+    autoConnected: i.autoConnected ?? null,
   }
 }
 

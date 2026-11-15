@@ -22,6 +22,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Icon, Panel, Pill, styles as vs } from '@/components/visual/kit'
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
+import { AutoConnectPanel, AutoConnectedNote } from '@/components/plugins/AutoConnect'
 import n from './nextcloud.module.css'
 import { CheckGroups, JobView, LogView, Steps, SystemView, TalkView, UpdateCheckView, VersionTrack } from './parts'
 import {
@@ -31,7 +32,12 @@ import {
 
 const API = '/api/plugins/nextcloud'
 
-interface Instance { id: string; name: string; guest?: { kind: 'lxc' | 'qemu'; vmid: number }; url?: string | null; user?: string | null; hasAppPassword: boolean; deployment?: { kind: string } | null }
+interface Instance {
+  id: string; name: string; guest?: { kind: 'lxc' | 'qemu'; vmid: number }; url?: string | null; user?: string | null; hasAppPassword: boolean; deployment?: { kind: string } | null
+  /** Connected by HyperProx itself (auto-connect), and how its web login was made. */
+  autoConnected?: { at: string; evidence: string[]; webLogin: string | null } | null
+  appPasswordMadeByHyperProx?: boolean
+}
 
 type Retry = () => void
 
@@ -428,16 +434,19 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
     set('appPassword', '')
     onSaved()
   }
-  const remove = async () => {
-    if (!inst || !window.confirm(`Remove ${inst.name} from HyperProx? Its app password is deleted from the vault. Nextcloud itself is not touched.`)) return
-    const r = await apiJson(`${API}/instances/${inst.id}`, 'DELETE')
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
-    if (!r.ok) { setErr(r.error ?? 'Could not remove it.'); return }
+  const [forceRemove, setForceRemove] = useState(false)
+  const remove = async (force = false) => {
+    if (!inst || (!force && !window.confirm(`Remove ${inst.name} from HyperProx? ${inst.appPasswordMadeByHyperProx ? 'The app password HyperProx made is revoked in Nextcloud first, then' : 'Its app password is'} deleted from the vault. HyperProx will not connect it again by itself. Nextcloud itself is not touched.`))) return
+    const r = await apiJson(`${API}/instances/${inst.id}${force ? '?force=1' : ''}`, 'DELETE')
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove(force)); return }
+    if (!r.ok) { setErr(r.error ?? 'Could not remove it.'); setForceRemove(r.code === 'revoke_failed'); return }
     onSaved()
   }
   return (
     <div className="flex flex-col gap-3 rounded-lg border p-4" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
       <h3 className="font-display font-semibold" style={{ fontSize: 18, color: 'var(--text-bright)' }}>{inst ? `Settings: ${inst.name}` : 'Add a Nextcloud'}</h3>
+      {inst?.autoConnected && <AutoConnectedNote evidence={inst.autoConnected.evidence} extra={inst.autoConnected.webLogin ? `Web login: ${inst.autoConnected.webLogin}.` : 'No web login yet: occ gives the health and setup checks; the web login adds server details.'} />}
+      {!inst && <Notice kind="info">HyperProx connects every Nextcloud it finds on the cluster by itself. Add one here only when it was not found (another network, or a guest the service scan cannot reach).</Notice>}
       <Notice kind="info">HyperProx reaches Nextcloud through its guest, with the node&apos;s login (the same way the VPN page does): it runs occ there, from a fixed list of commands. The web login is optional: an admin&apos;s app password, kept in the vault, used only to read server info and the admin page&apos;s own checks.</Notice>
       <label><span style={LABEL}>Name</span><input style={INPUT} value={f.name} onChange={e => set('name', e.target.value)} placeholder="Cloud" /></label>
       {!inst && (
@@ -457,6 +466,7 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
         <span>Make the app password for me<span className="block text-[12px]" style={{ color: 'var(--text-dim)' }}>HyperProx runs occ user:auth-tokens:add for the admin user above, named HyperProx (so its own activity is never counted as a person online), and keeps it in the vault. Revoke it any time under that user&apos;s Security settings.</span></span></label>}
       {err && <Notice kind="error">{err}</Notice>}
       <div className="flex flex-wrap justify-end gap-2">
+        {inst && forceRemove && <GhostButton type="button" onClick={() => void remove(true)} style={{ color: 'var(--crit-soft)' }}>Remove anyway (leave the app password)</GhostButton>}
         {inst && <GhostButton type="button" onClick={() => void remove()} style={{ color: 'var(--crit-soft)' }}>Remove</GhostButton>}
         {onCancel && <GhostButton type="button" onClick={onCancel}>Cancel</GhostButton>}
         <PrimaryButton type="button" disabled={busy || !f.name || (!inst && !f.guest)} onClick={() => void save()}>{busy ? 'Checking…' : inst ? 'Save' : 'Check and add'}</PrimaryButton>
@@ -484,13 +494,14 @@ export function NextcloudPage() {
   const s = list?.find(i => i.id === sel) ?? list?.[0] ?? null
   return (
     <div className="min-h-full overflow-x-hidden" style={{ background: 'var(--ground)' }}>
-      {admin && <div className="flex flex-wrap items-center gap-3 pb-2"><span className="ml-auto"><PrimaryButton type="button" onClick={() => setAdding(true)}>Add a Nextcloud</PrimaryButton></span></div>}
+      {admin && <div className="flex flex-wrap items-center gap-3 pb-2"><span className="ml-auto"><GhostButton type="button" onClick={() => setAdding(true)}>Add one by hand</GhostButton></span></div>}
       <div className="flex min-w-0 flex-col gap-4 py-4">
         <PluginSwitcher current="nextcloud" />
         {error && <Notice kind="error">{error}</Notice>}
         {!list && !error && <BusyNote>Reading…</BusyNote>}
+        {admin && <AutoConnectPanel plugins={['nextcloud']} onChanged={() => void reload()} />}
         {adding && <InstanceForm inst={null} onCancel={() => setAdding(false)} onSaved={() => { setAdding(false); void reload() }} />}
-        {list && list.length === 0 && !adding && <Notice kind="info">No Nextcloud is set up yet.{admin ? ' Use "Add a Nextcloud", or install one from the Catalogue.' : ' An admin can add one.'}</Notice>}
+        {list && list.length === 0 && !adding && <Notice kind="info">No Nextcloud found yet. HyperProx connects one by itself as soon as it finds it{admin ? ': install one from the Catalogue, or add one by hand if it is somewhere the scan cannot see.' : '.'}</Notice>}
         {list && s && (
           <>
             {list.length > 1 && <div className={n.tabs} role="tablist" aria-label="Nextcloud instances">{list.map(i => <button key={i.id} role="tab" aria-selected={i.id === s.id} onClick={() => setSel(i.id)} className={n.tab}>{i.name}</button>)}</div>}

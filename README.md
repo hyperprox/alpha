@@ -2063,9 +2063,25 @@ API fetches the picture from Plex with the token from the vault, so the token ne
 It only fetches Plex's own cover pictures, at a fixed size, and keeps them for a short while. If a cover
 cannot be loaded, the page shows the title card instead.
 
-**Scan for services** finds qBittorrent, Sonarr, Radarr, Prowlarr, Unmanic, Plex and Tautulli on running
-guests and offers to configure them; nothing is saved until you press **Use this**, and API keys are
-never guessed. A plug-in declares the settings it needs and HyperProx makes its HTTP calls for it, so
+**Plug-ins connect what they find by themselves.** Every few minutes, and right after HyperProx is
+unlocked, it looks at what the service scan and the Catalogue found and connects it, with no button to
+press:
+
+- **No key needed** (Unmanic workers, qBittorrent): an empty address setting is filled with the address
+  found.
+- **A key needed** (an Arr app's API key, a Plex token, Tautulli's key): HyperProx looks in its vault for
+  a login whose saved web address is that same server. With exactly one, it uses that key, for that
+  server only. With none, the plug-in waits for you. With two or more, the plug-ins page asks you to pick
+  one. A web password is never used as an API key.
+- **Never** a guest tagged `hyperprox-ignore`, a guest on Remote access's "never look inside" list, or an
+  address in a subnet listed in `HYPERPROX_AUTOCONNECT_EXCLUDE_SUBNETS`; never while that list cannot be
+  read; never a setting you filled in yourself.
+- **Something you disconnect or clear stays that way.** HyperProx remembers it and shows **Connect again**
+  instead of adding it back.
+
+Each connection is in the audit log as the system, with how it was found and, when one was used, the
+vault item's name and id (never its value). **Scan for services** runs a scan now, connects what it can,
+and lists only what still needs something; **Use this** fills in an address by hand. A plug-in declares the settings it needs and HyperProx makes its HTTP calls for it, so
 the plug-in never reads a credential. The page also lists plug-ins that do not exist yet, each with a
 button that opens a pre-filled GitHub issue in your browser.
 
@@ -2432,8 +2448,23 @@ why.
 
 #### Nextcloud
 
-Open **Plug-ins, Nextcloud** and press **Add a Nextcloud** (admins; the master password is asked again).
-Pick the container or VM it runs in and press **Look for Nextcloud there**: HyperProx looks inside the guest
+HyperProx connects each Nextcloud it finds by itself: one the service scan sees (`/status.php`) or one the
+Catalogue installed. It looks inside the guest, read-only, the same way **Look for Nextcloud there** does
+(below), and adds it with `occ` through the node's login, which needs no password. The health and setup checks
+work straight away. For the optional web login it uses, in this order:
+
+1. A vault login whose saved web address is this Nextcloud's address. If it holds an app password, that is
+   used, against that address only. An ordinary password is never sent anywhere; only its user name is used,
+   to say which admin HyperProx makes its own app password for.
+2. The admin the Catalogue made.
+3. The admin group's only member.
+
+HyperProx's own app password is kept in the vault and revoked in Nextcloud when you remove the instance.
+Nothing is guessed: two vault logins for the address, or two possible containers, become one choice on the
+page; with several admins and no vault login, the web login waits for you to add it. Removing an instance is remembered, so it is not added back by itself.
+
+To add one the scan cannot see, open **Plug-ins, Nextcloud** and press **Add one by hand** (admins; the
+master password is asked again). Pick the container or VM it runs in and press **Look for Nextcloud there**: HyperProx looks inside the guest
 (read-only) for a running container with Nextcloud's `occ` in it, its Docker Compose project, directory and
 file, whether the image is built from a Dockerfile, the database container, Talk's signalling server and a
 Client Push daemon; or, with no container, a plain install's `occ` and the user that owns it. Nothing is
@@ -2548,10 +2579,15 @@ image names, or the confirm texts, and cannot ask for a fresh read. The page rea
 
 [Homepage](https://gethomepage.dev) is a start page with a tile for every app you run. Install it from the
 Catalogue (Apps, Homepage), then open **Plug-ins, Homepage** (admins only: the preview shows every service's
-address on your network). HyperProx lists the Homepage installs it finds: its own Catalogue installs, the
-service scan (Homepage answers on port 3000), and the install note the Catalogue leaves on a container.
-**Connect** looks inside that guest once, read-only, for the Homepage container and the folder Docker mounts
-as its config. It never guesses a path.
+address on your network). HyperProx finds Homepage installs by itself: its own Catalogue installs, the
+service scan (Homepage answers on port 3000), and the install note the Catalogue leaves on a container. It
+connects each one by itself, the same way for every install: it looks inside that guest once, read-only,
+for the Homepage container and the folder Docker mounts as its config. It never guesses a path. When one
+guest runs two Homepage containers, the page asks which one. A new dashboard (no `services.yaml`, Homepage's
+own sample, or a file that is exactly what HyperProx wrote before) also gets its first fill by itself, with a
+backup of each file. A dashboard that holds your own groups is never written by itself: the page shows the
+diff and **Apply**. Auto-sync stays off until you turn it on. **Disconnect** is remembered: HyperProx does
+not connect that dashboard again until you press **Connect again**.
 
 The page then shows the dashboard HyperProx would write, drawn the way Homepage draws it, and the line diff of
 each file:

@@ -40,6 +40,8 @@ import {
   KEY_FILE, backupsScript, composeUpScript, locateScript, sq, parseLocate, parseRead, parseVerify, parseWrite, purgeBackupsScript, readScript,
   safeContainer, safePath, stampOf, verifyScript, writeScript, type Located, type ReadFile, type VerifyResult,
 } from './remote'
+import { SYSTEM_ACTOR, exclusionOf, type AdapterContext, type Outcome } from '../auto-connect/core'
+import { MANAGED_MARK } from './generate'
 import {
   CRITICAL_SOURCES, DEFAULT_OPTIONS, EMPTY_STATE, type Entry, type GenerateOptions, type Inventory, type InventorySourceId, type ManagedState,
   type MergeNotes,
@@ -75,6 +77,8 @@ export interface HomepageInstance {
   lastFingerprint: string | null
   addedBy: string
   addedAt: number
+  /** Set when HyperProx connected it by itself (lib/auto-connect): when, how it was found, and the first fill if any. */
+  autoConnected?: { at: number; evidence: string[]; firstFill: { at: number; reason: string; ok: boolean; message: string } | null } | null
 }
 
 export interface Actor { email: string; token: string | null }
@@ -123,6 +127,8 @@ export interface HomepageDeps {
   audit(action: string, resource: string, details: Record<string, unknown>): Promise<void>
   now(): number
   log?(m: string): void
+  /** A person disconnected this guest's dashboard: auto-connect must never add it back by itself (lib/auto-connect). */
+  dismissed?(machineId: string, label: string, by: string): Promise<void>
 }
 
 // ── constants ────────────────────────────────────────────────────────────────
@@ -259,13 +265,14 @@ export class HomepageService {
   }
 
   /** Connect one dashboard: look inside once for the container and its mounted config folder. One at a time per guest. */
-  async connect(machineId: string, actor: Actor, container?: string): Promise<HomepageInstance> {
+  async connect(machineId: string, actor: Actor, container?: string, auto?: { evidence: string[] }): Promise<HomepageInstance> {
     if (!/^(lxc|qemu)-\d{1,9}$/.test(machineId)) throw new HomepageRefusal('bad_input', 'Pick a guest from the list.')
     return this.withLock(`connect:${machineId}`, async () => {
       const existing = (await this.d.store.list()).find(i => i.machineId === machineId && (!container || i.container === container))
       if (existing) return existing
       const m = await this.machine({ machineId, name: machineId })
-      await this.d.audit('homepage.connect', `homepage:${machineId}`, { by: actorLabel(actor) })
+      if (auto) await this.d.audit('homepage.auto_connect', `homepage:${machineId}`, { by: SYSTEM_ACTOR, evidence: auto.evidence, container: container ?? null })
+      else await this.d.audit('homepage.connect', `homepage:${machineId}`, { by: actorLabel(actor) })
       const found = (await this.locate(m)).filter(l => !container || l.container === container)
       if (!found.length) throw new HomepageRefusal('not_found', `No Homepage container on ${m.name}.`, 404)
       if (found.length > 1 && !container) throw new HomepageRefusal('several', `${m.name} runs ${found.length} Homepage containers; pick one: ${found.map(f => f.container).join(', ')}.`, 409)
@@ -281,10 +288,98 @@ export class HomepageService {
         url: sight?.url ?? null,
         options: { excludeSubnets: [], includeBareGuests: false, hiddenGroups: [], hiddenEntries: [], widgets: [] },
         autoSync: false, state: { ...EMPTY_STATE, released: [] }, exported: {}, proxmoxToken: null, lastSync: null, lastFingerprint: null,
-        addedBy: actorLabel(actor), addedAt: this.d.now(),
+        addedBy: auto ? SYSTEM_ACTOR : actorLabel(actor), addedAt: this.d.now(),
+        autoConnected: auto ? { at: this.d.now(), evidence: auto.evidence.slice(0, 10), firstFill: null } : null,
       }
       await this.d.store.put(i)
       return i
+    })
+  }
+
+  // ── auto-connect (lib/auto-connect) ───────────────────────────────────────
+
+  /** Guests whose look-up found no Homepage container: not looked in again for an hour. */
+  private noHomepage = new Map<string, number>()
+
+  /**
+   * One auto-connect pass. Every Homepage found and not connected yet is connected: the same read-only look-up a
+   * person's Connect does, as the system. Never a guest that is excluded, stopped, or that a person disconnected.
+   * Two Homepage containers in one guest are not guessed between: that is left as one choice to pick.
+   * A dashboard connected this way gets its first fill only when the file is empty, Homepage's sample, or exactly
+   * HyperProx's own earlier write (autoFirstFill); anything else waits for a person's Apply.
+   */
+  async autoConnect(ctx: AdapterContext): Promise<Outcome[]> {
+    const out: Outcome[] = []
+    const detected = await this.detected()
+    const machines = await this.d.exec.listMachines()
+    for (const d of detected) {
+      const label = d.name
+      if (d.connected) { out.push({ key: d.machineId, label, did: 'present' }); continue }
+      const m = machines.find(x => x.id === d.machineId)
+      const why = exclusionOf(ctx, { machineId: d.machineId, tags: m?.tags, addresses: [d.url, m?.address] })
+      if (why) { out.push({ key: d.machineId, label, did: 'excluded', message: why }); continue }
+      if (ctx.dismissed(d.machineId)) { out.push({ key: d.machineId, label, did: 'dismissed' }); continue }
+      if (!d.running) { out.push({ key: d.machineId, label, did: 'skipped', message: 'not running' }); continue }
+      const miss = this.noHomepage.get(d.machineId)
+      if (miss && this.d.now() - miss < 60 * 60_000) { out.push({ key: d.machineId, label, did: 'skipped', message: 'no Homepage container' }); continue }
+      try {
+        const found = (await this.locate(m ?? await this.machine({ machineId: d.machineId, name: d.name }))).filter(l => !!l.configDir)
+        if (!found.length) { this.noHomepage.set(d.machineId, this.d.now()); out.push({ key: d.machineId, label, did: 'skipped', message: 'no Homepage container with a mounted config folder' }); continue }
+        if (found.length > 1) {
+          out.push({ key: d.machineId, label, did: 'ambiguous', choiceKind: 'container', message: `${d.name} runs ${found.length} Homepage containers. Pick the one HyperProx fills.`,
+            choices: found.map(f => ({ id: f.container, label: `${f.container} (${f.configDir})` })) })
+          continue
+        }
+        const i = await this.connect(d.machineId, { email: SYSTEM_ACTOR, token: null }, found[0].container, { evidence: d.via.map(v => `found by ${v}`) })
+        out.push({ key: d.machineId, label, did: 'connected', evidence: d.via.map(v => `found by ${v}`), message: await this.autoFirstFill(i.id).catch((e: any) => `first fill not done: ${e?.message ?? e}`) })
+      } catch (e: any) {
+        out.push({ key: d.machineId, label, did: 'failed', message: String(e?.message ?? e).slice(0, 300) })
+      }
+    }
+    return out
+  }
+
+  /** A person picked which Homepage container of a guest to connect. */
+  async autoPick(machineId: string, container: string): Promise<Outcome> {
+    const i = await this.connect(machineId, { email: SYSTEM_ACTOR, token: null }, container, { evidence: ['picked by a person'] })
+    return { key: machineId, label: i.name, did: 'connected', evidence: ['picked by a person'], message: await this.autoFirstFill(i.id).catch((e: any) => `first fill not done: ${e?.message ?? e}`) }
+  }
+
+  /**
+   * The first fill of a dashboard HyperProx connected by itself, done by itself only when nothing of a person's can be
+   * in the file: services.yaml missing or empty, Homepage's unmodified sample, or a file that is exactly HyperProx's
+   * own earlier write (its header, only its groups, no entry a person added or edited). Every file is backed up first
+   * (the same write as Apply), never from an inventory with a source missing, and audited as the system. Otherwise
+   * nothing is written: the page shows the diff and one Apply.
+   */
+  async autoFirstFill(id: string): Promise<string> {
+    return this.withLock(id, async () => {
+      const i = await this.instance(id)
+      if (!i.autoConnected || i.autoConnected.firstFill) return 'first fill already decided'
+      const m = await this.machine(i)
+      const inv = await this.d.inventory(false)
+      const missing = (inv.failed ?? []).filter(s => CRITICAL_SOURCES.includes(s))
+      if (missing.length) return `first fill waits: ${missing.join(', ')} could not be read`
+      const read = await this.readFiles(m, i)
+      if (!read.writable) return 'first fill not done: the config folder is not writable'
+      const p = await this.planFrom(i, inv, read.files, SYSTEM_ACTOR)
+      const reason = firstFillReason(read.files['services.yaml'], p)
+      const record = async (fill: { reason: string; ok: boolean; message: string }) => {
+        const cur = (await this.d.store.get(i.id)) ?? i
+        await this.d.store.put({ ...cur, autoConnected: { ...(cur.autoConnected ?? { at: this.d.now(), evidence: [] }), firstFill: { at: this.d.now(), ...fill } } })
+      }
+      if (!reason) {
+        await record({ reason: 'person', ok: true, message: 'The dashboard already holds your own groups: preview and apply it when you want HyperProx\'s groups added.' })
+        return 'left for a person: the file holds their own groups'
+      }
+      try {
+        const r = await this.write(i, p, `${SYSTEM_ACTOR}, first fill (${reason})`)
+        await record({ reason, ok: true, message: r.unchanged ? 'Already up to date.' : `Wrote ${r.wrote.join(' and ')}${r.backups.length ? `; backups beside them` : ''}.` })
+        return `first fill (${reason})`
+      } catch (e: any) {
+        await record({ reason, ok: false, message: String(e?.message ?? e).slice(0, 300) })
+        throw e
+      }
     })
   }
 
@@ -305,6 +400,8 @@ export class HomepageService {
           left = Object.keys(i.exported)
         }
       }
+      // Remembered before the record goes, so auto-connect never puts it straight back; not remembered, not removed.
+      await this.d.dismissed?.(i.machineId, i.name, actorLabel(actor))
       await this.d.store.delete(id)
       return { keysRemoved: removed, keysLeft: left }
     })
@@ -987,4 +1084,19 @@ export function wireEnv(text: string, container: string): string | null {
   const s = composeService(doc, container)
   if (!s) throw new HomepageRefusal('no_service', 'The compose file has no Homepage service HyperProx can recognise.', 409)
   return wireEnvText(text, s.key)
+}
+
+/**
+ * Why a dashboard connected by itself may get its first fill without a person, or null. Only when nothing of a
+ * person's would be touched: no services.yaml (or an empty one), Homepage's own unmodified sample, or a file that is
+ * exactly HyperProx's earlier write (its header first, and the merge kept no group, entry or edit of anyone else's).
+ */
+export function firstFillReason(services: ReadFile | undefined, p: Pick<Plan, 'notes' | 'failed'>): 'missing' | 'sample' | 'own' | null {
+  if (p.failed.length) return null
+  if (!services?.exists || !services.text.trim()) return 'missing'
+  if (p.notes.droppedSamples && !p.notes.keptUserGroups.length && !p.notes.keptUserEntries.length) return 'sample'
+  const n = p.notes
+  const noneOfTheirs = !n.keptUserGroups.length && !n.keptUserEntries.length && !n.keptEdits.length && !n.userRemovedGroups.length && !n.renamed.length
+  if (noneOfTheirs && services.text.replace(/^---\s*\n/, '').startsWith(MANAGED_MARK)) return 'own'
+  return null
 }

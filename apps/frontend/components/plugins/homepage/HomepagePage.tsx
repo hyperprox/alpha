@@ -4,7 +4,7 @@
 //  HyperProx — Homepage: fill a Homepage dashboard from the cluster
 //
 //  Phone first: one column of panels. The HUD; the dashboards HyperProx found
-//  (Catalogue installs, the service scan, the install marker) with Connect; and
+//  (Catalogue installs, the service scan, the install marker), connected by itself; and
 //  for a connected one, its problems with a fix button each, the dashboard it
 //  would build drawn the way Homepage draws it, the line diff of every file,
 //  and Apply. Settings: auto-sync (off until turned on), bare guests, excluded
@@ -22,6 +22,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Icon, Panel, Pill, styles as vs } from '@/components/visual/kit'
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
+import { AutoConnectPanel, AutoConnectedNote } from '@/components/plugins/AutoConnect'
 import h from './homepage.module.css'
 import {
   KEYS_WARNING, SOURCE_NAME, SOURCE_WORD, applyGate, diffStats, foldDiff, grouped, keptWords, monogram, plural, syncWords, validSubnets,
@@ -149,11 +150,14 @@ export function HomepagePage() {
   const current = instances.find(i => i.id === pick) ?? instances[0] ?? null
   const unconnected = (data?.detected ?? []).filter(d => !d.connected)
 
-  const connect = async (d: Detected) => {
-    setBusy(d.machineId); setNote(null)
-    const r = await apiJson<{ data: Instance }>(`${API}/instances`, 'POST', { machineId: d.machineId })
+  // HyperProx connects what it finds by itself (lib/auto-connect); this only asks it to look now.
+  const lookNow = async () => {
+    setBusy('look'); setNote(null)
+    const r = await apiJson<{ data: { waited: string | null } }>('/api/auto-connect/run', 'POST', {})
     setBusy(null)
-    if (r.ok) { setPick(r.body!.data.id); await reload() } else setNote({ text: r.error ?? 'Could not connect it.', ok: false })
+    if (!r.ok) setNote({ text: r.error ?? 'Could not look again.', ok: false })
+    else if (r.body!.data.waited === 'locked') setNote({ text: 'HyperProx is locked; it connects them once it is unlocked.', ok: false })
+    await reload()
   }
 
   return (
@@ -169,23 +173,26 @@ export function HomepagePage() {
       {note && <p className="text-sm" role="status" style={{ color: note.ok ? 'var(--good)' : 'var(--warn-2)' }}>{note.text}</p>}
       {!data && !error && <BusyNote>Looking for Homepage on the cluster…</BusyNote>}
 
+      <AutoConnectPanel plugins={['homepage']} onChanged={() => void reload()} />
+
       {data && (unconnected.length > 0 || !instances.length) && (
         <Panel title="Found on the cluster" sub={unconnected.length ? plural(unconnected.length, 'dashboard') : undefined}>
           {unconnected.length === 0
-            ? <p className="text-sm" style={{ color: 'var(--text-soft)' }}>No Homepage found. Install it from the <a href="/catalogue" style={{ color: 'var(--hx-accent)' }}>Catalogue</a> (Apps → Homepage), then come back here.</p>
+            ? <p className="text-sm" style={{ color: 'var(--text-soft)' }}>No Homepage found yet. Install it from the <a href="/catalogue" style={{ color: 'var(--hx-accent)' }}>Catalogue</a> (Apps → Homepage): HyperProx connects it and fills it with your apps by itself.</p>
             : (
               <ul className={h.found}>
                 {unconnected.map(d => (
                   <li key={d.machineId}>
                     <span><b style={{ color: 'var(--text-bright)' }}>{d.name}</b> <small>{d.kind === 'lxc' ? 'CT' : 'VM'} {d.vmid} · {d.node} · {d.via.map(v => ({ catalogue: 'Catalogue install', scan: 'service scan', marker: 'install note', proxy: 'proxy host' })[v]).join(', ')}</small></span>
-                    <button type="button" className={`${vs.btn} ${vs.btnPri}`} disabled={!d.running || busy === d.machineId} onClick={() => void connect(d)}>
-                      {!d.running ? 'Not running' : busy === d.machineId ? 'Looking inside…' : 'Connect'}
-                    </button>
+                    <small>{d.running ? 'Connecting by itself…' : 'Not running: connected when it starts'}</small>
                   </li>
                 ))}
               </ul>
             )}
-          <p className="mt-2 text-xs" style={{ color: 'var(--text-dimmer)' }}>Connecting looks inside the guest once, read-only, for the Homepage container and the folder Docker mounts as its config. Nothing is written until you apply a preview.</p>
+          <div className={h.toolbar}>
+            <GhostButton type="button" disabled={busy === 'look'} onClick={() => void lookNow()}>{busy === 'look' ? 'Looking…' : 'Look again now'}</GhostButton>
+            <small>HyperProx looks inside each one once, read-only, for the Homepage container and its config folder. It fills a fresh (sample) dashboard by itself, with a backup; one that has your own groups waits for your Apply.</small>
+          </div>
         </Panel>
       )}
 
@@ -444,6 +451,7 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
       </Panel>
 
       <Panel title="Connection">
+        {i.autoConnected && <AutoConnectedNote evidence={i.autoConnected.evidence} extra={i.autoConnected.firstFill?.message ?? null} />}
         <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Container <b>{i.container}</b>, config at <code>{i.configDir}</code>{i.composeDir ? <>, compose in <code>{i.composeDir}</code></> : null}. HyperProx owns the groups {i.managedGroups.length ? i.managedGroups.join(', ') : '(none yet)'}.</p>
         {i.releasedGroups?.length > 0 && (
           <div className={h.toolbar}>
@@ -475,7 +483,7 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
       {disconnecting && (
         <Modal title="Disconnect this dashboard" onClose={() => setDisconnecting(false)}>
           <div className="flex flex-col gap-4">
-            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>HyperProx stops filling {i.name}. Widget keys are taken off the guest first; the dashboard stays as it is now, and connecting again takes its groups back.</p>
+            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>HyperProx stops filling {i.name}. Widget keys are taken off the guest first; the dashboard stays as it is now. HyperProx will not connect it again by itself; "Connect again" on this page does, and takes its groups back.</p>
             <div className="flex justify-end gap-2">
               <GhostButton type="button" onClick={() => setDisconnecting(false)}>Cancel</GhostButton>
               {note && !note.ok && i.exportedVars.length > 0 && <GhostButton type="button" onClick={() => void disconnect(true)}>Disconnect and leave the keys there</GhostButton>}

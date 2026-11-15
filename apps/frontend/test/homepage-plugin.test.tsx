@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import "./css-stub"
 import { renderToStaticMarkup } from 'react-dom/server'
 import { DashboardPreview, DiffView, ProblemList, WidgetList } from '../components/plugins/homepage/HomepagePage'
+import { AutoConnectedNote } from '../components/plugins/AutoConnect'
 import { applyGate, diffStats, foldDiff, grouped, keptWords, monogram, syncWords, validSubnets, KEYS_WARNING, type PreviewEntry } from '../components/plugins/homepage/logic'
 
 const e = (o: Partial<PreviewEntry>): PreviewEntry => ({
@@ -96,4 +97,10 @@ test('apply gate: a preview with a source missing needs "apply anyway"; one with
   assert.equal(x.ok, false); assert.match(x.reason!, /exclusion list/)
   assert.match(KEYS_WARNING, /homepage\.env/)
   assert.match(KEYS_WARNING, /backups/)
+})
+
+test('a dashboard HyperProx connected by itself says so, with how it was found and what its first fill did', () => {
+  const html = renderToStaticMarkup(<AutoConnectedNote evidence={['found by catalogue', 'found by proxy']} extra="Wrote services.yaml; backups beside them." />)
+  assert.match(html, /Connected automatically \(found by catalogue, found by proxy\)\./)
+  assert.match(html, /Wrote services\.yaml/)
 })

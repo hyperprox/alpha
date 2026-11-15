@@ -103,8 +103,9 @@ export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
     try { return { success: true, data: await svc().update(req.params.iid, req.body ?? {}, actor(req)) } } catch (e) { return fail(reply, e) }
   })
 
-  fastify.delete<P>('/instances/:iid', async (req, reply) => {
-    try { await svc().remove(req.params.iid, actor(req)); return { success: true } } catch (e) { return fail(reply, e) }
+  // ?force=1 removes even when the app password HyperProx made cannot be revoked (the answer says it is left).
+  fastify.delete<P & { Querystring: { force?: string } }>('/instances/:iid', async (req, reply) => {
+    try { return { success: true, data: await svc().remove(req.params.iid, actor(req), req.query.force === '1') } } catch (e) { return fail(reply, e) }
   })
 
   // The whole reading. One that cannot be read is a normal state: 200 with ok:false and the reason.

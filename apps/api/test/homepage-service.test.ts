@@ -10,11 +10,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { HomepageService, HomepageRefusal, composeReadsEnv, wireEnv, wireEnvText, WIRE_SNIPPET, AUTO_MIN_GAP_MS, type HomepageDeps, type HomepageInstance, type RecordStore } from '../src/lib/homepage/service'
+import { firstFillReason, HomepageService, HomepageRefusal, composeReadsEnv, wireEnv, wireEnvText, WIRE_SNIPPET, AUTO_MIN_GAP_MS, type HomepageDeps, type HomepageInstance, type RecordStore } from '../src/lib/homepage/service'
 import {
   locateScript, readScript, writeScript, verifyScript, composeUpScript, parseLocate, safePath, safeContainer, sha256, UnsafeValueError,
 } from '../src/lib/homepage/remote'
-import { varName, yaml } from '../src/lib/homepage/generate'
+import { varName, yaml, MANAGED_MARK } from '../src/lib/homepage/generate'
+import { SYSTEM_ACTOR, type AdapterContext } from '../src/lib/auto-connect/core'
 import { tileOf } from '../src/plugins/homepage'
 import { assertSafeScript } from '../src/lib/clusters/script-guard'
 import { requiredRole, needsReconfirm } from '../src/lib/roles'
@@ -780,4 +781,104 @@ test('compose files: an unsafe path in Docker\'s record is refused, never replac
   await assert.rejects(() => t.svc.wireEnv(i.id, me), (e: any) => e.code === 'compose_unknown')
   assert.equal(t.keyFile(), null, 'nothing written')
   assert.ok(!/^compose /m.test(t.calls()), 'compose never run')
+})
+
+// ── auto-connect (lib/auto-connect) ──────────────────────────────────────────
+
+const acx = (o: Partial<AdapterContext> = {}): AdapterContext => ({
+  dismissed: () => false, autoConnectedBefore: () => false, excludedMachines: new Set(), excludedSubnets: [], vaultItems: () => [], audit: async () => {}, now: () => 0, ...o,
+})
+
+test('auto-connect: a found Homepage is connected by itself, audited as the system, and a sample config gets its first fill with a backup', async () => {
+  const t = setup()
+  const out = await t.svc.autoConnect(acx())
+  assert.equal(out.length, 1)
+  assert.equal(out[0].did, 'connected')
+  const [i] = await t.svc.instances()
+  assert.equal(i.addedBy, SYSTEM_ACTOR)
+  assert.equal(i.autoSync, false, 'auto-sync stays off')
+  assert.deepEqual(i.autoConnected?.evidence, ['found by catalogue', 'found by proxy'])
+  const row = t.audits.find(a => a.action === 'homepage.auto_connect')!
+  assert.equal(row.details.by, SYSTEM_ACTOR)
+  assert.equal(i.autoConnected?.firstFill?.reason, 'sample')
+  assert.ok(t.read('services.yaml').startsWith(MANAGED_MARK))
+  assert.equal(fs.readdirSync(t.guest.config).filter(n => n.startsWith('services.yaml.bak-hyperprox-')).length, 1, 'the sample is backed up')
+  // Already connected: the next pass changes nothing.
+  const n = t.audits.length
+  assert.equal((await t.svc.autoConnect(acx()))[0].did, 'present')
+  assert.equal(t.audits.length, n)
+})
+
+test('auto-connect: a services.yaml with the person\'s own groups is connected but never written; the page shows the diff and Apply', async () => {
+  const t = setup()
+  const mine = '---\n- Mine:\n    - Router:\n        href: http://10.0.0.1/\n'
+  fs.writeFileSync(path.join(t.guest.config, 'services.yaml'), mine)
+  assert.equal((await t.svc.autoConnect(acx()))[0].did, 'connected')
+  assert.equal(t.read('services.yaml'), mine)
+  assert.ok(!t.audits.some(a => a.action === 'homepage.write'))
+  const [i] = await t.svc.instances()
+  assert.equal(i.autoConnected?.firstFill?.reason, 'person')
+  // The manual path is unchanged: a preview, then Apply.
+  const p = await t.svc.preview(i.id, me)
+  assert.ok(p.files.find(f => f.name === 'services.yaml')!.changed)
+})
+
+test('auto-connect: a file that is exactly HyperProx\'s own earlier write gets the first fill too; one with a person\'s edit does not', async () => {
+  const t = setup()
+  await t.svc.autoConnect(acx())
+  const own = t.read('services.yaml')
+  // The record goes (a reinstall of HyperProx, say), the file stays as HyperProx wrote it.
+  for (const i of await t.svc.instances()) await t.store.delete(i.id)
+  await t.svc.autoConnect(acx())
+  assert.equal((await t.svc.instances())[0].autoConnected?.firstFill?.reason, 'own')
+  assert.equal(t.read('services.yaml'), own)
+  // Edited by a person (an entry added to a HyperProx group): left for them.
+  for (const i of await t.svc.instances()) await t.store.delete(i.id)
+  fs.writeFileSync(path.join(t.guest.config, 'services.yaml'), own.replace(/^(- [^\n]+:\n)/m, '$1    - Added by me:\n        href: http://10.0.0.9/\n'))
+  await t.svc.autoConnect(acx())
+  assert.equal((await t.svc.instances())[0].autoConnected?.firstFill?.reason, 'person')
+})
+
+test('auto-connect: never an excluded guest, a guest on an excluded subnet, a dismissed one, or while the exclusion list is unknown', async () => {
+  const t = setup()
+  t.setExcluded(['lxc-130'])
+  assert.deepEqual(await t.svc.autoConnect(acx()), [], 'the exclusion list hides it from detection altogether')
+  t.setExcluded([])
+  ;(machine as any).address = '10.0.0.30'
+  try { assert.equal((await t.svc.autoConnect(acx({ excludedSubnets: ['10.0.0.0/24'] })))[0].did, 'excluded') } finally { delete (machine as any).address }
+  assert.equal((await t.svc.autoConnect(acx({ dismissed: k => k === 'lxc-130' })))[0].did, 'dismissed')
+  t.setExcluded(null)
+  await assert.rejects(t.svc.autoConnect(acx()), (e: any) => e.code === 'exclusions_unknown')
+  assert.equal((await t.svc.instances()).length, 0)
+  assert.ok(!t.audits.some(a => a.action === 'homepage.auto_connect'))
+})
+
+test('auto-connect: a person\'s disconnect is remembered (before the record goes) so the dashboard is not added back', async () => {
+  const t = setup()
+  const remembered: string[] = []
+  ;(t.svc as any).d.dismissed = async (id: string) => { remembered.push(id) }
+  const [o] = await t.svc.autoConnect(acx())
+  assert.equal(o.did, 'connected')
+  const [i] = await t.svc.instances()
+  await t.svc.disconnect(i.id, me)
+  assert.deepEqual(remembered, ['lxc-130'])
+  // Not remembered (the store is down): not disconnected either.
+  const t2 = setup()
+  ;(t2.svc as any).d.dismissed = async () => { throw new Error('store down') }
+  await t2.svc.autoConnect(acx())
+  const [i2] = await t2.svc.instances()
+  await assert.rejects(t2.svc.disconnect(i2.id, me), /store down/)
+  assert.equal((await t2.svc.instances()).length, 1)
+})
+
+test('first fill rule: only missing, empty, the sample, or HyperProx\'s own file; never with a source missing', () => {
+  const notes = { keptUserGroups: [], keptUserEntries: [], keptEdits: [], userRemovedGroups: [], renamed: [], droppedSamples: false, adopted: [] }
+  const f = (text: string, exists = true) => ({ name: 'services.yaml', exists, text, sha: null, owner: null, mode: null })
+  assert.equal(firstFillReason(undefined, { notes, failed: [] }), 'missing')
+  assert.equal(firstFillReason(f('  \n'), { notes, failed: [] }), 'missing')
+  assert.equal(firstFillReason(f(SAMPLE), { notes: { ...notes, droppedSamples: true }, failed: [] }), 'sample')
+  assert.equal(firstFillReason(f(`${MANAGED_MARK}\n- A:\n`), { notes, failed: [] }), 'own')
+  assert.equal(firstFillReason(f(`${MANAGED_MARK}\n- A:\n`), { notes: { ...notes, keptUserGroups: ['Mine'] }, failed: [] }), null)
+  assert.equal(firstFillReason(f('- Mine:\n'), { notes, failed: [] }), null)
+  assert.equal(firstFillReason(undefined, { notes, failed: ['scan'] }), null)
 })

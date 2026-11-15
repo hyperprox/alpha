@@ -47,6 +47,8 @@ export interface SecretItem {
   id: string
   /** Vault revision date (ISO). Additive to the contract, for the Secrets page. */
   revisionDate?: string
+  /** A login item's URIs (addresses, not secrets). Additive: auto-connect matches a detected install by them. */
+  uris?: string[]
 }
 
 export type VaultAuthCode = 'bad_credentials' | 'totp_required' | 'totp_invalid' | 'not_member' | 'locked_out'
@@ -220,10 +222,13 @@ function itemToSecret(it: any | DecryptedItem): SecretItem {
   for (const f of it?.fields ?? []) {
     if (f?.name) fields[String(f.name)] = f.value == null ? '' : String(f.value)
   }
+  const uris = (Array.isArray(it?.login?.uris) ? it.login.uris : [])
+    .map((u: any) => (typeof u === 'string' ? u : u?.uri)).filter((u: unknown): u is string => typeof u === 'string' && !!u).slice(0, 20)
   return {
     id: String(it.id),
     name: String(it.name ?? ''),
     fields,
+    ...(uris.length ? { uris } : {}),
     ...(it.notes ? { notes: String(it.notes) } : {}),
     ...(it.revisionDate ? { revisionDate: String(it.revisionDate) } : {}),
   }

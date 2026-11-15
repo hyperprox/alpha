@@ -204,6 +204,10 @@ const NEXTCLOUD_RECONFIRM = /^\/api\/plugins\/nextcloud\/instances(\/[^/]+(\/sec
 // widgets on, writing their keys to the guest, wiring Homepage's key file into its compose file, deleting old key-file
 // backups, and making or revoking the Proxmox token are also re-confirmed.
 const HOMEPAGE = /^\/api\/plugins\/homepage\/(installs|instances)(\/|$)/
+// Auto-connect (routes/auto-connect.ts): admin for every method, reads included (it names guests, addresses and vault
+// item names). A pick or "connect again" is the same read-only connect the background pass makes, so it is not
+// re-confirmed; every write and fix those plug-ins have keeps its own rule above.
+const AUTO_CONNECT = /^\/api\/auto-connect(\/|$)/
 const HOMEPAGE_RECONFIRM = /^\/api\/plugins\/homepage\/instances\/[^/]+\/(widgets|secrets|proxmox-token|wire-env|purge-key-backups)$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
@@ -340,6 +344,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (LOCAL.test(p)) return 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
   if (HOMEPAGE.test(p)) return 'admin'
+  if (AUTO_CONNECT.test(p)) return 'admin'
   if (CATALOGUE_DETECTED.test(p)) return 'admin'
   if (PLEX_SIGNIN.test(p)) return 'admin'
   if (SITES.test(p)) return 'admin'

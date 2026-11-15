@@ -198,6 +198,7 @@ export function productionHomepage(): HomepageService {
     audit: (a, r, d) => auditOrThrow(a, r, d),
     now: () => Date.now(),
     log: m => console.warn(m),
+    dismissed: async (machineId, label, by) => (await import('../auto-connect')).rememberDismissed('homepage', machineId, label, by),
   }
   return new HomepageService(deps)
 }

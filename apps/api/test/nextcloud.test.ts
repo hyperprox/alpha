@@ -26,6 +26,7 @@ import { viewerReading } from '../src/routes/nextcloud'
 import { requiredRole, needsReconfirm } from '../src/lib/roles'
 import { tokenForbidden } from '../src/lib/api-tokens'
 import { tileOf } from '../src/plugins/nextcloud'
+import { SYSTEM_ACTOR, type AdapterContext } from '../src/lib/auto-connect/core'
 
 const FIX = path.join(__dirname, 'fixtures', 'nextcloud')
 const CHECKS = fs.readFileSync(path.join(FIX, 'setupchecks-occ.json'), 'utf8')
@@ -749,4 +750,144 @@ test('the card: an update or a warning is "needs attention", an unreachable one 
   assert.throws(() => tileOf([]), /Not configured/)
   assert.equal(tileOf([{ id: 'n1', name: 'Cloud', version: '34.0.3', update: '34.0.6', counts: { error: 0, warning: 6, info: 9 }, error: null }]).tone, 'warn')
   assert.equal(tileOf([{ id: 'n1', name: 'Cloud', version: null, update: null, counts: null, error: 'down' }]).tone, 'bad')
+})
+
+// ── auto-connect (lib/auto-connect) ──────────────────────────────────────────
+
+const APP_PW = 'abcde-fghij-klmno-pqrst-uvwxy'
+const acx = (o: Partial<AdapterContext> = {}, audits: Array<{ action: string; details: Record<string, unknown> }> = []): AdapterContext => ({
+  dismissed: () => false, autoConnectedBefore: () => false, excludedMachines: new Set(), excludedSubnets: [], vaultItems: () => [],
+  audit: async (action, _r, details) => { audits.push({ action, details: { ...details, by: SYSTEM_ACTOR } }) }, now: () => NOW, ...o,
+})
+const SEEN = [{ guest: { kind: 'lxc' as const, vmid: 100 }, url: 'https://10.0.0.25', via: 'scan' }]
+/** A guest where "make the app password" works: the new token shows up as id 42. */
+function makerGuest(o: Parameters<typeof fakeGuest>[0] = {}) {
+  let made = false
+  const g = fakeGuest({
+    ...o,
+    parts: { t: () => (made ? `[{"id":3,"name":"Firefox","lastActivity":1,"type":0},{"id":42,"name":"HyperProx","lastActivity":${NOW / 1000},"type":1}]` : '[{"id":3,"name":"Firefox","lastActivity":1,"type":0}]'), ...o.parts },
+    scripts: [[/user:auth-tokens:add/, () => { made = true; return `app password:\n${'A'.repeat(72)}\n` }], ...(o.scripts ?? [])],
+  })
+  return g
+}
+
+test('auto-connect: a single sighting is detected and added over occ with no password, audited as the system; the only admin gets HyperProx\'s own app password', async () => {
+  const s = service(makerGuest(), { sightings: async () => SEEN })
+  const audits: Array<{ action: string; details: Record<string, unknown> }> = []
+  const out = await s.svc.autoConnect(acx({}, audits))
+  assert.deepEqual(out.map(o => o.did), ['connected', 'connected'])
+  const [m] = await s.svc.instances.list()
+  assert.equal(m.name, 'cloud')
+  assert.equal(m.deployment!.kind, 'compose')
+  assert.ok(m.autoConnected)
+  const row = audits.find(a => a.action === 'nextcloud.instance.auto_connect')!
+  assert.equal(row.details.by, SYSTEM_ACTOR)
+  assert.ok((row.details.evidence as string[]).includes('found by scan'))
+  const login = await s.svc.instances.login(m.id)
+  assert.equal(login.user, 'alice')
+  assert.equal(login.tokenId, 42)
+  assert.equal(login.made, true, 'kept in the vault and marked, so removing revokes it')
+  assert.equal(login.url, 'https://cloud.example.com', 'tested against Nextcloud\'s own address')
+  // The next pass changes nothing.
+  const n = audits.length
+  assert.deepEqual((await s.svc.autoConnect(acx({}, audits))).map(o => o.did), ['present'])
+  assert.equal(audits.length, n)
+})
+
+test('auto-connect: one vault item for Nextcloud\'s host with an app password is used as it is; its id and name are audited, never the value', async () => {
+  const g = makerGuest()
+  const s = service(g, { sightings: async () => SEEN })
+  const audits: Array<{ action: string; details: Record<string, unknown> }> = []
+  const items = [{ id: 'v1', name: 'Nextcloud admin', uris: ['https://cloud.example.com'], fields: { username: 'alice', password: APP_PW } }]
+  const out = await s.svc.autoConnect(acx({ vaultItems: () => items }, audits))
+  assert.equal(out[1].did, 'connected')
+  assert.deepEqual(out[1].vaultItem, { id: 'v1', name: 'Nextcloud admin' })
+  assert.ok(!g.calls.some(c => c.includes('user:auth-tokens:add')), 'no new app password made')
+  assert.deepEqual(s.ocsCalls.map(c => c.url), ['https://cloud.example.com'])
+  const [m] = await s.svc.instances.list()
+  assert.equal((await s.svc.instances.login(m.id)).made, false, 'a person\'s app password is never revoked by HyperProx')
+  const row = audits.find(a => a.action === 'nextcloud.web_login.auto')!
+  assert.equal(row.details.vaultItemId, 'v1')
+  assert.equal(row.details.vaultItemName, 'Nextcloud admin')
+  assert.ok(!JSON.stringify(audits).includes(APP_PW) && !JSON.stringify(out).includes(APP_PW))
+})
+
+test('auto-connect: a vault login for another host is never sent; an ordinary password is never sent at all (its user gets HyperProx\'s own app password)', async () => {
+  // Another host: not matched; the only admin's own app password is made instead.
+  let s = service(makerGuest(), { sightings: async () => SEEN })
+  await s.svc.autoConnect(acx({ vaultItems: () => [{ id: 'v9', name: 'Other cloud', uris: ['https://cloud.example.net'], fields: { username: 'alice', password: APP_PW } }] }))
+  assert.ok(s.ocsCalls.every(c => c.appPassword !== APP_PW))
+  // The right host, an ordinary password: only its user name is used.
+  s = service(makerGuest(), { sightings: async () => SEEN })
+  const out = await s.svc.autoConnect(acx({ vaultItems: () => [{ id: 'v2', name: 'NC', uris: ['cloud.example.com'], fields: { username: 'alice', password: 'correct horse battery' } }] }))
+  assert.equal(out[1].did, 'connected')
+  assert.ok(s.ocsCalls.every(c => c.appPassword !== 'correct horse battery'))
+  assert.equal((await s.svc.instances.login((await s.svc.instances.list())[0].id)).made, true)
+})
+
+test('auto-connect: two vault logins for the address are a pick (still added over occ); several admins are not guessed between', async () => {
+  const s = service(makerGuest({ parts: { groups: '{"admin":["alice","bob"]}' } }), { sightings: async () => SEEN })
+  const items = [
+    { id: 'v1', name: 'NC alice', uris: ['https://cloud.example.com'], fields: { username: 'alice', password: APP_PW } },
+    { id: 'v2', name: 'NC bob', uris: ['https://cloud.example.com/'], fields: { username: 'bob', password: APP_PW } },
+  ]
+  const out = await s.svc.autoConnect(acx({ vaultItems: () => items }))
+  assert.equal(out[0].did, 'connected')
+  assert.equal(out[1].did, 'ambiguous')
+  assert.deepEqual(out[1].choices, [{ id: 'v1', label: 'NC alice' }, { id: 'v2', label: 'NC bob' }])
+  assert.equal(s.ocsCalls.length, 0)
+  const picked = await s.svc.autoPick(out[1].key, 'v2', acx({ vaultItems: () => items }))
+  assert.equal(picked.did, 'connected')
+  assert.equal((await s.svc.instances.login((await s.svc.instances.list())[0].id)).user, 'bob')
+  // No vault item, two admins: left for a person.
+  const s2 = service(makerGuest({ parts: { groups: '{"admin":["alice","bob"]}' } }), { sightings: async () => SEEN })
+  assert.equal((await s2.svc.autoConnect(acx()))[1].did, 'needs_credential')
+})
+
+test('auto-connect: never an ignored or excluded guest, a dismissed one, or a stopped one; two candidate containers are a pick', async () => {
+  const s = service(fakeGuest(), { sightings: async () => [...SEEN, { guest: { kind: 'lxc', vmid: 101 }, url: null, via: 'scan' }] })
+  let out = await s.svc.autoConnect(acx({ excludedMachines: new Set(['lxc-100']) }))
+  assert.deepEqual(out.map(o => o.did), ['excluded', 'excluded'])
+  out = await s.svc.autoConnect(acx({ dismissed: k => k === 'lxc-100' }))
+  assert.equal(out[0].did, 'dismissed')
+  out = await s.svc.autoConnect(acx({ excludedSubnets: ['10.0.0.0/24'] }))
+  assert.equal(out[0].did, 'excluded')
+  assert.equal((await s.svc.instances.list()).length, 0)
+  // Two candidates in one guest.
+  const noFlag = DETECT_CRON.replace(/^(CTR\|nextcloud-cron-1\|(?:[^|]*\|){14})1\|0\|/m, '$10|0|').replace(/^(CTR\|nextcloud-app-1\|(?:[^|]*\|){15})1\|/m, '$10|')
+  const twin = noFlag.replace('|app:service_started:false', '|')
+  const s2 = service(fakeGuest({ detect: twin, parts: { groups: '{"admin":[]}' } }), { sightings: async () => SEEN })
+  out = await s2.svc.autoConnect(acx())
+  assert.equal(out[0].did, 'ambiguous')
+  assert.equal(out[0].choices!.length, 2)
+  assert.equal((await s2.svc.instances.list()).length, 0)
+  const o = await s2.svc.autoPick('lxc-100', 'nextcloud-app-1', acx())
+  assert.equal(o.did, 'connected')
+  assert.equal((await s2.svc.instances.list())[0].deployment!.app!.container, 'nextcloud-app-1')
+})
+
+test('removing: the app password HyperProx made is revoked first (refused when it cannot be, unless forced), and the guest is remembered as dismissed', async () => {
+  const dismissed: string[] = []
+  const g = makerGuest()
+  const s = service(g, { sightings: async () => SEEN, dismissed: async k => { dismissed.push(k) } })
+  await s.svc.autoConnect(acx())
+  const [m] = await s.svc.instances.list()
+  await s.svc.remove(m.id, ADMIN)
+  assert.match(g.calls.find(c => c.includes('user:auth-tokens:delete'))!, /'alice' '42'/)
+  assert.deepEqual(dismissed, ['lxc-100'])
+  assert.equal((await s.svc.instances.list()).length, 0)
+  // Cannot be revoked: refused, nothing removed; forced: removed, and the answer says the password is left.
+  const g2 = makerGuest({ scripts: [[/user:auth-tokens:delete/, 'boom', 1]] })
+  const s2 = service(g2, { sightings: async () => SEEN })
+  await s2.svc.autoConnect(acx())
+  const [m2] = await s2.svc.instances.list()
+  await assert.rejects(s2.svc.remove(m2.id, ADMIN), (e: any) => e.code === 'revoke_failed')
+  assert.equal((await s2.svc.instances.list()).length, 1)
+  assert.deepEqual(await s2.svc.remove(m2.id, ADMIN, true), { appPasswordLeft: true })
+  // A pasted app password is not HyperProx's: removing never touches it.
+  const g3 = fakeGuest()
+  const s3 = service(g3)
+  const m3 = await added(s3)
+  await s3.svc.remove(m3.id, ADMIN)
+  assert.ok(!g3.calls.some(c => c.includes('user:auth-tokens:delete')))
 })

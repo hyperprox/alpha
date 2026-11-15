@@ -87,8 +87,10 @@ export class DetectAmbiguous extends Error {
  * The app container: running, with occ, and not a sidecar (cron, Client Push) built from the same image. Among
  * several, the one running a web server or PHP-FPM; then the one the others depend on; more than one left: refused.
  */
-export function pickApp(cs: ContainerFact[]): ContainerFact | null {
+export function pickApp(cs: ContainerFact[], prefer?: string): ContainerFact | null {
   let c = cs.filter(x => x.hasOcc && x.state === 'running' && !x.cron && !x.notifyPush)
+  // A person picked which one (an ambiguous detection, lib/auto-connect): only a real candidate is taken.
+  if (prefer) return c.find(x => x.name === prefer) ?? null
   if (c.length <= 1) return c[0] ?? null
   const web = c.filter(x => x.web)
   if (web.length) c = web
@@ -157,12 +159,12 @@ export function parseContainers(out: string): ContainerFact[] {
 }
 
 /** What the detection script found, as a deployment; null when there is no Nextcloud in the guest. */
-export function parseDetect(out: string): Deployment | null {
+export function parseDetect(out: string, prefer?: string): Deployment | null {
   if (!/^END\|ok$/m.test(out)) throw new Error('The detection did not finish in the guest.')
   const docker = /^DOCKER\|(\S{1,40})$/m.exec(out)?.[1] ?? null
   const compose = /^COMPOSE\|v?(\S{1,40})$/m.exec(out)?.[1] ?? null
   const cs = parseContainers(out)
-  const app = pickApp(cs)
+  const app = pickApp(cs, prefer)
   if (app) {
     const same = (c: ContainerFact) => !!app.project && c.project === app.project
     const db = cs.find(c => same(c) && /(^|\/)(postgres|postgis)/i.test(c.image)) ?? cs.find(c => same(c) && /(^|\/)(mariadb|mysql)/i.test(c.image))

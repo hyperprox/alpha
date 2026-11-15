@@ -15,6 +15,7 @@ import Link from 'next/link'
 import { Page, HudHeader, Panel, styles } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { PlexSignIn } from '@/components/plugins/plex/SignIn'
+import { AutoConnectPanel } from '@/components/plugins/AutoConnect'
 import { LOCAL_PLUGINS } from '@local-plugins'
 
 interface PluginSetting {
@@ -328,8 +329,18 @@ export default function PluginsPage() {
     try {
       const res = await fetch('/api/plugins/discover').then(r => r.json())
       if (!res.success) return setNotice(res.error)
-      setFindings(res.data)
-      if (!res.data.length) setNotice('Nothing found. Only running containers with a readable address are scanned.')
+      // What can be connected without a person (an address with no key, or a key the vault holds for that same
+      // address) is connected now; the list below keeps only what still needs something.
+      const auto = await fetch('/api/auto-connect/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.json()).catch(() => null)
+      const left = await fetch('/api/plugins').then(r => r.json()).catch(() => null)
+      const filled = new Set<string>()
+      for (const p of left?.data ?? []) for (const st of p.settings ?? []) if (st.isSet && st.value) filled.add(`${p.id}:${st.key}:${st.value}`)
+      const rest = (res.data as Finding[]).filter(f => !(f.setting && filled.has(`${f.pluginId}:${f.setting}:${f.address}`)))
+      setFindings(rest)
+      await load()
+      if (auto?.data?.waited === 'locked') setNotice('HyperProx is locked: what it found is connected once it is unlocked.')
+      else if (!res.data.length) setNotice('Nothing found. Only running containers with a readable address are scanned.')
+      else if (!rest.length) setNotice('Everything found is connected.')
     } catch (e: any) {
       setNotice(e.message)
     } finally {
@@ -403,6 +414,8 @@ export default function PluginsPage() {
           <button onClick={() => setNotice(null)} className={`${styles.btn} ${styles.btnGhost}`}>dismiss</button>
         </div>
       )}
+
+        <AutoConnectPanel plugins={['unmanic', 'arrstack', 'plex', 'homepage', 'nextcloud']} onChanged={() => void load()} />
 
         {findings && findings.length > 0 && (
           <Panel title="Found on your cluster" sub={`${findings.length}`}

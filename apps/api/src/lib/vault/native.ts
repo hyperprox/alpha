@@ -64,7 +64,7 @@ export interface DecryptedItem {
   id: string
   name: string
   notes?: string | null
-  login?: { username?: string | null; password?: string | null }
+  login?: { username?: string | null; password?: string | null; uris?: string[] }
   fields?: Array<{ name: string; value: string | null }>
   revisionDate?: string
 }
@@ -270,6 +270,12 @@ export class NativeVaultSession {
     return encString2(Buffer.from(v, 'utf8'), key)
   }
 
+  /** A login's URIs (addresses, not secrets), only when it has any: auto-connect matches an install to its login by them. */
+  private static urisOf(login: any, D: (v: unknown) => string | null): { uris?: string[] } {
+    const uris = (Array.isArray(login?.uris) ? login.uris : []).map((u: any) => D(u?.uri)).filter((u: unknown): u is string => typeof u === 'string' && !!u).slice(0, 20)
+    return uris.length ? { uris } : {}
+  }
+
   /** Decrypts one item; one that cannot be read shows as the CLI shows it instead of failing the listing. */
   private decrypt(c: any): DecryptedItem {
     let key: SymKey
@@ -280,7 +286,8 @@ export class NativeVaultSession {
         id: String(c.id),
         name: D(c.name) ?? '',
         notes: D(c.notes),
-        ...(c.login ? { login: { username: D(c.login.username), password: D(c.login.password) } } : {}),
+        // A login's URIs are addresses, not secrets: auto-connect matches an install to its login by them.
+        ...(c.login ? { login: { username: D(c.login.username), password: D(c.login.password), ...NativeVaultSession.urisOf(c.login, D) } } : {}),
         fields: (c.fields ?? []).map((f: any) => ({ name: D(f?.name) ?? '', value: D(f?.value) })),
         ...(c.revisionDate ? { revisionDate: String(c.revisionDate) } : {}),
       }

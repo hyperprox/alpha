@@ -93,7 +93,9 @@ function parseIndex(raw: string | null): NcMeta[] {
       try { guest = cleanGuest(x.guest) } catch { guest = { kind: 'lxc', vmid: 0 } }
       const snoozed: Record<string, string> = {}
       for (const [k, t] of Object.entries(x.snoozed ?? {})) if (/^[A-Za-z0-9_\\:-]{1,160}$/.test(k) && typeof t === 'string' && (t === 'forever' || !Number.isNaN(Date.parse(t)))) snoozed[k] = t
-      return { id: x.id, name: String(x.name).slice(0, 40), guest, deployment: (x.deployment ?? null) as Deployment | null, snoozed, addedAt: typeof x.addedAt === 'string' ? x.addedAt.slice(0, 40) : '' }
+      const ac = x.autoConnected && typeof x.autoConnected === 'object' ? x.autoConnected : null
+      const autoConnected = ac ? { at: String(ac.at ?? '').slice(0, 40), evidence: (Array.isArray(ac.evidence) ? ac.evidence : []).map(String).map((e: string) => e.slice(0, 120)).slice(0, 10), webLogin: typeof ac.webLogin === 'string' ? ac.webLogin.slice(0, 200) : null } : null
+      return { id: x.id, name: String(x.name).slice(0, 40), guest, deployment: (x.deployment ?? null) as Deployment | null, snoozed, addedAt: typeof x.addedAt === 'string' ? x.addedAt.slice(0, 40) : '', ...(autoConnected ? { autoConnected } : {}) }
     }).filter(m => m.guest.vmid > 0)
   } catch { return [] }
 }
@@ -127,33 +129,34 @@ export class NcInstanceStore {
   private async write(list: NcMeta[]): Promise<void> { await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list), false) }
 
   /** The OCS login; null parts when none is set. The password never leaves the service. */
-  async login(id: string): Promise<{ url: string | null; user: string | null; appPassword: string | null; tokenId: number | null }> {
+  async login(id: string): Promise<{ url: string | null; user: string | null; appPassword: string | null; tokenId: number | null; made: boolean }> {
     const p = providerFor(id)
-    const [url, user, appPassword, tid] = await Promise.all([this.io.get(CATEGORY, p, 'url'), this.io.get(CATEGORY, p, 'user'), this.io.get(CATEGORY, p, 'app_password'), this.io.get(CATEGORY, p, 'token_id')])
+    const [url, user, appPassword, tid, made] = await Promise.all([this.io.get(CATEGORY, p, 'url'), this.io.get(CATEGORY, p, 'user'), this.io.get(CATEGORY, p, 'app_password'), this.io.get(CATEGORY, p, 'token_id'), this.io.get(CATEGORY, p, 'made')])
     const tokenId = tid && /^\d{1,15}$/.test(tid) ? Number(tid) : null
-    return { url, user, appPassword, tokenId }
+    // made: HyperProx made this app password itself (occ), so it revokes it again when the instance is removed.
+    return { url, user, appPassword, tokenId, made: made === '1' && !!appPassword }
   }
 
   async view(m: NcMeta): Promise<NcView> {
     const l = await this.login(m.id)
-    return { ...m, url: l.url, user: l.user, hasAppPassword: !!l.appPassword }
+    return { ...m, url: l.url, user: l.user, hasAppPassword: !!l.appPassword, appPasswordMadeByHyperProx: l.made }
   }
 
   async views(): Promise<NcView[]> { return Promise.all((await this.list()).map(m => this.view(m))) }
 
-  async create(input: { name: string; guest: GuestRef; deployment: Deployment | null; url: string | null; user: string | null; appPassword: string | null; tokenId?: number | null }): Promise<NcMeta> {
+  async create(input: { name: string; guest: GuestRef; deployment: Deployment | null; url: string | null; user: string | null; appPassword: string | null; tokenId?: number | null; made?: boolean; autoConnected?: NcMeta['autoConnected'] }): Promise<NcMeta> {
     return this.serial(async () => {
       const list = await this.list()
       if (list.length >= MAX_INSTANCES) throw bad(`HyperProx looks after up to ${MAX_INSTANCES} Nextcloud instances.`)
       if (list.some(m => m.guest.kind === input.guest.kind && m.guest.vmid === input.guest.vmid)) throw new NcRefusal('duplicate', 'That guest is already added.', 409)
-      const meta: NcMeta = { id: `n${crypto.randomBytes(4).toString('hex')}`, name: input.name, guest: input.guest, deployment: input.deployment, snoozed: {}, addedAt: new Date().toISOString() }
+      const meta: NcMeta = { id: `n${crypto.randomBytes(4).toString('hex')}`, name: input.name, guest: input.guest, deployment: input.deployment, snoozed: {}, addedAt: new Date().toISOString(), ...(input.autoConnected ? { autoConnected: input.autoConnected } : {}) }
       await this.writeLogin(meta.id, input)
       await this.write([...list, meta])
       return meta
     })
   }
 
-  private async writeLogin(id: string, l: { url: string | null; user: string | null; appPassword: string | null; tokenId?: number | null }): Promise<void> {
+  private async writeLogin(id: string, l: { url: string | null; user: string | null; appPassword: string | null; tokenId?: number | null; made?: boolean }): Promise<void> {
     const p = providerFor(id)
     if (l.url !== null) await this.io.set(CATEGORY, p, 'url', l.url, false)
     if (l.user !== null) await this.io.set(CATEGORY, p, 'user', l.user, false)
@@ -161,7 +164,28 @@ export class NcInstanceStore {
       await this.io.set(CATEGORY, p, 'app_password', l.appPassword, true)
       // Which Nextcloud token that password is (so its own activity is never counted as a person's); '' when unknown.
       await this.io.set(CATEGORY, p, 'token_id', l.tokenId ? String(l.tokenId) : '', false)
+      await this.io.set(CATEGORY, p, 'made', l.made ? '1' : '', false)
     }
+  }
+
+  /** Set the web login of an instance that has none yet (auto-connect). Refused when one is set already. */
+  async setLogin(id: string, l: { url: string; user: string; appPassword: string; tokenId: number | null; made: boolean }): Promise<void> {
+    await this.serial(async () => {
+      if (!(await this.list()).some(m => m.id === id)) throw new NcRefusal('no_instance', 'No such Nextcloud.', 404)
+      if ((await this.login(id)).appPassword) throw new NcRefusal('has_login', 'This Nextcloud already has a web login.', 409)
+      await this.writeLogin(id, { url: cleanUrl(l.url), user: cleanUser(l.user), appPassword: cleanAppPassword(l.appPassword), tokenId: l.tokenId, made: l.made })
+    })
+  }
+
+  /** Record how auto-connect made the web login (shown on the page). */
+  async setAutoConnected(id: string, a: NcMeta['autoConnected']): Promise<void> {
+    await this.serial(async () => {
+      const list = await this.list()
+      const i = list.findIndex(m => m.id === id)
+      if (i < 0) return
+      list[i] = { ...list[i], autoConnected: a }
+      await this.write(list)
+    })
   }
 
   /**

@@ -27,9 +27,11 @@ export interface NcMeta {
   /** Snoozed or dismissed checks: check id -> ISO time it comes back, or 'forever'. */
   snoozed:   Record<string, string>
   addedAt:   string
+  /** Set when HyperProx connected it by itself (lib/auto-connect): when, how it was found, how the web login was made. */
+  autoConnected?: { at: string; evidence: string[]; webLogin: string | null } | null
 }
 
-export interface NcView extends NcMeta { url: string | null; user: string | null; hasAppPassword: boolean }
+export interface NcView extends NcMeta { url: string | null; user: string | null; hasAppPassword: boolean; appPasswordMadeByHyperProx: boolean }
 
 export interface CheckView {
   id: string; category: string; name: string; severity: Severity; description: string; doc: string | null
