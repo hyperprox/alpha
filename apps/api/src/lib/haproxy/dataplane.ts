@@ -81,9 +81,17 @@ export async function persistMaintenance(w: ConfigWriter, backend: string, srv: 
 
 export interface NewServer { name: string; address: string; port: number; weight: number; check: boolean }
 
+/** HAProxy's own control ports on its container's loopback: never a server, or visitors could reach them through it. */
+export const RESERVED_LOOPBACK_PORTS = [5555, 8404, 8405] as const
+const isLoopback = (a: string) => /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(a) || a.toLowerCase() === 'localhost' || a === '::1'
+
 export function checkNewServer(v: Record<string, unknown>): NewServer {
-  return { name: checkName(v.name, 'The server name'), address: checkAddress(v.address), port: checkPort(v.port),
+  const s: NewServer = { name: checkName(v.name, 'The server name'), address: checkAddress(v.address), port: checkPort(v.port),
     weight: v.weight === undefined || v.weight === '' ? 100 : checkWeight(v.weight), check: v.check !== false }
+  if (isLoopback(s.address) && (RESERVED_LOOPBACK_PORTS as readonly number[]).includes(s.port)) {
+    throw new RuntimeRefusal(`Port ${s.port} on this container's loopback is HAProxy's own control port (Data Plane API, stats or metrics), never an app: pick the app's port.`)
+  }
+  return s
 }
 
 const serverBody = (s: NewServer) => ({ name: s.name, address: s.address, port: s.port, weight: s.weight, check: s.check ? 'enabled' : 'disabled' })
