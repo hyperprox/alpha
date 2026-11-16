@@ -14,14 +14,15 @@
 
 import type { CatalogueRecipe, RecipeOption } from '../catalogue'
 import { DETECT } from '../catalogue-detect'
-import { TC_SCRIPT, TDARR_VERSION } from './compose'
+import { TC_SCRIPT, PLEX_SCRIPT, PLEX_PORT, PLEX_VERSION, TDARR_VERSION } from './compose'
 import { LAYOUT_LINE } from './media'
 
 export const UNMANIC_ID = 'unmanic'
 export const UNMANIC_WORKER_ID = 'unmanic-worker'
 export const TDARR_ID = 'tdarr'
 export const TDARR_NODE_ID = 'tdarr-node'
-export const TRANSCODE_IDS = [UNMANIC_ID, UNMANIC_WORKER_ID, TDARR_ID, TDARR_NODE_ID] as const
+export const PLEX_ID = 'plex'
+export const TRANSCODE_IDS = [UNMANIC_ID, UNMANIC_WORKER_ID, TDARR_ID, TDARR_NODE_ID, PLEX_ID] as const
 
 const bool = (key: string, label: string, def: boolean, hint?: string): RecipeOption => ({ key, label, kind: 'boolean', default: def ? '1' : '0', ...(hint ? { hint } : {}) })
 
@@ -199,4 +200,52 @@ export const TDARR_NODE_RECIPE: CatalogueRecipe = {
   checkOptions: v => checkTcOptions(v, { library: true, main: true }),
 }
 
-export const TRANSCODE_RECIPES: CatalogueRecipe[] = [UNMANIC_RECIPE, UNMANIC_WORKER_RECIPE, TDARR_RECIPE, TDARR_NODE_RECIPE]
+// ── Plex Media Server ───────────────────────────────────────────────────────
+
+export const PLEX_OPTIONS: RecipeOption[] = [
+  ...ACCEL_OPTIONS, ...MEDIA_OPTIONS,
+  // The id of a "Sign in with Plex" the person made in the wizard, to claim the new server to their account. Only an
+  // id: it is checked against the person's own open sign-in when the install runs, and holds no token.
+  { key: 'PLEX_SIGNIN', label: 'Plex sign-in', kind: 'text', maxLength: 40 },
+  bool('PLEX_LIBRARIES', 'Add a Movies and a TV Shows library', true, 'Points them at the movies and tv folders inside the library when those folders exist.'),
+]
+
+const PLEX_ID_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
+
+export const PLEX_RECIPE: CatalogueRecipe = {
+  id: PLEX_ID,
+  detect: DETECT[PLEX_ID],
+  name: 'Plex Media Server',
+  summary: 'Your own Plex server: installed from Plex\'s official repository, claimed to your Plex account, with your library folder added and, if the node has a graphics card to share, hardware transcoding.',
+  category: 'media',
+  satisfies: { kind: 'plugin', id: 'plex', setting: 'plex_url' },
+  port: PLEX_PORT,
+  healthPath: '/identity',
+  expectStatus: [200],
+  healthBody: { contains: ['machineIdentifier'] },
+  needsDocker: false,
+  wantsGpu: true,
+  defaults: { cores: 4, memoryMb: 4096, diskGb: 24, swapMb: 512 },
+  minimum: { cores: 2, memoryMb: 2048, diskGb: 10 },
+  firstRun: { kind: 'none' },
+  firstLogin: 'Sign in with Plex in the wizard and the server is claimed to your account for you; nothing to type in Plex afterwards. Without it the server stays unclaimed on your network.',
+  notes: [
+    `Plex Media Server ${PLEX_VERSION}, from Plex's own apt repository (the repository's signing key is checked against a pinned hash first). The container updates it with apt like any other package.`,
+    LAYOUT_LINE,
+    'Plex reads the library; it does not need to change your files, so a read-only share works. Its own database and artwork live on the container\'s own disk (step 2): allow room for them, they grow with the library.',
+    'Hardware is looked at on the node you pick: Intel or AMD graphics (VAAPI) or an NVIDIA card whose driver is already on the node. For NVIDIA, HyperProx puts exactly the node\'s own driver version of the user-space libraries in the container, checked against a pinned hash, and refuses any other version; use the GPU page for a card it cannot match. HyperProx never installs or changes a driver on a node.',
+    'Hardware transcoding itself needs a Plex Pass on the account that claims the server; HyperProx turns the setting on and Plex uses it when the account has one.',
+    'The server gets no public name. Plex\'s own remote access needs port 32400 forwarded to this container; do that on your router, or add a proxy host in HyperProx for a name of your own.',
+    'The Plex plug-in connects to this server by itself once it is claimed, with the server\'s token kept in the vault.',
+  ],
+  wizard: false,
+  options: PLEX_OPTIONS,
+  install: { kind: 'script', script: PLEX_SCRIPT },
+  stack: 'transcode',
+  checkOptions: v => [
+    ...checkTcOptions(v, { library: true }),
+    ...(v.PLEX_SIGNIN && !PLEX_ID_RE.test(v.PLEX_SIGNIN) ? ['The Plex sign-in is not one HyperProx made. Sign in with Plex again.'] : []),
+  ],
+}
+
+export const TRANSCODE_RECIPES: CatalogueRecipe[] = [UNMANIC_RECIPE, UNMANIC_WORKER_RECIPE, TDARR_RECIPE, TDARR_NODE_RECIPE, PLEX_RECIPE]

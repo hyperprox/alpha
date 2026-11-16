@@ -10,15 +10,16 @@
 //  again, and refuses a hardware choice the node cannot honour.
 // =============================================================================
 
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { apiJson } from '@/lib/api'
 import { alpha } from '@/lib/theme'
 import { useState } from 'react'
 import { INPUT } from '@/components/vault/ui'
 import { Field, MediaSource, Segmented, mediaMissing, type MediaFacts } from './MediaSource'
+import { PlexClaim } from './PlexClaim'
 
-export type TcKind = 'unmanic' | 'unmanic-worker' | 'tdarr' | 'tdarr-node'
-export const TC_KINDS: TcKind[] = ['unmanic', 'unmanic-worker', 'tdarr', 'tdarr-node']
+export type TcKind = 'unmanic' | 'unmanic-worker' | 'tdarr' | 'tdarr-node' | 'plex'
+export const TC_KINDS: TcKind[] = ['unmanic', 'unmanic-worker', 'tdarr', 'tdarr-node', 'plex']
 export const isTcRecipe = (r: { id: string; stack?: string | null }) => r.stack === 'transcode' && (TC_KINDS as string[]).includes(r.id)
 const hasLibrary = (k: TcKind) => k !== 'unmanic-worker'
 const isUnmanic = (k: TcKind) => k.startsWith('unmanic')
@@ -42,6 +43,10 @@ const EXPLAIN: Record<TcKind, { what: string; extras: string }> = {
     what: 'One container with the Tdarr server and a node beside it. The server hands out jobs; the node, with the GPU, does the work.',
     extras: 'Want more nodes? After this install, add Tdarr nodes on other cluster nodes. Each sees the library at exactly the same path (/data/media) and runs the server\'s own Tdarr version, and each gets its own node\'s hardware.',
   },
+  plex: {
+    what: 'One container with Plex Media Server in it, installed from Plex\'s own repository. Your library is mounted at /data/media, the folder the Arr Stack fills, and a Movies and a TV Shows library are added for you when those folders exist.',
+    extras: 'Plex reads your library and does not change your files, so a read-only share works. For remote access, forward port 32400 on your router to this container; HyperProx gives it no public name.',
+  },
   'tdarr-node': {
     what: 'An extra Tdarr node on another cluster node, for the Tdarr server you already run.',
     extras: 'It must see the library at exactly /data/media, the same text the server uses: give it the same NAS export, or a folder that exists on this node at the same place.',
@@ -63,6 +68,7 @@ export function TranscodePicker({ kind, opts, setOpts, onState }: {
 }) {
   const [facts, setFacts] = useState<Facts | null>(null)
   const set = (k: string, v: string) => setOpts(o => ({ ...o, [k]: v }))
+  const onClaim = useCallback((id: string) => setOpts(o => ({ ...o, PLEX_SIGNIN: id })), [setOpts])
 
   useEffect(() => {
     void apiJson<{ data: Facts }>('/api/catalogue/wizard/transcode').then(r => { if (r.ok && r.body?.data) setFacts(r.body.data) })
@@ -89,7 +95,7 @@ export function TranscodePicker({ kind, opts, setOpts, onState }: {
       <div className="rounded-lg border p-4 space-y-3 min-w-0" style={{ borderColor: 'var(--border-soft)', background: 'var(--ground-inset)' }}>
         <p className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>Hardware acceleration</p>
         <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
-          A GPU does this several times faster than the CPU. HyperProx looks at the node you pick in step 3 and shows what it has there; Automatic uses its Intel or AMD graphics, else its NVIDIA card, else the CPU.
+          {kind === 'plex' ? 'A GPU lets Plex transcode a stream for a device that cannot play it as it is, using far less of the CPU (hardware transcoding needs a Plex Pass). ' : 'A GPU does this several times faster than the CPU. '}HyperProx looks at the node you pick in step 3 and shows what it has there; Automatic uses its Intel or AMD graphics, else its NVIDIA card, else the CPU.
         </p>
         <Segmented label="Hardware acceleration" value={accel} onChange={v => set('TC_ACCEL', v)}
           items={(['auto', 'vaapi', 'nvidia', 'cpu'] as const).map(a => [a, ACCEL_WORDS[a]] as [typeof a, string])} />
@@ -104,6 +110,19 @@ export function TranscodePicker({ kind, opts, setOpts, onState }: {
 
       {hasLibrary(kind) && (
         <MediaSource opts={opts} set={set} facts={facts} layoutLine="The library is /data/media inside the container: the same folder the Arr Stack fills, at the same path." />
+      )}
+
+      {kind === 'plex' && (
+        <div className="rounded-lg border p-4 space-y-3 min-w-0" style={{ borderColor: 'var(--border-soft)', background: 'var(--ground-inset)' }}>
+          <p className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>Your Plex account</p>
+          <PlexClaim onFlow={onClaim} />
+          <label className="flex items-start gap-2 text-sm cursor-pointer" style={{ color: 'var(--text)' }}>
+            <input type="checkbox" className="mt-1" checked={opts.PLEX_LIBRARIES !== '0'} onChange={e => set('PLEX_LIBRARIES', e.target.checked ? '1' : '0')} />
+            <span>Add a Movies and a TV Shows library
+              <span className="block text-[12px]" style={{ color: 'var(--text-dim)' }}>Points them at the movies and tv folders inside the library, when those folders exist.</span>
+            </span>
+          </label>
+        </div>
       )}
 
       {needsMain(kind) && (
@@ -134,10 +153,12 @@ export function TranscodePicker({ kind, opts, setOpts, onState }: {
       )}
 
       <div className="rounded-lg border p-4 space-y-2 min-w-0" style={{ borderColor: 'var(--border-soft)', background: 'var(--ground-inset)' }}>
-        <p className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>{needsMain(kind) ? 'How it joins' : 'More nodes later'}</p>
+        <p className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>{needsMain(kind) ? 'How it joins' : kind === 'plex' ? 'Good to know' : 'More nodes later'}</p>
         <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>{ex.extras}</p>
         <p className="text-[12px]" style={{ color: 'var(--text-dim)' }}>
-          {isUnmanic(kind) ? 'Unmanic has no sign-in' : 'Tdarr has no sign-in by default'}: anyone on your network can open it. HyperProx gives it no public name and no port forward. Nothing here needs a password, so nothing is put in the vault.
+          {kind === 'plex'
+            ? 'Plex has its own sign-in: you will use your Plex account. The server\'s token is kept in the vault and the Plex plug-in connects with it by itself. HyperProx gives it no public name and no port forward.'
+            : `${isUnmanic(kind) ? 'Unmanic has no sign-in' : 'Tdarr has no sign-in by default'}: anyone on your network can open it. HyperProx gives it no public name and no port forward. Nothing here needs a password, so nothing is put in the vault.`}
           {kind === 'tdarr' || kind === 'tdarr-node' ? ' HyperProx has no Tdarr plug-in yet, so after the install it links to Tdarr; add your library folders there.' : ''}
         </p>
       </div>

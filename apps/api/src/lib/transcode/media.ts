@@ -53,11 +53,14 @@ export function mediaProbeScript(l: Layout, vmid: number): string {
 export interface MediaVerdict { errors: string[]; warnings: string[]; checks: string[] }
 
 /** What the node's answer means for this layout, including the write test. */
-export function judgeMedia(out: string, l: Layout, vmid: number): MediaVerdict {
+export function judgeMedia(out: string, l: Layout, vmid: number, needWrite = true): MediaVerdict {
   const p: Probe = parseProbe(out)
   const j = judgeProbe(p, l, vmid)
   if (l.media === 'path' && !j.errors.length) {
-    if (/^@@arr readonly /m.test(out)) {
+    if (/^@@arr readonly /m.test(out) && !needWrite) {
+      // A media server only reads: a read-only folder works, it just cannot have its Movies and TV folders made.
+      j.warnings.push(`${l.hostPath} is read-only for the container's user (uid ${PUID} inside, ${HOST_UID} on the node), which is fine for reading. HyperProx cannot make the movies and tv folders there, so point Plex at the folders you have.`)
+    } else if (/^@@arr readonly /m.test(out)) {
       j.errors.push(`${l.hostPath} is not writable by the container's user (uid ${PUID} inside, ${HOST_UID} on the node). These apps replace files in place, so let that user write there, for example by giving group ${100000 + PGID} write access, or pick another folder.`)
     } else if (/^@@arr writable$/m.test(out)) j.checks.push(`uid ${HOST_UID} can write there, as these apps need.`)
   }
@@ -69,9 +72,9 @@ export function judgeMedia(out: string, l: Layout, vmid: number): MediaVerdict {
  * it nesting and keyctl (Docker needs both) and its hardware devices, start it again. The Arr Stack's own script
  * does this with the library on top; the device pairs are checked the same way there.
  */
-export function prepareNoLibraryScript(o: { vmid: number; extra: Array<[string, string]> }): string {
+export function prepareNoLibraryScript(o: { vmid: number; extra: Array<[string, string]>; docker?: boolean }): string {
   if (!Number.isInteger(o.vmid) || o.vmid < 100) throw new Error('Bad container id.')
-  const set = ['--features nesting=1,keyctl=1']
+  const set = o.docker === false ? [] : ['--features nesting=1,keyctl=1']
   for (const [flag, value] of o.extra) {
     if (!/^--dev\d{1,2}$/.test(flag)) throw new Error('Refused: only device settings may be added.')
     set.push(`${flag} ${sq(safe(value))}`)

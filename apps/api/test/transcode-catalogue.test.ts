@@ -104,14 +104,17 @@ test("hardware: the node probe is the existing read-only one plus a group lookup
 
 // ── The recipes ─────────────────────────────────────────────────────────────
 
-test("recipes: four entries, listed once, Docker, no generated login, each option key an environment name", () => {
+test("recipes: five entries, listed once, no generated login, each option key an environment name; the four transcoders run Docker", () => {
   assert.deepEqual(TRANSCODE_RECIPES.map(r => r.id), [...TRANSCODE_IDS])
   for (const r of TRANSCODE_RECIPES) {
     assert.equal(CATALOGUE.filter(x => x.id === r.id).length, 1, r.id)
-    assert.equal(r.stack, "transcode"); assert.equal(r.needsDocker, true); assert.equal(r.wizard, false); assert.equal(r.category, "media")
-    assert.deepEqual(r.firstRun, { kind: "none" }, "neither app has a login here, so nothing is generated or kept")
+    assert.equal(r.stack, "transcode"); assert.equal(r.wizard, false); assert.equal(r.category, "media")
+    assert.deepEqual(r.firstRun, { kind: "none" }, "no app here has a generated login, so nothing is generated or kept")
     assert.equal(r.wantsGpu, true)
     assert.equal(r.install.kind, "script")
+    // Plex (the fifth, tested in plex-catalogue.test.ts) is a package, not Docker, and its first login is Plex's own.
+    if (r.id === "plex") continue
+    assert.equal(r.needsDocker, true)
     for (const o of r.options!) assert.match(o.key, /^(TC|UNMANIC)_[A-Z_]+$/)
     assert.ok(r.notes!.some(n => /No sign-in/.test(n)), `${r.id} says plainly that it has no sign-in`)
   }

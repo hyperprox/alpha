@@ -309,7 +309,7 @@ export function judgeProbe(p: Probe, l: Layout, vmid?: number): { errors: string
  * library mountpoint, then start it again. Every change here is undone by removing the container, except the NFS
  * line, which `unmountScript` removes.
  */
-export function prepareScript(o: { vmid: number; layout: Layout; storage: string; tun: boolean; extra?: Array<[string, string]> }): string {
+export function prepareScript(o: { vmid: number; layout: Layout; storage: string; tun: boolean; extra?: Array<[string, string]>; /** False for an app that is no Docker host: no nesting or keyctl is set. */ docker?: boolean }): string {
   const { vmid, layout } = o
   if (!Number.isInteger(vmid) || vmid < 100) throw new StorageInputError('Bad container id.')
   const lines = ['set -eu', `V=${vmid}`]
@@ -344,7 +344,7 @@ export function prepareScript(o: { vmid: number; layout: Layout; storage: string
     )
     mp0 = `"$R"${sq(`,mp=${mountTarget(layout)},backup=0`)}`
   }
-  const set = [`--features nesting=1,keyctl=1`, `-mp0 ${mp0}`]
+  const set = [...(o.docker === false ? [] : [`--features nesting=1,keyctl=1`]), `-mp0 ${mp0}`]
   if (o.tun) set.push('--dev0 /dev/net/tun')
   // More container settings from a caller (the transcoders' GPU devices), each checked like the rest.
   for (const [flag, value] of o.extra ?? []) {
@@ -371,10 +371,10 @@ export function unmountScript(vmid: number, fstab = '/etc/fstab'): string {
 }
 
 /** What the container's config must say after prepareScript, as read back through the API. */
-export function configProblems(cfg: Record<string, unknown> | null, o: { layout: Layout; storage: string; vmid: number; tun: boolean; resolved?: string; extra?: Array<[string, string]> }): string[] {
+export function configProblems(cfg: Record<string, unknown> | null, o: { layout: Layout; storage: string; vmid: number; tun: boolean; resolved?: string; extra?: Array<[string, string]>; docker?: boolean }): string[] {
   const out: string[] = []
   const features = String(cfg?.features ?? '')
-  if (!/(^|,)nesting=1(,|$)/.test(features) || !/(^|,)keyctl=1(,|$)/.test(features)) out.push(`features read back as "${features || 'none'}", not nesting=1,keyctl=1.`)
+  if (o.docker !== false && (!/(^|,)nesting=1(,|$)/.test(features) || !/(^|,)keyctl=1(,|$)/.test(features))) out.push(`features read back as "${features || 'none'}", not nesting=1,keyctl=1.`)
   const mp0 = String(cfg?.mp0 ?? '')
   const target = `mp=${mountTarget(o.layout)}`
   if (!mp0.split(',').includes(target)) out.push(`mp0 read back as "${mp0 || 'nothing'}", not mounted at ${mountTarget(o.layout)}.`)

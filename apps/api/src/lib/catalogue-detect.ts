@@ -97,6 +97,18 @@ export const DETECT: Record<string, Fingerprint[]> = {
     path: '/',
     match: a => (a.status === 200 && /<title>[^<]*Tdarr[^<]*<\/title>/i.test(a.body) ? { version: null } : null),
   }],
+  // Plex's own identity answer: JSON when asked for it, XML otherwise, carrying the server's machine identifier.
+  plex: [{
+    path: '/identity',
+    match: a => {
+      if (a.status !== 200) return null
+      const j = json(a)
+      if (j?.MediaContainer && typeof j.MediaContainer.machineIdentifier === 'string') return { version: str(j.MediaContainer.version) }
+      // The version is read from the MediaContainer tag itself: the XML declaration above it has a version too.
+      const tag = /<MediaContainer\b[^>]*>/.exec(a.body)?.[0]
+      return tag && /\bmachineIdentifier="[^"]+"/.test(tag) ? { version: /\bversion="([^"]+)"/.exec(tag)?.[1]?.slice(0, 40) ?? null } : null
+    },
+  }],
   'nginx-proxy-manager': [{
     path: '/api/',
     match: a => { const j = json(a); const v = j?.version; return j && j.status === 'OK' && v && typeof v.major === 'number' ? { version: `${v.major}.${v.minor ?? 0}.${v.revision ?? 0}` } : null },

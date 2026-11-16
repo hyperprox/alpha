@@ -45,6 +45,8 @@ export interface ArrDeps {
   savePluginSettings: ArrSetupDeps['savePluginSettings']
   localAddressTo: ArrSetupDeps['localAddressTo']
   mediaServer: ArrSetupDeps['mediaServer']
+  /** Plex's sign-in service, for claiming a new Plex server to the person's account (lib/transcode/plex.ts). */
+  plexClaim?: import('../transcode/plex').PlexClaimDeps
 }
 
 const WG_KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$/

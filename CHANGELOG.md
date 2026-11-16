@@ -21,6 +21,21 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — Plex Media Server in the Catalogue
+
+### New
+- You can now install your own Plex Media Server from the Catalogue. It comes from Plex's official repository, in its own container, on the node you pick.
+  - Technical: a fifth entry on the transcode stack (`lib/transcode/recipes.ts`, `lib/transcode/plex.ts`), a package install rather than Docker; build `1.43.5.11079-b3b13e506`, with Plex's signing key and the fallback package pinned by SHA-256.
+- Sign in with Plex in the wizard and the new server is claimed to your account for you, so there is nothing to do in Plex afterwards. Your Plex sign-in is only held by HyperProx, in memory, while the install runs. The server's own token, which Plex may make the same as your account's, is kept in the vault.
+  - Technical: `POST /api/plugins/plex/signin` takes `claim: true`; `PlexSignin` (`lib/plex-signin.ts`) keeps the account token in memory for 25 minutes at most, asks plex.tv for a claim code at install time, and drops the sign-in on use, expiry, a lock or the end of the install. `lib/plex-signin-shared.ts` is the one shared service.
+- The Plex page in HyperProx connects to the new server by itself, with its token kept in the vault, so Now streaming, Clear-out and Library work straight away.
+- If the node has Intel or AMD graphics, or an NVIDIA card whose driver HyperProx can match exactly, the container gets it and hardware transcoding is switched on (Plex uses it for accounts with a Plex Pass). Your library folder can be a new disk, a NAS or a folder on the node, and a Movies and a TV Shows library are added for you when those folders exist.
+  - Technical: reuses the transcoders' hardware probe, pinned NVIDIA installer checksums and the Arr Stack's storage layout, `shared=1` is never set on the library mount; a read-only library is accepted because Plex only reads.
+
+### Improved
+- Finding an existing Plex server on your network now also works through a proxy host.
+  - Technical: `DETECT.plex` fingerprints `/identity` (JSON or XML).
+
 ## 2026-11-16 — Proxy hosts live on their cards
 
 ### Improved

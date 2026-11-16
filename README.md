@@ -74,7 +74,7 @@ To run it locally, see [docs/demo.md](docs/demo.md).
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
-| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes |
+| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes; **Plex Media Server** installs from Plex's own repository, is claimed to your Plex account in the flow, and the Plex plug-in connects to it by itself |
 | Websites | Its own section: a New website wizard (static site, WordPress or Ghost) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link or open Ghost's admin, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
 | Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
@@ -1170,7 +1170,7 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic and Tdarr (below). Websites are not listed here: they have their own section,
+Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr and Plex (below). Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
@@ -1390,6 +1390,51 @@ container, because only the wizard sets up the node-side devices and mounts.
 
 **Already running?** Unmanic is found by its worker list (`/unmanic/api/v2/workers/status`) and Tdarr by its start
 page; the worker and node entries are not looked for, since they look like the app they join.
+
+#### Plex Media Server from the Catalogue
+
+One container with Plex Media Server in it, from Plex's own apt repository (not Docker). It uses the same picker as
+Unmanic and Tdarr, so the graphics choice, the library choice and the safety rules are the ones described above;
+this is what differs.
+
+**The build.** HyperProx installs one exact Plex build, the one the repository carried when it was last checked,
+never "the latest". The repository's signing key is checked against a pinned SHA-256 before it is trusted. If Plex has
+since removed that build from the repository, the same build is fetched from the repository's pool and checked
+against a pinned SHA-256 of the package; if Plex no longer publishes it, the install stops and says HyperProx needs
+updating. After the install, apt in the container updates Plex like any other package.
+
+**Order.** HyperProx turns hardware transcoding on and adds the libraries before it claims the server, because a claimed server turns away requests that carry no token. If it is refused anyway, it asks again with the server's own token, read from the vault, once the plug-in is connected.
+
+**No Docker settings.** Plex is a package, so its container is an ordinary unprivileged one with no nesting and no keyctl (checked: Plex runs in such a container).
+
+**Claiming the server, in the flow.** Step 1 has **Sign in with Plex**: the 4-character code to enter at
+plex.tv/link, the same sign-in the Plex plug-in's page uses. HyperProx keeps the account's token in memory only
+(never stored, logged or sent to the page), asks plex.tv for a one-time claim code at the last moment (it lives about
+four minutes), gives it to the new server's own address, and reads `/identity` back until it says claimed. The
+sign-in is dropped when the install ends, after 25 minutes, or when HyperProx locks, and only the person who made it
+can use it. Without signing in, the server is installed and left unclaimed on your network, and each skipped step
+says why. If plex.tv or the server refuses the claim after the package is installed, the install still finishes and
+that step says what happened, because the server works.
+
+**The Plex plug-in connects by itself.** Once plex.tv lists the new server under the account, HyperProx saves its
+address and the server's own token as the Plex plug-in's settings, through the normal settings save, so the token goes
+in the vault. What is saved is the token plex.tv lists for that server; for a server you own, Plex may make that the same token as your account's own, so treat it like your Plex password (it is in the vault, never in a settings file, and an existing Sign in with Plex on the Plex page saves exactly the same thing). The Plex page (now streaming, Clear-out, Library) works at
+once.
+
+**Graphics.** Intel or AMD graphics: the node's render device is shared with the container, and a group with the node's
+render group number is given to Plex's user. NVIDIA: only for a driver version HyperProx has a pinned installer
+checksum for, and the container gets exactly the node's version of the user-space libraries; any other version is
+refused in the preview, and the GPU page is the way for a card HyperProx cannot match. HyperProx switches Plex's
+hardware transcoding setting on; Plex uses it only for an account with a Plex Pass.
+
+**The library.** Inside the container it is `/data/media`, owned by uid 1000 like the Arr Stack's files. Plex only
+reads it, so a read-only folder or share is accepted (the preview says it cannot make the `movies` and `tv` folders
+there). When the library is writable the `movies` and `tv` folders are made, and a **Movies** and a **TV Shows**
+library are added where those folders exist, read back from Plex's library list. A library of the same name or
+folder that is already there is left alone.
+
+**Public name.** None. Plex's own remote access needs port 32400 forwarded to the container on your router, or a
+proxy host you add yourself.
 
 #### Proxmox Backup Server from the Catalogue
 

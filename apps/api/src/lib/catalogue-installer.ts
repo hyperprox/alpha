@@ -27,6 +27,7 @@ import {
 } from './arr/catalogue'
 import { isTranscode, kindOf, nodeHardwareFacts, tcPreview, tcPrepare, tcInstallEnv, tcJobSteps, tcRunSetup, tcCleanup } from './transcode/catalogue'
 import type { LinkRecord } from './transcode/setup'
+import { sharedPlexSignin } from './plex-signin-shared'
 import { execOnNode } from './node-exec'
 import type { CreatePVE } from './wizard-executor'
 import type { ExecResult } from './node-exec'
@@ -295,7 +296,7 @@ export async function createFromPlan(
   // backups), or a NAS export the node mounts, given to the container after the create, before its first start.
   const pbs = recipe.setup === 'pbs' ? plan.options ?? {} : null
   if (pbs?.PBS_LOCATION === 'disk') set('mp0', `${plan.storage}:${Number(pbs.PBS_SIZE_GB)},mp=${DATASTORE_BASE}/${pbs.PBS_DATASTORE},backup=0`)
-  set('unprivileged', 1); set('features', 'nesting=1'); set('onboot', 1); set('start', pbs?.PBS_LOCATION === 'nas' ? 0 : 1)
+  set('unprivileged', 1); if (recipe.id !== 'plex') set('features', 'nesting=1'); set('onboot', 1); set('start', pbs?.PBS_LOCATION === 'nas' ? 0 : 1)
   set('password', randomBytes(18).toString('base64url') + 'Aa1')
   set('description', `${recipe.name}, installed by HyperProx on ${new Date().toISOString().slice(0, 10)}.\n${installMark(jobId)}`)
   const upid = await client.fetchStrict<string>(`/nodes/${enc(plan.node)}/lxc`, 'POST', body.toString())
@@ -549,7 +550,7 @@ async function runJob(
       const s0 = job.steps.find(x => x.id === 'container')
       if (s0 && job.tcPrepared) s0.detail = `${s0.detail}: ${job.tcPrepared}`
       const out = await tcRunSetup({
-        kind: tc, ip: job.ip, hostname: job.hostname ?? recipe.id, options,
+        kind: tc, ip: job.ip, hostname: job.hostname ?? recipe.id, options, owner: job.owner,
         // Recorded the moment the main Unmanic has the link, so a failure after it can still be undone.
         onLink: r => { job.tcLink = r; void persistJob(job).catch(e => persistFailed(job, e)) },
       }, id => step(job, id), { arr: deps.arr, wait: deps.wait })
@@ -1320,7 +1321,7 @@ export async function previewInstall(
   // Unmanic and Tdarr: the node's hardware, the library, and (for a worker or node) the main server it joins.
   const tcp = isTranscode(recipe) && !r.errors.length ? await tcPreview({
     kind: kindOf(recipe.id), node: input.node, vmid: input.vmid, storage: input.storage, diskGb: input.diskGb, cores: input.cores,
-    values: checkOptions(recipe, input.options).values,
+    values: checkOptions(recipe, input.options).values, owner,
     storageFreeGb: view.storages.find(x => x.node === input.node && x.storage === input.storage)?.freeGb,
   }, deps) : null
   if (tcp) { r.errors.push(...tcp.errors); r.warnings.push(...tcp.warnings); r.checks.push(...tcp.checks); input = { ...input, options: tcp.options } }
@@ -1819,6 +1820,7 @@ function realArrDeps(): ArrDeps {
       await saveSettings(plugin.manifest, values)
     },
     localAddressTo,
+    plexClaim: sharedPlexSignin(),
     // The Plex plug-in's own server and token, when it has them: Seerr signs in with that Plex account.
     mediaServer: async () => {
       const p = await getSettings('plex').catch(() => ({} as Record<string, string>))

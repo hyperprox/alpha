@@ -785,6 +785,10 @@ function tcReview(kind: TcKind, o: Record<string, string> | undefined): Array<[s
   if (kind !== 'unmanic-worker') {
     out.push(['Library', `${o.TC_MEDIA === 'nfs' ? `NAS ${o.TC_NFS_HOST}:${o.TC_NFS_EXPORT} (NFS)` : o.TC_MEDIA === 'path' ? `${o.TC_HOST_PATH} on the node` : `new ${o.TC_MEDIA_GB} GB disk`}, at /data/media`])
   }
+  if (kind === 'plex') {
+    out.push(['Plex account', o.PLEX_SIGNIN ? 'the account you signed in with: the server is claimed to it and the Plex plug-in connected' : 'none: the server is left unclaimed on your network'])
+    out.push(['Libraries', o.PLEX_LIBRARIES === '0' ? 'none added' : 'Movies and TV Shows, where the movies and tv folders exist'])
+  }
   if (kind === 'unmanic' || kind === 'unmanic-worker') out.push(['Workers', o.UNMANIC_WORKERS || '1'])
   if (kind === 'unmanic-worker' || kind === 'tdarr-node') out.push([kind === 'tdarr-node' ? 'Tdarr server' : 'Main Unmanic', o.TC_MAIN_URL || '—'])
   if (kind === 'tdarr-node') out.push(['Tdarr version', o.TC_VERSION || '—'])

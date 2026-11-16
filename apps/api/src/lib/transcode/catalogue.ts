@@ -25,8 +25,9 @@ import type { ArrDeps } from '../arr/catalogue'
 import type { StepRef } from '../arr/setup'
 import { HARDWARE_SCRIPT, deviceSettings, groupAdd, hardwareFacts, parseHardware, resolveAccel, type Accel, type NodeHardware } from './hardware'
 import { layoutFromOptions, judgeMedia, mediaProbeScript, prepareNoLibraryScript, LAYOUT_LINE } from './media'
-import { scriptEnv, NVIDIA_RUN_SHA256, TDARR_VERSION, TDARR_SERVER_PORT, TDARR_WEB_PORT, UNMANIC_PORT, type TcKind } from './compose'
+import { scriptEnv, plexScriptEnv, NVIDIA_RUN_SHA256, TDARR_VERSION, TDARR_SERVER_PORT, TDARR_WEB_PORT, UNMANIC_PORT, type TcKind } from './compose'
 import { TRANSCODE_IDS, parseMainUrl } from './recipes'
+import { PLEX_NO_SIGNIN, PlexAuthRefused, addLibraries, claimServer, enableHardwareTranscoding, plexUrl, waitForPlex, type PlexSetupDeps } from './plex'
 import {
   linkWorker, tdarrServerVersion, tdarrUrl, unlinkWorker, unmanicUrl, waitForTdarr, waitForTdarrNode, waitForUnmanic,
   setUnmanicLibrary, setUnmanicWorkers, wireUnmanicPlugin, type LinkRecord, type TcSetupDeps,
@@ -41,7 +42,7 @@ export function kindOf(recipeId: string): TcKind {
   return recipeId as TcKind
 }
 const hasLibrary = (k: TcKind) => k !== 'unmanic-worker'
-const appName = (k: TcKind) => (k.startsWith('unmanic') ? 'Unmanic' : 'Tdarr')
+const appName = (k: TcKind) => (k === 'plex' ? 'Plex' : k.startsWith('unmanic') ? 'Unmanic' : 'Tdarr')
 
 // ── Preview ─────────────────────────────────────────────────────────────────
 
@@ -56,6 +57,8 @@ export interface TcPreviewInput {
   node: string; vmid: number; storage: string; diskGb: number; cores: number
   /** The options after checkOptions. */
   values: Record<string, string>
+  /** Who is previewing (ownerOf): a Plex sign-in counts only for the person who made it. */
+  owner?: string
   storageFreeGb?: number
 }
 
@@ -99,7 +102,7 @@ export async function tcPreview(i: TcPreviewInput, d: { arr?: () => ArrDeps }): 
       } else {
         const r = await run(mediaProbeScript(l, i.vmid), 60_000)
         if (r.code === -1) errors.push(`HyperProx could not run a check on ${i.node}.`)
-        else { const j = judgeMedia(r.output, l, i.vmid); errors.push(...j.errors); warnings.push(...j.warnings); checks.push(...j.checks) }
+        else { const j = judgeMedia(r.output, l, i.vmid, i.kind !== 'plex'); errors.push(...j.errors); warnings.push(...j.warnings); checks.push(...j.checks) }
       }
       checks.push(LAYOUT_LINE)
     }
@@ -141,7 +144,15 @@ export async function tcPreview(i: TcPreviewInput, d: { arr?: () => ArrDeps }): 
     if (w > i.cores) warnings.push(`${w} workers on ${i.cores} cores: set more cores in step 2, or fewer workers.`)
   }
   if (i.diskGb < 16) warnings.push(`${i.diskGb} GB is little scratch space: conversions write their whole output to the container's disk first.`)
-  checks.push('The container gets keyctl as well as nesting (Docker needs both), set on the node through its login.')
+  if (i.kind === 'plex') {
+    const si = v.PLEX_SIGNIN
+    const ready = si ? arr.plexClaim?.claimReady(si, i.owner ?? '') ?? null : null
+    if (si && !ready) errors.push('Your Plex sign-in has ended or is not finished. Sign in with Plex again in step 1, or install without it.')
+    else if (ready) checks.push(`The server will be claimed to ${ready.user}'s Plex account, and the Plex plug-in connected to it.`)
+    else checks.push('No Plex sign-in: the server is installed and left unclaimed on your network.')
+    if (!si) warnings.push('Without signing in with Plex, the server is not claimed and the Plex plug-in is not connected to it. Sign in with Plex in the wizard to have both done for you.')
+    checks.push('The container is an ordinary unprivileged one: Plex is a package, so it gets neither nesting nor keyctl.')
+  } else checks.push('The container gets keyctl as well as nesting (Docker needs both), set on the node through its login.')
   checks.push(`${appName(i.kind)} gets no public name and no port forward: it is on the container's own address only.`)
   return { errors, warnings, checks, options }
 }
@@ -198,7 +209,7 @@ export async function tcPrepare(plan: { node: string; vmid: number; storage: str
   const layout: Layout | undefined = lo.layout
   if (!layout) throw new Error(`The settings are not usable: ${lo.errors.join(' ')}`)
   if (layout.media === 'nfs') await onMount()
-  const so = { vmid: plan.vmid, layout, storage: plan.storage, tun: false, extra }
+  const so = { vmid: plan.vmid, layout, storage: plan.storage, tun: false, extra, docker: kind !== 'plex' }
   const r = await arr.nodeRun(plan.node, prepareScript(so), 5 * 60_000)
   if (layout.media === 'nfs' && !/@@arr mounted/.test(r.output)) throw new Error(`${layout.nfs!.source} could not be mounted on ${plan.node}.`)
   if (!/@@arr refused /.test(r.output) && (r.code !== 0 || !/@@arr prepared/.test(r.output))) throw new Error(`The container could not be given its library and hardware on ${plan.node} (exit ${r.code}).`)
@@ -213,7 +224,7 @@ export async function tcPrepare(plan: { node: string; vmid: number; storage: str
   const bad = configProblems(cfg, { ...so, resolved })
   if (bad.length) throw new Error(`CT ${plan.vmid}'s settings did not read back: ${bad.join(' ')}`)
   const where = layout.media === 'disk' ? `a new ${layout.mediaGb} GB disk on ${plan.storage}` : layout.media === 'nfs' ? `${layout.nfs!.source} (mounted on ${plan.node})` : resolved
-  return { detail: `nesting and keyctl on; hardware: ${accel === 'cpu' ? 'CPU only' : accel === 'vaapi' ? 'Intel/AMD graphics (VAAPI)' : 'NVIDIA'}; library on ${where} at /data`, groups }
+  return { detail: `${kind === 'plex' ? 'ordinary unprivileged container' : 'nesting and keyctl on'}; hardware: ${accel === 'cpu' ? 'CPU only' : accel === 'vaapi' ? 'Intel/AMD graphics (VAAPI)' : 'NVIDIA'}; library on ${where} at /data`, groups }
 }
 
 // ── Install ─────────────────────────────────────────────────────────────────
@@ -222,6 +233,7 @@ export async function tcPrepare(plan: { node: string; vmid: number; storage: str
 export function tcInstallEnv(kind: TcKind, o: { options: Record<string, string>; groups: number[]; ip: string; hostname: string }): Record<string, string> {
   const accel = o.options.TC_ACCEL as Accel
   if (!['vaapi', 'nvidia', 'cpu'].includes(accel)) throw new Error('The plan has no resolved hardware choice.')
+  if (kind === 'plex') return plexScriptEnv({ accel, groups: o.groups, library: true, nvidiaVersion: o.options.TC_NVIDIA_VERSION || undefined })
   const main = kind === 'tdarr-node' ? parseMainUrl(o.options.TC_MAIN_URL ?? '', TDARR_WEB_PORT) : null
   if (kind === 'tdarr-node' && !main) throw new Error('The Tdarr server\'s address is missing.')
   return scriptEnv({
@@ -233,7 +245,10 @@ export function tcInstallEnv(kind: TcKind, o: { options: Record<string, string>;
 
 export function tcJobSteps<T extends { id: string; label: string; status: string }>(steps: T[], kind: TcKind): T[] {
   const at = steps.findIndex(x => x.id === 'install')
-  const mine: Array<{ id: string; label: string }> = kind === 'unmanic'
+  const mine: Array<{ id: string; label: string }> = kind === 'plex'
+    ? [{ id: 'tc-ready', label: 'Wait for Plex to answer' }, { id: 'tc-hardware', label: 'Turn on hardware transcoding' },
+       { id: 'tc-libraries', label: 'Add the Movies and TV Shows libraries' }, { id: 'tc-claim', label: 'Claim the server to your Plex account' }, { id: 'tc-plugin', label: 'Connect the Plex plug-in' }]
+    : kind === 'unmanic'
     ? [{ id: 'tc-ready', label: 'Wait for Unmanic to answer' }, { id: 'tc-library', label: 'Set the library' }, { id: 'tc-workers', label: 'Set the workers' }, { id: 'tc-plugin', label: 'Connect the Unmanic plug-in' }]
     : kind === 'unmanic-worker'
       ? [{ id: 'tc-ready', label: 'Wait for Unmanic to answer' }, { id: 'tc-workers', label: 'Set the workers' }, { id: 'tc-link', label: 'Link it to the main Unmanic' }, { id: 'tc-plugin', label: 'Connect the Unmanic plug-in' }]
@@ -246,6 +261,8 @@ export function tcJobSteps<T extends { id: string; label: string; status: string
 
 export interface TcRunInput {
   kind: TcKind; ip: string; hostname: string; options: Record<string, string>
+  /** Who started the install (ownerOf): a Plex sign-in is used only by the person who made it. */
+  owner?: string
   /** Recorded the moment a link exists on the main Unmanic, so a failure after it can still undo it. */
   onLink: (r: LinkRecord) => void
 }
@@ -254,11 +271,13 @@ export interface TcRunInput {
 export async function tcRunSetup(o: TcRunInput, step: (id: string) => StepRef, d: { arr?: () => ArrDeps; wait(ms: number): Promise<unknown> }): Promise<{ url: string; apps: Array<{ id: string; name: string; url: string }>; followUp?: { recipeId: string; label: string; url: string } }> {
   const arr = d.arr?.()
   if (!arr) throw new Error('The setup is not available here.')
-  const sd: TcSetupDeps = { http: arr.http, wait: d.wait, pluginSettings: arr.pluginSettings, savePluginSettings: arr.savePluginSettings }
+  const sd: PlexSetupDeps = { http: arr.http, wait: d.wait, pluginSettings: arr.pluginSettings, savePluginSettings: arr.savePluginSettings, claim: arr.plexClaim }
   const t = (id: string, run: () => Promise<{ status?: 'done' | 'skipped'; detail: string } | string>) => run().then(r => {
     const s = step(id); const x = typeof r === 'string' ? { detail: r } : r
     s.status = x.status ?? 'done'; s.detail = x.detail
   })
+
+  if (o.kind === 'plex') return await runPlexSetup(o, step, sd, t)
 
   if (o.kind === 'unmanic' || o.kind === 'unmanic-worker') {
     const base = unmanicUrl(o.ip)
@@ -302,3 +321,74 @@ export async function tcCleanup(job: { tcLink?: LinkRecord }, d: { arr?: () => A
 }
 
 export { unmountScript }
+
+type Chore = (id: string, run: () => Promise<{ status?: 'done' | 'skipped'; detail: string } | string>) => Promise<void>
+
+/** Plex: wait, claim, hardware, libraries, plug-in (lib/transcode/plex.ts). The sign-in is ended whatever happens. */
+async function runPlexSetup(o: TcRunInput, step: (id: string) => StepRef, sd: PlexSetupDeps, t: Chore) {
+  const base = plexUrl(o.ip)
+  const signin = o.options.PLEX_SIGNIN || ''
+  const owner = o.owner ?? ''
+  try {
+    let machineId = ''
+    await t('tc-ready', async () => { const id = await waitForPlex(sd, base); machineId = id.machineId; return `Plex ${id.version || ''} answers at ${base}.`.replace('Plex  ', 'Plex ') })
+
+    // Past this point the server is installed and answering, so a chore that fails is said plainly and the install
+    // still finishes: failing the whole install would only leave a working server to be cleaned up.
+    const soft = (what: string, run: () => Promise<{ status?: 'done' | 'skipped'; detail: string } | string>) => async () => {
+      try { return await run() } catch (e: any) { return { status: 'skipped' as const, detail: `${what} did not finish: ${String(e?.message ?? e).slice(0, 300)}` } }
+    }
+
+    // The chores that need no account run BEFORE the claim: a claimed server turns a request without its token away.
+    // One that is refused anyway is tried again, with the server's own token from the vault, once the plug-in is connected.
+    type Out = { status?: 'done' | 'skipped'; detail: string } | string
+    const retry: Array<{ id: string; what: string; run: (token?: string) => Promise<Out> }> = []
+    const chore = (id: string, what: string, run: (token?: string) => Promise<Out>) =>
+      t(id, async () => {
+        try { return await run() } catch (e: any) {
+          if (e instanceof PlexAuthRefused) { retry.push({ id, what, run }); return { status: 'skipped' as const, detail: `${what} is waiting for the server's token; it is tried again once the Plex plug-in is connected.` } }
+          return { status: 'skipped' as const, detail: `${what} did not finish: ${String(e?.message ?? e).slice(0, 300)}` }
+        }
+      })
+
+    await chore('tc-hardware', 'Turning on hardware transcoding', async token => {
+      if (o.options.TC_ACCEL === 'cpu') return { status: 'skipped' as const, detail: 'CPU only, so there is no hardware to turn on.' }
+      return await enableHardwareTranscoding(sd, base, token)
+    })
+
+    await chore('tc-libraries', 'Adding the libraries', async token => {
+      if (o.options.PLEX_LIBRARIES === '0') return { status: 'skipped' as const, detail: 'Not asked for. Add libraries in Plex under Settings, Libraries.' }
+      return await addLibraries(sd, base, token)
+    })
+
+    let claimed = false
+    await t('tc-claim', soft('Claiming the server', async () => {
+      if (!signin || !sd.claim) return { status: 'skipped' as const, detail: PLEX_NO_SIGNIN }
+      await claimServer(sd, base, await sd.claim.claimToken(signin, owner))
+      claimed = true
+      return 'The server is claimed to your Plex account.'
+    }))
+
+    await t('tc-plugin', soft('Connecting the Plex plug-in', async () => {
+      if (!claimed || !sd.claim) return { status: 'skipped' as const, detail: 'The server is not claimed, so there is no account to connect the plug-in with. Sign in with Plex on the Plex plug-in\'s page once it is.' }
+      const r = await sd.claim.connectClaimed(signin, owner, { machineId, url: base, by: owner, wait: sd.wait })
+      const back = await sd.pluginSettings('plex')
+      if (back.plex_url !== base) fail(`The Plex plug-in did not read back ${base}.`)
+      // Anything the claimed server turned away is tried again with its own token (read from where the plug-in keeps it).
+      for (const x of retry) {
+        const st = step(x.id)
+        try {
+          const out: Out = back.plex_token ? await x.run(back.plex_token) : { status: 'skipped' as const, detail: `${x.what} needs the server's token, which could not be read back.` }
+          const v = typeof out === 'string' ? { detail: out } : out
+          st.status = v.status ?? 'done'; st.detail = v.detail
+        } catch (e: any) { st.status = 'skipped'; st.detail = `${x.what} did not finish: ${String(e?.message ?? e).slice(0, 300)}` }
+      }
+      return `The Plex plug-in reads ${r.server} at ${base}, with its token in the vault; it shows on the Plex page now.`
+    }))
+  } finally {
+    if (signin && sd.claim) sd.claim.endClaim(signin, owner)
+  }
+  return { url: base, apps: [{ id: 'plex', name: 'Open Plex', url: `${base}/web` }] }
+}
+
+const fail = (m: string): never => { throw new Error(m) }

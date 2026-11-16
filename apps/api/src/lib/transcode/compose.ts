@@ -23,7 +23,7 @@
 import { PUID, PGID } from '../arr/components'
 import type { Accel } from './hardware'
 
-export type TcKind = 'unmanic' | 'unmanic-worker' | 'tdarr' | 'tdarr-node'
+export type TcKind = 'unmanic' | 'unmanic-worker' | 'tdarr' | 'tdarr-node' | 'plex'
 
 export const UNMANIC_IMAGE = 'josh5/unmanic:0.4.1'
 /** Tdarr's server and nodes must be the same version, or the node is refused with no hint. */
@@ -41,18 +41,29 @@ export const NVIDIA_RUN_SHA256: Record<string, string> = {
   '580.173.02': '8d8eb9001e05a9a8a663d3d5d304feb64ef2844ee185ccdfd952786820f46e1b',
 }
 
+/**
+ * Plex Media Server, from Plex's own apt repository (https://repo.plex.tv/deb). The repository publishes one build at
+ * a time, so this is that build as checked on 2026-11-16 (the repository's Release file was dated 2026-10-26), and the
+ * installer is the exact package, then verified by hash. The signing key is pinned by the SHA-256 of the key file
+ * Plex publishes, so a changed key stops the install instead of being trusted.
+ */
+export const PLEX_VERSION = '1.43.5.11079-b3b13e506'
+export const PLEX_DEB_SHA256 = '74e9a71c97e06d6e925cc4398279141fd838ee9df446f90e769614fa2c87a206'
+export const PLEX_KEY_SHA256 = '9fa243139bcc65451c2a334b08607c84ab58c140a457bea57725424d4f9370e1'
+export const PLEX_PORT = 32400
+
 export const UNMANIC_PORT = 8888
 export const TDARR_WEB_PORT = 8265
 export const TDARR_SERVER_PORT = 8266
 export const TDARR_NODE_PORT = 8267
 
 export const APP_DIR: Record<TcKind, string> = {
-  unmanic: '/opt/unmanic', 'unmanic-worker': '/opt/unmanic', tdarr: '/opt/tdarr', 'tdarr-node': '/opt/tdarr',
+  unmanic: '/opt/unmanic', 'unmanic-worker': '/opt/unmanic', tdarr: '/opt/tdarr', 'tdarr-node': '/opt/tdarr', plex: '/var/lib/plexmediaserver',
 }
 /** Folders under the app's directory, owned by the apps' user. `cache` and `temp` are the scratch space. */
 export const APP_SUBDIRS: Record<TcKind, string[]> = {
   unmanic: ['config', 'cache'], 'unmanic-worker': ['config', 'cache'],
-  tdarr: ['server', 'configs', 'logs', 'temp'], 'tdarr-node': ['configs', 'logs', 'temp'],
+  tdarr: ['server', 'configs', 'logs', 'temp'], 'tdarr-node': ['configs', 'logs', 'temp'], plex: [],
 }
 
 export interface ComposeInput {
@@ -242,3 +253,103 @@ export function scriptEnv(i: ScriptInput): Record<string, string> {
 }
 
 export const STOP_SCRIPT = (kind: TcKind) => `cd ${APP_DIR[kind]} && docker compose stop >/dev/null 2>&1 && echo "@@stopped apps"\n`
+
+// ── Plex Media Server: not Docker, the package from Plex's own repository ────────────────────────────────────────
+
+/**
+ * The install script for Plex. Plex runs as `plex`, made here with the same uid and gid every other app of the stack
+ * writes as (1000), so the library's files have one owner whichever app made them. Every value arrives as an exported
+ * variable. Nothing secret is made or printed: claiming the server happens afterwards, over its own address.
+ */
+export const PLEX_SCRIPT = String.raw`umask 022
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq ca-certificates curl gnupg
+
+as_puid() { setpriv --reuid=$TC_PUID --regid=$TC_PGID --clear-groups "$@"; }
+
+# The user Plex runs as: the stack's own uid and gid, so what it writes is owned like everything else in the library.
+getent group "$TC_PGID" >/dev/null || groupadd -g "$TC_PGID" plex
+getent passwd "$TC_PUID" >/dev/null || useradd -u "$TC_PUID" -g "$TC_PGID" -M -d /var/lib/plexmediaserver -s /usr/sbin/nologin plex
+PLEX_USER=$(getent passwd "$TC_PUID" | cut -d: -f1)
+
+# The library: made as that user first (a NAS may squash root), and a folder that exists is never re-owned.
+# Plex does not need to change it; Movies and TV folders are made when the library is writable, so the first two Plex
+# libraries have somewhere to point. Nothing is ever deleted here.
+if [ "$TC_LIBRARY" = 1 ]; then
+  if [ ! -d /data ]; then mkdir -p /data; chown "$TC_PUID:$TC_PGID" /data 2>/dev/null || true; fi
+  [ -d /data/media ] || as_puid mkdir -p /data/media 2>/dev/null || { mkdir -p /data/media && chown "$TC_PUID:$TC_PGID" /data/media; }
+  if as_puid sh -c 'f=/data/media/.hyperprox-write-test && : > "$f" && rm -f "$f"' 2>/dev/null; then
+    for d in movies tv; do [ -e "/data/media/$d" ] || as_puid mkdir -p "/data/media/$d" 2>/dev/null || true; done
+    echo "@@plex library writable"
+  else
+    echo "@@plex library readonly"
+  fi
+fi
+
+# The graphics card. VAAPI: the device file arrives with the node's render group id; Plex's user joins a group of that id.
+if [ -n "$TC_GROUPS" ]; then
+  for gid in $TC_GROUPS; do
+    g=$(getent group "$gid" | cut -d: -f1)
+    [ -n "$g" ] || { groupadd -g "$gid" hyperprox-gpu"$gid"; g=hyperprox-gpu"$gid"; }
+    usermod -aG "$g" "$PLEX_USER"
+  done
+fi
+
+# NVIDIA: the node's driver is the node's. Only the user-space libraries are matched here, to exactly its version.
+if [ "$TC_ACCEL" = nvidia ]; then
+  apt-get install -y -qq kmod
+  if ! nvidia-smi -L >/dev/null 2>&1; then
+    n=0
+    until curl -fsSL -o /tmp/nvidia.run "https://download.nvidia.com/XFree86/Linux-x86_64/$TC_NVIDIA_VERSION/NVIDIA-Linux-x86_64-$TC_NVIDIA_VERSION.run"; do
+      n=$((n + 1)); [ "$n" -ge 3 ] && { echo "Could not download NVIDIA's libraries for version $TC_NVIDIA_VERSION." >&2; exit 7; }
+      sleep 10
+    done
+    echo "$TC_NVIDIA_SHA256  /tmp/nvidia.run" | sha256sum -c - || { rm -f /tmp/nvidia.run; echo "checksum mismatch" >&2; exit 7; }
+    sh /tmp/nvidia.run --silent --no-kernel-module --no-kernel-module-source --no-drm --no-x-check --no-nouveau-check --no-install-compat32-libs || { echo "NVIDIA's libraries did not install." >&2; exit 7; }
+    rm -f /tmp/nvidia.run
+  fi
+  nvidia-smi -L >/dev/null || { echo "The NVIDIA card does not answer inside the container (driver $TC_NVIDIA_VERSION)." >&2; exit 7; }
+fi
+
+# Plex's own repository, its key checked against the pinned hash before it is trusted.
+install -d -m 0755 /usr/share/keyrings
+curl -fsSL -o /tmp/plex.key https://downloads.plex.tv/plex-keys/PlexSign.v2.key
+echo "$PLEX_KEY_SHA256  /tmp/plex.key" | sha256sum -c - || { rm -f /tmp/plex.key; echo "Plex's signing key is not the one HyperProx checked, so nothing was installed." >&2; exit 8; }
+gpg --dearmor --yes -o /usr/share/keyrings/plexmediaserver.gpg /tmp/plex.key
+rm -f /tmp/plex.key
+echo "deb [signed-by=/usr/share/keyrings/plexmediaserver.gpg] https://repo.plex.tv/deb public main" > /etc/apt/sources.list.d/plexmediaserver.list
+apt-get update -qq
+
+# The exact build. If the repository has moved on, the same build is fetched from its pool and checked by hash.
+if ! apt-get install -y -qq -o Dpkg::Options::=--force-confold "plexmediaserver=$PLEX_VERSION"; then
+  echo "The repository no longer lists $PLEX_VERSION; fetching that build from its pool."
+  curl -fsSL -o /tmp/plex.deb "https://repo.plex.tv/deb/pool/main/p/plexmediaserver/plexmediaserver_"$PLEX_VERSION"_amd64.deb"     || { echo "Plex no longer publishes $PLEX_VERSION. HyperProx needs updating to a newer checked build." >&2; exit 9; }
+  echo "$PLEX_DEB_SHA256  /tmp/plex.deb" | sha256sum -c - || { rm -f /tmp/plex.deb; echo "checksum mismatch" >&2; exit 9; }
+  apt-get install -y -qq -o Dpkg::Options::=--force-confold /tmp/plex.deb
+  rm -f /tmp/plex.deb
+fi
+
+# The package's own scripts may touch the repository file: write the signed form again and check it, so apt keeps
+# trusting only the pinned key for this repository.
+echo "deb [signed-by=/usr/share/keyrings/plexmediaserver.gpg] https://repo.plex.tv/deb public main" > /etc/apt/sources.list.d/plexmediaserver.list
+grep -q 'signed-by=/usr/share/keyrings/plexmediaserver.gpg' /etc/apt/sources.list.d/plexmediaserver.list || { echo "Plex's repository file is not in its signed form." >&2; exit 9; }
+systemctl enable plexmediaserver
+systemctl restart plexmediaserver
+echo "Plex Media Server $PLEX_VERSION is starting."`
+
+export interface PlexScriptInput { accel: Accel; groups?: number[]; nvidiaVersion?: string; library: boolean }
+
+/** The variables PLEX_SCRIPT reads. */
+export function plexScriptEnv(i: PlexScriptInput): Record<string, string> {
+  if (i.accel === 'nvidia' && !/^\d{3}\.\d{2,3}(\.\d{2})?$/.test(i.nvidiaVersion ?? '')) throw new Error('The NVIDIA driver version is missing or not a version.')
+  const sha = i.accel === 'nvidia' ? NVIDIA_RUN_SHA256[i.nvidiaVersion!] : ''
+  if (i.accel === 'nvidia' && !/^[0-9a-f]{64}$/.test(sha ?? '')) throw new Error(`NVIDIA driver ${i.nvidiaVersion} has no pinned checksum, so its installer is not run.`)
+  for (const g of i.groups ?? []) if (!Number.isInteger(g) || g < 0 || g > 65535) throw new Error('Bad group id.')
+  return {
+    TC_PUID: String(PUID), TC_PGID: String(PGID), TC_LIBRARY: i.library ? '1' : '0',
+    TC_ACCEL: i.accel, TC_NVIDIA_VERSION: i.accel === 'nvidia' ? i.nvidiaVersion! : '', TC_NVIDIA_SHA256: sha ?? '',
+    TC_GROUPS: (i.groups ?? []).join(' '),
+    PLEX_VERSION, PLEX_DEB_SHA256, PLEX_KEY_SHA256,
+  }
+}
