@@ -1,0 +1,52 @@
+[
+ {
+  "id": 11,
+  "title": "Quiet Harbour",
+  "qualityProfileId": 8,
+  "seasons": [
+   {
+    "seasonNumber": 1,
+    "monitored": true,
+    "statistics": {
+     "episodeFileCount": 10,
+     "episodeCount": 10,
+     "totalEpisodeCount": 10,
+     "sizeOnDisk": 0,
+     "releaseGroups": [],
+     "percentOfEpisodes": 0
+    }
+   },
+   {
+    "seasonNumber": 2,
+    "monitored": true,
+    "statistics": {
+     "episodeFileCount": 0,
+     "episodeCount": 3,
+     "totalEpisodeCount": 3,
+     "sizeOnDisk": 0,
+     "releaseGroups": [],
+     "percentOfEpisodes": 0
+    }
+   }
+  ]
+ },
+ {
+  "id": 22,
+  "title": "Night Ferry",
+  "qualityProfileId": 8,
+  "seasons": [
+   {
+    "seasonNumber": 1,
+    "monitored": true,
+    "statistics": {
+     "episodeFileCount": 3,
+     "episodeCount": 5,
+     "totalEpisodeCount": 5,
+     "sizeOnDisk": 0,
+     "releaseGroups": [],
+     "percentOfEpisodes": 0
+    }
+   }
+  ]
+ }
+]

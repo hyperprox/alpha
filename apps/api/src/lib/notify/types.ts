@@ -37,7 +37,7 @@ export function familyOf(type: string): Family | null {
     case 'backup': return 'backups'
     case 'alert': return 'resources'
     case 'ha': return 'home'
-    case 'plex': return 'media'
+    case 'plex': case 'arr': return 'media'
     default: return null
   }
 }

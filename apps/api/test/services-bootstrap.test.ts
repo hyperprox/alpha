@@ -60,6 +60,7 @@ function rig() {
     homepage: { start: () => { started('homepage'); return () => { events.push('homepage-stopped') } } },
     autoConnect: { start: on => { started('auto-connect'); on(() => events.push('auto-connect-unlock-pass')); return () => { events.push('auto-connect-stopped') } } },
     placement: { start: async () => { started('placement'); return () => { events.push('placement-stopped') } } },
+    arrGiveUp: { start: () => { started('arr-give-up'); return () => { events.push('arr-give-up-stopped') } } },
     onUnlock: cb => { unlockCallbacks.push(cb) },
   }
   return { events, counts, sourcesAtStart, unlockCallbacks, dismissals, rt, deps }
@@ -83,7 +84,7 @@ async function boot(r: ReturnType<typeof rig>, routes?: (app: FastifyInstance) =
   return { app, handle }
 }
 
-const ALL = ['nextcloud', 'homepage', 'auto-connect', 'updates-recover', 'updates-timers', 'placement']
+const ALL = ['nextcloud', 'homepage', 'auto-connect', 'updates-recover', 'updates-timers', 'placement', 'arr-give-up']
 
 test('no route registered: every service still starts, once, in the documented order, after its sources', async () => {
   setGuestExclusionSource(null)
@@ -91,7 +92,7 @@ test('no route registered: every service still starts, once, in the documented o
   const { handle } = await boot(r)
   assert.deepEqual(handle.steps, [
     'exclusions', 'compose-owners', 'dismissed', 'updates', 'install-hook',
-    'nextcloud', 'homepage', 'auto-connect', 'updates-recover', 'updates-timers', 'placement',
+    'nextcloud', 'homepage', 'auto-connect', 'updates-recover', 'updates-timers', 'placement', 'arr-give-up',
   ])
   for (const name of ALL) assert.equal(r.counts[name], 1, `${name} started exactly once`)
   // The compose owners and the read-only Updates sources come before the first thing that can tick or resume.

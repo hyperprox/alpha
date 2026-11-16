@@ -1,0 +1,1085 @@
+[
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 99,
+  "size": 5104564535,
+  "indexerId": 2,
+  "title": "Harbour.Lights 1996 1080p BluRay HDR10 FLAC 2 0 x265-GRP0",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 2,
+  "seeders": 5,
+  "leechers": 8,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/0000",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 99,
+  "size": 5104564535,
+  "indexerId": 4,
+  "title": "Harbour.Lights 1996 1080p BluRay HDR10 FLAC 2 0 x265-GRP1",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 3,
+  "seeders": 5,
+  "leechers": 8,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/0001",
+  "indexer": "Indexer B (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 90,
+  "size": 5100273664,
+  "indexerId": 5,
+  "title": "Harbour.Lights 1996 1080p BluRay HDR10 FLAC 2 0 x265-GRPX",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 4,
+  "seeders": 11,
+  "leechers": 3,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/0002",
+  "indexer": "Indexer C (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1801,
+  "age": 2896,
+  "size": 7051528949,
+  "indexerId": 4,
+  "title": "Harbour.Lights.1996.1080p.BluRay.x264-GRP3",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 13,
+  "seeders": 6,
+  "leechers": 0,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/0003",
+  "indexer": "Indexer B (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 119,
+  "size": 1709396983,
+  "indexerId": 7,
+  "title": "Harbour.Lights 1996 USA REMASTERED 1080p BluRay HEVC x265 5.1-GRPY",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "1.6 GB is smaller than minimum allowed 1.7 GB (for Harbour Lights)"
+  ],
+  "releaseWeight": 0,
+  "seeders": 92,
+  "leechers": 21,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/0004",
+  "indexer": "Indexer D (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 90,
+  "size": 1632087572,
+  "indexerId": 5,
+  "title": "Harbour.Lights 1996 USA REMASTERED 1080p BluRay HEVC x265 5 1-GRPY",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "1.5 GB is smaller than minimum allowed 1.7 GB (for Harbour Lights)"
+  ],
+  "releaseWeight": 1,
+  "seeders": 68,
+  "leechers": 8,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/0005",
+  "indexer": "Indexer C (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 99,
+  "size": 5100273664,
+  "indexerId": 8,
+  "title": "Harbour.Lights 1996 1080p BluRay HDR10 FLAC 2 0 x265-GRP6",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Not enough seeders: 4. Minimum seeders: 5"
+  ],
+  "releaseWeight": 5,
+  "seeders": 4,
+  "leechers": 0,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/0006",
+  "indexer": "Indexer E (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 120,
+  "size": 1632087572,
+  "indexerId": 2,
+  "title": "Harbour.Lights 1996 USA REMASTERED 1080p BluRay HEVC x265 5.1-GRPY",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "1.5 GB is smaller than minimum allowed 1.7 GB (for Harbour Lights)"
+  ],
+  "releaseWeight": 6,
+  "seeders": 25,
+  "leechers": 5,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/0007",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 120,
+  "size": 1636773453,
+  "indexerId": 4,
+  "title": "Harbour.Lights 1996 USA REMASTERED 1080p BluRay HEVC x265 5.1-GRPY",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "1.5 GB is smaller than minimum allowed 1.7 GB (for Harbour Lights)"
+  ],
+  "releaseWeight": 7,
+  "seeders": 20,
+  "leechers": 10,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/0008",
+  "indexer": "Indexer B (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 3,
+    "name": "WEBDL-1080p",
+    "source": "webdl",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 21,
+    "name": "Upscaled"
+   }
+  ],
+  "customFormatScore": -10000,
+  "qualityWeight": 1701,
+  "age": 19,
+  "size": 2265595248,
+  "indexerId": 2,
+  "title": "The.Lantern.Keeper 2006 AI Upscaled 1080p WEB x264 AAC 2.0-GRP0",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Custom Formats Upscaled have score -10000 below Movie's profile minimum 0",
+   "Hardcode subs found: ESUB"
+  ],
+  "releaseWeight": 0,
+  "seeders": 44,
+  "leechers": 20,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/1000",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 3,
+    "name": "WEBDL-1080p",
+    "source": "webdl",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 21,
+    "name": "Upscaled"
+   }
+  ],
+  "customFormatScore": -10000,
+  "qualityWeight": 1701,
+  "age": 18,
+  "size": 2265595248,
+  "indexerId": 5,
+  "title": "The.Lantern.Keeper 2006 AI Upscaled 1080p WEB x264 AAC 2 0 ESUB",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Custom Formats Upscaled have score -10000 below Movie's profile minimum 0",
+   "Hardcode subs found: ESUB"
+  ],
+  "releaseWeight": 1,
+  "seeders": 37,
+  "leechers": 40,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/1001",
+  "indexer": "Indexer C (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 3,
+    "name": "WEBDL-1080p",
+    "source": "webdl",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 21,
+    "name": "Upscaled"
+   }
+  ],
+  "customFormatScore": -10000,
+  "qualityWeight": 1701,
+  "age": 19,
+  "size": 2266376450,
+  "indexerId": 4,
+  "title": "The.Lantern.Keeper 2006 AI Upscaled 1080p WEB x264 AAC 2.0-GRP2",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Custom Formats Upscaled have score -10000 below Movie's profile minimum 0",
+   "Hardcode subs found: ESUB"
+  ],
+  "releaseWeight": 2,
+  "seeders": 21,
+  "leechers": 49,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/1002",
+  "indexer": "Indexer B (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 2,
+    "name": "DVD",
+    "source": "dvd",
+    "resolution": 0,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 801,
+  "age": 365,
+  "size": 4241280204,
+  "indexerId": 5,
+  "title": "(The.Lantern.Keeper) 2006 DVDRip",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "DVD is not wanted in profile",
+   "Not enough seeders: 3. Minimum seeders: 5"
+  ],
+  "releaseWeight": 3,
+  "seeders": 3,
+  "leechers": 1,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/1003",
+  "indexer": "Indexer C (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 2,
+    "name": "DVD",
+    "source": "dvd",
+    "resolution": 0,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 801,
+  "age": 365,
+  "size": 2512555868,
+  "indexerId": 5,
+  "title": "The.Lantern.Keeper 2006 RUS DVDRip XviD",
+  "languages": [
+   {
+    "id": 11,
+    "name": "Russian"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "DVD is not wanted in profile",
+   "Not enough seeders: 0. Minimum seeders: 5"
+  ],
+  "releaseWeight": 4,
+  "seeders": 0,
+  "leechers": 1,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/1004",
+  "indexer": "Indexer C (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 2,
+    "name": "DVD",
+    "source": "dvd",
+    "resolution": 0,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 801,
+  "age": 365,
+  "size": 2244120412,
+  "indexerId": 5,
+  "title": "The.Lantern.Keeper 2006 DVDRip avi",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "DVD is not wanted in profile",
+   "Not enough seeders: 1. Minimum seeders: 5"
+  ],
+  "releaseWeight": 5,
+  "seeders": 1,
+  "leechers": 0,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/1005",
+  "indexer": "Indexer C (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 2,
+    "name": "DVD",
+    "source": "dvd",
+    "resolution": 0,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 21,
+    "name": "Upscaled"
+   },
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": -8000,
+  "qualityWeight": 801,
+  "age": 365,
+  "size": 1524713390,
+  "indexerId": 5,
+  "title": "The.Lantern.Keeper 2006 DVDRip 720p Upscale x265 OPUS QAAC-GRPZ",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Custom Formats Upscaled, x265 (HD) have score -8000 below Movie's profile minimum 0",
+   "DVD is not wanted in profile"
+  ],
+  "releaseWeight": 6,
+  "seeders": 30,
+  "leechers": 6,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/1006",
+  "indexer": "Indexer C (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 2,
+    "name": "DVD",
+    "source": "dvd",
+    "resolution": 0,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 21,
+    "name": "Upscaled"
+   },
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": -8000,
+  "qualityWeight": 801,
+  "age": 401,
+  "size": 2791728742,
+  "indexerId": 8,
+  "title": "The.Lantern.Keeper (2006) (720p AIUS DVD x265 HEVC 10bit AC3 5.1 GRPW)",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Custom Formats Upscaled, x265 (HD) have score -8000 below Movie's profile minimum 0",
+   "DVD is not wanted in profile"
+  ],
+  "releaseWeight": 7,
+  "seeders": 13,
+  "leechers": 0,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/1007",
+  "indexer": "Indexer E (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 2,
+    "name": "DVD",
+    "source": "dvd",
+    "resolution": 0,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 26,
+    "name": "Blocked: Foreign / Dual Language"
+   }
+  ],
+  "customFormatScore": -10000,
+  "qualityWeight": 801,
+  "age": 544,
+  "size": 2093796556,
+  "indexerId": 2,
+  "title": "The.Lantern.Keeper.2006.MULTi.DVDRip.x264-GRP8",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Custom Formats Blocked: Foreign / Dual Language have score -10000 below Movie's profile minimum 0",
+   "DVD is not wanted in profile"
+  ],
+  "releaseWeight": 8,
+  "seeders": 8,
+  "leechers": 2,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/1008",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 99,
+  "size": 5104564535,
+  "indexerId": 2,
+  "title": "Harbour.Lights.1996.1080p.WEB-DL.AV1.Opus-GRPA",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 2,
+  "seeders": 5,
+  "leechers": 8,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/x18",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 99,
+  "size": 5104564535,
+  "indexerId": 2,
+  "title": "Harbour.Lights.1996.3D.1080p.BluRay.Half-SBS.x264-GRPB",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 2,
+  "seeders": 5,
+  "leechers": 8,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/x19",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 99,
+  "size": 5104564535,
+  "indexerId": 2,
+  "title": "Harbour.Lights.1996.HFR.48fps.1080p.WEB-DL.x264-GRPC",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 2,
+  "seeders": 5,
+  "leechers": 8,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/x20",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [
+   {
+    "id": 22,
+    "name": "x265 (HD)"
+   }
+  ],
+  "customFormatScore": 2000,
+  "qualityWeight": 1801,
+  "age": 99,
+  "size": 5104564535,
+  "indexerId": 2,
+  "title": "Harbour.Lights.1996.1080p.BluRay.x264-GRPD.exe",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [
+   "Unknown is not wanted in profile"
+  ],
+  "releaseWeight": 2,
+  "seeders": 5,
+  "leechers": 8,
+  "protocol": "torrent",
+  "indexerFlags": [
+   "G_Freeleech"
+  ],
+  "guid": "https://indexer.example.invalid/details/x21",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ }
+]

@@ -1,0 +1,63 @@
+{
+ "page": 1,
+ "pageSize": 1000,
+ "totalRecords": 3,
+ "records": [
+  {
+   "id": 31,
+   "title": "Low Songs",
+   "artistId": 4,
+   "artist": {
+    "id": 4,
+    "artistName": "The Paper Boats",
+    "foreignArtistId": "aaaa-1111",
+    "qualityProfileId": 1,
+    "metadataProfileId": 1,
+    "rootFolderPath": "/media/Music"
+   },
+   "foreignAlbumId": "bbbb-2222",
+   "releaseDate": "2019-04-05T00:00:00Z",
+   "monitored": true,
+   "lastSearchTime": "2026-11-12T00:00:00Z",
+   "statistics": {
+    "trackFileCount": 0,
+    "trackCount": 10,
+    "sizeOnDisk": 0
+   }
+  },
+  {
+   "id": 32,
+   "title": "Half There",
+   "artistId": 4,
+   "artist": {
+    "id": 4,
+    "artistName": "The Paper Boats"
+   },
+   "releaseDate": "2021-04-05T00:00:00Z",
+   "monitored": true,
+   "lastSearchTime": "2026-11-12T00:00:00Z",
+   "statistics": {
+    "trackFileCount": 3,
+    "trackCount": 10,
+    "sizeOnDisk": 100
+   }
+  },
+  {
+   "id": 33,
+   "title": "Next Year",
+   "artistId": 4,
+   "artist": {
+    "id": 4,
+    "artistName": "The Paper Boats"
+   },
+   "releaseDate": "2099-01-01T00:00:00Z",
+   "monitored": true,
+   "lastSearchTime": null,
+   "statistics": {
+    "trackFileCount": 0,
+    "trackCount": 0,
+    "sizeOnDisk": 0
+   }
+  }
+ ]
+}

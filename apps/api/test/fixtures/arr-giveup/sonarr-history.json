@@ -1,0 +1,110 @@
+{
+ "page": 1,
+ "pageSize": 500,
+ "totalRecords": 3,
+ "records": [
+  {
+   "eventType": "downloadFolderImported",
+   "date": "2026-11-03T00:00:00Z",
+   "quality": {
+    "quality": {
+     "id": 4,
+     "name": "HDTV-720p",
+     "source": "television",
+     "resolution": 720
+    },
+    "revision": {
+     "version": 1,
+     "real": 0,
+     "isRepack": false
+    }
+   },
+   "languages": [
+    {
+     "id": 1,
+     "name": "English"
+    }
+   ],
+   "customFormats": [],
+   "customFormatScore": 0,
+   "qualityCutoffNotMet": true,
+   "id": 5003,
+   "episodeId": 999,
+   "seriesId": 22,
+   "sourceTitle": "Night.Ferry.S01E04.720p.HDTV.x264-GRP",
+   "downloadId": "0000000000000000000000000000000000000000",
+   "data": {
+    "downloadClient": "qBittorrent"
+   }
+  },
+  {
+   "eventType": "downloadFailed",
+   "date": "2026-11-02T00:00:00Z",
+   "quality": {
+    "quality": {
+     "id": 3,
+     "name": "WEBDL-1080p",
+     "source": "web",
+     "resolution": 1080
+    },
+    "revision": {
+     "version": 1,
+     "real": 0,
+     "isRepack": false
+    }
+   },
+   "languages": [
+    {
+     "id": 1,
+     "name": "English"
+    }
+   ],
+   "customFormats": [],
+   "customFormatScore": 0,
+   "qualityCutoffNotMet": false,
+   "id": 5002,
+   "episodeId": 202,
+   "seriesId": 22,
+   "sourceTitle": "Night.Ferry.S01E04.720p.HDTV.x264-GRP",
+   "downloadId": "0000000000000000000000000000000000000000",
+   "data": {
+    "downloadClient": "qBittorrent",
+    "message": "Manually marked as failed"
+   }
+  },
+  {
+   "eventType": "grabbed",
+   "date": "2026-11-01T00:00:00Z",
+   "quality": {
+    "quality": {
+     "id": 4,
+     "name": "HDTV-720p",
+     "source": "television",
+     "resolution": 720
+    },
+    "revision": {
+     "version": 1,
+     "real": 0,
+     "isRepack": false
+    }
+   },
+   "languages": [
+    {
+     "id": 1,
+     "name": "English"
+    }
+   ],
+   "customFormats": [],
+   "customFormatScore": 0,
+   "qualityCutoffNotMet": true,
+   "id": 5001,
+   "episodeId": 202,
+   "seriesId": 22,
+   "sourceTitle": "Night.Ferry.S01E04.720p.HDTV.x264-GRP",
+   "downloadId": "0000000000000000000000000000000000000000",
+   "data": {
+    "downloadClient": "qBittorrent"
+   }
+  }
+ ]
+}
