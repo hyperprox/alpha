@@ -46,8 +46,8 @@ interface Job {
   adminCredential?: { user: string; password: string; savedInVault: boolean }
   /** An Arr Stack's apps, each at its own address. */
   arrApps?: Array<{ id: string; name: string; url: string }>
-  /** What to offer next on a finished Unmanic or Tdarr install: another worker or node. */
-  tcFollowUp?: { recipeId: string; label: string; url: string }
+  /** What to offer next on a finished install (Unmanic, Tdarr, K3s): another worker or node, with its options filled in. */
+  tcFollowUp?: { recipeId: string; label: string; url: string; options?: Record<string, string> }
 }
 
 /** Category names, matching the API's labels; the API's own label wins when it sends one. */
@@ -107,6 +107,16 @@ export default function CataloguePage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // ?recipe=<id> (a plug-in page's "Install" or "Add a node" link): open that recipe's wizard once the list is in.
+  const [asked, setAsked] = useState(false)
+  useEffect(() => {
+    if (asked || !recipes.length || !canInstall || typeof window === 'undefined') return
+    const id = new URLSearchParams(window.location.search).get('recipe')
+    const r = id ? recipes.find(x => x.id === id) : undefined
+    setAsked(true)
+    if (r) { setWizardOpts(undefined); setWizard(r) }
+  }, [asked, recipes, canInstall])
 
   // An install runs for minutes. Poll rather than guess when it is done.
   useEffect(() => {
@@ -269,10 +279,12 @@ export default function CataloguePage() {
             return (
               <div style={{ marginBottom: 12 }}>
                 <button className={styles.btn} type="button"
-                  onClick={() => { setWizardOpts({ TC_MAIN_URL: job.tcFollowUp!.url.replace(/^https?:\/\//, '').replace(/\/$/, '') }); setWizard(next) }}>
+                  onClick={() => { setWizardOpts(job.tcFollowUp!.options ?? { TC_MAIN_URL: job.tcFollowUp!.url.replace(/^https?:\/\//, '').replace(/\/$/, '') }); setWizard(next) }}>
                   {job.tcFollowUp.label}
                 </button>
-                <small style={{ display: 'block', marginTop: 4, color: 'var(--text-dim)' }}>Pick another node in step 3; HyperProx looks at its hardware and joins the new one to this one.</small>
+                <small style={{ display: 'block', marginTop: 4, color: 'var(--text-dim)' }}>{job.tcFollowUp.options?.K3S_SERVER
+                  ? 'Step 3 recommends a node that does not run this cluster yet; the agent joins with the token from the vault.'
+                  : 'Pick another node in step 3; HyperProx looks at its hardware and joins the new one to this one.'}</small>
               </div>
             )
           })()}

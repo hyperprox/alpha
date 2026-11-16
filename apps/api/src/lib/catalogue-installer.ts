@@ -37,6 +37,7 @@ import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
 import { wizardStore } from './catalogue-store'
 import { auditCredentialUse, auditOrThrow } from './audit'
+import { installStillOwns } from './auto-connect/core'
 import {
   validateNaming, detectConvention, pickNext, managementFallback, namingPolicy, takenAddresses, schemeLabel, bareIp, readSavedNaming, NAMING_ID,
   type NamingSettings, type Detection,
@@ -54,6 +55,9 @@ import { ownScrapers } from './haproxy/recipe'
 import { FWDPROXY_SETUP_STEPS, runFwdProxySetup } from './fwdproxy/setup'
 import { isPrivateV4 } from './fwdproxy/net'
 import { BALANCE_STEP, balancePreview, runInstallBalance, realBalanceDeps, realBalanceCheckDeps, type InstallBalance, type BalanceDeps, type BalanceCheckDeps } from './haproxy/install-balance'
+import { isK3s, k3sPrepare, k3sPreview, k3sInstallEnv, k3sRunSetup, k3sSteps } from './k3s/catalogue'
+import type { K3sService } from './k3s/service'
+import { k3sService } from './k3s'
 import {
   planPublish, runPublish, cleanupPublish, recordSite, realPublishDeps, PUBLISH_STEPS,
   type PublishDeps, type PublishPlan, type PublishLedger, type PublishInput,
@@ -110,8 +114,10 @@ export interface InstallJob {
   tcGroups?: number[]
   /** The one link an Unmanic worker install added to its main Unmanic; clean-up removes only this. */
   tcLink?: LinkRecord
-  /** What to offer on the finished page next (an extra worker or node). */
-  tcFollowUp?: { recipeId: string; label: string; url: string }
+  /** What to offer on the finished page next (an extra worker or node), with the options to fill in for it. */
+  tcFollowUp?: { recipeId: string; label: string; url: string; options?: Record<string, string> }
+  /** What was set on a K3s container over the node login (keyctl), in words. */
+  k3sPrepared?: string
   startedAt: number
   finishedAt?: number
   /** True once Proxmox accepted a create this job asked for: there is a container this job made. */
@@ -180,6 +186,8 @@ export interface InstallDeps {
   haproxyBalance?: () => Promise<BalanceDeps>
   /** What the preview checks that step's guests and public name against. */
   haproxyBalanceCheck?: () => Promise<BalanceCheckDeps>
+  /** The K3s page's service: an agent's server and join token, and connecting a new server (lib/k3s). */
+  k3s?:        () => K3sService
 }
 
 /** HAProxy's setup as it runs for real: the Proxy service, the plug-in's store, the audit log and Prometheus. */
@@ -219,6 +227,7 @@ const realDeps = (): InstallDeps => ({
     await (await import('./auto-connect')).autoConnect().runFresh('catalogue-install')
     return (await (await import('./fwdproxy')).fwdProxyService().instances()).some(i => i.vmid === vmid)
   },
+  k3s:         () => k3sService(),
 })
 
 /** How long after an install the generated admin login is still served to the page. */
@@ -422,7 +431,8 @@ const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan, ba
   { id: 'network',   label: 'Wait for an address',   status: 'pending' },
   { id: 'install',   label: `Install ${recipe.name}`, status: 'pending' },
   ...(recipe.setup === 'pbs' ? PBS_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase }))
-    : recipe.setup === 'fwdproxy' ? FWDPROXY_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase })) : [
+    : recipe.setup === 'fwdproxy' ? FWDPROXY_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase }))
+    : isK3s(recipe) ? k3sSteps(recipe.id).map(x => ({ ...x, status: 'pending' as Phase })) : [
     ...(recipe.setup === 'ghost' ? GHOST_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase })) : []),
     { id: 'verify',    label: 'Check it answers',       status: 'pending' as Phase },
     // HAProxy's own setup takes the place of the generic wiring.
@@ -451,6 +461,7 @@ export async function startInstall(opts: {
     throw new Error('A new container is planned in the install wizard first: preview it, then apply that preview.')
   }
   if (isTranscode(recipe)) throw new Error(`${recipe.name} needs its container's hardware and library set up on the node, which only the install wizard does. Make a new container with the wizard.`)
+  if (isK3s(recipe)) throw new Error(`${recipe.name} needs keyctl set on its container from the node, which only the install wizard does. Make a new container with the wizard.`)
 
   // Throws before a job exists, so a refusal is an error the caller sees rather
   // than a job that fails asynchronously three minutes later.
@@ -580,6 +591,11 @@ async function runJob(
     const proxySecret = recipe.registersProxy ? managedSecret() : ''
     if (proxySecret) env.HPX_PROXY_SECRET = proxySecret
     if (tc) Object.assign(env, tcInstallEnv(tc, { options, groups: job.tcGroups ?? [], ip: job.ip ?? '', hostname: job.hostname ?? recipe.id }))
+    // K3s: the server's own address for its certificate; an agent's server and join token (from the vault, into the script only).
+    if (isK3s(recipe)) {
+      if (!deps.k3s) throw new Error('The K3s page is not available here.')
+      Object.assign(env, await k3sInstallEnv(recipe.id, { ip: job.ip, options }, { service: deps.k3s }))
+    }
     // The Arr Stack's shell in its container, and the stop that every failure after `docker compose up` runs first:
     // an app Compose already started may have no sign-in yet.
     const arrSh = (script: string, timeoutMs: number) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} })
@@ -626,6 +642,21 @@ async function runJob(
         })
       job.url = out.url
       job.adminCredential = { user: admin.user, vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}`, key: 'admin_password' }, issuedAt: Date.now() }
+      job.status = 'completed'
+      return
+    }
+
+    // K3s: its admin login into the vault, HyperProx's own two accounts, the K3s page connected (lib/k3s/catalogue.ts);
+    // an agent: it joined and is Ready. In place of the generic check and wiring.
+    if (isK3s(recipe)) {
+      if (!job.ip) throw new Error(`${recipe.name} has no address, so its setup cannot reach it.`)
+      if (!deps.k3s) throw new Error('The K3s page is not available here.')
+      const s0 = job.steps.find(x => x.id === 'container')
+      if (s0 && job.k3sPrepared) s0.detail = `${s0.detail}: ${job.k3sPrepared}`
+      const out = await k3sRunSetup({ recipeId: recipe.id, ip: job.ip, vmid: job.vmid!, hostname: job.hostname ?? recipe.id, owner: job.owner, options },
+        id => step(job, id), { service: deps.k3s, sh: (script, timeoutMs) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} }) })
+      job.url = out.url
+      if (out.followUp) job.tcFollowUp = out.followUp
       job.status = 'completed'
       return
     }
@@ -1114,11 +1145,28 @@ export function notePartial(view: ClusterView, live: LiveRead): void {
 export interface Need { cores: number; memoryMb: number; diskGb: number; storage?: string }
 
 /** The node table and the recommendation for one recipe at one size. */
-export function placementFor(recipe: CatalogueRecipe, need: Need, view: ClusterView): {
+/**
+ * The nodes that already run a guest of one of `recipe.spreadWith` (a finished Catalogue install whose guest is still
+ * the one it made), for placement to count against. Empty for a recipe that does not spread.
+ */
+export async function spreadNodes(recipe: Pick<CatalogueRecipe, 'spreadWith'>, view: Pick<ClusterView, 'guests'>): Promise<string[]> {
+  if (!recipe.spreadWith?.length) return []
+  const out = new Set<string>()
+  for (const r of await wizardStore().list('job').catch(() => [])) {
+    const j: any = r.data
+    if (!recipe.spreadWith.includes(j?.recipeId) || j?.status !== 'completed') continue
+    const g = view.guests.find(x => Number(x.vmid) === Number(j.vmid))
+    if (g && installStillOwns(j, g)) out.add(g.node)
+  }
+  return [...out]
+}
+
+export function placementFor(recipe: CatalogueRecipe, need: Need & { avoidNodes?: string[] }, view: ClusterView): {
   nodes: Array<NodeView & { verdict: NodeVerdict; rootStorages: PlacementStorage[]; excludedStorages: Array<PlacementStorage & { reason: string }> }>
   recommendation: { node: string; reason: string; storage: string } | null
 } {
-  const verdicts = scoreNodes(view.nodes, view.storages, { ...need, needsGpu: recipe.needsGpu, wantsGpu: recipe.wantsGpu })
+  const avoid = need.avoidNodes?.length ? { nodes: need.avoidNodes, what: `part of this ${recipe.spreadWith?.some(id => id.startsWith('k3s')) ? 'K3s cluster' : 'cluster'}` } : undefined
+  const verdicts = scoreNodes(view.nodes, view.storages, { ...need, avoidNodes: avoid, needsGpu: recipe.needsGpu, wantsGpu: recipe.wantsGpu })
   const byNode = new Map(view.nodes.map(n => [n.node, n]))
   return {
     nodes: verdicts.map(v => ({ ...byNode.get(v.node)!, verdict: v, rootStorages: rootStorages(view.storages, v.node),
@@ -1461,6 +1509,14 @@ export async function previewInstall(
     storageFreeGb: view.storages.find(x => x.node === input.node && x.storage === input.storage)?.freeGb,
   }, deps) : null
   if (tcp) { r.errors.push(...tcp.errors); r.warnings.push(...tcp.warnings); r.checks.push(...tcp.checks); input = { ...input, options: tcp.options } }
+  // K3s: its logins go to the vault, so it must be writable; an agent names a server HyperProx looks after.
+  if (isK3s(recipe)) {
+    if (!await deps.vaultOpen()) r.errors.push(`${recipe.name}'s admin login and HyperProx's tokens are kept in the vault, and the vault is locked. Sign in to unlock it.`)
+    else if (!r.errors.length && deps.k3s) {
+      const kp = await k3sPreview(recipe.id, checkOptions(recipe, input.options).values, { service: deps.k3s })
+      r.errors.push(...kp.errors); r.checks.push(...kp.checks)
+    }
+  }
   // Ghost: the SMTP password into the vault (only this preview names its item), and what mail will do.
   if (recipe.setup === 'ghost') {
     const o = checkOptions(recipe, input.options)
@@ -1564,6 +1620,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     const { view, live, pinged, naming } = await freshRead(plan, deps)
     const r = checkPlan(plan, recipe, view, live, pinged, naming)
     if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) r.errors.push('The vault is locked, so the generated admin password could not be kept.')
+    if (isK3s(recipe) && !await deps.vaultOpen()) r.errors.push('The vault is locked, so K3s\'s admin login and HyperProx\'s tokens could not be kept.')
     if (plan.publish) {
       // The name is checked again: a record or a proxy change since the preview refuses the apply.
       const again = await planPublish({ zone: plan.publish.zone, name: plan.publish.name, instanceId: plan.publish.instanceId }, deps.publish)
@@ -1618,6 +1675,12 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
         // keyctl, the hardware devices and the library, which an API token cannot set; then it starts again.
         const prep = await tcPrepare(plan, kindOf(recipe.id), deps, async () => { job.arrHostMount = { node: plan.node, vmid: plan.vmid }; await persistJob(job).catch(e => persistFailed(job, e)) })
         job.tcPrepared = prep.detail; job.tcGroups = prep.groups
+        await persistJob(job).catch(e => persistFailed(job, e))
+        await waitRunning(deps, plan.node, plan.vmid)
+      }
+      if (isK3s(recipe)) {
+        // keyctl, which an API token cannot set; then it starts again.
+        job.k3sPrepared = await k3sPrepare(plan, { service: deps.k3s!, nodeRun: deps.nodeRun, client: deps.client })
         await persistJob(job).catch(e => persistFailed(job, e))
         await waitRunning(deps, plan.node, plan.vmid)
       }
