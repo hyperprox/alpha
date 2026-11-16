@@ -2,8 +2,9 @@
 //  HyperProx — K3s routes (/api/plugins/k3s)
 //
 //  Roles (lib/roles.ts): the cluster list and a reading are viewer, like every
-//  plug-in page; below admin a cluster's address and the pods' last log lines
-//  are left out. Logs and the drain preview are admin (logs can hold anything
+//  plug-in page; below admin a cluster's address, node, ingress and service
+//  addresses, event text and the pods' last log lines are left out, and a
+//  fresh read (past the cache) is admin only. Logs and the drain preview are admin (logs can hold anything
 //  an app printed). Connecting, renaming or removing a cluster, and every
 //  action, are admin with the master password re-entered, which also keeps API
 //  tokens out; the service refuses a token again by name.
@@ -39,9 +40,20 @@ export function viewOf<T extends Partial<K3sMeta> & { url?: string }>(m: T, admi
   const { url: _u, ...rest } = m
   return rest as T
 }
+/**
+ * What a viewer sees of a reading: the shape and the health, without the network map (node addresses, ingress hosts
+ * and paths, service addresses), the pods' log lines or the events' text, which can name anything an app printed.
+ */
 export function readingFor(r: Reading, admin: boolean): Reading {
   if (admin) return r
-  return { ...r, problems: r.problems.map(({ lastLines: _l, ...p }) => p) }
+  return {
+    ...r,
+    nodes: r.nodes.map(n => ({ ...n, ip: null })),
+    problems: r.problems.map(({ lastLines: _l, ...p }) => p),
+    events: r.events.map(e => ({ ...e, message: '' })),
+    services: r.services.map(x => ({ ...x, clusterIP: null, external: [] })),
+    ingresses: r.ingresses.map(i => ({ ...i, hosts: [], addresses: [], paths: [] })),
+  }
 }
 
 const ACTIONS: FixAction[] = ['restart', 'rollback', 'scale', 'delete-pod', 'cordon', 'uncordon', 'drain']
@@ -62,7 +74,8 @@ export const k3sRoutes: FastifyPluginAsync = async (fastify) => {
   // A cluster that cannot be read is a normal state: 200 with ok:false and the reason.
   fastify.get<P & { Querystring: { fresh?: string } }>('/clusters/:id/reading', async (req, reply) => {
     try {
-      const r = await svc().reading(req.params.id, { fresh: req.query.fresh === '1' })
+      // A fresh read (past the 15-second cache) costs the cluster a dozen list calls: admins only.
+      const r = await svc().reading(req.params.id, { fresh: req.query.fresh === '1' && isAdminReq(req) })
       return { success: true, data: { ok: true, reading: readingFor(r, isAdminReq(req)) } }
     } catch (e: any) {
       if (e instanceof K3sRefusal && e.status === 404) return fail(reply, e)

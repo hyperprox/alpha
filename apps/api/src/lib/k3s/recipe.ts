@@ -161,7 +161,7 @@ export function checkAgentOptions(v: Record<string, string>): string[] {
   return parseServer(v.K3S_SERVER ?? '') ? [] : ['The K3s server is its address and port, like 10.0.0.40:6443.']
 }
 
-const UNPRIVILEGED_NOTE = 'Runs in an unprivileged container with nesting and keyctl (set from the node, as for the Arr Stack). Kubelet is told it runs in a user namespace, so a pod cannot raise node-wide kernel limits, and privileged pods still cannot touch the node. Not a privileged container: nothing here turns AppArmor off or opens every device.'
+const UNPRIVILEGED_NOTE = 'Runs in an unprivileged container with nesting and keyctl (set from the node, as for the Arr Stack). Kubelet is told it runs in a user namespace, so a pod cannot raise node-wide kernel limits. A privileged pod still cannot touch the Proxmox node, but it does control this container and the K3s cluster, so treat "privileged" in a pod as root on this cluster. Not a privileged container: nothing here turns AppArmor off or opens every device.'
 const VERSION_NOTE = `Pinned to K3s ${K3S_VERSION}: the release binary and K3s's own install script from that release are checked against their SHA-256 before they run. The K3s page says when a newer stable release exists.`
 
 export const K3S_RECIPE: CatalogueRecipe = {

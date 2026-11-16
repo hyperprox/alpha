@@ -178,7 +178,7 @@ function ClusterView({ c, admin, onRemoved }: { c: Cluster; admin: boolean; onRe
 
           <DetailsSection count={3}>
             <section className="rounded-lg border p-3 text-sm" style={{ background: 'var(--surface)', borderColor: 'var(--border)', color: 'var(--text-soft)' }}>
-              <p>Reads use HyperProx&apos;s read-only account <code>hyperprox-reader</code> in kube-system (no secrets, no config maps). The buttons use a second account, <code>hyperprox-operator</code>, that can only restart, roll back and scale workloads, delete pods, and cordon, uncordon and drain nodes.</p>
+              <p>Reads use HyperProx&apos;s read-only account <code>hyperprox-reader</code> in kube-system (no secrets, no config maps). The buttons use a second account, <code>hyperprox-operator</code>, used for nothing else; admission policies in the cluster stop it from making a workload privileged or giving it host access, and from changing a node beyond cordoning.</p>
               <p className="mt-2">The admin kubeconfig{c.hasJoinToken ? ' and the join token are' : ' is'} in the vault ({`plugin/k3s.${c.id}.admin`}), where an admin can reveal {c.hasJoinToken ? 'them' : 'it'}. The Kubernetes API stays on your network: HyperProx gives it no public name.</p>
               {c.url && <p className="mt-2 font-mono">{c.url} · CA {c.caFingerprint.slice(0, 29)}…</p>}
             </section>
@@ -241,9 +241,9 @@ function RemoveCluster({ c, onRemoved }: { c: Cluster; onRemoved: () => void }) 
   }
   return (
     <section className="flex flex-col gap-2 rounded-lg border p-3" style={{ borderColor: 'var(--border)' }}>
-      <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Removing {c.name} deletes HyperProx&apos;s two accounts in the cluster and its tokens and kubeconfig from the vault. The cluster itself keeps running. Auto-connect will not add it back by itself.</p>
+      <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Removing {c.name} deletes HyperProx&apos;s two accounts and its admission policies in the cluster and its tokens and kubeconfig from the vault. The cluster itself keeps running. Auto-connect will not add it back by itself.</p>
       {err && <Notice kind="error">{err}</Notice>}
-      {force && <small style={{ color: 'var(--warn-2)' }}>Removing again removes it from HyperProx anyway; delete hyperprox-reader and hyperprox-operator in kube-system yourself.</small>}
+      {force && <small style={{ color: 'var(--warn-2)' }}>Removing again removes it from HyperProx anyway; delete the hyperprox-reader and hyperprox-operator accounts (kube-system) and the hyperprox-operator admission policies yourself.</small>}
       <div><GhostButton type="button" disabled={busy} onClick={() => void remove()} style={{ color: 'var(--crit-soft)' }}>{busy ? 'Removing…' : force ? 'Remove anyway' : `Remove ${c.name} from HyperProx`}</GhostButton></div>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </section>

@@ -1214,8 +1214,15 @@ its own two accounts in it, and the K3s plug-in page shows it. There is nothing 
   kept only in the vault (**Plug-ins, K3s, Details** says which item); reveal them there. HyperProx uses the admin login
   once, to make its own two accounts in `kube-system`: `hyperprox-reader`, which can read what the page shows and the
   pod logs and nothing else (never secrets or config maps; HyperProx checks it cannot read secrets before it keeps
-  anything), and `hyperprox-operator`, which can only restart, roll back and scale workloads, delete pods, and
-  cordon, uncordon and drain nodes.
+  anything), and `hyperprox-operator`, used only for the actions you confirm. Kubernetes permissions cannot be narrowed
+  to exactly those actions, so it has the rights they need (changing workloads and their size, deleting and evicting
+  pods, changing nodes), and two admission policies HyperProx adds to the cluster narrow it further: through that
+  account a workload can never be made privileged or given a host path, the host's network, PID or IPC, or a
+  capability it did not already have, and on a node nothing may change except whether it takes new pods. The kubeconfig
+  kept in the vault is rebuilt from the checked parts (address, CA, client certificate); nothing else of what was read
+  is kept.
+- **A privileged pod is still root on this cluster.** It cannot reach the Proxmox node, but it does control the K3s
+  container and the whole K3s cluster. Run privileged workloads only if you trust them.
 - **The API stays on your network.** The Kubernetes API (port 6443) gets no public name and no port forward. Publish
   an app through its ingress instead.
 - **More nodes.** The finished page offers **Add an agent on another node**. The wizard fills in the server, takes
@@ -3020,7 +3027,9 @@ audited. HyperProx changes the proxy only through its helper's fixed commands, w
 **Plug-ins, K3s** shows each K3s cluster HyperProx looks after. A cluster installed from the Catalogue is connected
 by itself. So is a K3s server HyperProx finds on your guests: the service scan sees a Kubernetes API answering on
 port 6443, HyperProx looks inside that guest once, read-only, for K3s's admin login, and connects it the same way
-(never a guest tagged `hyperprox-ignore` or on Remote access's "never look inside" list). Only when it finds an API
+(never a guest tagged `hyperprox-ignore` or on Remote access's "never look inside" list). Note that connecting means
+HyperProx creates its two service accounts and two admission policies in every K3s it finds this way; tag a guest
+`hyperprox-ignore` if you do not want that. Only when it finds an API
 but no K3s login it can read (another Kubernetes, or a cluster outside your Proxmox) does the page ask: **Connect a
 cluster** takes that cluster's kubeconfig, and the join token if you want the Catalogue to add agents to it.
 
@@ -3041,9 +3050,11 @@ The page opens with the cluster's nodes ready, pods running, pods in trouble and
 
 Every action is for admins, asks for the master password (once every five minutes), says what it will do before it
 runs, is checked against the cluster at that moment (a button never acts on something that has gone), is written to
-the audit log, and is sent with the narrower `hyperprox-operator` account. API tokens cannot act on a cluster.
-Logs are for admins too, as they hold whatever an app printed. **Remove** (under Details) deletes HyperProx's two
-accounts from the cluster and its logins from the vault; the cluster keeps running, and auto-connect does not add it
+the audit log, and is sent with the separate `hyperprox-operator` account, which the admission policies (see K3s in the Catalogue above) keep from
+widening a workload's access or changing a node beyond cordoning. API tokens cannot act on a cluster.
+Below admin, the page leaves out addresses (nodes, ingresses, services) and the text of events and logs. Logs are for
+admins too, as they hold whatever an app printed. **Remove** (under Details) deletes HyperProx's two accounts and two
+admission policies from the cluster and its logins from the vault; the cluster keeps running, and auto-connect does not add it
 back by itself.
 
 ### Settings
