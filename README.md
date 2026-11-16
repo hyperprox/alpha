@@ -74,10 +74,10 @@ To run it locally, see [docs/demo.md](docs/demo.md).
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
-| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes |
+| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server, Pi-hole, AdGuard Home and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes |
 | Websites | Its own section: a New website wizard (static site, WordPress or Ghost) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link or open Ghost's admin, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
-| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
+| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud, Pi-hole, AdGuard Home and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and the master password; a message when something new is added |
 | Nextcloud | Version and update, every setup warning from the admin page grouped by severity with a one-click fix, a guided step or an honest "optional" for each, Talk's signalling server and Client Push, PHP, database, background jobs and the log; updates a Docker Compose install (database dump first, master password) |
 | Backups | The Proxmox Backup Server plug-in: datastores, stale guests, job health and an optional Verify, read-only unless you turn on managing backups (delete, prune, clean up; protected snapshots are never touched) |
@@ -1741,6 +1741,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 | QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
 | ASUS router | Stock Asuswrt or Merlin, without Home Assistant: model, firmware, uptime, CPU and RAM; internet status with live down and up rates; each Wi-Fi band with its network name, channel and clients; connected devices with connection, signal and time online; what needs attention; reboot behind the confirm step (see below) |
 | Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; read-only unless you turn on backup management, which adds deleting, pruning and clean-up (see below) |
+| Pi-hole and AdGuard Home | Each DNS blocker as a shield with the share of queries blocked, a 24-hour chart, the domains blocked most (an Allow button each), the busiest devices (hideable), each upstream DNS server with its state and answer time, how old the block lists are, and whether blocking is on; every problem has a fix button (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
@@ -2137,6 +2138,61 @@ controls stop until you pin its certificate or give it a LAN, Tailscale or `http
 remote server and it also appears on that server's page (a **Home Assistant** tab, in amber) and in
 the Command center. The Home Assistant you had already set up is the first house, called "Home", with
 nothing to redo.
+
+#### Pi-hole and AdGuard Home
+
+Both are network-wide DNS ad and tracker blockers: your devices ask them for a name, and they answer "no such
+place" for the names on their block lists. Install either from the **Catalogue** (category *DNS and network*).
+
+**The install.** The container is made, the blocker installed and started, and its admin password generated and
+kept in the vault; it is shown once on the result page and never written anywhere else. Pi-hole runs from its official
+image, pinned by tag and digest. AdGuard Home runs from one release tarball, checked against the SHA-256 the project
+publishes, as a systemd service, and its first-run page is only ever open on the container's own loopback, never on
+your network. Both answer DNS (port 53) and show their web page on the container's own address only, not on every
+interface. The upstream DNS servers are the ones you type, or, when you leave the box blank, the resolvers the
+container was given, which are the ones your cluster already uses.
+
+**Its web page.** By default the web page is reachable on your network only. In the install wizard's *Name & network* step you can
+instead give it a public name: pick a domain, a name and a proxy, press **Check this name**, and the review lists the exact DNS
+record, proxy host and certificate that will be made (the same code the Websites wizard uses). DNS itself (port 53) is never
+published or proxied. The plug-in always talks to the blocker on its own address, not through the public name.
+
+**Nothing else changes by itself.** The install does not touch any other machine's DNS. The result page has a box,
+**Point your network at it**: set the DNS server your router hands out by DHCP to the blocker's address (a device
+picks it up when it renews its lease), or set it on one device first to try it. Keep a second DNS server out of the
+list, or devices use it and skip the blocking. **Use for HyperProx-installed guests** (admin, master password) puts the
+blocker first in the DNS list HyperProx gives the guests it creates from now on (Settings, Naming), with the old
+servers behind it; guests that already exist are not changed, and one click undoes it. If you have no naming
+settings saved yet, it says so instead of inventing them.
+
+**The plug-ins.** Open **Plug-ins, Pi-hole** or **AdGuard Home**. HyperProx connects every blocker it finds on the
+cluster by itself (a Catalogue install, or one its service scan sees), signing in once to prove the password before it
+saves anything: a Catalogue install uses the generated password from the vault, and one you installed yourself needs
+exactly one vault item whose login address is that very address (Pi-hole: its password; AdGuard Home: user name and
+password). With none, the page says what is missing; with several, you pick one. A blocker can also be added by hand
+(admin, master password again). The login goes only to the address it was saved for, and a blocker that refuses it
+is not asked again until you save the login again.
+
+| What you see | Where it comes from |
+|---|---|
+| Queries, share blocked, answer time, devices that asked | The blocker's own statistics |
+| Top blocked domains, busiest devices | The same; per-device numbers are hidden from viewers, and an admin can switch them off for a blocker so HyperProx never asks for them |
+| Upstream DNS servers with state and time | A test lookup HyperProx makes to each (Pi-hole) or the blocker's own upstream test (AdGuard Home), plus the time the blocker measured for real queries |
+| Block lists: entries, age | The blocker; older than eight days is called overdue |
+
+| Problem | Fix button | Who |
+|---|---|---|
+| Blocking is off or paused | Turn blocking back on | operator |
+| (any time) | Pause blocking for 5, 30 or 60 minutes | operator |
+| Block lists overdue | Update the block lists now | operator |
+| One upstream server does not answer | Use only the ones that answer | admin, master password |
+| No upstream server answers | Switch to Cloudflare (or Quad9, Google) | admin, master password |
+| It does not answer a test lookup | Restart it (needs the guest it runs in; goes through the leave-alone guard) | admin, master password |
+| A site is broken by a block | Allow that domain (you type `Allow <domain>` to confirm) | admin, master password |
+
+Each action reads the blocker again afterwards and says it worked only when the blocker agrees. Every attempt,
+refused ones too, is written to the audit log with who did it and what, never a password. API tokens cannot use the
+admin actions or add a blocker.
 
 #### QNAP NAS
 
