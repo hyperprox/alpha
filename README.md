@@ -2705,8 +2705,10 @@ Every problem shown has its fix when one exists: **Start** a stopped proxy, **Tu
 Caddy reloads through its API; Envoy picks its listener and cluster files up again, and says so when it
 refuses one), **Drain** an Envoy (its health check answers failed, so a load balancer in front stops sending
 it traffic) and, for an Envoy whose configuration is all in its startup file, **Restart** after a check.
-Actions are for admins; each shows what it does and asks first, runs only if a reading taken at that moment
-still offers it, and is recorded in the audit log. Anyone signed in can read the pages.
+Actions are for admins signed in to HyperProx (never an API token); each shows what it does and asks first, runs
+only if a reading taken at that moment still offers it, and is recorded in the audit log. Anyone signed in can read
+the pages; reading a proxy again on demand, and the list of proxies found but not connected, are for admins.
+Envoy runs as its own user with only the right to bind its ports, and a read-only view of the system.
 
 #### Naming & addresses
 
