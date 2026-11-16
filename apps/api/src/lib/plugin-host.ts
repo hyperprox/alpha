@@ -526,6 +526,24 @@ export async function saveSettings(
   }
 }
 
+/**
+ * Every setting that holds an address, each with the credential settings sent to that address (the endpoint's
+ * auth). Clearing an address clears its credentials with it, so a key is never left for an address that is gone.
+ */
+export function addressSettings(manifest: PluginManifest): Array<{ key: string; secrets: string[] }> {
+  const out: Array<{ key: string; secrets: string[] }> = []
+  const add = (key: string | undefined, secrets: string[]) => {
+    if (!key || !manifest.settings.some(s => s.key === key)) return
+    const have = out.find(x => x.key === key)
+    if (have) { for (const k of secrets) if (!have.secrets.includes(k)) have.secrets.push(k); return }
+    out.push({ key, secrets: [...secrets] })
+  }
+  add(manifest.baseUrlSetting, authSecrets(manifest.auth))
+  for (const e of manifest.endpoints ?? []) add(e.baseUrlSetting, authSecrets(e.auth))
+  for (const s of manifest.settings) if (s.type === 'url') add(s.key, [])
+  return out
+}
+
 /** Settings for the UI: secrets are reported as set or unset, never returned. */
 export async function describeSettings(manifest: PluginManifest) {
   const stored = await getSettings(manifest.id)
