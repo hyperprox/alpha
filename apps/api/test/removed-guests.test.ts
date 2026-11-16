@@ -7,7 +7,8 @@ import {
   EMPTY_STATE, MIN_SPAN_MS, markDestroyed, step, type ClusterRead, type DetectorState, type RemovedGuest,
 } from '../src/lib/removed-guests/detector'
 import { cleanUp, holdingsFor, jobVmids, noticeWords, type HoldingDeps } from '../src/lib/removed-guests/holdings'
-import { EMPTY_SERVICE_STATE, RemovedGuestsService, type ServiceState, type TaskRow } from '../src/lib/removed-guests/service'
+import { EMPTY_SERVICE_STATE, RemovedGuestsService, probeGuestConfig, type ConfigProbe, type ServiceState, type TaskRow } from '../src/lib/removed-guests/service'
+
 import { MemoryStateStore, Reconciler } from '../src/lib/auto-connect/core'
 import { needsReconfirm, requiredRole } from '../src/lib/roles'
 
@@ -101,13 +102,14 @@ interface World {
   ac: Array<{ plugin: string; key: string; label: string; state: 'connected' | 'pending' | 'dismissed' }>
   plugin: Array<{ plugin: string; pluginName: string; setting: string; value: string; also: string[] }>
   deckAddr: Record<string, string>
-  pins: string[]
   remote: Array<{ machineId: string; provider: string; deviceId: string | null; adopted: boolean }>
   wg: { servers: any[]; peers: any[] }
   moves: Array<{ id: string; sid: string; name: string }>
   ha: string[]
   jobs: Array<{ id: string; vmid: string; schedule: string | null; comment: string | null }>
   live: Set<string>
+  scanAt: number
+  newestAt: number | null
   calls: string[]
   audits: Array<{ action: string; details: any }>
   auditDown?: boolean
@@ -124,13 +126,12 @@ function world(): World {
     plugin: [{ plugin: 'arrstack', pluginName: 'Arr Stack', setting: 'sonarr_url', value: 'http://10.0.0.5:8989', also: ['sonarr_key'] },
       { plugin: 'arrstack', pluginName: 'Arr Stack', setting: 'radarr_url', value: 'http://10.0.0.6:7878', also: ['radarr_key'] }],
     deckAddr: { 'lxc-105': '10.0.0.5', 'lxc-100': '10.0.0.9' },
-    pins: ['10.0.0.5:22', '10.0.0.9:22', 'c0123456789:10.0.0.5:22'],
     remote: [{ machineId: 'lxc-105', provider: 'tailscale', deviceId: 'd1', adopted: false }, { machineId: 'lxc-100', provider: 'tailscale', deviceId: 'd2', adopted: false }],
     wg: { servers: [], peers: [{ id: 'p1', machineId: 'lxc-105', name: 'dash-tun', serverId: 's9' }] },
     moves: [{ id: 'm1', sid: 'ct:105', name: 'dash' }, { id: 'm2', sid: 'ct:100', name: 'keep' }],
     ha: ['ct:105', 'ct:100'],
     jobs: [{ id: 'backup-daily', vmid: '100,105,110', schedule: '02:00', comment: 'daily' }, { id: 'backup-only', vmid: '105', schedule: 'sun 01:00', comment: null }, { id: 'backup-other', vmid: '100', schedule: null, comment: null }],
-    live: new Set(['10.0.0.9', '10.0.0.6']),
+    live: new Set(['10.0.0.9', '10.0.0.6']), scanAt: 5000, newestAt: null,
     calls: [], audits: [],
   }
 }
@@ -146,7 +147,6 @@ function deps(w: World): HoldingDeps {
     plugins: { addresses: async () => w.plugin, clear: async (p, settings) => { call(`plugin.clear ${p} ${settings.join(',')}`); w.plugin = w.plugin.filter(x => !(x.plugin === p && settings.includes(x.setting))) } },
     deck: {
       addresses: async () => w.deckAddr, forget: async id => { call(`deck.forget ${id}`); delete w.deckAddr[id] },
-      pins: async () => w.pins, forgetPin: async (h, port) => { call(`pin.forget ${h}:${port}`); w.pins = w.pins.filter(p => p !== `${h}:${port}`) },
     },
     remote: { list: async () => w.remote, forget: async (m, p) => { call(`remote.forget ${m} ${p}`); w.remote = w.remote.filter(r => r.machineId !== m); return 'ok' } },
     wireguard: { list: async () => w.wg, forgetMachine: async m => { call(`wg.forget ${m}`); w.wg.peers = w.wg.peers.filter(p => p.machineId !== m); return 'ok' } },
@@ -158,7 +158,7 @@ function deps(w: World): HoldingDeps {
       deleteJob: async id => { call(`job.delete ${id}`); w.jobs = w.jobs.filter(j => j.id !== id) },
     },
     publish: { cleanup: async l => { call(`publish.cleanup ${l.dnsRecord?.name ?? ''} ${l.proxyHost?.hostId ?? ''}`); return ['Removed the DNS record.', 'Removed the proxy host.'] } },
-    liveAddresses: async () => w.live,
+    liveAddresses: async () => ({ hosts: w.live, scanAt: w.scanAt, newestGuestAt: w.newestAt }),
     audit: async (action, _r, details) => { if (w.auditDown) throw new Error('audit down'); w.audits.push({ action, details }) },
   }
 }
@@ -172,7 +172,7 @@ test('holdings: everything that points at the removed guest, and nothing that po
   const ids = holdings.map(h => h.id).sort()
   assert.deepEqual(ids, [
     'auto-connect:arrstack/sonarr_url@http://10.0.0.5:8989', 'auto-connect:homepage/lxc-105',
-    'backup-job:backup-daily', 'backup-job:backup-only', 'deck-address:lxc-105', 'ha:ct:105', 'homepage:h1', 'host-key:10.0.0.5:22',
+    'backup-job:backup-daily', 'backup-job:backup-only', 'deck-address:lxc-105', 'ha:ct:105', 'homepage:h1',
     'install:j1', 'move:m1', 'plugin-address:arrstack:sonarr_url', 'published:install:j1:0', 'remote:lxc-105:tailscale', 'wireguard:lxc-105',
   ])
   const daily = holdings.find(h => h.id === 'backup-job:backup-daily')!
@@ -215,7 +215,7 @@ test('clean-up: only the removed guest\'s records; published names only when tic
   assert.equal(w.jobs.find(j => j.id === 'backup-other')!.vmid, '100')
   // The other guest's records are all still there.
   assert.ok(w.homepage.some(h => h.id === 'h2') && w.nextcloud.length === 1 && w.ha.includes('ct:100') && w.moves.some(m => m.id === 'm2'))
-  assert.ok(w.remote.some(r => r.machineId === 'lxc-100') && w.deckAddr['lxc-100'] && w.pins.includes('10.0.0.9:22') && w.pins.includes('c0123456789:10.0.0.5:22'))
+  assert.ok(w.remote.some(r => r.machineId === 'lxc-100') && w.deckAddr['lxc-100'])
   assert.ok(w.ac.some(a => a.key === 'lxc-100') && w.plugin.some(p => p.setting === 'radarr_url'))
   assert.ok(w.calls.includes('plugin.clear arrstack sonarr_url,sonarr_key'), 'the key saved for that address goes with it')
   // Audited before (the list) and after (the outcome).
@@ -256,7 +256,7 @@ test('clean-up: nothing changes when the audit row cannot be written', async () 
 
 // ── the service: a pass, the alert, and HyperProx's own delete ──────────────
 
-function svc(w: World, reads: ClusterRead[], tasks: TaskRow[] | 'fail' = []) {
+function svc(w: World, reads: ClusterRead[], tasks: TaskRow[] | 'fail' = [], probe: ConfigProbe = 'missing') {
   let state: ServiceState = structuredClone(EMPTY_SERVICE_STATE)
   const published: any[] = []
   let i = 0
@@ -267,6 +267,7 @@ function svc(w: World, reads: ClusterRead[], tasks: TaskRow[] | 'fail' = []) {
     tasks: async () => { if (tasks === 'fail') throw new Error('no tasks'); return tasks },
     candidates: async () => [{ vmid: 105, type: 'lxc', name: 'dash' }, ...w.jobs.flatMap(j => jobVmids(j.vmid).map(vmid => ({ vmid })))],
     scanAddresses: () => new Map(),
+    probeConfig: async () => probe,
     holdings: deps(w),
     unlocked: () => true,
     publish: async e => { published.push(e) },
@@ -358,3 +359,122 @@ test('roles: removed guests are admin, reads included; clean-up and plug-in disc
 })
 
 test('detector: MIN_SPAN_MS is ten minutes', () => { assert.equal(MIN_SPAN_MS, 10 * MIN) })
+
+// ── review fixes: the re-check before acting, the mass-disappearance guard, current addresses ──
+
+/** 105 seen, then gone for three reads: removed. Later reads are what Clean up sees. */
+function removedThen(w: World, after: ClusterRead[], probe: ConfigProbe = 'missing') {
+  // Last seen at 1000: the fixture's records (made at 50 and 100) are from before that.
+  const base = [ok(1000, [guest(100, 'keep'), guest(110, 'x'), guest(105, 'dash')]), ...passes(3, [guest(100, 'keep'), guest(110, 'x')], 5 * MIN)]
+  return svc(w, [...base, ...after], [], probe)
+}
+const tickN = async (r: ReturnType<typeof svc>, n: number) => { for (let k = 0; k < n; k++) await r.s.tick() }
+
+test('clean-up: removed, ID reused before the next look, then Clean up: only what is safe under a reused ID is touched', async () => {
+  const w = world()
+  const r = removedThen(w, [ok(30 * MIN, [guest(100, 'keep'), guest(110, 'x'), guest(105, 'other', 'qemu')])])
+  await tickN(r, 4)
+  assert.ok(r.state().removed['105'] && !r.state().removed['105'].reused)
+  const out = await r.s.cleanUp(105, { deleteEmptyJobs: ['backup-only'] }, 'admin@example.com')
+  assert.equal(r.state().removed['105'].reused?.name, 'other', 'marked reused at clean-up')
+  // Its own old records go; nothing keyed by the ID (now the new guest's) is touched.
+  assert.ok(w.calls.includes('homepage.forget h1') && w.calls.includes('install.forget j1'))
+  for (const c of ['ha.remove', 'job.put', 'job.delete', 'deck.forget', 'remote.forget', 'wg.forget', 'move.cancel', 'ac.forget homepage/lxc-105']) {
+    assert.ok(!w.calls.some(x => x.startsWith(c)), `${c} is the new guest's`)
+  }
+  assert.ok(out.results.every(x => !['ha', 'backup-job', 'deck-address', 'remote', 'wireguard', 'move'].includes(x.kind)))
+})
+
+test('clean-up: the same guest back under its name is not removed any more, and nothing is cleaned', async () => {
+  const w = world()
+  const r = removedThen(w, [ok(30 * MIN, [guest(100, 'keep'), guest(110, 'x'), guest(105, 'dash')])])
+  await tickN(r, 4)
+  await assert.rejects(r.s.cleanUp(105, {}, 'a'), (e: any) => e.code === 'back')
+  assert.ok(!r.state().removed['105'])
+  assert.deepEqual(w.calls, [])
+})
+
+test('clean-up: refused when the cluster cannot be read, a node is down, or Proxmox does not say the config is gone', async () => {
+  for (const [after, probe] of [
+    [{ ok: false, at: 30 * MIN, why: 'HTTP 500' } as ClusterRead, 'missing'],
+    [ok(30 * MIN, [guest(100, 'keep'), guest(110, 'x')], [{ name: 'node-a', online: true }, { name: 'node-b', online: false }]), 'missing'],
+    [ok(30 * MIN, [guest(100, 'keep'), guest(110, 'x')]), 'unknown'],
+    [ok(30 * MIN, [guest(100, 'keep'), guest(110, 'x')]), 'exists'],
+  ] as Array<[ClusterRead, ConfigProbe]>) {
+    const w = world()
+    const r = removedThen(w, [after])
+    await tickN(r, 4)
+    // The probe used at clean-up is the one given; the tick's own probe saw "missing" first.
+    ;(r.s as any).d.probeConfig = async () => probe
+    await assert.rejects(r.s.cleanUp(105, {}, 'a'), (e: any) => e.code === 'not_confirmed')
+    assert.deepEqual(w.calls, [], 'nothing changed')
+  }
+})
+
+test('the config probe: only "does not exist" on every node is missing; a 403 or an error proves nothing', async () => {
+  const gone = (path: string) => Promise.reject(new Error(`Proxmox GET ${path}: HTTP 500 — Configuration file 'nodes/x/lxc/105.conf' does not exist`))
+  assert.equal(await probeGuestConfig(gone, 105, 'lxc', ['node-a', 'node-b']), 'missing')
+  assert.equal(await probeGuestConfig(gone, 105, null, ['node-a']), 'missing')
+  assert.equal(await probeGuestConfig(() => Promise.reject(new Error('Proxmox GET /x: HTTP 403 — Permission check failed')), 105, 'lxc', ['node-a']), 'unknown')
+  assert.equal(await probeGuestConfig(p => p.includes('node-b') ? Promise.resolve({}) : gone(p), 105, 'lxc', ['node-a', 'node-b']), 'exists')
+  assert.equal(await probeGuestConfig(gone, 105, 'lxc', []), 'unknown')
+  // On a look: a guest whose config the token may not read is not decided removed.
+  const r = svc(world(), [ok(0, [guest(100, 'keep'), guest(110, 'x'), guest(105, 'dash')]), ...passes(3, [guest(100, 'keep'), guest(110, 'x')], 5 * MIN)], [], 'unknown')
+  await tickN(r, 4)
+  assert.deepEqual(r.state().removed, {})
+})
+
+test('mass disappearance: many guests missing at once does not count, and says so once', async () => {
+  const many = [100, 101, 102, 103, 104, 105, 106].map(v => guest(v, `g${v}`))
+  const few = many.slice(0, 2)
+  const w = world()
+  w.jobs = []
+  const r = svc(w, [ok(0, many), ...passes(5, few, 5 * MIN), ok(60 * MIN, many)])
+  await tickN(r, 6)
+  assert.deepEqual(r.state().removed, {}, 'none of them is removed')
+  assert.deepEqual(r.state().absent, {}, 'no absence even started')
+  assert.match(r.state().lastRead?.why ?? '', /5 guests seen before are missing at once/)
+  const sent = r.published.filter(e => e.type === 'removed_guests.cannot_see')
+  assert.equal(sent.length, 1)
+  assert.match(sent[0].title, /HyperProx can't see 5 guests it saw before/)
+  assert.match(sent[0].lines.join(' '), /token's permissions/)
+  await r.s.tick()
+  assert.equal(r.published.filter(e => e.type === 'removed_guests.cannot_see' && e.resolved).length, 1, 'cleared when they are seen again')
+  // Over a fifth, even under four: two of five is not a removal either; one of five still is a normal absence.
+  const five = [100, 101, 102, 103, 104].map(v => guest(v, `g${v}`))
+  let s = step(EMPTY_STATE, { read: ok(0, five), candidates: [] })
+  s = step(s, { read: ok(5 * MIN, five.slice(2)), candidates: [] })
+  assert.equal(s.lastRead?.ok, false)
+  s = step(s, { read: ok(10 * MIN, five.slice(1)), candidates: [] })
+  assert.equal(s.lastRead?.ok, true); assert.equal(s.absent['100'].reads, 1)
+})
+
+test('addresses: matched only against a scan taken after the removal and the newest guest; a configured address of a current guest never; host keys never', async () => {
+  const ids = async (w: World, g = removed()) => (await holdingsFor(g, deps(w))).holdings.map(h => h.id)
+  const fresh = world()
+  assert.ok((await ids(fresh)).includes('plugin-address:arrstack:sonarr_url'))
+  const old = world(); old.scanAt = 500
+  let r = await holdingsFor(removed(), deps(old))
+  assert.ok(!r.holdings.some(h => h.kind === 'plugin-address'), 'a scan from before the removal says nothing about who uses the address now')
+  assert.ok(r.unread.some(u => /newer than the removal/.test(u)))
+  const created = world(); created.newestAt = 6000
+  assert.ok(!(await ids(created)).some(i => i.startsWith('plugin-address')), 'a guest made after the scan may have the address')
+  const configured = world(); configured.live.add('10.0.0.5')
+  assert.ok(!(await ids(configured)).some(i => i.startsWith('plugin-address') || i.includes('@http://10.0.0.5')))
+  assert.ok(!(await ids(fresh)).some(i => i.startsWith('host-key')), 'pinned host keys are never offered')
+  // The clean-up checks again at the moment it acts: an address taken since is kept.
+  const w = world()
+  const d = deps(w)
+  d.refreshScan = async () => { w.live.add('10.0.0.5'); w.scanAt = 9000 }
+  const out = await cleanUp(removed(), {}, 'a', d)
+  assert.ok(!w.calls.some(c => c.startsWith('plugin.clear')))
+  assert.ok(!out.results.some(x => x.kind === 'plugin-address'))
+})
+
+test('reused ID: a record that does not say when it was made is not the removed guest\'s', async () => {
+  const w = world()
+  w.homepage[0].addedAt = 0
+  const ids = (await holdingsFor(removed({ reused: { name: 'other', type: 'lxc', at: 9000 } }), deps(w))).holdings.map(h => h.id)
+  assert.ok(!ids.includes('homepage:h1'))
+  assert.ok((await holdingsFor(removed(), deps(w))).holdings.some(h => h.id === 'homepage:h1'), 'not reused: it still is')
+})

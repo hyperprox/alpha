@@ -23,6 +23,12 @@ export const MIN_READS = 3
 export const MIN_SPAN_MS = 10 * 60_000
 /** A removed guest HyperProx holds nothing for any more is forgotten after this long. */
 export const FORGET_AFTER_MS = 30 * 24 * 3600_000
+/**
+ * More guests than this missing from one read, or (two or more) more than MASS_SHARE of the guests seen, is not a removal: it is
+ * HyperProx seeing less (a token that lost its rights, a pool it cannot read). Such a read does not count.
+ */
+export const MASS_COUNT = 3
+export const MASS_SHARE = 0.2
 
 export type Kind = 'lxc' | 'qemu'
 
@@ -52,9 +58,21 @@ export interface DetectorState {
   absent: Record<string, { since: number; reads: number }>
   removed: Record<string, RemovedGuest>
   lastRead: { at: number; ok: boolean; why: string | null } | null
+  /** The last read had too many seen guests missing at once (see MASS_COUNT): how many, and since when. */
+  massVanish?: { count: number; since: number } | null
 }
 
-export const EMPTY_STATE: DetectorState = { seen: {}, absent: {}, removed: {}, lastRead: null }
+export const EMPTY_STATE: DetectorState = { seen: {}, absent: {}, removed: {}, lastRead: null, massVanish: null }
+
+/** How many guests seen before are missing from this read, and whether that is too many to be removals. */
+export function vanished(s: DetectorState, read: ClusterRead): { count: number; mass: boolean } {
+  if (!read.ok) return { count: 0, mass: false }
+  const here = new Set(read.guests.map(g => g.vmid))
+  const seen = Object.values(s.seen)
+  const count = seen.filter(g => !here.has(g.vmid)).length
+  // One guest gone is never "mass", however small the cluster: the share rule needs at least two at once.
+  return { count, mass: count > MASS_COUNT || (count >= 2 && count / seen.length > MASS_SHARE) }
+}
 
 /** One look at the cluster. `ok: false` is a read that failed: it is recorded and decides nothing. */
 export type ClusterRead =
@@ -85,7 +103,7 @@ export function readCounts(r: ClusterRead): boolean {
 
 /** The guests that would be absent on this read (needed before step(), to know whether to read the task log). */
 export function absentCandidates(s: DetectorState, read: ClusterRead, candidates: Candidate[]): number[] {
-  if (!readCounts(read) || !read.ok) return []
+  if (!readCounts(read) || !read.ok || vanished(s, read).mass) return []
   const here = new Set(read.guests.map(g => g.vmid))
   const ids = new Set<number>([...Object.values(s.seen).map(g => g.vmid), ...candidates.map(c => c.vmid)])
   return [...ids].filter(v => !here.has(v) && !s.removed[String(v)])
@@ -101,6 +119,14 @@ export function step(prev: DetectorState, input: StepInput): DetectorState {
     s.lastRead = { at: r.at, ok: false, why: r.nodes.length ? `not every node is online (${down.join(', ')})` : 'no node was listed' }
     return s
   }
+  const v = vanished(s, r)
+  if (v.mass) {
+    // Nothing is learned from it: no absence advances and nothing seen is replaced by a smaller picture.
+    s.lastRead = { at: r.at, ok: false, why: `${v.count} guests seen before are missing at once` }
+    s.massVanish = { count: v.count, since: s.massVanish?.since ?? r.at }
+    return s
+  }
+  s.massVanish = null
   s.lastRead = { at: r.at, ok: true, why: null }
   const here = new Map(r.guests.map(g => [g.vmid, g]))
   const byId = new Map<number, Candidate>()
@@ -160,6 +186,28 @@ export function markDestroyed(prev: DetectorState, g: { vmid: number; type: Kind
   }
   delete s.seen[k]
   delete s.absent[k]
+  return s
+}
+
+/**
+ * A probe of the guest's config showed it was not proven gone (it answered, or the answer was not "does not exist"):
+ * it is not removed. Its absence count starts again.
+ */
+export function unremove(prev: DetectorState, vmid: number): DetectorState {
+  const s: DetectorState = structuredClone(prev)
+  const k = String(vmid)
+  const g = s.removed[k]
+  delete s.removed[k]
+  delete s.absent[k]
+  if (g?.type && g.name) s.seen[k] = { vmid, type: g.type, name: g.name, node: g.node ?? '', lastSeen: g.noticedAt, addresses: g.addresses }
+  return s
+}
+
+/** Another guest has this ID now (seen at clean-up): only what is safe under a reused ID is touched from now on. */
+export function markReused(prev: DetectorState, vmid: number, by: { name: string; type: Kind }, at: number): DetectorState {
+  const s: DetectorState = structuredClone(prev)
+  const g = s.removed[String(vmid)]
+  if (g && !g.reused) g.reused = { name: by.name, type: by.type, at }
   return s
 }
 

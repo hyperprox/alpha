@@ -17,15 +17,15 @@ import { addressSettings, getSettings } from '../plugin-host'
 import { sharedServiceScan } from '../service-scan'
 import { listSites, forgetSite, cleanupPublish, realPublishDeps, type PublishLedger } from '../sites'
 import { metricsStore } from '../site-metrics/store'
-import { forgetPin, listPins } from '../hostkey-pins'
+import { configAddresses } from '../wizard-placement'
 import { PrismaRemoteStore, type RemoteStore } from '../remote/store'
 import { providerFromVault } from '../remote/providers'
 import { isProviderId } from '../remote/types'
 import { prismaPlacementStore } from '../placement/store'
 import { publish } from '../notify'
 import { SETTING_SPECS } from '../auto-connect/settings-adapter'
-import { hostOf, type HoldingDeps, type InstallRow, type SiteRow } from './holdings'
-import { EMPTY_SERVICE_STATE, RemovedGuestsService, type RemovedGuestsDeps, type ServiceState, type TaskRow } from './service'
+import { hostOf, type HoldingDeps, type InstallRow, type LiveAddresses, type SiteRow } from './holdings'
+import { EMPTY_SERVICE_STATE, RemovedGuestsService, probeGuestConfig, type RemovedGuestsDeps, type ServiceState, type TaskRow } from './service'
 import type { Candidate, ClusterRead } from './detector'
 import type { LogLike } from '../log-once'
 
@@ -72,11 +72,33 @@ async function haSids(): Promise<string[]> {
   return ha.map(r => String(r?.sid ?? '')).filter(Boolean)
 }
 
-/** Addresses guests are seen at now: the last service scan, only when it is recent (an old one could miss a reuse). */
-function liveScanAddresses(maxAgeMs = 60 * 60_000): Set<string> {
-  const r = sharedServiceScan().peek()
-  if (!r || Date.now() - r.builtAt > maxAgeMs) throw new Error('No recent service scan.')
-  return new Set(r.findings.filter(f => f.guest).map(f => hostOf(f.address)))
+const CREATE_TYPES = new Set(['vzcreate', 'qmcreate', 'vzrestore', 'qmrestore', 'qmclone', 'vzclone'])
+let liveCache: { at: number; v: LiveAddresses } | null = null
+
+/**
+ * What guests use now: the hosts the last service scan saw on a guest, plus every current guest's configured address
+ * (net0 ip=, ipconfig0 ip=), with when that scan was taken and when the newest guest was created or restored.
+ * Kept a minute (the page reads it per removed guest). Throws when the guest list or a config cannot be read.
+ */
+async function liveAddresses(): Promise<LiveAddresses> {
+  if (liveCache && Date.now() - liveCache.at < 60_000) return liveCache.v
+  const scan = sharedServiceScan().peek()
+  if (!scan) throw new Error('No service scan yet.')
+  const hosts = new Set(scan.findings.filter(f => f.guest).map(f => hostOf(f.address)))
+  const pve = homePve()
+  const rows = await pve.fetchStrict<any[]>('/cluster/resources?type=vm')
+  if (!Array.isArray(rows)) throw new Error('Proxmox returned no guest list.')
+  for (const r of rows.filter(x => x && (x.type === 'lxc' || x.type === 'qemu'))) {
+    const cfg = await pve.fetchStrict<Record<string, unknown>>(`/nodes/${enc(String(r.node))}/${r.type}/${Number(r.vmid)}/config`)
+    for (const ip of configAddresses(cfg)) hosts.add(ip)
+  }
+  const tasks = await pve.fetchStrict<any[]>('/cluster/tasks').catch(() => null)
+  const created = (Array.isArray(tasks) ? tasks : []).filter(t => CREATE_TYPES.has(String(t?.type))).map(t => Number(t.starttime) * 1000).filter(Number.isFinite)
+  // Without the task log, "now" stands in: no scan is newer, so no address is matched.
+  const newestGuestAt = Array.isArray(tasks) ? (created.length ? Math.max(...created) : null) : Date.now()
+  const v = { hosts, scanAt: scan.builtAt, newestGuestAt }
+  liveCache = { at: Date.now(), v }
+  return v
 }
 
 export function productionHoldingDeps(prisma: unknown): HoldingDeps {
@@ -149,8 +171,6 @@ export function productionHoldingDeps(prisma: unknown): HoldingDeps {
         return out
       },
       forget: async hostId => deleteCredential('deck', 'address', hostId),
-      pins: async () => (await listPins()).map(p => p.id),
-      forgetPin: async (host, port) => forgetPin(host, port, null),
     },
     remote: {
       list: async () => (await remoteStore().list()).map(r => ({ machineId: r.machineId, provider: r.provider, deviceId: r.deviceId, adopted: r.adopted })),
@@ -193,7 +213,8 @@ export function productionHoldingDeps(prisma: unknown): HoldingDeps {
       deleteJob: async id => { await homePve().fetchStrict(`/cluster/backup/${enc(id)}`, 'DELETE') },
     },
     publish: { cleanup: (ledger, owner) => cleanupPublish(ledger, owner, realPublishDeps()) },
-    liveAddresses: async () => liveScanAddresses(),
+    liveAddresses,
+    refreshScan: async () => { await sharedServiceScan().result(true); liveCache = null },
     audit: (a, r, d) => auditOrThrow(a, r, d),
   }
 }
@@ -238,6 +259,7 @@ export function productionRemovedGuests(prisma: unknown, log?: LogLike): Removed
       if (!Array.isArray(rows)) throw new Error('Proxmox returned no task list.')
       return rows.map(t => ({ type: String(t?.type ?? ''), id: String(t?.id ?? ''), status: t?.status ? String(t.status) : undefined, starttime: Number(t?.starttime) || 0, endtime: t?.endtime ? Number(t.endtime) : undefined }))
     },
+    probeConfig: (vmid, type, nodes) => probeGuestConfig(path => homePve().fetchStrict(path), vmid, type, nodes),
     candidates: () => candidates(holdings),
     scanAddresses: () => {
       const m = new Map<number, string[]>()

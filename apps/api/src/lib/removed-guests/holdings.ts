@@ -16,7 +16,6 @@
 //      plugin-address  a plug-in setting holding an address it had (+ the key
 //                      stored for that address)
 //      deck-address    the Terminal's remembered address for it
-//      host-key        a pinned SSH host key for an address it had
 //      remote          Remote access's record of the VPN client on it (+ the
 //                      device at the provider when HyperProx installed it)
 //      wireguard       a WireGuard server or peer on it (+ their vault items)
@@ -31,8 +30,11 @@
 //                      making: never guessed from an address
 //
 //  Addresses are matched only for an address the guest itself was seen at
-//  (the service scan, its install record), and never when a guest that exists
-//  now is seen at that address. A record made after the guest was removed is
+//  (the service scan, its install record), only against a scan taken after the
+//  removal and after the newest guest was created or restored, and never when
+//  a guest that exists now is seen at that address or has it in its config.
+//  A pinned SSH host key is never forgotten: nothing proves whose key it is,
+//  and a pin that no longer matches already refuses the connection. A record made after the guest was removed is
 //  never its. When another guest has the ID now, nothing on the cluster and no
 //  record keyed by the ID alone is touched.
 // =============================================================================
@@ -41,7 +43,7 @@ import type { RemovedGuest } from './detector'
 import type { PublishLedger } from '../sites'
 
 export type HoldingKind =
-  | 'homepage' | 'nextcloud' | 'install' | 'site' | 'auto-connect' | 'plugin-address' | 'deck-address' | 'host-key'
+  | 'homepage' | 'nextcloud' | 'install' | 'site' | 'auto-connect' | 'plugin-address' | 'deck-address'
   | 'remote' | 'wireguard' | 'move' | 'ha' | 'backup-job' | 'published'
 
 export type HoldingGroup = 'hyperprox' | 'cluster' | 'published'
@@ -66,6 +68,7 @@ export interface Holding {
 
 export interface InstallRow { jobId: string; recipeId: string; vmid: number; hostname: string | null; ip: string | null; startedAt: number; owner: string; vaultItem: { category: string; provider: string; createdByJob: boolean } | null; ledgers: PublishLedger[] }
 export interface SiteRow { id: string; name: string; vmid: number; ip: string | null; createdAt: number; owner: string; vault: { category: string; provider: string } | null; published: PublishLedger | null }
+export interface LiveAddresses { hosts: Set<string>; scanAt: number; newestGuestAt: number | null }
 export interface PluginAddress { plugin: string; pluginName: string; setting: string; value: string; also: string[] }
 export interface BackupJob { id: string; vmid: string; schedule: string | null; comment: string | null }
 
@@ -76,7 +79,7 @@ export interface HoldingDeps {
   sites: { list(): Promise<SiteRow[]>; forget(id: string, by: string): Promise<string> }
   autoConnect: { keys(): Promise<Array<{ plugin: string; key: string; label: string; state: 'connected' | 'pending' | 'dismissed' }>>; forget(entries: Array<{ plugin: string; key: string }>): Promise<void> }
   plugins: { addresses(): Promise<PluginAddress[]>; clear(plugin: string, settings: string[], by: string): Promise<void> }
-  deck: { addresses(): Promise<Record<string, string>>; forget(hostId: string): Promise<void>; pins(): Promise<string[]>; forgetPin(host: string, port: number): Promise<void> }
+  deck: { addresses(): Promise<Record<string, string>>; forget(hostId: string): Promise<void> }
   remote: { list(): Promise<Array<{ machineId: string; provider: string; deviceId: string | null; adopted: boolean }>>; forget(machineId: string, provider: string, by: string): Promise<string> }
   wireguard: { list(): Promise<{ servers: Array<{ id: string; machineId: string; iface: string }>; peers: Array<{ id: string; machineId: string | null; name: string; serverId: string | null }> }>; forgetMachine(machineId: string, by: string): Promise<string> }
   moves: { scheduled(): Promise<Array<{ id: string; sid: string; name: string }>>; cancel(id: string, by: string): Promise<void> }
@@ -89,7 +92,14 @@ export interface HoldingDeps {
   }
   publish: { cleanup(ledger: PublishLedger, owner: string): Promise<string[]> }
   /** Addresses a guest that exists now is seen at: never treated as the removed guest's. */
-  liveAddresses(): Promise<Set<string>>
+  /**
+   * What guests use now: the hosts the last service scan saw on a guest plus every current guest's configured address,
+   * when that scan was taken, and when the newest guest was created or restored (null when the task log does not say).
+   * Throws when it cannot be read: then no address is matched.
+   */
+  liveAddresses(): Promise<LiveAddresses>
+  /** Take a fresh service scan (the clean-up does, so the addresses it matches are current). */
+  refreshScan?(): Promise<void>
   /** Throws when the audit row cannot be written: then nothing is changed. */
   audit(action: string, resource: string, details: Record<string, unknown>): Promise<void>
 }
@@ -117,7 +127,17 @@ function sids(g: RemovedGuest): string[] {
 /** Made before the guest was removed (a record made after it is some other guest's). */
 function before(g: RemovedGuest, at: number | null | undefined): boolean {
   const cut = g.removedAt ?? g.noticedAt
-  return !at || !Number.isFinite(at) || at <= cut
+  // With the ID reused, a record that does not say when it was made could be the new guest's: it is not the old one's.
+  if (!at || !Number.isFinite(at)) return !g.reused
+  return at <= cut
+}
+
+/** The removed guest's addresses that are safe to match now, or null when the picture of what guests use is too old. */
+export function addressesTheirs(g: RemovedGuest, live: LiveAddresses | null): Set<string> | null {
+  if (!live) return null
+  const after = Math.max(g.removedAt ?? g.noticedAt, live.newestGuestAt ?? 0)
+  if (live.scanAt <= after) return null
+  return new Set(g.addresses.map(hostOf).filter(h => h && !live.hosts.has(h)))
 }
 
 const what = (g: RemovedGuest) => g.type === 'qemu' ? 'VM' : g.type === 'lxc' ? 'container' : 'guest'
@@ -129,9 +149,11 @@ export async function holdingsFor(g: RemovedGuest, d: HoldingDeps): Promise<{ ho
   const reused = !!g.reused
   const ids = machineIds(g)
   const read = async <T>(name: string, fn: () => Promise<T>): Promise<T | null> => { try { return await fn() } catch { unread.push(name); return null } }
-  const live = (await read('which addresses guests use now (so no plug-in address or SSH key is offered)', () => d.liveAddresses())) ?? null
-  // Without the live list, no address is matched at all (one may belong to another guest now).
-  const theirs = new Set(live ? g.addresses.map(hostOf).filter(h => h && !live.has(h)) : [])
+  const live = (await read('which addresses guests use now (so no plug-in address is offered)', () => d.liveAddresses())) ?? null
+  // Without a current picture of what guests use, no address is matched at all (one may belong to another guest now).
+  const fresh = addressesTheirs(g, live)
+  if (live && !fresh && g.addresses.length) unread.push('a service scan newer than the removal (so no plug-in address is offered)')
+  const theirs = fresh ?? new Set<string>()
 
   for (const h of (await read('Homepage', () => d.homepage.list())) ?? []) {
     if (h.vmid !== g.vmid || (g.type && h.kind !== g.type) || !before(g, h.addedAt)) continue
@@ -169,16 +191,8 @@ export async function holdingsFor(g: RemovedGuest, d: HoldingDeps): Promise<{ ho
     out.push({ id: `plugin-address:${p.plugin}:${p.setting}`, kind: 'plugin-address', group: 'hyperprox', plugin: p.plugin,
       label: `${p.pluginName}'s address ${p.value}`, change: `cleared${p.also.length ? ' with the key saved for it' : ''}`, ...(p.also.length ? { vault: [`plugin/${p.plugin}`] } : {}) })
   }
-  const deck = await read('the Terminal', async () => ({ addresses: await d.deck.addresses(), pins: await d.deck.pins() }))
-  if (deck) {
-    if (!reused) for (const id of ids) if (deck.addresses[id]) out.push({ id: `deck-address:${id}`, kind: 'deck-address', group: 'hyperprox', label: `The Terminal's saved address for it (${deck.addresses[id]})`, change: 'forgotten' })
-    for (const pin of deck.pins) {
-      const m = /^(.+):(\d{1,5})$/.exec(pin)
-      // Only this cluster's pins (a remote cluster's carry its id first).
-      if (!m || /^c[0-9a-f]{10}:/.test(pin) || !theirs.has(hostOf(m[1]))) continue
-      out.push({ id: `host-key:${pin}`, kind: 'host-key', group: 'hyperprox', label: `The pinned SSH host key for ${m[1]}`, change: 'forgotten, so a new machine at that address is checked afresh' })
-    }
-  }
+  const deck = reused ? null : await read('the Terminal', () => d.deck.addresses())
+  if (deck) for (const id of ids) if (deck[id]) out.push({ id: `deck-address:${id}`, kind: 'deck-address', group: 'hyperprox', label: `The Terminal's saved address for it (${deck[id]})`, change: 'forgotten' })
   if (!reused) {
     for (const r of (await read('Remote access', () => d.remote.list())) ?? []) {
       if (!ids.includes(r.machineId)) continue
@@ -225,6 +239,8 @@ export interface CleanChoice {
   deleteEmptyJobs?: string[]
   /** Leave these kinds alone (the site delete removes its own record and names). */
   except?: HoldingKind[]
+  /** Take a fresh service scan first, so addresses are matched against what guests use now (default: yes). */
+  freshScan?: boolean
 }
 
 export interface CleanResult { id: string; kind: HoldingKind; outcome: 'removed' | 'kept' | 'failed'; words: string }
@@ -235,6 +251,7 @@ export interface CleanResult { id: string; kind: HoldingKind; outcome: 'removed'
  * list is read again and only this ID is taken out of it. Audited before (fail closed) and after.
  */
 export async function cleanUp(g: RemovedGuest, choice: CleanChoice, by: string, d: HoldingDeps): Promise<{ results: CleanResult[]; unread: string[] }> {
+  if (choice.freshScan !== false && d.refreshScan) await d.refreshScan().catch(() => undefined)
   const { holdings, unread } = await holdingsFor(g, d)
   const skip = new Set(choice.except ?? [])
   const todo = holdings.filter(h => !skip.has(h.kind) && (h.group !== 'published' || choice.published))
@@ -277,16 +294,12 @@ async function cleanOne(g: RemovedGuest, h: Holding, choice: CleanChoice, by: st
       const [plugin, setting] = rest.split(':')
       const p = (await d.plugins.addresses()).find(x => x.plugin === plugin && x.setting === setting)
       if (!p) return done(`${h.label}: already gone.`)
-      if (!new Set(g.addresses.map(hostOf)).has(hostOf(p.value)) || (await d.liveAddresses()).has(hostOf(p.value))) return { outcome: 'kept', words: `${p.pluginName}'s address changed since, so it was kept.` }
+      const now = addressesTheirs(g, await d.liveAddresses().catch(() => null))
+      if (!now?.has(hostOf(p.value))) return { outcome: 'kept', words: `${p.pluginName}'s address ${p.value} was kept: HyperProx could not confirm no guest uses it now.` }
       await d.plugins.clear(plugin, [setting, ...p.also], by)
       return done(`Cleared ${p.pluginName}'s address ${p.value}${p.also.length ? ' and the key saved for it' : ''}.`)
     }
     case 'deck-address': await d.deck.forget(rest); return done(`The Terminal forgot its address for ${rest}.`)
-    case 'host-key': {
-      const m = /^(.+):(\d{1,5})$/.exec(rest)!
-      await d.deck.forgetPin(m[1], Number(m[2]))
-      return done(`Forgot the pinned host key for ${m[1]}.`)
-    }
     case 'remote': {
       const [machineId, provider] = rest.split(':')
       return done(await d.remote.forget(machineId, provider, by))
