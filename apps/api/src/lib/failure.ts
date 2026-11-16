@@ -265,11 +265,15 @@ export function failureEnvelope(body: unknown, status: number, requestId: string
  * always used for it, and any fields a page reads beside them (problems, a running job's id). The same envelope as
  * sendFailure; the one place a route turns a refusal into a reply.
  */
+const QUIET_REFUSALS = new Set(['ceph_unavailable', 'locked'])
+
 export function sendRefusal(reply: FastifyReply, status: number, code: string, error: string, extra: Record<string, unknown> = {}) {
   const req = reply.request
   const body = { ok: false as const, success: false as const, code, error, ...extra, requestId: String(req.id) }
   const ctx = { route: routeOf(req), user: who(req), code: body.code, status }
-  if (status >= 500) req.log.warn(ctx, `request refused: ${body.code}`)
+  // Expected states that pages poll for (no Ceph on this cluster, HyperProx locked) are not worth a line each time.
+  if (QUIET_REFUSALS.has(body.code)) req.log.debug(ctx, `request refused: ${body.code}`)
+  else if (status >= 500) req.log.warn(ctx, `request refused: ${body.code}`)
   else req.log.info(ctx, `request refused: ${body.code}`)
   return reply.status(status).send(body)
 }
