@@ -352,7 +352,15 @@ export class WireguardService {
     const peers = await this.d.store.listPeers()
     const words: string[] = []
     for (const p of peers.filter(x => x.machineId === machineId && !(x.serverId && dead.has(x.serverId)))) {
-      await this.removePeer(p.id, by)
+      // The live side changes first; the row goes only once it has. A server that cannot be updated keeps the peer
+      // row (put back as it was), so HyperProx never forgets a peer that is still configured there.
+      if (p.routerIface && p.routerPeerId) await this.removeRouterPeer(p.routerPeerId, by)
+      await this.d.store.removePeer(p.id)
+      if (p.serverId) {
+        try { await this.applyServer(this.job('forget removed machine', by), await this.server(p.serverId)) }
+        catch (e) { const { createdAt: _made, ...back } = p; await this.d.store.addPeer(back); throw e }
+      }
+      await this.d.store.audit('wireguard.peer.remove', p.id, { ...auditBy(by), name: p.name, why: 'its machine was removed from Proxmox' })
       words.push(`Took the tunnel ${p.name} off its server.`)
     }
     for (const s of servers) {
