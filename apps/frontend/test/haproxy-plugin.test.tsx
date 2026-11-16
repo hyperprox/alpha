@@ -11,7 +11,7 @@ import { confirmText, layout, lbProblems, serverActions, since, summary, type Lb
 import { autoConnectWord } from '../lib/plugin-status'
 
 const srv = (o: Partial<ServerView> = {}): ServerView => ({
-  name: 'web1', address: '192.0.2.11:8080', state: 'up', status: 'UP', weight: 100, sessions: 3, sessionsMax: 9, rate: 2, total: 40, queue: 0, errors: 0, http5xx: 0,
+  name: 'web1', address: '198.51.100.11:8080', state: 'up', status: 'UP', weight: 100, sessions: 3, sessionsMax: 9, rate: 2, total: 40, queue: 0, errors: 0, http5xx: 0,
   responseMs: 12, check: { configured: true, enabled: true, code: 'L7OK', words: 'the check page answered correctly', durationMs: 1, failures: 0 },
   lastChangeS: 300, downtimeS: 0, dynamic: false, ...o,
 })
