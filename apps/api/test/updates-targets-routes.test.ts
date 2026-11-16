@@ -46,7 +46,7 @@ before(async () => {
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildUpdatesRoutes({
-    store, exec: fake, loadPolicy: policyLoad(POLICY), timing: FAST, scheduler: false, recover: false, onRunner: r => { runner = r },
+    store, exec: fake, loadPolicy: policyLoad(POLICY), timing: FAST, onRunner: r => { runner = r },
   }), { prefix: '/api/updates' })
   await app.ready()
 })

@@ -19,22 +19,12 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { approverChanged } from '../lib/users/approvals'
 import { actorOf } from '../lib/http/request-actor'
 import { answerData, type RefusalAnswer } from '../lib/http/answer'
-import { publish } from '../lib/notify'
 import { VaultLockedError } from '../lib/credentials'
 import { currentRemote } from '../lib/clusters/context'
 import { isSid, parseGuestPath, sidOf } from '../lib/guest-id'
-import { nodeAddress } from '../lib/ha'
 import { redactText } from '../lib/ha/redact'
-import { livePve } from '../lib/pve-env'
-import { auditOrThrow } from '../lib/audit'
-import { isUnlocked } from '../lib/vault/state'
-import { nodeExec as runOnNode } from '../lib/node-exec'
-import { prometheusBase } from '../lib/service-health'
 import { PlacementRefusal, PlacementService } from '../lib/placement/service'
-import type { LogLike } from '../lib/log-once'
-import { livePromRange } from '../lib/placement/read'
-import { prismaPlacementStore } from '../lib/placement/store'
-import type { HaPve } from '../lib/ha/read'
+import { placementService } from '../lib/placement/production'
 
 /** How load balancing's failures are answered. Its refusals keep their words; anything else is reported as Proxmox's answer. */
 function placementRefusal(e: any): RefusalAnswer {
@@ -60,48 +50,16 @@ function guestSid(p: { type: string; vmid: string }): string {
   return sidOf(g.type, g.vmid)
 }
 
-let production: PlacementService | null = null
-
-/** The production service: the live Proxmox token, Prometheus, Postgres, the audit log and the node logins. */
-export function placementService(prisma: any, log?: LogLike): PlacementService {
-  if (production) return production
-  const pve = livePve()
-  production = new PlacementService({
-    pve: () => pve as unknown as HaPve,
-    prom: livePromRange(prometheusBase()),
-    store: prismaPlacementStore(prisma),
-    audit: (action, resource, details) => auditOrThrow(action, resource, details),
-    isUnlocked,
-    // Has the approver of a scheduled move been removed or demoted since they approved it? From what HyperProx holds,
-    // never by borrowing anyone's session: their own live session (its role is current: a role change signs them
-    // out), the audit log (a removal names the email; a role change names only a member id, so any demotion since
-    // the approval counts), and the operator record a demotion to operator leaves.
-    approverChanged: (email, sinceMs) => approverChanged(prisma, email, sinceMs),
-    alert: async (title, lines) => {
-      await publish({ type: 'placement.move.stuck', severity: 'warning', title, lines, link: '/balance', where: 'Load balancing page', fingerprint: `placement:${title}` }).catch(() => undefined)
-    },
-    notify: async (title, lines, fingerprint, severity = 'info') => {
-      await publish({ type: 'placement.balance', severity, title, lines, link: '/balance', where: 'Load balancing page', fingerprint }).catch(() => undefined)
-    },
-    nodeExec: async (node, command) => {
-      const r = await runOnNode(node, command, { host: n => nodeAddress(pve as any, n), timeoutMs: 30_000, maxOutputBytes: 2_000_000 })
-      return r ? { code: r.timedOut ? 124 : r.code, output: r.output } : null
-    },
-  }, log)
-  return production
-}
+// The production service is built in lib/placement/production.ts and its scheduler is started by
+// lib/services/bootstrap.ts; these routes only resolve it.
+export { placementService }
 
 /** Exported for tests (lib/users/approvals.ts: an owner counts as an admin). */
 export { approverChanged }
 
-export function buildPlacementRoutes(deps: { service?: () => PlacementService; startScheduler?: boolean } = {}): FastifyPluginAsync {
+export function buildPlacementRoutes(deps: { service?: () => PlacementService } = {}): FastifyPluginAsync {
   return async (fastify) => {
     const svc = deps.service ?? (() => placementService((fastify as any).prisma, fastify.log))
-    if (deps.startScheduler) {
-      let stop: (() => void) | null = null
-      fastify.addHook('onReady', async () => { stop = await svc().start().catch(() => null) })
-      fastify.addHook('onClose', async () => { stop?.() })
-    }
 
     fastify.get('/map', async (_q, r) => wrap(r, () => svc().map()))
     fastify.get('/advice', async (_q, r) => wrap(r, () => svc().advice()))
@@ -167,4 +125,4 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
   }
 }
 
-export const placementRoutes: FastifyPluginAsync = buildPlacementRoutes({ startScheduler: true })
+export const placementRoutes: FastifyPluginAsync = buildPlacementRoutes()

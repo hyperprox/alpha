@@ -321,7 +321,7 @@ export interface SendDeps {
 }
 
 let exclusionSource: (() => Promise<string[]>) | null = null
-/** The remote-access page's "never look inside" list (machine ids such as lxc-101), set by the routes. */
+/** The remote-access page's "never look inside" list (machine ids such as lxc-101), set by lib/services/bootstrap.ts. */
 export function setExclusionSource(fn: (() => Promise<string[]>) | null): void { exclusionSource = fn }
 
 /** The cluster's own "never look inside" list (Edit server), plus the Remote access list for home guests. */

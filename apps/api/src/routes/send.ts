@@ -12,9 +12,7 @@ import { currentContext } from '../lib/auth'
 import { contextActor } from '../lib/http/request-actor'
 import { sendRefusal } from '../lib/failure'
 import { ClusterRefusal, clusterRow, validClusterId } from '../lib/clusters/registry'
-import { discoverSend, browseSend, searchSend, previewSend, setupSend, sendNow, linkSpeed, setExclusionSource, planReadiness, type SendPlan } from '../lib/clusters/send-simple'
-import { PrismaRemoteStore } from '../lib/remote/store'
-import { setGuestExclusionSource } from '../lib/guest-guard'
+import { discoverSend, browseSend, searchSend, previewSend, setupSend, sendNow, linkSpeed, planReadiness, type SendPlan } from '../lib/clusters/send-simple'
 import { jobStore } from '../lib/clusters/files'
 import { PinConfirmRefusal } from '../lib/hostkey-pins'
 
@@ -54,14 +52,8 @@ export async function planView(p: SendPlan) {
 }
 
 export const sendRoutes: FastifyPluginAsync = async (fastify) => {
-  // Guests listed under Remote access as "never look inside" are not entered while looking for Plex.
-  const prisma = (fastify as any).prisma
-  if (prisma) {
-    const list = () => new PrismaRemoteStore(prisma).listExclusions()
-    setExclusionSource(list)
-    // The same list guards every command into a guest (lib/remote/executor.ts).
-    setGuestExclusionSource(list)
-  }
+  // Guests listed under Remote access as "never look inside" are not entered while looking for Plex: the list is
+  // set by lib/services/bootstrap.ts (lib/clusters/send-simple.ts setExclusionSource).
 
   const remoteOr404 = (id: string, reply: FastifyReply) => {
     const row = validClusterId(id) ? clusterRow(id) : null

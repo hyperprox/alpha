@@ -81,6 +81,7 @@ import { migrationSettled } from './lib/credentials'
 import { loadPolicy as loadUpdatesPolicy } from './lib/updates/policy'
 import { loadCertsPolicy } from './lib/certs/policy'
 import { productionAlertForwarder } from './lib/alerts/forwarder'
+import { bootstrapServices } from './lib/services/bootstrap'
 
 const server = Fastify(serverOptions({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -156,6 +157,11 @@ async function main() {
   }, m => server.log.info(m), () => migrationSettled())
   setNotifyService(notify)
   server.addHook('onClose', async () => notify.stop())
+
+  // -- Background services (lib/services/bootstrap.ts) --------------------------
+  // Built and started in one place, before the routes that read them: the exclusion list and the compose owners are
+  // set before any timer or resumed job can enter a guest; the schedulers that waited for onReady still do.
+  bootstrapServices(server, { prisma: server.prisma, log: server.log })
 
   await server.register(authRoutes,           { prefix: '/api/auth' })
   await server.register(apiTokenRoutes,       { prefix: '/api/auth/tokens' })

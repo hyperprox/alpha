@@ -10,13 +10,25 @@
 //  VM), the script on stdin. A guest HyperProx must leave alone (the
 //  hyperprox-ignore tag, or Remote access's "never look inside" list:
 //  lib/guest-guard.ts) is never entered; the executor refuses it as well.
+//
+//  Home cluster only. The plug-in is not in the remote allowlist
+//  (lib/clusters/context.ts), so a request naming another cluster is answered
+//  409 before it reaches the routes, and the background work (resuming a
+//  detached update, auto-connect) runs outside any request. Its guest lookups
+//  therefore read the home cluster by name (homePve), not "whichever cluster
+//  the request is about" (livePve): the answer is the same today, and it stays
+//  home if the allowlist ever changes without this file being looked at.
+//
+//  Built and started by lib/services/bootstrap.ts, which also sets the ports
+//  this file must not import (auto-connect's dismissal record).
 // =============================================================================
 
 import { setPluginTransport } from '../plugin-host'
 import { getCredential, setCredential, deleteProviderCredentials } from '../credentials'
 import { auditOrThrow } from '../audit'
-import { livePve } from '../pve-env'
+import { homePve } from '../pve-env'
 import { productionRemoteExecutor, type RemoteExecutor } from '../remote/executor'
+import type { ProxmoxClient } from '../proxmox-client'
 import { GuestExcludedRefusal, IGNORE_TAG, excludedMachineIds, guestExcluded } from '../guest-guard'
 import type { Machine } from '../remote/types'
 import { prismaPlacementStore } from '../placement/store'
@@ -37,7 +49,7 @@ import { sightingsOf } from '../catalogue/sightings'
  * it could not be read (then only the tag marks a row; nothing is entered anyway, see exec below).
  */
 async function guestRows(excluded?: string[] | null): Promise<GuestRow[]> {
-  const rows = await listGuests(livePve())
+  const rows = await listGuests(homePve())
   const ids = excluded === undefined ? await excludedMachineIds().catch(() => null) : excluded
   return rows.filter(r => !r.template).map(r => {
     const why = guestExcluded({ kind: r.type, vmid: r.vmid, tags: r.tags }, { excludedMachines: ids ?? [] })
@@ -47,7 +59,7 @@ async function guestRows(excluded?: string[] | null): Promise<GuestRow[]> {
 
 /** A running vzdump of this guest (or a node-wide one that has not named its guest yet). Null when unreadable. */
 export async function backupRunning(g: GuestRef): Promise<boolean | null> {
-  const { read, rows } = await runningBackups(livePve())
+  const { read, rows } = await runningBackups(homePve())
   if (!read) return null
   return rows.some(b => b.id === String(g.vmid) || !b.id)
 }
@@ -58,7 +70,7 @@ export async function snapshotNote(g: GuestRef): Promise<string | null> {
   try {
     const row = (await guestRows()).find(r => r.kind === 'lxc' && r.vmid === g.vmid)
     if (!row) return null
-    const cfg = await livePve().fetchStrict<Record<string, unknown>>(`/nodes/${encodeURIComponent(row.node)}/lxc/${g.vmid}/config`)
+    const cfg = await homePve().fetchStrict<Record<string, unknown>>(`/nodes/${encodeURIComponent(row.node)}/lxc/${g.vmid}/config`)
     const binds = Object.entries(cfg ?? {}).filter(([k, v]) => /^mp\d+$/.test(k) && typeof v === 'string' && v.startsWith('/')).map(([k]) => k)
     return binds.length ? `This container has bind mounts (${binds.join(', ')}), so Proxmox cannot snapshot it. The database dump and the kept image are the rollback.` : null
   } catch { return null }
@@ -98,8 +110,19 @@ export function nextcloudExec(d: {
   }
 }
 
+/** Auto-connect's record of what a person disconnected (lib/auto-connect rememberDismissed), given by the composition root. */
+export type NextcloudDismissedPort = (key: string, label: string, by: string) => Promise<void>
+let dismissedPort: NextcloudDismissedPort | null = null
+/** Set once by lib/services/bootstrap.ts. Importing lib/auto-connect here would close an import cycle (it reads this module). */
+export function setNextcloudDismissedPort(fn: NextcloudDismissedPort | null): void { dismissedPort = fn }
+
+/** The home cluster's API, resolved at each call (homePve throws while locked, so never at construction). */
+const homeFetch: Pick<ProxmoxClient, 'fetchStrict'> = {
+  fetchStrict: <T>(path: string, method?: string, body?: string, timeoutMs?: number) => homePve().fetchStrict<T>(path, method, body, timeoutMs),
+}
+
 export function productionNextcloud(prisma?: unknown): NextcloudService {
-  const executor = productionRemoteExecutor()
+  const executor = productionRemoteExecutor(homeFetch)
   return new NextcloudService({
     store: new NcInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials }),
     audit: (action, resource, details) => auditOrThrow(action, resource, details),
@@ -109,15 +132,19 @@ export function productionNextcloud(prisma?: unknown): NextcloudService {
     quietHours: async () => {
       if (!prisma) return null
       const s = await prismaPlacementStore(prisma).settings()
-      const nodes = await livePve().fetchStrict<any[]>('/cluster/status').catch(() => [])
+      const nodes = await homePve().fetchStrict<any[]>('/cluster/status').catch(() => [])
       const first = (nodes ?? []).find((n: any) => n.type === 'node' && n.online === 1)?.name
-      const t = first ? await livePve().fetchStrict<any>(`/nodes/${encodeURIComponent(first)}/time`).catch(() => null) : null
+      const t = first ? await homePve().fetchStrict<any>(`/nodes/${encodeURIComponent(first)}/time`).catch(() => null) : null
       return { busy: s.busyHours ?? [], tz: t?.timezone ? String(t.timezone) : null }
     },
     backupRunning,
     snapshotNote,
     sightings,
-    dismissed: async (key, label, by) => (await import('../auto-connect')).rememberDismissed('nextcloud', key, label, by),
+    // Fails loudly when unset: the dismissal is what keeps auto-connect from adding it back.
+    dismissed: async (key, label, by) => {
+      if (!dismissedPort) throw new Error('Auto-connect is not running, so the removal could not be remembered.')
+      await dismissedPort(key, label, by)
+    },
     alert: async (title, lines) => publish({ type: 'vault.nextcloud.app_password_left', severity: 'warning', title, lines, link: '/plugins/nextcloud', linkLabel: 'Open Nextcloud', where: 'Nextcloud page' }),
     ...(prisma ? { jobs: prismaJobStore(prisma) } : {}),
   })
@@ -125,14 +152,10 @@ export function productionNextcloud(prisma?: unknown): NextcloudService {
 
 let service: NextcloudService | null = null
 let prismaRef: unknown
+/** The one service. Building it starts nothing: lib/services/bootstrap.ts resumes interrupted work at start-up. */
 export function nextcloudService(prisma?: unknown): NextcloudService {
   if (prisma) prismaRef = prisma
-  if (!service) {
-    service = productionNextcloud(prismaRef)
-    // A detached update that was running when the API last stopped is watched again; work that ran in the old
-    // process is marked failed. Only with the database: without it there is nothing to resume.
-    if (prismaRef) void service.resume().catch(() => {})
-  }
+  if (!service) service = productionNextcloud(prismaRef)
   return service
 }
 /** For tests. */
@@ -177,7 +200,7 @@ export function nextcloudComposeProjects(list: () => Promise<NcMeta[]>) {
   })
 }
 
-/** Tell Updates which compose projects are the Nextcloud page's (the routes call it; returns the undo). */
+/** Tell Updates which compose projects are the Nextcloud page's (lib/services/bootstrap.ts calls it; returns the undo). */
 export function registerNextcloudComposeOwner(): () => void {
   return registerComposeOwner('nextcloud', 'the Nextcloud page',
     nextcloudComposeProjects(() => new NcInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials }).list()))

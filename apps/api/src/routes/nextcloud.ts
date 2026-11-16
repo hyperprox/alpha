@@ -16,12 +16,10 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
 import { actorOf, isAdmin, auditBy } from '../lib/http/request-actor'
 import { sendRefusal } from '../lib/failure'
-import { nextcloudService, registerNextcloudComposeOwner } from '../lib/nextcloud'
+import { nextcloudService } from '../lib/nextcloud'
 import { NcRefusal, type Reading } from '../lib/nextcloud/types'
 import { OccRefusal } from '../lib/nextcloud/occ'
 import { UpdateRefusal } from '../lib/nextcloud/update'
-import { PrismaRemoteStore } from '../lib/remote/store'
-import { setGuestExclusionSource } from '../lib/guest-guard'
 
 function fail(reply: FastifyReply, e: any) {
   if (e instanceof NcRefusal) return sendRefusal(reply, e.status, e.code, e.message, e.extra)
@@ -60,14 +58,9 @@ export function viewerReading(r: Reading): Partial<Reading> {
 type P = { Params: { iid: string } }
 
 export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
+  // Built, registered with Updates as a compose owner, and resumed by lib/services/bootstrap.ts, which also sets
+  // Remote access's "never look inside" list before any of that (lib/guest-guard.ts). Here it is only resolved.
   const svc = () => nextcloudService((fastify as any).prisma)
-  // Remote access's "never look inside" list: a detect, add or action never enters a guest on it (lib/guest-guard.ts).
-  if ((fastify as any).prisma) setGuestExclusionSource(() => new PrismaRemoteStore((fastify as any).prisma).listExclusions())
-  // Updates leaves the compose projects of every Nextcloud here to this page's guarded update (lib/compose-owners.ts).
-  const offOwner = registerNextcloudComposeOwner()
-  fastify.addHook('onClose', async () => { offOwner() })
-  // Created now (not at the first request), so a detached update from before a restart is watched again at once.
-  if ((fastify as any).prisma) svc()
 
   // Refusals the gate makes (role, re-confirmation, token) never reach a handler: record those too.
   fastify.addHook('onResponse', async (req, reply) => {

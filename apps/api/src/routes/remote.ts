@@ -32,7 +32,7 @@ import { publish } from '../lib/notify'
 import type { VpnPrefs } from '../lib/remote/planner'
 import type { RemoteOverview, RemoteMachineRow } from '../lib/remote/service'
 import { ProviderError, isProviderId } from '../lib/remote/types'
-import { IGNORE_TAG, setGuestExclusionSource } from '../lib/guest-guard'
+import { IGNORE_TAG } from '../lib/guest-guard'
 
 export interface RemoteRouteDeps {
   service?: RemoteAccessService
@@ -94,8 +94,7 @@ function params(req: FastifyRequest<{ Params: MachineParams }>): { id: string; p
 export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsync {
   return async (fastify) => {
     // Remote access owns the "never look inside" list; it guards every command into a guest (lib/remote/executor.ts).
-    const prisma = (fastify as any).prisma
-    if (prisma) setGuestExclusionSource(() => new PrismaRemoteStore(prisma).listExclusions())
+    // lib/services/bootstrap.ts gives it to the guard and to every feature that enters guests, before any timer.
     const exec = productionRemoteExecutor(livePve())
     // Which guest is HyperProx itself, by its MACs and addresses against the guest configs: asked once, at start-up.
     let selfOnce: Promise<string | null> | null = null

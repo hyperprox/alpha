@@ -93,7 +93,7 @@ before(async () => {
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildUpdatesRoutes({
     store, exec: home, remoteExec: () => remote, loadPolicy: policyLoad(POLICY),
-    timing: FAST, scheduler: false, recover: false, check: false, checkState: new MemoryCheckState(), checkGapMs: 0,
+    timing: FAST, checkState: new MemoryCheckState(), checkGapMs: 0,
     connection: () => 'conn-1', publish: async () => {},
     onServices: s => { services = s },
   }), { prefix: '/api/updates' })

@@ -34,7 +34,7 @@ export const wizardStateStore = (): StateStore => ({
 })
 
 let exclusionSource: (() => Promise<string[]>) | null = null
-/** Remote access's "never look inside" list; the routes set it (it lives in Postgres). */
+/** Remote access's "never look inside" list; lib/services/bootstrap.ts sets it (it lives in Postgres). */
 export function setAutoConnectExclusionSource(fn: (() => Promise<string[]>) | null): void { exclusionSource = fn }
 
 const lazy = {

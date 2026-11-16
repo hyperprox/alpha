@@ -55,7 +55,7 @@ before(async () => {
   await app.register(buildUpdatesRoutes({
     store, exec: home, remoteExec: () => remote,
     loadPolicy: policyLoad('nodes:\n  pve1: { upgrade: upgrade, reboot: manual, require_pin: 7.0.1-1-pve }\n'),
-    timing: FAST, scheduler: false, recover: false, check: false, checkState: new MemoryCheckState(), checkGapMs: 0,
+    timing: FAST, checkState: new MemoryCheckState(), checkGapMs: 0,
     connection: () => 'conn-1', publish: async () => {}, manualCheckGapMs: 15 * 60_000,
     onServices: (s, c) => { services = s; checker = c },
   }), { prefix: '/api/updates' })

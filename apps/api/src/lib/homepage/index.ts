@@ -41,7 +41,7 @@ export const wizardRecordStore = (): RecordStore => ({
 })
 
 let exclusionSource: (() => Promise<string[]>) | null = null
-/** Remote access's "never look inside" list; the routes set it (it lives in Postgres). */
+/** Remote access's "never look inside" list; lib/services/bootstrap.ts sets it (it lives in Postgres). */
 export function setHomepageExclusionSource(fn: (() => Promise<string[]>) | null): void { exclusionSource = fn }
 /** The list, failing closed: with no source, or an unreadable one, this throws and nothing is contacted or written. */
 export async function excludedMachines(): Promise<string[]> {
@@ -156,6 +156,12 @@ async function pluginSecret(plugin: string, setting: string): Promise<string | n
 
 let svc: HomepageService | null = null
 
+/** Auto-connect's record of what a person disconnected (lib/auto-connect rememberDismissed), given by the composition root. */
+export type HomepageDismissedPort = (machineId: string, label: string, by: string) => Promise<void>
+let dismissedPort: HomepageDismissedPort | null = null
+/** Set once by lib/services/bootstrap.ts. Importing lib/auto-connect here would close an import cycle (it reads this module). */
+export function setHomepageDismissedPort(fn: HomepageDismissedPort | null): void { dismissedPort = fn }
+
 export function productionHomepage(): HomepageService {
   const store = wizardRecordStore()
   const exec = productionRemoteExecutor()
@@ -200,7 +206,11 @@ export function productionHomepage(): HomepageService {
     audit: (a, r, d) => auditOrThrow(a, r, d),
     now: () => Date.now(),
     log: m => appLog.warn(m),
-    dismissed: async (machineId, label, by) => (await import('../auto-connect')).rememberDismissed('homepage', machineId, label, by),
+    // Fails loudly when unset: the dismissal is what keeps auto-connect from adding it back.
+    dismissed: async (machineId, label, by) => {
+      if (!dismissedPort) throw new Error('Auto-connect is not running, so the disconnect could not be remembered.')
+      await dismissedPort(machineId, label, by)
+    },
   }
   return new HomepageService(deps)
 }

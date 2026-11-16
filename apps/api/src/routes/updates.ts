@@ -15,40 +15,44 @@
 //  resumed or rolled back through another. On a remote, everything that changes something (starting a run,
 //  confirming, resuming, rolling back, rebooting) also needs the master password re-entered within the last
 //  five minutes — which an API token can never do.
+//
+//  The services, the daily check and the scheduler are built and started by
+//  lib/services/bootstrap.ts (lib/updates/runtime.ts); these routes only use them.
 // =============================================================================
 
 import { sendFailure, sendRefusal } from '../lib/failure'
 import { actorOf, auditBy, isAdmin } from '../lib/http/request-actor'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
-import type { UpdatesInventory, UpdatesWsPayload } from '../lib/updates/types'
 import { hasRole } from '../lib/roles'
-import { isUnlocked, onLock } from '../lib/vault/state'
+import { onLock } from '../lib/vault/state'
 import { trackSocket } from '../lib/session-sockets'
 import { isReconfirmed } from '../lib/auth'
-import { loadPolicy as loadPolicyFile, policyStatus, unmatchedSections, sectionKeyFor, renameRefusal, type PolicyLoad } from '../lib/updates/policy'
+import { policyStatus, unmatchedSections, sectionKeyFor, type PolicyLoad } from '../lib/updates/policy'
 import { type UpdatesExecutor } from '../lib/updates/executor'
 import { annotatePlanSafety } from '../lib/updates/ceph-checks'
 import { buildPlan } from '../lib/updates/planner'
 import { UpdatesRunner, PolicyRequiredError, JobStateError, type RunnerTiming } from '../lib/updates/runner'
-import { publish, type NotifyEventInput } from '../lib/notify'
-import { UpdatesScheduler } from '../lib/updates/scheduler'
+import { type NotifyEventInput } from '../lib/notify'
 import { ActiveJobError, PrismaStore, jobView, type UpdatesStore } from '../lib/updates/store'
-import { APPROVAL_ID, productionAppEnv, type AppEnv } from '../lib/updates/apps'
+import { APPROVAL_ID, type AppEnv } from '../lib/updates/apps'
 import { UpdatesServices, type ClusterUpdates } from '../lib/updates/service'
-import { jobCluster } from '../lib/updates/cluster-store'
-import { UpdatesChecker, FileCheckState, type CheckStateStore } from '../lib/updates/check'
-import { setCheckSummarySource } from '../lib/updates/check-summary'
+import { UpdatesChecker, type CheckStateStore } from '../lib/updates/check'
 import { currentClusterId } from '../lib/clusters/context'
-import { HOME_ID, clusterRow, listClusters, setRenameGuard } from '../lib/clusters/registry'
+import { listClusters } from '../lib/clusters/registry'
 import { selfVmidOf } from '../lib/updates/inventory'
-import { buildTargets, buildSelectedPlan, parseTargetId, MAX_SELECTION, type GuardContext } from '../lib/updates/targets'
-import { guardsFrom, homeGuards } from '../lib/updates/guards'
-import { lastComposeOwnership } from '../lib/compose-owners'
-import { busyJobs } from '../lib/long-jobs'
-import { setTargetsSource } from '../lib/updates/targets-summary'
+import { buildSelectedPlan, parseTargetId, MAX_SELECTION, type GuardContext } from '../lib/updates/targets'
 import { jobLog } from '../lib/log-once'
+import { UpdatesRuntime, updatesRuntime } from '../lib/updates/runtime'
+import { addSubscriber, broadcast, closeAllSubscribers, removeSubscriber, subscriberCount } from '../lib/updates/broadcast'
 
+/**
+ * What a test builds the routes from when it passes no runtime: a runtime is made from these and its read-only sources
+ * installed, but nothing is started (no recovery, no scheduler, no daily check timer: lib/services/bootstrap.ts does
+ * that, once, for the production runtime).
+ */
 export interface UpdatesRouteDeps {
+  /** The runtime to answer with. Production: the one lib/services/bootstrap.ts built. */
+  runtime?:    () => UpdatesRuntime
   store?:      UpdatesStore
   /** Home's executor. */
   exec?:       UpdatesExecutor
@@ -58,16 +62,12 @@ export interface UpdatesRouteDeps {
   loadPolicy?: () => PolicyLoad
   /** Where the daily check keeps its result. Default data/updates-check.json. */
   checkState?: CheckStateStore
-  /** The daily check's timer (default on, like the scheduler) and its pauses between machines. */
-  check?:      boolean
+  /** The daily check's pauses between machines. */
   checkGapMs?: number
   /** How HyperProx reaches a remote now (tests); default lib/pve-env.ts connectionKey. */
   connection?: (clusterId: string) => string
   hostname?:   string
   timing?:     Partial<RunnerTiming>
-  /** Tests turn these off; production wants both. */
-  scheduler?:  boolean
-  recover?:    boolean
   /** App-update providers. Default: the bundled plug-ins' — but only with the production executor. */
   apps?:       AppEnv
   /** Exposes the home runner so tests can wait for a job to settle. */
@@ -82,23 +82,15 @@ export interface UpdatesRouteDeps {
   guards?:     () => Promise<GuardContext>
 }
 
-// Sockets on /ws/updates, each opened by an admin. The general /ws channel is viewer-level, and
-// these frames carry step output and log lines from hosts, so they go only here.
-const subscribers = new Set<{ readyState: number; send(m: string): void; close(): void }>()
+// Sockets on /ws/updates, each opened by an admin (lib/updates/broadcast.ts).
 let lockHook = false
-
-/** Same framing as lib/ws-broadcast.ts: { type: 'updates', payload, ts }. */
-function broadcast(payload: UpdatesWsPayload) {
-  const msg = JSON.stringify({ type: 'updates', payload, ts: Date.now() })
-  for (const c of subscribers) if (c.readyState === 1) c.send(msg)
-}
 
 /** Registered under /ws/updates (nginx proxies upgrades only below /ws). */
 export const updatesWsRoutes: FastifyPluginAsync = async (fastify) => {
   if (!lockHook) {
     lockHook = true
     // A lock ends every session; the sockets those sessions opened go with them.
-    onLock(() => { for (const c of subscribers) { try { c.close() } catch { /* gone */ } } subscribers.clear() })
+    onLock(() => closeAllSubscribers())
   }
   fastify.get('/', { websocket: true }, (socket: any, req: FastifyRequest) => {
     const s = req.session
@@ -107,15 +99,15 @@ export const updatesWsRoutes: FastifyPluginAsync = async (fastify) => {
       socket.close()
       return
     }
-    subscribers.add(socket)
-    socket.on('close', () => subscribers.delete(socket))
+    addSubscriber(socket)
+    socket.on('close', () => removeSubscriber(socket))
     // Sign-out or the session ending closes it too, not only a lock (lib/session-sockets.ts).
     trackSocket(s, socket, 'updates')
   })
 }
 
 /** For tests: how many admin sockets are listening. */
-export function updatesSubscriberCount(): number { return subscribers.size }
+export function updatesSubscriberCount(): number { return subscriberCount() }
 
 async function adminOnly(req: FastifyRequest, reply: FastifyReply) {
   const s = req.session
@@ -161,67 +153,28 @@ function approvalsFrom(raw: string | undefined): string[] | null {
   return list.length <= 200 && list.every(a => APPROVAL_ID.test(a)) ? list : null
 }
 
+/** A runtime for routes built without one (tests): made from the deps, its sources installed, nothing started. */
+function runtimeFromDeps(deps: UpdatesRouteDeps, fastify: { prisma?: unknown; log: Parameters<typeof jobLog>[0] }): UpdatesRuntime {
+  const rt = new UpdatesRuntime({
+    store: deps.store ?? new PrismaStore(fastify.prisma as any), exec: deps.exec, remoteExec: deps.remoteExec,
+    loadPolicy: deps.loadPolicy, checkState: deps.checkState, checkGapMs: deps.checkGapMs, connection: deps.connection,
+    hostname: deps.hostname, timing: deps.timing, apps: deps.apps, publish: deps.publish, emit: broadcast,
+    guards: deps.guards, log: jobLog(fastify.log),
+  })
+  rt.installSources()
+  return rt
+}
+
 export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAsync {
   return async (fastify) => {
-    const store  = deps.store ?? new PrismaStore((fastify as any).prisma)
-    const loadPolicy = deps.loadPolicy ?? (() => loadPolicyFile())
-    const apps   = deps.apps ?? (deps.exec ? undefined : productionAppEnv())
-    const appProviders = apps?.providers.map(r => r.provider.id)
-
-    const services = new UpdatesServices({
-      store, exec: deps.exec, remoteExec: deps.remoteExec, loadPolicy,
-      hostname: deps.hostname, timing: deps.timing, apps,
-      publish: deps.publish ?? publish, emit: broadcast,
-      log: jobLog(fastify.log), connection: deps.connection, guards: deps.guards,
-    })
-    const home = services.get(HOME_ID)
-    const runner = home.runner
-    deps.onRunner?.(runner)
+    const rt = deps.runtime ? deps.runtime() : runtimeFromDeps(deps, fastify as any)
+    const { store, services, checker, appProviders, loadPolicy } = rt
+    deps.onRunner?.(rt.runner)
+    deps.onServices?.(services, checker)
     /** The service for the cluster this request is about. */
     const svc = () => services.get(currentClusterId())
-
-    const checker = new UpdatesChecker({
-      clusters: () => listClusters().map(c => {
-        const s = services.get(c.id)
-        return { ref: { id: c.id, name: c.name, kind: c.kind }, exec: s.exec, loadPolicy: s.loadPolicy, remote: s.remote }
-      }),
-      loadPolicy, isUnlocked,
-      activeJob: () => store.activeJob(),
-      state: deps.checkState ?? new FileCheckState(),
-      publish: deps.publish ?? publish,
-      log: jobLog(fastify.log),
-      gapMs: deps.checkGapMs, clusterGapMs: deps.checkGapMs,
-    })
-    setCheckSummarySource(id => checker.summary(id))
-    // A rename must not quietly attach a name-keyed policy section written for another server.
-    setRenameGuard((c, newName) => { const l = loadPolicy(); return renameRefusal(l.loaded ? l.policy : null, c, newName) })
-    deps.onServices?.(services, checker)
-
-    if (deps.recover !== false) {
-      // The database needs no vault, so a job interrupted by a restart is paused before anyone can press anything.
-      fastify.addHook('onReady', async () => {
-        await runner.recoverAfterRestart().catch(e => fastify.log.error(`[updates] restart recovery failed: ${e.message}`))
-        const active = await store.activeJob().catch(() => null)
-        const id = active ? jobCluster(active) : HOME_ID
-        if (active && id !== HOME_ID) {
-          if (clusterRow(id)) await services.get(id).runner.recoverAfterRestart().catch(e => fastify.log.error(`[updates] restart recovery failed: ${e.message}`))
-          else {
-            await store.transitionJob(active.id, ['planned', 'awaiting-confirm', 'running', 'paused'], { status: 'failed', pauseReason: 'Its cluster was removed from HyperProx; nothing more was done', finishedAt: new Date() })
-            await store.releaseLock(active.id)
-          }
-        }
-      })
-    }
-    if (deps.scheduler !== false) {
-      // Scheduled runs are home-only. The daily check covers every cluster, read-only.
-      const scheduler = new UpdatesScheduler({ runner, loadPolicy, isUnlocked, busy: () => checker.running, log: jobLog(fastify.log) })
-      fastify.addHook('onReady', async () => scheduler.start())
-      fastify.addHook('onClose', async () => scheduler.stop())
-    }
-    if (deps.check ?? deps.scheduler !== false) {
-      fastify.addHook('onReady', async () => checker.start())
-      fastify.addHook('onClose', async () => checker.stop())
-    }
+    const guardsFor = (s: ClusterUpdates): Promise<GuardContext> => rt.guardsFor(s)
+    const treeFor = (s: ClusterUpdates, inv: Parameters<UpdatesRuntime['treeFor']>[1], guards?: GuardContext) => rt.treeFor(s, inv, guards)
 
     fastify.addHook('preHandler', adminOnly)
 
@@ -257,7 +210,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
         const built = buildPlan(inv, load.policy, {
           approvals, appProviders: s.remote ? undefined : appProviders,
           scope: req.query.scope === 'guests' ? 'guests' : 'all',
-          selfVmid: s.remote ? null : selfVmidOf(inv, load.policy, deps.hostname),
+          selfVmid: s.remote ? null : selfVmidOf(inv, load.policy, rt.hostname),
           remote: s.remote || undefined,
           policyNote: load.loaded ? undefined : `${load.error ?? 'No policy file'} — this plan uses the built-in safe defaults.`,
         })
@@ -268,25 +221,6 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
         try { return await annotatePlanSafety(s.exec, plan, await s.exec.cephPresent()) }
         catch (e: any) { return { ...plan, warnings: [...plan.warnings, `Ceph safety not checked: ${e?.message ?? e}`] } }
       } catch (e) { return sendError(reply, e) }
-    })
-
-    /** What the plug-ins say about home guests now: the compose projects their pages manage, their long jobs. */
-    const guardsFor = async (s: ClusterUpdates): Promise<GuardContext> => (s.remote ? {} : (deps.guards ?? homeGuards)())
-    /** The same, from what was read last, for callers that cannot wait (the assistant's summary). */
-    const lastGuards = (s: ClusterUpdates): GuardContext => (s.remote ? {} : guardsFrom(lastComposeOwnership(), busyJobs()))
-
-    /** What the tree is built from, for one cluster: the cached inventory, its policy and HyperProx's own guest. */
-    const treeFor = (s: ClusterUpdates, inv: UpdatesInventory, guards: GuardContext = lastGuards(s)) => {
-      const load = s.loadPolicy()
-      const selfVmid = s.remote ? null : selfVmidOf(inv, load.policy, deps.hostname)
-      return { load, selfVmid, guards, targets: buildTargets(inv, load.policy, { selfVmid, remote: s.remote, ...guards }) }
-    }
-    // The assistant answers "what updates does X have" from what was last read, never by reading.
-    setTargetsSource(id => {
-      if (!clusterRow(id)) return null
-      const s = services.get(id)
-      const inv = s.cached()
-      return inv ? { refreshedAt: inv.refreshedAt, cluster: { ...s.ref }, targets: treeFor(s, inv).targets } : null
     })
 
     // Everything that can be updated, as a tree, each row with its own count, preview and whether it can be chosen.
@@ -451,4 +385,4 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
   }
 }
 
-export const updatesRoutes: FastifyPluginAsync = buildUpdatesRoutes()
+export const updatesRoutes: FastifyPluginAsync = buildUpdatesRoutes({ runtime: updatesRuntime })

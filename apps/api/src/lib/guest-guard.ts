@@ -111,7 +111,7 @@ const rowsCache = new WeakMap<object, { at: number; gen: number; rows: any[] }>(
 /** Forget every cached read. Called when the exclusion list is changed, so the change bites at once. */
 export function invalidateGuardCache(): void { generation++; idsCache = null }
 
-/** Remote access's "never look inside" list; the routes set it (it lives in Postgres). */
+/** Remote access's "never look inside" list; lib/services/bootstrap.ts sets it at start-up, before any timer (it lives in Postgres). */
 export function setGuestExclusionSource(fn: (() => Promise<string[]>) | null): void { source = fn; invalidateGuardCache() }
 
 /** The list now (reused for 5 s). Throws ExclusionsUnknownRefusal when it is not available: the caller enters no guest. */

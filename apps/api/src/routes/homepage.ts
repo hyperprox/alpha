@@ -15,12 +15,9 @@
 
 import { sendFailure, sendRefusal } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
-import { PrismaRemoteStore } from '../lib/remote/store'
-import { setGuestExclusionSource } from '../lib/guest-guard'
 import { actorOf } from '../lib/http/request-actor'
-import { onInstallCompleted } from '../lib/catalogue-installer'
 import {
-  HomepageRefusal, homepageService, homepageInventoryChanged, setHomepageExclusionSource, type HomepageInstance, type Plan,
+  HomepageRefusal, homepageService, type HomepageInstance, type Plan,
 } from '../lib/homepage'
 import { YamlProblem } from '../lib/homepage/generate'
 import { UnsafeValueError } from '../lib/homepage/remote'
@@ -61,17 +58,7 @@ export function planView(p: Plan) {
 type P = { Params: { iid: string } }
 
 export const homepageRoutes: FastifyPluginAsync = async (fastify) => {
-  const prisma = (fastify as any).prisma
-  if (prisma) {
-    const list = () => new PrismaRemoteStore(prisma).listExclusions()
-    setHomepageExclusionSource(list)
-    // The same list guards every command into a guest (lib/remote/executor.ts).
-    setGuestExclusionSource(list)
-  }
-  // A finished Catalogue install changes what is on the cluster: auto-sync (when on) looks again.
-  const offInstall = onInstallCompleted(() => homepageInventoryChanged())
-  const stopAuto = svc().start()
-  fastify.addHook('onClose', async () => { offInstall(); stopAuto() })
+  // Auto-sync, its exclusion list and the "a Catalogue install finished" hook are started by lib/services/bootstrap.ts.
 
   fastify.get('/installs', async (_req, reply) => {
     try {

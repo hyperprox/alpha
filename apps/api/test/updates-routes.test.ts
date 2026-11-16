@@ -39,7 +39,7 @@ before(async () => {
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildUpdatesRoutes({
     store, exec: fake, loadPolicy: () => policyLoad(policyYaml)(), timing: FAST,
-    scheduler: false, recover: false, onRunner: r => { runner = r },
+    onRunner: r => { runner = r },
   }), { prefix: '/api/updates' })
   await app.register(updatesWsRoutes, { prefix: '/ws/updates' })
   await app.ready()
