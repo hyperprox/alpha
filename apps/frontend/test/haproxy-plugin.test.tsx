@@ -1,13 +1,14 @@
 // The HAProxy plug-in page's pieces, rendered to HTML: the traffic map (frontends → backends → servers, each state in
 // words as well as colour), the problems with their fix buttons (a backend with no healthy server is an alert), the
-// HUD chips, the "Load-balance this app" form and the pure logic behind them.
+// HUD chips, the "Proxy load balancing" form and the pure logic behind them.
 //   cd apps/frontend && node ../api/node_modules/tsx/dist/cli.mjs --tsconfig test/tsconfig.json --test test/*.test.tsx
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './css-stub'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { ProblemList, TrafficMap, ServerPod, LoadBalanceForm, hudChips } from '../components/plugins/haproxy/HaproxyPage'
-import { confirmText, layout, lbProblems, serverActions, since, summary, type LbForm, type Reading, type ServerView } from '../components/plugins/haproxy/logic'
+import { BalanceOnInstall, EMPTY_LB } from '../components/plugins/haproxy/BalanceOnInstall'
+import { confirmText, layout, lbBody, lbProblems, serverActions, since, summary, type LbForm, type Reading, type ServerView } from '../components/plugins/haproxy/logic'
 import { autoConnectWord } from '../lib/plugin-status'
 
 const srv = (o: Partial<ServerView> = {}): ServerView => ({
@@ -89,7 +90,7 @@ test('server actions by state, and destructive ones confirmed in words saying ru
   assert.equal(since(45), '45s'); assert.equal(since(7200), '2h'); assert.equal(since(null), '—')
 })
 
-test('"Load-balance this app": two guests or more, a port, an optional name, publishing checked against the domain', () => {
+test('"Proxy load balancing": two guests or more, a port, an optional name, publishing checked against the domain', () => {
   const f: LbForm = { name: 'shop', guests: ['lxc-151', 'lxc-152'], port: '3000', hostname: '', algorithm: 'roundrobin', checkPath: '/', publish: false, zone: '', proxyInstanceId: '' }
   assert.deepEqual(lbProblems(f), [])
   assert.match(lbProblems({ ...f, guests: ['lxc-151'] })[0], /at least two/)
@@ -108,4 +109,22 @@ test('"Load-balance this app": two guests or more, a port, an optional name, pub
 
 test('the plug-in card connects by itself: no form to fill', () => {
   assert.deepEqual(autoConnectWord('haproxy', { pending: {}, lastRun: null, waitingForUnlock: true }), { word: 'connects automatically once HyperProx is unlocked', pick: false })
+})
+
+test('install step: off by default, on it shows the same form with the plain explanations and the line that tells the two apart', () => {
+  const off = renderToStaticMarkup(<BalanceOnInstall value={null} onChange={() => {}} />)
+  assert.match(off, /Proxy load balancing now \(optional\)/)
+  assert.match(off, /moves guests between nodes/)
+  assert.ok(!off.includes('Guests running it'), 'no form until it is switched on')
+  const on = renderToStaticMarkup(<BalanceOnInstall value={{ ...EMPTY_LB, algorithm: 'leastconn' }} onChange={() => {}} />)
+  assert.match(on, /Guests running it \(pick two or more\)/)
+  assert.match(on, /To go on: Give the app a short name/)
+})
+
+test('install step: the request body is the plug-in\'s own, guests as kind and id, a blank name left out', () => {
+  const f = { name: 'shop', guests: ['lxc-151', 'qemu-9'], port: '8080', hostname: '', algorithm: 'roundrobin', checkPath: '/', publish: false, zone: '', proxyInstanceId: '' }
+  assert.deepEqual(lbBody(f), { ...f, guests: [{ kind: 'lxc', vmid: 151 }, { kind: 'qemu', vmid: 9 }], port: 8080, hostname: undefined })
+  assert.deepEqual(lbProblems({ ...f, guests: ['lxc-151'] }), ['Pick at least two guests running the same app.'])
+  assert.ok(lbProblems({ ...f, port: '70000' }).some(p => /1 to 65535/.test(p)))
+  assert.deepEqual(lbProblems(f), [])
 })

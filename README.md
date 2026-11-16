@@ -80,7 +80,7 @@ To run it locally, see [docs/demo.md](docs/demo.md).
 | Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud, HAProxy and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and the master password; a message when something new is added |
 | Nextcloud | Version and update, every setup warning from the admin page grouped by severity with a one-click fix, a guided step or an honest "optional" for each, Talk's signalling server and Client Push, PHP, database, background jobs and the log; updates a Docker Compose install (database dump first, master password) |
-| Load balancing | The HAProxy plug-in draws each load balancer as frontends, backends and servers with their live state, weights, sessions, request rates, errors, health checks and response times; drain, maintenance, weights, health checks, adding and removing servers and the balance algorithm are a click each (runtime only, or saved after `haproxy -c`); **Load-balance this app** puts two or more guests behind one name |
+| Proxy load balancing | The HAProxy plug-in draws each load balancer as frontends, backends and servers with their live state, weights, sessions, request rates, errors, health checks and response times; drain, maintenance, weights, health checks, adding and removing servers and the balance algorithm are a click each (runtime only, or saved after `haproxy -c`); **Proxy load balancing** spreads one app's traffic across two or more guests (the Load balancing page, by contrast, moves guests between nodes) |
 | Backups | The Proxmox Backup Server plug-in: datastores, stale guests, job health and an optional Verify, read-only unless you turn on managing backups (delete, prune, clean up; protected snapshots are never touched) |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
 | Security | Built-in Vaultwarden sign-in with 2FA, secrets in memory only, auto-lock, roles and API tokens (an owner can let one admin token save plug-in settings without the master password; off by default and audited) |
@@ -2693,11 +2693,20 @@ Data Plane API, which a Catalogue install has; a HAProxy found any other way get
 page says so. Destructive changes ask first, and every change is recorded in the audit log with who made it. API tokens
 can read the page's data but never make these changes: they need a signed-in admin.
 
-**Load-balance this app.** Pick two or more guests running the same app, the port it answers on and a health
+**Proxy load balancing.** Spreads the traffic for one app across several guests. (The **Load balancing** page is a
+different thing: it moves guests between nodes.) Pick two or more guests running the same app, the port it answers on and a health
 check page. HyperProx makes one backend for them with HTTP health checks and a rule in the public frontend that
 sends visitors to it, by host name, or every visitor no other rule matches when you give no name. Give a host
 name and tick **Also publish it** to have HyperProx make the DNS record, the proxy host on your public proxy and
 the certificate too, pointed at this HAProxy; the name is checked first, so a problem there changes nothing.
+
+You can also do this while installing HAProxy. The wizard's first step has an optional **Proxy load balancing now**
+switch with the same form: the guests, the port, a health check page, how to spread visitors (each way explained) and,
+if you like, a web address. Left off, the install is exactly the same as before. Switched on, the install goes on after
+the plug-in is connected: it makes the backend through the same code as the plug-in's button, and it counts as
+finished only once HAProxy shows every server and at least one of them healthy (and, with a web address, once that
+address is published). Guests HyperProx leaves alone cannot be picked, and everything is checked again before
+anything is created.
 
 **Disconnect** removes it from HyperProx only. HAProxy keeps running untouched, and HyperProx does not connect
 it again by itself until you say so.

@@ -546,7 +546,7 @@ export const CATALOGUE: CatalogueRecipe[] = [
     id: HAPROXY_RECIPE_ID,
     detect: DETECT[HAPROXY_RECIPE_ID],
     name: 'HAProxy',
-    summary: `A load balancer and reverse proxy: HAProxy ${HAPROXY_VERSION} (the ${HAPROXY_LINE} long-term support line). HyperProx adds it to the Proxy page and connects its load-balancing plug-in for you.`,
+    summary: `A load balancer and reverse proxy: HAProxy ${HAPROXY_VERSION} (the ${HAPROXY_LINE} long-term support line). HyperProx adds it to the Proxy page and connects its plug-in for you, and can set up proxy load balancing for an app as part of the install.`,
     category: 'proxy',
     port: 80,
     // A fresh HAProxy has no rule yet, so its own "no server is available" page proves it is serving.
@@ -564,7 +564,7 @@ export const CATALOGUE: CatalogueRecipe[] = [
       'Takes port 80 on this container. Its Runtime API is a local socket, its Data Plane API and stats page listen on the container\'s loopback only: nothing on the network can change it.',
       `Prometheus reads its metrics on port ${METRICS_PORT}, which answers HyperProx's own addresses only.`,
       'Every change HyperProx saves is checked with haproxy -c before HAProxy reloads; a change that fails is not applied.',
-      'Load-balance an app from the plug-in: pick two or more guests running it, and optionally a public name.',
+      'Proxy load balancing spreads one app\'s traffic across several guests (the Load balancing page moves guests between nodes). Set it up during the install or later from the plug-in: pick two or more guests running the app, and optionally a public name.',
     ],
     setup: 'haproxy',
     install: { kind: 'script', script: HAPROXY_SCRIPT },

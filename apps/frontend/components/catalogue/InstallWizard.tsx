@@ -16,6 +16,8 @@ import { ArrPicker, type ArrNames, type ArrVpn } from './ArrPicker'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 import { PbsLocation } from './PbsLocation'
+import { BalanceOnInstall } from '@/components/plugins/haproxy/BalanceOnInstall'
+import { lbBody, lbProblems, type LbForm } from '@/components/plugins/haproxy/logic'
 import { NodeHardware, TranscodePicker, isTcRecipe, type TcKind } from './TranscodePicker'
 import { ModalFrame } from '@/components/layout/ModalFrame'
 import { ConfirmOverride, NamingCallout, confirmNeeded, useProposal, type NamingSettingsView, type Proposal } from './NamingProposal'
@@ -121,6 +123,11 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
     ...options.filter(o => o.required && !String(opts[o.key] ?? '').trim()),
     ...(isPbs && opts.PBS_LOCATION !== 'disk' ? options.filter(o => (o.key === 'PBS_NFS_HOST' || o.key === 'PBS_NFS_EXPORT') && !String(opts[o.key] ?? '').trim()) : []),
   ]
+
+  // HAProxy's optional "Load-balance an app now": null is skipped, and the install is what it always was.
+  const isHaproxy = recipe.id === 'haproxy'
+  const [balance, setBalance] = useState<LbForm | null>(null)
+  const balanceOk = !isHaproxy || balance === null || lbProblems(balance).length === 0
 
   const isArr = recipe.id === 'arr-stack'
   const [arrOpts, setArrOpts] = useState<Record<string, string>>(() => Object.fromEntries((recipe.options ?? []).map(o => [o.key, o.default ?? ''])))
@@ -287,7 +294,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
   const swapMax = Math.min(Math.max(0, memoryMb) * 2, 8192)
 
   const canNext = (() => {
-    if (step === 0) return missing.length === 0 && (!isArr || (arrState.totals !== null && arrState.missing.length === 0)) && (!isTc || tcState.missing.length === 0)
+    if (step === 0) return missing.length === 0 && balanceOk && (!isArr || (arrState.totals !== null && arrState.missing.length === 0)) && (!isTc || tcState.missing.length === 0)
     if (step === 1) return cores >= 1 && memoryMb >= 64 && diskGb >= 1 && swapMb >= 0 && swapMb <= swapMax
     if (step === 2) return Boolean(selected?.verdict.eligible && storage)
     if (step === 3) {
@@ -310,6 +317,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
       ...(vlan !== '' ? { vlan } : {}),
       ...(overrideNeed ? { namingConfirm } : {}),
       ...(options.length ? { options: opts } : {}),
+      ...(isHaproxy && balance ? { balance: lbBody(balance) } : {}),
       // The VPN login goes to the vault at the preview, never into the plan; names only when some are given.
       ...(isTc ? { options: tcOpts } : {}),
       ...(isArr ? {
@@ -432,6 +440,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
                   {missing.length > 0 && <p className="text-[12px]" style={{ color: 'var(--text-dim)' }}>Fill in {missing.map(o => o.label).join(', ')} to go on.</p>}
                 </div>
               )}
+              {isHaproxy && <BalanceOnInstall value={balance} onChange={setBalance} />}
               {isArr && (
                 <>
                   <ArrPicker opts={arrOpts} setOpts={setArrOpts} vpn={arrVpn} setVpn={setArrVpn} names={arrNames} setNames={setArrNames} onState={onArrState} />
@@ -734,6 +743,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
                       ...(proposal && proposal.ip !== 'dhcp' && proposal.vmid === preview.plan.vmid && proposal.ip === preview.plan.ip ? [['Numbering', proposal.label] as [string, any]] : []),
                       ['DNS', preview.plan.dns || 'the node’s'], ['Template', String(preview.plan.template).split('/').pop()],
                       ['Privileges', isArr || isTc ? 'unprivileged, nesting and keyctl' : 'unprivileged, nesting only'], ['Starts at boot', 'yes'],
+                      ...(preview.plan.balance ? balanceReview(preview.plan.balance as unknown as { name: string; guests: unknown[]; port: number; algorithm: string; hostname?: string }) : []),
                       ...(isArr ? arrReview(preview.plan.options as unknown as Record<string, string> | undefined, recipe.options ?? []) : []),
                       ...(isTc ? tcReview(recipe.id as TcKind, preview.plan.options as unknown as Record<string, string> | undefined) : []),
                       ...options.map(o => {
@@ -760,6 +770,11 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
           )}
     </ModalFrame>
   )
+}
+
+/** HAProxy's optional step in the review, in words. */
+function balanceReview(b: { name: string; guests: unknown[]; port: number; algorithm: string; hostname?: string }): Array<[string, string]> {
+  return [['Proxy load balancing', `${b.name}: ${b.guests.length} guests on port ${b.port} by ${b.algorithm}${b.hostname ? `, as ${b.hostname}` : ''}`]]
 }
 
 /** The Arr Stack's choices in the review, in words rather than as raw options. */

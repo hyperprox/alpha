@@ -1,5 +1,5 @@
 // =============================================================================
-//  HyperProx — HAProxy: the Catalogue install's optional "Load-balance an app now"
+//  HyperProx — HAProxy: the Catalogue install's optional "Proxy load balancing"
 //
 //  Pick two or more guests running the same app and, after HAProxy is installed,
 //  set up and connected, HyperProx balances them through the very service the
@@ -20,7 +20,7 @@ import type { Reading } from './model'
 import { ALGORITHMS } from './dataplane'
 import { HaproxyRefusal, parseLoadBalance, pickLoadBalanceServers, serverNameFor, type ActionResult, type Actor, type GuestRow } from './service'
 
-export const BALANCE_STEP = { id: 'haproxy-balance', label: 'Load-balance an app now' } as const
+export const BALANCE_STEP = { id: 'haproxy-balance', label: 'Proxy load balancing' } as const
 
 /** The step as the preview holds it: the plug-in's own request body, checked and with nothing else in it. */
 export interface InstallBalance {

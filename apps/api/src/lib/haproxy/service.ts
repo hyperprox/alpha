@@ -137,7 +137,7 @@ export function findPickGuest(rows: GuestRow[], g: Record<string, unknown>): Gue
 }
 
 /**
- * The servers for "Load-balance this app": every pick checked (on the cluster, not left alone, once, running, with an
+ * The servers for proxy load balancing: every pick checked (on the cluster, not left alone, once, running, with an
  * address). `self` is HAProxy's own guest when it is one of them (reached on its loopback). Shared by the plug-in's
  * button and the install's optional step, so the two cannot disagree.
  */
@@ -325,7 +325,7 @@ export class HaproxyService {
   }
 
   /**
-   * "Load-balance this app": 2 or more guests running the same app on the same port become one backend with HTTP
+   * Proxy load balancing ("Load-balance this app" in the code): 2 or more guests running the same app on the same port become one backend with HTTP
    * health checks, and a rule in the public frontend sends visitors to it (by host name, or everything else when no
    * name is given). `publish` (planned by the caller before anything changes) then publishes the host name through the
    * Proxy page and DNS, pointed at HAProxy, in the background.

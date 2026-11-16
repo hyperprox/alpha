@@ -101,8 +101,16 @@ export function confirmText(action: string, backend: string, server: string | nu
   }
 }
 
-/** The "Load-balance this app" form, checked before it is sent (the API checks it all again). */
+/** Names the two kinds of balancing apart, in the modal and the install step. */
+export const PROXY_LB_LINE = 'Proxy load balancing spreads one app\'s traffic across several guests. (The Load balancing page is different: it moves guests between nodes.)'
+
+/** The "Proxy load balancing" form, checked before it is sent (the API checks it all again). */
 export interface LbForm { name: string; guests: string[]; port: string; hostname: string; algorithm: string; checkPath: string; publish: boolean; zone: string; proxyInstanceId: string }
+
+/** The request body for the form: what the plug-in's button and the install step both send. */
+export function lbBody(f: LbForm) {
+  return { ...f, guests: f.guests.map(k => { const [kind, vmid] = k.split('-'); return { kind, vmid: Number(vmid) } }), port: Number(f.port), hostname: f.hostname || undefined }
+}
 
 export function lbProblems(f: LbForm): string[] {
   const out: string[] = []

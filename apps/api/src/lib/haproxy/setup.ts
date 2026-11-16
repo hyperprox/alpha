@@ -6,7 +6,7 @@
 //       from the install's vault item into the instance's own), so proxy hosts
 //       can be added to it like to any other proxy;
 //    2. the HAProxy plug-in connects it, linked to that instance, so the
-//       load-balancing page works at once and saved changes go through the
+//       proxy load balancing page works at once and saved changes go through the
 //       Data Plane API;
 //    3. Prometheus gets its /metrics address.
 //  Each step says what it did; a failure names what is left and where.
