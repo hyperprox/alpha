@@ -20,6 +20,7 @@
 // =============================================================================
 
 import { randomUUID } from 'node:crypto'
+import { auditBy } from './http/request-actor'
 
 export const PLEX_PRODUCT = 'HyperProx'
 export const PLEX_TV = 'https://plex.tv'
@@ -372,7 +373,7 @@ export class PlexSignin {
       let note: string | undefined
       try {
         await this.d.audit('plex.signin', {
-          message: `Plex signed in as ${user}, server ${server.name}`, user, server: server.name, address: c.uri, by,
+          message: `Plex signed in as ${user}, server ${server.name}`, user, server: server.name, address: c.uri, ...auditBy(by),
         })
       } catch {
         note = 'The server was saved, but the audit log row for this sign-in could not be written.'

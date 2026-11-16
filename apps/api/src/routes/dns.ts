@@ -7,12 +7,12 @@
 //  vault; nothing here returns one.
 // =============================================================================
 
-import { sendFailure } from '../lib/failure'
-import { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyReply } from 'fastify'
+import { answerData } from '../lib/http/answer'
 import { GoDaddyClient } from '../lib/godaddy-client'
 import { dnsRouter, PROVIDER_LABEL, type DnsProviderId, type DnsRouter } from '../lib/dns-providers'
 import { auditCredentialUse } from '../lib/audit'
-import { currentContext } from '../lib/auth'
+import { auditBy, contextActor } from '../lib/http/request-actor'
 
 export interface DnsRouteDeps {
   router(): Promise<DnsRouter | null>
@@ -32,14 +32,12 @@ export class DnsNotConfigured extends Error {
   constructor() { super('No DNS provider is connected yet. Connect GoDaddy or Cloudflare under Settings → DNS.') }
 }
 
-const wrap = async (reply: any, fn: () => Promise<any>) => {
-  try   { return { success: true, data: await fn() } }
-  catch (e: any) {
-    // 409: the request is fine, the install is not set up for it yet. The page shows its empty state.
-    if (e instanceof DnsNotConfigured) return reply.status(409).send({ success: false, configured: false, code: e.code, error: e.message })
-    return sendFailure(reply.request, reply, e, 'The DNS provider did not accept that or did not answer. The details are in the log.', { adminDetail: true })
-  }
-}
+const wrap = (reply: FastifyReply, fn: () => Promise<unknown>) => answerData(reply, fn, {
+  // 409: the request is fine, the install is not set up for it yet. The page shows its empty state.
+  refusal: e => e instanceof DnsNotConfigured ? { status: 409, code: e.code, error: e.message, extra: { configured: false } } : null,
+  friendly: 'The DNS provider did not accept that or did not answer. The details are in the log.',
+  adminDetail: true,
+})
 
 /**
  * The fields of a registrar domain HyperProx may send to a browser. GoDaddy's domain answer also holds the
@@ -73,7 +71,7 @@ export function makeDnsRoutes(deps: DnsRouteDeps = defaultDeps): FastifyPluginAs
   /** One audit row per write: who, which provider, which zone, type and name. Never a value or a credential. */
   const audited = async (action: string, r: DnsRouter, zone: string, details: Record<string, unknown>) => {
     const provider = await r.providerOf(zone).catch(() => 'unknown')
-    await deps.audit(action, `dns:${provider}`, { by: currentContext()?.email ?? 'unknown', zone: String(zone).toLowerCase(), ...details })
+    await deps.audit(action, `dns:${provider}`, { ...auditBy(contextActor()), zone: String(zone).toLowerCase(), ...details })
   }
   const idOf = (q: any) => (typeof q?.id === 'string' && q.id ? q.id : undefined)
 

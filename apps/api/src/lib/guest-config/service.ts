@@ -34,6 +34,7 @@ import { splitConf, rewriteRawLines, readScript, writeScript, parseRead, cleanup
 import { gpuMajors } from './devices'
 import { ExclusionsUnknownRefusal, GuestExcludedRefusal, guestLeftAloneReason } from '../guest-guard'
 import { vpnStatuses, vpnStatusSource, type VpnStatusSource } from './vpn'
+import { auditBy } from '../http/request-actor'
 
 // ── what the service reaches ──────────────────────────────────────────────────
 
@@ -561,7 +562,7 @@ export class GuestConfigService {
     if (!isSecretKey(key)) throw new GuestConfigRefusal('Only secret keys are revealed here; the rest are shown already.', 'refused')
     if (g.type === 'qemu' && key === 'cipassword') throw new GuestConfigRefusal('Proxmox never returns a VM’s cloud-init password (its API answers with a mask), so it cannot be shown. It can only be set again.', 'refused')
     const cfg = await this.d.pve.get<PveConfig>(`${this.base(g)}/config`)
-    await this.d.audit('guest_config.reveal', `${g.type}/${g.vmid}`, { by: actor, node: g.node, key }).catch(() => {})
+    await this.d.audit('guest_config.reveal', `${g.type}/${g.vmid}`, { ...auditBy(actor), node: g.node, key }).catch(() => {})
     const v = cfg?.[key] === undefined ? null : str(cfg[key])
     if (v !== null && /^\*+$/.test(v)) throw new GuestConfigRefusal('Proxmox returns this value masked, so it cannot be shown.', 'refused')
     return v
@@ -714,7 +715,7 @@ export class GuestConfigService {
       })
     } catch (e: any) { problems.push(`The change was made but its history row could not be stored: ${e?.message ?? e}`) }
     await this.d.audit('guest_config.apply', resource, {
-      by: owner, node: p.guest.node, kind: p.kind, previewId: p.id, outcome: ok ? 'ok' : 'failed',
+      ...auditBy(owner), node: p.guest.node, kind: p.kind, previewId: p.id, outcome: ok ? 'ok' : 'failed',
       keys: p.plan.touched, steps, problems,
     }).catch(() => { /* the history row is the record; an audit outage must not hide the outcome */ })
     return row

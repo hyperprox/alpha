@@ -41,6 +41,7 @@ import {
   DOWNLOAD_URL, PROVIDER_IDS, PROVIDER_LABEL, isProviderId,
   type Machine, type ProviderDevice, type ProviderId, type RemoteProvider, type RoutingRequest,
 } from './types'
+import { auditBy } from '../http/request-actor'
 
 export class RemoteInputError extends Error { constructor(m: string) { super(m); this.name = 'RemoteInputError' } }
 export class RemoteBusyError extends Error { constructor(m: string, readonly jobId: string) { super(m); this.name = 'RemoteBusyError' } }
@@ -562,7 +563,7 @@ export class RemoteAccessService {
     await this.d.store.setExclusions(ids, by)
     invalidateGuardCache()   // the 5 s read of the list must not outlive the change
     const after = await this.d.store.listExclusions()
-    await this.d.store.audit('remote.exclusions', 'vpn', { by, added: after.filter(i => !before.includes(i)), removed: before.filter(i => !after.includes(i)) })
+    await this.d.store.audit('remote.exclusions', 'vpn', { ...auditBy(by), added: after.filter(i => !before.includes(i)), removed: before.filter(i => !after.includes(i)) })
     return after
   }
 
@@ -696,7 +697,7 @@ export class RemoteAccessService {
       if (this.active === job.id) this.active = null
       this.devices.delete(req.provider)
       await this.d.store.audit(`remote.${req.action}`, req.machineIds.join(','), {
-        by: job.by, provider: req.provider, status: job.status, error: job.error ?? null,
+        ...auditBy(job.by), provider: req.provider, status: job.status, error: job.error ?? null,
         ...(req.action === 'routing' ? { subnets: req.subnets ?? [], exitNode: !!req.exitNode } : {}),
         ...(req.existing ? { existing: req.existing } : {}),
       }).catch(err => this.d.log?.(`[remote] audit write failed: ${msg(err)}`))
@@ -863,7 +864,7 @@ export class RemoteAccessService {
         if (!o.undoOnFailure) throw e
         let note: string; let failed = false
         try { note = `Cleaned up: ${await this.runUndo(job, m, undo.plan, p)}.` } catch (u) { failed = true; note = `Cleaning up failed too: ${msg(u)}. Check ${m.name} by hand.` }
-        await this.d.store.audit('remote.cleanup', m.id, { by: job.by, provider, action, ok: !failed, note }).catch(() => undefined)
+        await this.d.store.audit('remote.cleanup', m.id, { ...auditBy(job.by), provider, action, ok: !failed, note }).catch(() => undefined)
         throw new GuardError(`${msg(e)}. ${note}`, failed)
       }
     }
@@ -892,7 +893,7 @@ export class RemoteAccessService {
         const end = left.length
           ? `After the rollback the node still differs: ${left.join('; ')}. Check it by hand now.`
           : 'The node is back as it was.'
-        await this.d.store.audit('remote.rollback', m.id, { by: job.by, provider, action, changes: diff, ok: !failed && !left.length }).catch(() => undefined)
+        await this.d.store.audit('remote.rollback', m.id, { ...auditBy(job.by), provider, action, changes: diff, ok: !failed && !left.length }).catch(() => undefined)
         throw new GuardError(`${why}: ${note}. ${end}`, failed || left.length > 0)
       }
       if (failure) throw failure
@@ -1120,7 +1121,7 @@ export class RemoteAccessService {
       adopted: true, forwardingBefore: null, connected: st.connected, checkedAt: new Date(this.now()), lastError: null,
       ...(m.kind === 'node' ? { prefs: { ...DEFAULT_PREFS, tags: [], netfilterOff: true } } : {}),
     })
-    if (locked) await this.d.store.audit('remote.adopt.lock', m.id, { by: job.by, provider })
+    if (locked) await this.d.store.audit('remote.adopt.lock', m.id, { ...auditBy(job.by), provider })
     return `Adopted${locked ? ' and put under the node locks' : ' as it is'}: ${st.connected ? 'connected' : 'not connected'}${st.ip ? ` as ${st.ip}` : ''}, ${dev ? `matched to “${dev.name}”` : `not known to the ${PROVIDER_LABEL[provider]} API yet (no API key): device actions wait until one is added`}. ` +
       (locked ? 'Overlay DNS, accepted routes, overlay SSH and client firewall rules are now off, confirmed from the client.' : 'Nothing on the machine was changed.')
   }
@@ -1299,7 +1300,7 @@ export class RemoteAccessService {
       job.status = 'failed'; job.error = detail; job.finishedAt = new Date(this.now()).toISOString()
       this.jobs.set(job.id, job)
       if (remove) await this.d.store.removeInflight(row.id)
-      await this.d.store.audit('remote.recovered', row.machineId, { provider: row.provider, action: row.action, by: row.by, detail, done: remove }).catch(() => undefined)
+      await this.d.store.audit('remote.recovered', row.machineId, { provider: row.provider, action: row.action, ...auditBy(row.by), detail, done: remove }).catch(() => undefined)
     }
     if (!m) return finish(`${what}; that machine no longer exists.`, true)
 
@@ -1350,13 +1351,13 @@ export class RemoteAccessService {
     try {
       await this.d.exec.setLxcConfig(m, { [fix.param!]: fix.value! }, typeof config.digest === 'string' ? config.digest : undefined)
     } catch (e) {
-      await this.d.store.audit('remote.tun', m.id, { by, applied: false, param: fix.param })
+      await this.d.store.audit('remote.tun', m.id, { ...auditBy(by), applied: false, param: fix.param })
       return {
         applied: false, command: fix.command,
         message: `Proxmox did not accept the change from HyperProx (${redactKnownKeyShapes(msg(e)).slice(0, 200)}). Run this on node ${m.node} instead, then restart the container: ${fix.command}`,
       }
     }
-    await this.d.store.audit('remote.tun', m.id, { by, applied: true, param: fix.param })
+    await this.d.store.audit('remote.tun', m.id, { ...auditBy(by), applied: true, param: fix.param })
     return { applied: true, message: `Added ${fix.param}: /dev/net/tun. It takes effect when the container next restarts; HyperProx does not restart it for you.` }
   }
 
@@ -1384,7 +1385,7 @@ export class RemoteAccessService {
     if (pv.exists) return { added: false, message: pv.message }
     const m = (await this.d.exec.listMachines()).find(x => x.id === machineId)!
     await this.d.exec.addFirewallRule(m.node!, pv.rule)
-    await this.d.store.audit('remote.firewall', m.id, { by, provider, rule: pv.rule })
+    await this.d.store.audit('remote.firewall', m.id, { ...auditBy(by), provider, rule: pv.rule })
     return { added: true, message: `Added to ${m.name}: accept TCP ${pv.rule.dport} on ${pv.rule.iface} from ${pv.rule.source}.` }
   }
 
@@ -1438,7 +1439,7 @@ export class RemoteAccessService {
   async revealLogin(machineId: string, provider: ProviderId, by: string): Promise<{ url: string; expiresAt: string } | null> {
     if (!isProviderId(provider)) throw new RemoteInputError('provider must be tailscale or netbird')
     const v = this.loginFor(machineId, provider)
-    await this.d.store.audit('remote.login-url.reveal', machineId, { by, provider, found: !!v })
+    await this.d.store.audit('remote.login-url.reveal', machineId, { ...auditBy(by), provider, found: !!v })
     return v ? { url: v.url, expiresAt: new Date(v.until).toISOString() } : null
   }
 
@@ -1548,7 +1549,7 @@ export class RemoteAccessService {
     }
     const { installedAt: _i, updatedAt: _u, ...base } = await this.record(m, provider)
     await this.d.store.upsert({ ...base, prefs: { ...desired, tags: rec.prefs?.tags ?? [], netfilterOff: m.kind === 'node' } })
-    await this.d.store.audit('remote.configure', m.id, { by: job.by, provider, changes: words })
+    await this.d.store.audit('remote.configure', m.id, { ...auditBy(job.by), provider, changes: words })
     return words.join(' ')
   }
 
@@ -1569,7 +1570,7 @@ export class RemoteAccessService {
     if (!p.setKeyExpiry) throw new RemoteInputError(`${PROVIDER_LABEL[provider]} cannot change key expiry`)
     await p.setKeyExpiry(dev, disabled)
     this.devices.delete(provider)
-    await this.d.store.audit('remote.key-expiry', machineId, { by, provider, disabled })
+    await this.d.store.audit('remote.key-expiry', machineId, { ...auditBy(by), provider, disabled })
     return disabled ? 'Key expiry is off: this machine stays signed in until you remove it.' : 'Key expiry is on again.'
   }
 
@@ -1582,7 +1583,7 @@ export class RemoteAccessService {
     if (!p.setTags) throw new RemoteInputError(`${PROVIDER_LABEL[provider]} cannot change tags`)
     await p.setTags(dev, tags)
     this.devices.delete(provider)
-    await this.d.store.audit('remote.tags', machineId, { by, provider, tags })
+    await this.d.store.audit('remote.tags', machineId, { ...auditBy(by), provider, tags })
     return tags.length ? `Now ${tags.join(', ')}.` : 'No tags or groups.'
   }
 
@@ -1595,7 +1596,7 @@ export class RemoteAccessService {
     if (!dev) throw new RemoteNotFoundError(`No such ${PROVIDER_LABEL[provider]} device: ${deviceId}`)
     await p.approve(dev)
     this.devices.delete(provider)
-    await this.d.store.audit('remote.device.approve', `${provider}:${deviceId}`, { by, name: dev.name })
+    await this.d.store.audit('remote.device.approve', `${provider}:${deviceId}`, { ...auditBy(by), name: dev.name })
     return `Approved ${dev.name}.`
   }
 
@@ -1608,7 +1609,7 @@ export class RemoteAccessService {
     if (!dev) throw new RemoteNotFoundError(`No such ${PROVIDER_LABEL[provider]} device: ${deviceId}`)
     await p.deleteDevice(deviceId)
     this.devices.delete(provider)
-    await this.d.store.audit('remote.device.remove', `${provider}:${deviceId}`, { by, name: dev.name })
+    await this.d.store.audit('remote.device.remove', `${provider}:${deviceId}`, { ...auditBy(by), name: dev.name })
     return `Removed ${dev.name} from ${PROVIDER_LABEL[provider]}.`
   }
 
@@ -1684,7 +1685,7 @@ export class RemoteAccessService {
     }
     if (pv.pinned) throw new RemoteInputError(`A different key is pinned for ${pv.host}:${pv.port}. If the machine was rebuilt, clear the old pin in the Terminal first.`)
     await this.d.exec.pinHostKey(pv.host, pv.port, fingerprint)
-    await this.d.store.audit('remote.pin-host-key', machineId, { by, host: pv.host, port: pv.port, fingerprint })
+    await this.d.store.audit('remote.pin-host-key', machineId, { ...auditBy(by), host: pv.host, port: pv.port, fingerprint })
     return { pinned: true, message: `Pinned ${pv.host}:${pv.port} to ${fingerprint}. The Terminal uses the same pin.` }
   }
 
@@ -1699,7 +1700,7 @@ export class RemoteAccessService {
     const settings = await this.d.providerSettings(provider)
     // Recorded before it is shown: the sweep revokes it in 30 minutes even if HyperProx restarts meanwhile.
     const { key } = await this.mintRecorded(p, provider, `HyperProx manual ${m.id}`, tags ?? settings.tags, MANUAL_KEY_REVOKE_MS, 'manual')
-    await this.d.store.audit('remote.manual-key', m.id, { by, provider, expiresAt: key.expiresAt })
+    await this.d.store.audit('remote.manual-key', m.id, { ...auditBy(by), provider, expiresAt: key.expiresAt })
     const extra = provider === 'tailscale' ? ' --accept-dns=false --accept-routes=false' : (settings.managementUrl ? ` --management-url ${settings.managementUrl}` : '')
     return {
       secret: key.secret, expiresAt: key.expiresAt, downloadUrl: DOWNLOAD_URL[provider],

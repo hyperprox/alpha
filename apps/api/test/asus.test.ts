@@ -681,7 +681,7 @@ test('diagnostics end to end: admin read, every hook on its own, nothing secret 
   assert.ok(d.calls.find(c => c.name === 'aimesh.cfg_clientlist')!.body!.includes('XX-NODE'))
   assert.ok(d.calls.find(c => c.name === 'plugin.mode')!.body!.includes('"sw_mode": "3"'))
   assert.equal(fake.seen.filter(x => x.path === '/applyapp.cgi').length, 0, 'reads only')
-  assert.deepEqual(audits.at(-1), { action: 'asus.diagnostics', details: { by: 'admin@example.com', via: 'api:ops', router: 'Mesh main' } })
+  assert.deepEqual(audits.at(-1), { action: 'asus.diagnostics', details: { by: 'admin@example.com', tokenName: 'ops', via: 'api:ops', router: 'Mesh main' } })
   await svc.diagnostics(m.id, admin)
   await assert.rejects(svc.diagnostics(m.id, { ...admin, sid: 's-x' }), (e: any) => e.code === 'rate_limited', 'two a minute per router')
   const bad = await setup({ pass: 'other' })

@@ -18,6 +18,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { approverChanged } from '../lib/users/approvals'
 import { actorOf } from '../lib/http/request-actor'
+import { answerData, type RefusalAnswer } from '../lib/http/answer'
 import { publish } from '../lib/notify'
 import { VaultLockedError } from '../lib/credentials'
 import { currentRemote } from '../lib/clusters/context'
@@ -29,26 +30,26 @@ import { auditOrThrow } from '../lib/audit'
 import { isUnlocked } from '../lib/vault/state'
 import { nodeExec as runOnNode } from '../lib/node-exec'
 import { prometheusBase } from '../lib/service-health'
-import { PlacementRefusal, PlacementService, type Actor } from '../lib/placement/service'
+import { PlacementRefusal, PlacementService } from '../lib/placement/service'
 import type { LogLike } from '../lib/log-once'
 import { livePromRange } from '../lib/placement/read'
 import { prismaPlacementStore } from '../lib/placement/store'
 import type { HaPve } from '../lib/ha/read'
 
-/** Who asked, with the API token's name whenever one was used (lib/http/request-actor.ts), so every audit row says so. */
-const actor = (req: FastifyRequest): Actor => { const a = actorOf(req); return { email: a.email, role: a.role, token: a.token } }
-
-async function wrap(reply: FastifyReply, fn: () => Promise<unknown>) {
-  try {
-    if (currentRemote()) throw new PlacementRefusal('Load balancing works on the home cluster only for now.', 400, 'home-only')
-    return { success: true, data: await fn() }
-  } catch (e: any) {
-    if (e instanceof PlacementRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: redactText(e.message), ...e.extra })
-    if (e instanceof VaultLockedError || /HyperProx is locked/.test(String(e?.message))) {
-      return reply.status(423).send({ success: false, error: 'HyperProx is locked — sign in to see load balancing.' })
-    }
-    return reply.status(502).send({ success: false, error: redactText(String(e?.message ?? e)) })
+/** How load balancing's failures are answered. Its refusals keep their words; anything else is reported as Proxmox's answer. */
+function placementRefusal(e: any): RefusalAnswer {
+  if (e instanceof PlacementRefusal) return { status: e.status, code: e.code, error: redactText(e.message), extra: e.extra }
+  if (e instanceof VaultLockedError || /HyperProx is locked/.test(String(e?.message))) {
+    return { status: 423, code: 'locked', error: 'HyperProx is locked — sign in to see load balancing.' }
   }
+  return { status: 502, code: 'bad_gateway', error: redactText(String(e?.message ?? e)) }
+}
+
+function wrap(reply: FastifyReply, fn: () => Promise<unknown>) {
+  return answerData(reply, () => {
+    if (currentRemote()) throw new PlacementRefusal('Load balancing works on the home cluster only for now.', 400, 'home-only')
+    return fn()
+  }, { refusal: placementRefusal })
 }
 
 const NODE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/
@@ -105,9 +106,9 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
     fastify.get('/map', async (_q, r) => wrap(r, () => svc().map()))
     fastify.get('/advice', async (_q, r) => wrap(r, () => svc().advice()))
     fastify.get('/settings', async (_q, r) => wrap(r, () => svc().settings()))
-    fastify.put<{ Body: unknown }>('/settings', async (q, r) => wrap(r, () => svc().saveSettings(q.body, actor(q))))
+    fastify.put<{ Body: unknown }>('/settings', async (q, r) => wrap(r, () => svc().saveSettings(q.body, actorOf(q))))
     fastify.get<{ Params: { type: string; vmid: string } }>('/guests/:type/:vmid', async (q, r) => wrap(r, () => svc().guest(guestSid(q.params))))
-    fastify.post<{ Params: { type: string; vmid: string } }>('/guests/:type/:vmid/paths', async (q, r) => wrap(r, () => svc().checkPaths(guestSid(q.params), actor(q))))
+    fastify.post<{ Params: { type: string; vmid: string } }>('/guests/:type/:vmid/paths', async (q, r) => wrap(r, () => svc().checkPaths(guestSid(q.params), actorOf(q))))
 
     const moveBody = (b: any) => {
       const target = String(b?.target ?? '')
@@ -124,7 +125,7 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
       const body: any = q.body ?? {}
       const b = moveBody(body)
       const when = body.when === 'next-quiet' ? 'next-quiet' : 'now'
-      return svc().move(guestSid(q.params), b.target, { when, anyway: body.anyway === true, bwlimitKiB: b.bwlimitKiB }, actor(q))
+      return svc().move(guestSid(q.params), b.target, { when, anyway: body.anyway === true, bwlimitKiB: b.bwlimitKiB }, actorOf(q))
     }))
 
     // Load balancing: the balance and its plan, plans, and automatic balancing.
@@ -144,12 +145,12 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
       }
       if (b.when !== undefined && b.when !== 'now' && b.when !== 'next-quiet') throw new PlacementRefusal('when must be now or next-quiet.', 400, 'bad-when')
       if (b.goal !== undefined && !goalOf(b.goal)) throw new PlacementRefusal('goal must be mem, cpu or both.', 400, 'bad-goal')
-      return svc().createPlan({ when: b.when ?? 'now', goal: goalOf(b.goal), expect }, actor(q))
+      return svc().createPlan({ when: b.when ?? 'now', goal: goalOf(b.goal), expect }, actorOf(q))
     }))
-    fastify.post<{ Params: { id: string } }>('/plans/:id/stop', async (q, r) => wrap(r, () => svc().stopPlan(q.params.id, actor(q))))
+    fastify.post<{ Params: { id: string } }>('/plans/:id/stop', async (q, r) => wrap(r, () => svc().stopPlan(q.params.id, actorOf(q))))
     fastify.get('/auto', async (_q, r) => wrap(r, () => svc().autoSettings()))
-    fastify.put<{ Body: unknown }>('/auto', async (q, r) => wrap(r, () => svc().saveAuto(q.body, actor(q))))
-    fastify.post('/auto/stop', async (q, r) => wrap(r, () => svc().autoStop(actor(q))))
+    fastify.put<{ Body: unknown }>('/auto', async (q, r) => wrap(r, () => svc().saveAuto(q.body, actorOf(q))))
+    fastify.post('/auto/stop', async (q, r) => wrap(r, () => svc().autoStop(actorOf(q))))
 
     fastify.get<{ Querystring: { sid?: string } }>('/moves', async (q, r) => wrap(r, () => {
       const sid = q.query?.sid && isSid(q.query.sid) ? q.query.sid : undefined
@@ -160,9 +161,9 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
       if (!m) throw new PlacementRefusal('No such move.', 404, 'not-found')
       return m
     }))
-    fastify.post<{ Params: { id: string } }>('/moves/:id/cancel', async (q, r) => wrap(r, () => svc().cancel(q.params.id, actor(q))))
-    fastify.post<{ Params: { id: string } }>('/moves/:id/resolve', async (q, r) => wrap(r, () => svc().resolve(q.params.id, actor(q))))
-    fastify.post<{ Params: { id: string } }>('/moves/:id/corosync', async (q, r) => wrap(r, () => svc().corosyncFor(q.params.id, actor(q))))
+    fastify.post<{ Params: { id: string } }>('/moves/:id/cancel', async (q, r) => wrap(r, () => svc().cancel(q.params.id, actorOf(q))))
+    fastify.post<{ Params: { id: string } }>('/moves/:id/resolve', async (q, r) => wrap(r, () => svc().resolve(q.params.id, actorOf(q))))
+    fastify.post<{ Params: { id: string } }>('/moves/:id/corosync', async (q, r) => wrap(r, () => svc().corosyncFor(q.params.id, actorOf(q))))
   }
 }
 

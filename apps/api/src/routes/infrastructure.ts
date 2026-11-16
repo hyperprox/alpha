@@ -6,15 +6,11 @@ import { strictParams } from '../lib/route-params'
 import { FastifyPluginAsync } from 'fastify'
 import { livePve }            from '../lib/pve-env'
 import { maskConfig }         from '../lib/guest-config/secrets'
-import { sendFailure } from '../lib/failure'
+import { answerData } from '../lib/http/answer'
 import { hasIgnoreTag } from '../lib/guest-guard'
 
 
 
-const wrap = async (reply: any, fn: () => Promise<any>) => {
-  try   { return { success: true, data: await fn() } }
-  catch (e: any) { return sendFailure(reply.request, reply, e) }
-}
 
 type VMParams     = { Params: { node: string; vmid: string; type: 'qemu' | 'lxc' } }
 type ActionParams = { Params: { node: string; vmid: string; type: 'qemu' | 'lxc'; action: 'start' | 'stop' | 'reboot' | 'shutdown' } }
@@ -40,7 +36,7 @@ export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<ActionParams>('/vms/:node/:vmid/:type/:action', async (req, r) => {
     const { node, vmid, type, action } = req.params
     if (!POWER_ACTIONS.includes(action)) return r.status(404).send({ success: false, error: `no such action: ${action}` })
-    return wrap(r, () => pve.vmAction(node, Number(vmid), type, action))
+    return answerData(r, () => pve.vmAction(node, Number(vmid), type, action))
   })
 
   // VM config, read-only, admin (lib/roles.ts). There is deliberately no console-ticket route (the browser must
@@ -50,7 +46,7 @@ export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
   // only its tags come back.
   fastify.get<VMParams>('/vms/:node/:vmid/:type/config', async (req, r) => {
     const { node, vmid, type } = req.params
-    return wrap(r, async () => {
+    return answerData(r, async () => {
       const cfg = (await pve.getVMConfig(node, Number(vmid), type)) as Record<string, any>
       if (hasIgnoreTag(cfg?.tags)) return { tags: cfg.tags, ignored: true }
       return maskConfig(cfg as any)
@@ -60,45 +56,45 @@ export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
   // Snapshots
   fastify.get<VMParams>('/vms/:node/:vmid/:type/snapshots', async (req, r) => {
     const { node, vmid, type } = req.params
-    return wrap(r, () => pve.getSnapshots(node, Number(vmid), type))
+    return answerData(r, () => pve.getSnapshots(node, Number(vmid), type))
   })
 
   fastify.post<VMParams & { Body: { name: string; description?: string } }>('/vms/:node/:vmid/:type/snapshots', async (req, r) => {
     const { node, vmid, type } = req.params
-    return wrap(r, () => pve.createSnapshot(node, Number(vmid), type, req.body.name, req.body.description))
+    return answerData(r, () => pve.createSnapshot(node, Number(vmid), type, req.body.name, req.body.description))
   })
 
   fastify.delete<SnapParams>('/vms/:node/:vmid/:type/snapshots/:snapname', async (req, r) => {
     const { node, vmid, type, snapname } = req.params
-    return wrap(r, () => pve.deleteSnapshot(node, Number(vmid), type, snapname))
+    return answerData(r, () => pve.deleteSnapshot(node, Number(vmid), type, snapname))
   })
 
   fastify.post<SnapParams>('/vms/:node/:vmid/:type/snapshots/:snapname/rollback', async (req, r) => {
     const { node, vmid, type, snapname } = req.params
-    return wrap(r, () => pve.rollbackSnapshot(node, Number(vmid), type, snapname))
+    return answerData(r, () => pve.rollbackSnapshot(node, Number(vmid), type, snapname))
   })
 
   // Migration
   fastify.post<VMParams & { Body: { target: string; online?: boolean } }>('/vms/:node/:vmid/:type/migrate', async (req, r) => {
     const { node, vmid, type } = req.params
-    return wrap(r, () => pve.migrateVM(node, Number(vmid), type, req.body.target, req.body.online ?? true))
+    return answerData(r, () => pve.migrateVM(node, Number(vmid), type, req.body.target, req.body.online ?? true))
   })
 
   // HA management
   fastify.put<{ Params: { sid: string }; Body: { state: 'started' | 'stopped' | 'disabled' } }>('/ha/:sid', async (req, r) => {
-    return wrap(r, () => pve.setHAState(req.params.sid, req.body.state))
+    return answerData(r, () => pve.setHAState(req.params.sid, req.body.state))
   })
 
   // Cluster tasks
-  fastify.get('/tasks', async (_, r) => wrap(r, () => pve.getClusterTasks()))
+  fastify.get('/tasks', async (_, r) => answerData(r, () => pve.getClusterTasks()))
 
   // Node tasks
   fastify.get<{ Params: { node: string } }>('/nodes/:node/tasks', async (req, r) =>
-    wrap(r, () => pve.getNodeTasks(req.params.node)))
+    answerData(r, () => pve.getNodeTasks(req.params.node)))
 
   // One task, for a page waiting on an action it started (snapshot, rollback, migration) to really finish.
   // Proxmox can take longer than the client's 20 s to answer while a long task (a migration) keeps a node busy: that
   // is "still running", not a failure, and the page asks again.
   fastify.get<{ Params: { node: string; upid: string } }>('/tasks/:node/:upid', async (req, r) =>
-    wrap(r, () => taskStatusOrRunning(() => pve.getTaskStatus(req.params.node, req.params.upid))))
+    answerData(r, () => taskStatusOrRunning(() => pve.getTaskStatus(req.params.node, req.params.upid))))
 }

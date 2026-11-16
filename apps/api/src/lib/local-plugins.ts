@@ -31,6 +31,7 @@ import path from 'path'
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { auditCredentialUse, auditOrThrow } from './audit'
 import { deleteCredential, getCredential, setCredential } from './credentials'
+import { auditBy, actorOf } from './http/request-actor'
 
 /** What a plug-in is given. It holds no other handle on HyperProx. */
 export interface LocalPluginHost {
@@ -147,7 +148,7 @@ export async function registerLocalPlugins(server: FastifyInstance, loaded: Load
         f.addHook('onResponse', async (req, reply) => {
           if (SAFE_METHODS.has(req.method) || !req.session) return
           const route = (req as any).routeOptions?.url ?? req.url.split('?')[0]
-          await host.audit('request', { by: req.session.email, method: req.method, route: String(route), status: reply.statusCode })
+          await host.audit('request', { ...auditBy(actorOf(req)), method: req.method, route: String(route), status: reply.statusCode })
         })
         await f.register(plugin.routes(host))
       }, { prefix: `/api/local/${plugin.id}` })

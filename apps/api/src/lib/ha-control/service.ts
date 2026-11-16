@@ -32,6 +32,7 @@ import type { InstanceMeta, InstanceStore } from './instances'
 import { hasRole, type Role } from '../roles'
 import { buildHealthDetail } from '../../plugins/home-assistant'
 import type { PluginDetail } from '../plugin-host'
+import { auditBy } from '../http/request-actor'
 
 export interface Actor {
   sid:   string
@@ -335,7 +336,7 @@ export class HAControlService {
   /** Audit a refusal that happened before the house was known (or that the gate made). */
   async auditRefusal(instanceId: string, actor: Actor | null, req: ActionRequest, code: string): Promise<void> {
     await this.d.audit('ha.action', `home-assistant:${String(instanceId).replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, {
-      by: actor?.email ?? 'anonymous', via: actor?.token ? `api:${actor.token}` : actor ? 'session' : 'none',
+      ...auditBy(actor ?? 'anonymous'), via: actor?.token ? `api:${actor.token}` : actor ? 'session' : 'none',
       entity: typeof req.entityId === 'string' ? req.entityId.slice(0, 160) : '', action: typeof req.action === 'string' ? req.action.slice(0, 40) : '',
       tier: 'unknown', result: `refused:${code}`,
     })
@@ -366,7 +367,7 @@ export class HAControlService {
     }
     const entityId = typeof req.entityId === 'string' ? req.entityId : ''
     const action = typeof req.action === 'string' ? req.action.slice(0, 40) : ''
-    const auditBase = { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', instance: m.name, instanceId: m.id, entity: entityId.slice(0, 160), action }
+    const auditBase = { ...auditBy(actor), via: actor.token ? `api:${actor.token}` : 'session', instance: m.name, instanceId: m.id, entity: entityId.slice(0, 160), action }
     const refuse = async (e: ActionRefusal, tier?: Tier): Promise<never> => {
       await this.d.audit('ha.action', `home-assistant:${m.id}`, { ...auditBase, tier: tier ?? 'unknown', result: `refused:${e.code}` })
       if ((tier === 'security' || secure) && ['forbidden', 'token_forbidden', 'confirm_required', 'rate_limited'].includes(e.code)) {

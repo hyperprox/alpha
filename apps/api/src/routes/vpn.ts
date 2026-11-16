@@ -7,7 +7,8 @@
 //  keeps API tokens out. Responses that carry a config are never cached.
 // =============================================================================
 
-import { sendFailure } from '../lib/failure'
+import { sendFailure, sendRefusal } from '../lib/failure'
+import { actorOf } from '../lib/http/request-actor'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
 import { execFile } from 'node:child_process'
@@ -92,8 +93,8 @@ async function adminOnly(req: FastifyRequest, reply: FastifyReply) {
 }
 
 function sendError(reply: FastifyReply, e: any) {
-  if (e instanceof WgInputError) return reply.status(400).send({ error: e.message })
-  if (e instanceof WgNotFoundError) return reply.status(404).send({ error: e.message })
+  if (e instanceof WgInputError) return sendRefusal(reply, 400, 'bad_input', e.message)
+  if (e instanceof WgNotFoundError) return sendRefusal(reply, 404, 'not_found', e.message)
   if (e?.name === 'VaultLockedError') throw e   // 423 from the gate's error handler
   return sendFailure(reply.request, reply, e, undefined, { status: 503 })
 }
@@ -133,7 +134,6 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
       onUnlock(() => { void service.sweepRotations().catch(() => 0) })
     }
     fastify.addHook('preHandler', adminOnly)
-    const by = (req: FastifyRequest) => req.session?.email ?? 'unknown'
     const noStore = (reply: FastifyReply) => reply.header('cache-control', 'no-store')
     const id = (v: string) => { if (!ID.test(v)) throw new WgInputError('Unknown id'); return v }
     const wrap = <T>(fn: () => Promise<T>) => async (_req: FastifyRequest, reply: FastifyReply) => { try { return await fn() } catch (e) { return sendError(reply, e) } }
@@ -148,7 +148,7 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
       try {
         const b: any = req.body ?? {}
         if (!MACHINE.test(String(b.machineId ?? ''))) throw new WgInputError('Choose a machine')
-        return reply.status(201).send({ server: await service.createServer({ machineId: b.machineId, iface: b.iface, listenPort: b.listenPort, address: String(b.address ?? ''), endpoint: String(b.endpoint ?? ''), backupKey: b.backupKey === true }, by(req)) })
+        return reply.status(201).send({ server: await service.createServer({ machineId: b.machineId, iface: b.iface, listenPort: b.listenPort, address: String(b.address ?? ''), endpoint: String(b.endpoint ?? ''), backupKey: b.backupKey === true }, actorOf(req).email) })
       } catch (e) { return sendError(reply, e) }
     })
     // Before offering a new server in a machine: can WireGuard run there (a container needs its node's module)?
@@ -162,39 +162,39 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
       try {
         const b: any = req.body ?? {}
         if (!MACHINE.test(String(b.machineId ?? ''))) throw new WgInputError('Choose a machine')
-        return { server: await service.adoptServer({ machineId: b.machineId, iface: b.iface, address: String(b.address ?? ''), endpoint: String(b.endpoint ?? '') }, by(req)) }
+        return { server: await service.adoptServer({ machineId: b.machineId, iface: b.iface, address: String(b.address ?? ''), endpoint: String(b.endpoint ?? '') }, actorOf(req).email) }
       } catch (e) { return sendError(reply, e) }
     })
     fastify.post<{ Params: { id: string } }>('/wg/servers/:id/backup-key', async (req, reply) => {
-      try { await service.backupServerKey(id(req.params.id), by(req)); return { ok: true } } catch (e) { return sendError(reply, e) }
+      try { await service.backupServerKey(id(req.params.id), actorOf(req).email); return { ok: true } } catch (e) { return sendError(reply, e) }
     })
     fastify.post<{ Params: { id: string }; Body: any }>('/wg/servers/:id/devices', async (req, reply) => {
       try {
         const b: any = req.body ?? {}
         noStore(reply)
-        return reply.status(201).send(await service.addDevice(id(req.params.id), { name: b.name, allowedIps: b.allowedIps, keepalive: b.keepalive, dns: b.dns, reach: b.reach === 'home' ? 'home' : 'hyperprox', publicKey: b.publicKey, privateKey: b.privateKey, keygen: b.keygen }, by(req)))
+        return reply.status(201).send(await service.addDevice(id(req.params.id), { name: b.name, allowedIps: b.allowedIps, keepalive: b.keepalive, dns: b.dns, reach: b.reach === 'home' ? 'home' : 'hyperprox', publicKey: b.publicKey, privateKey: b.privateKey, keygen: b.keygen }, actorOf(req).email))
       } catch (e) { return sendError(reply, e) }
     })
     fastify.patch<{ Params: { id: string }; Body: any }>('/wg/peers/:id', async (req, reply) => {
-      try { const b: any = req.body ?? {}; return { peer: await service.updatePeer(id(req.params.id), { name: b.name, clientAllowedIps: b.clientAllowedIps, keepalive: b.keepalive }, by(req)) } } catch (e) { return sendError(reply, e) }
+      try { const b: any = req.body ?? {}; return { peer: await service.updatePeer(id(req.params.id), { name: b.name, clientAllowedIps: b.clientAllowedIps, keepalive: b.keepalive }, actorOf(req).email) } } catch (e) { return sendError(reply, e) }
     })
     fastify.delete<{ Params: { id: string } }>('/wg/peers/:id', async (req, reply) => {
-      try { await service.removePeer(id(req.params.id), by(req)); return { ok: true } } catch (e) { return sendError(reply, e) }
+      try { await service.removePeer(id(req.params.id), actorOf(req).email); return { ok: true } } catch (e) { return sendError(reply, e) }
     })
     fastify.post<{ Params: { id: string } }>('/wg/peers/:id/reveal', async (req, reply) => {
-      try { noStore(reply); return await service.revealDevice(id(req.params.id), by(req)) } catch (e) { return sendError(reply, e) }
+      try { noStore(reply); return await service.revealDevice(id(req.params.id), actorOf(req).email) } catch (e) { return sendError(reply, e) }
     })
     fastify.post<{ Params: { id: string }; Body: any }>('/wg/peers/:id/rotate', async (req, reply) => {
-      try { const b: any = req.body ?? {}; noStore(reply); return await service.rotateDevice(id(req.params.id), { publicKey: b.publicKey, privateKey: b.privateKey, keygen: b.keygen }, by(req)) } catch (e) { return sendError(reply, e) }
+      try { const b: any = req.body ?? {}; noStore(reply); return await service.rotateDevice(id(req.params.id), { publicKey: b.publicKey, privateKey: b.privateKey, keygen: b.keygen }, actorOf(req).email) } catch (e) { return sendError(reply, e) }
     })
     fastify.post<{ Params: { id: string } }>('/wg/peers/:id/rollback', async (req, reply) => {
-      try { return { peer: await service.rollbackRotation(id(req.params.id), by(req)) } } catch (e) { return sendError(reply, e) }
+      try { return { peer: await service.rollbackRotation(id(req.params.id), actorOf(req).email) } } catch (e) { return sendError(reply, e) }
     })
     fastify.post<{ Params: { id: string }; Body: any }>('/wg/machines/:id/connect', async (req, reply) => {
       try {
         if (!MACHINE.test(req.params.id)) throw new WgInputError('Unknown machine id format')
         const b: any = req.body ?? {}
-        return await service.connectMachine({ machineId: req.params.id, serverId: b.serverId, router: b.router, allowedIps: b.allowedIps ?? [], siteSubnets: b.siteSubnets, remoteSubnets: b.remoteSubnets, keepalive: b.keepalive, iface: b.iface }, by(req))
+        return await service.connectMachine({ machineId: req.params.id, serverId: b.serverId, router: b.router, allowedIps: b.allowedIps ?? [], siteSubnets: b.siteSubnets, remoteSubnets: b.remoteSubnets, keepalive: b.keepalive, iface: b.iface }, actorOf(req).email)
       } catch (e) { return sendError(reply, e) }
     })
     fastify.get('/wg/router', wrap(() => service.routerView()))
@@ -211,11 +211,11 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
       try {
         const b: any = req.body ?? {}
         noStore(reply)
-        return reply.status(201).send(await service.addRouterDevice({ iface: String(b.iface ?? ''), endpoint: String(b.endpoint ?? ''), address: String(b.address ?? ''), allowedIps: b.allowedIps ?? [], name: String(b.name ?? ''), keepalive: b.keepalive, dns: b.dns, publicKey: b.publicKey, privateKey: b.privateKey }, by(req)))
+        return reply.status(201).send(await service.addRouterDevice({ iface: String(b.iface ?? ''), endpoint: String(b.endpoint ?? ''), address: String(b.address ?? ''), allowedIps: b.allowedIps ?? [], name: String(b.name ?? ''), keepalive: b.keepalive, dns: b.dns, publicKey: b.publicKey, privateKey: b.privateKey }, actorOf(req).email))
       } catch (e) { return sendError(reply, e) }
     })
     fastify.delete<{ Params: { id: string } }>('/wg/router/peers/:id', async (req, reply) => {
-      try { if (!/^\*[0-9A-F]{1,8}$/.test(req.params.id)) throw new WgInputError('Not a RouterOS id'); await service.removeRouterPeer(req.params.id, by(req)); return { ok: true } } catch (e) { return sendError(reply, e) }
+      try { if (!/^\*[0-9A-F]{1,8}$/.test(req.params.id)) throw new WgInputError('Not a RouterOS id'); await service.removeRouterPeer(req.params.id, actorOf(req).email); return { ok: true } } catch (e) { return sendError(reply, e) }
     })
   }
 }

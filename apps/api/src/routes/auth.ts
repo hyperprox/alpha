@@ -13,6 +13,7 @@ import {
   SESSION_SECONDS,
 } from '../lib/auth'
 import { hasRole } from '../lib/roles'
+import { isAdmin } from '../lib/http/request-actor'
 import { startMigration, migrationStatus, hydrateEnvFromVault } from '../lib/credentials'
 import { getNotifyService } from '../lib/notify'
 import { ensureGrafanaAdmin } from '../lib/grafana-admin'
@@ -189,7 +190,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       bootstrapped: s.bootstrapped,
       reachable:    s.reachable,
       ...(req.session ? { user: { email: req.session.email, role: req.session.role } } : {}),
-      ...(req.session && hasRole(req.session.role, 'admin') && migrationStatus().state !== 'idle' ? { migration: migrationStatus() } : {}),
+      ...(isAdmin(req) && migrationStatus().state !== 'idle' ? { migration: migrationStatus() } : {}),
     }
   })
 

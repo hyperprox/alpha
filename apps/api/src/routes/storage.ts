@@ -1,24 +1,12 @@
-import { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { livePve }            from '../lib/pve-env'
-import { withCephMon, CephUnavailableError } from '../lib/ceph'
+import { withCephMon, cephRefusal } from '../lib/ceph'
 import { sendFailure } from '../lib/failure'
+import { answerData } from '../lib/http/answer'
 
-
-const wrap = async (reply: any, fn: () => Promise<any>) => {
-  try   { return { success: true, data: await fn() } }
-  catch (e: any) { return sendFailure(reply.request, reply, e) }
-}
 
 // See routes/proxmox.ts — a CEPH-less cluster is a configuration, not a fault.
-const wrapCeph = async (reply: any, fn: () => Promise<any>) => {
-  try { return { success: true, data: await fn() } }
-  catch (e: any) {
-    if (e instanceof CephUnavailableError) {
-      return reply.status(503).send({ success: false, error: e.message, cephAvailable: false })
-    }
-    return sendFailure(reply.request, reply, e)
-  }
-}
+const wrapCeph = (reply: FastifyReply, fn: () => Promise<unknown>) => answerData(reply, fn, { refusal: cephRefusal })
 
 export const storageRoutes: FastifyPluginAsync = async (fastify) => {
   const pve = livePve()   // resolves the current token on every call (see lib/pve-env.ts)
@@ -110,7 +98,7 @@ export const storageRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   fastify.get<{ Params: { node: string } }>('/nodes/:node', async (req, r) =>
-    wrap(r, () => pve.getStorage(req.params.node)))
+    answerData(r, () => pve.getStorage(req.params.node)))
 
   fastify.get('/ceph/status', async (_, r) =>
     wrapCeph(r, () => pve.getClusterCephStatus()))
@@ -123,6 +111,6 @@ export const storageRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /api/storage/vms-breakdown — disk allocation per VM/CT
   fastify.get('/vms-breakdown', async (_, r) =>
-    wrap(r, () => pve.getVMStorageBreakdown()))
+    answerData(r, () => pve.getVMStorageBreakdown()))
 
 }

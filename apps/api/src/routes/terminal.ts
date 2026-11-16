@@ -6,7 +6,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
-import { hasRole } from '../lib/roles'
+import { actorOf, auditBy, isAdmin } from '../lib/http/request-actor'
 import { livePve }            from '../lib/pve-env'
 import {
   SHARED_CREDENTIAL_ID, credentialId, listCredentials, saveCredential,
@@ -365,7 +365,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/layouts', async (req, reply) => {
     try {
       const mine = layoutPrefix(req)
-      const admin = hasRole(req.session?.role ?? 'viewer', 'admin')
+      const admin = isAdmin(req)
       const rows = await fastify.prisma.terminalLayout.findMany({ orderBy: { name: 'asc' } })
       const data = rows.flatMap((r: any) => {
         if (r.name.startsWith(mine)) return [{ ...r, name: r.name.slice(mine.length) }]
@@ -409,7 +409,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.delete<{ Params: { name: string } }>('/layouts/:name', async (req, reply) => {
     try {
       const own = layoutPrefix(req) + req.params.name
-      const admin = hasRole(req.session?.role ?? 'viewer', 'admin')
+      const admin = isAdmin(req)
       // Your own layout, or (admins) one saved before layouts had owners. Never another person's.
       const names = admin && !req.params.name.startsWith(LAYOUT_OWNED) ? [own, req.params.name] : [own]
       await fastify.prisma.terminalLayout.deleteMany({ where: { name: { in: names } } })
@@ -425,7 +425,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.delete<{ Params: { host: string } }>('/hostkeys/:host', async (req, reply) => {
     if (isTokenContext()) return reply.status(403).send({ success: false, error: 'An API token cannot change host keys.' })
     try {
-      await auditOrThrow('host_key.clear', `host:${req.params.host}`, { by: req.session?.email ?? null })
+      await auditOrThrow('host_key.clear', `host:${req.params.host}`, { ...auditBy(req.session ? actorOf(req) : null) })
       await forgetHostKey(req.params.host)
       fastify.log.warn({ host: req.params.host }, '[terminal] pinned host key cleared')
       return { success: true }

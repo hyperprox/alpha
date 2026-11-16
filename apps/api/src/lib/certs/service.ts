@@ -42,6 +42,7 @@ import type {
   CertsEvent, CertsHousekeepingItem, CertsInventoryEntry, CertsManaged, CertsOverview, CertsPolicyStatus,
   CertsProbe, CertsTargetState, CertsVerdict,
 } from './types'
+import { auditBy } from '../http/request-actor'
 
 export { RenewingError }
 
@@ -515,7 +516,7 @@ export class CertsService {
 
   async probe(target?: { host?: string; port?: number }, by?: string): Promise<CertsProbe[]> {
     const port = target?.port ?? 443
-    await this.deps.store.audit('certs.probe', target?.host ? `${target.host}:${port}` : 'all', { by: by ?? null })
+    await this.deps.store.audit('certs.probe', target?.host ? `${target.host}:${port}` : 'all', { ...auditBy(by ?? null) })
     if (target?.host) return this.probeOne(target.host, port)
     return this.probeAll()
   }
@@ -540,7 +541,7 @@ export class CertsService {
     const { load, spec } = this.requirePolicy(label)
     if (this.deploying.has(label)) throw new CertsBusyError(`Certificate ${label} is being deployed`)
     await this.deps.store.beginIssue(label, spec.names)
-    await this.deps.store.audit('certs.issue', label, { by: by ?? null, names: spec.names, directory: load.policy.acme.directoryUrl })
+    await this.deps.store.audit('certs.issue', label, { ...auditBy(by ?? null), names: spec.names, directory: load.policy.acme.directoryUrl })
     this.track(this.runIssue(label, load.policy, 'manual'))
     return this.managedOne(label)
   }
@@ -608,7 +609,7 @@ export class CertsService {
     const stored = await this.deps.secrets.getBundle(label)
     if (!stored) throw new CertsInputError(`The vault holds no key for ${label}; issue it again`)
     const bundle = bundleFromPems(stored.keyPem, stored.fullchainPem)
-    await this.deps.store.audit('certs.deploy', label, { by: by ?? null, fingerprint: bundle.fingerprint256 })
+    await this.deps.store.audit('certs.deploy', label, { ...auditBy(by ?? null), fingerprint: bundle.fingerprint256 })
     this.track(this.deployAll(label, load.policy, bundle))
     return this.managedOne(label)
   }
@@ -683,7 +684,7 @@ export class CertsService {
     const deps = this.housekeepingDeps(this.policy().policy)
     const item = (await this.m.listHousekeeping(deps, this.now())).find(i => i.id === id)
     if (!item) throw new CertsNotFoundError(`No housekeeping item ${id} (it may already be done)`)
-    await this.deps.store.audit('certs.housekeeping.apply', id, { by: by ?? null, kind: item.kind, names: item.names })
+    await this.deps.store.audit('certs.housekeeping.apply', id, { ...auditBy(by ?? null), kind: item.kind, names: item.names })
     try {
       const detail = await this.m.applyHousekeeping(item, deps)
       await this.event(null, 'housekeeping', true, `${item.names.join(', ') || item.id}: ${detail}`)

@@ -38,6 +38,7 @@ import { assertSafeScript } from './monitoring'
 import { auditCredentialUse } from '../audit'
 import { publish, type NotifyEventInput } from '../notify'
 import { stripAddresses } from '../redact-addresses'
+import { auditBy } from '../http/request-actor'
 
 // ---------------------------------------------------------------------------
 //  Paths
@@ -210,7 +211,7 @@ export async function setupSending(o: { src: string; dst: string; dstNode: strin
   if (install.code !== 0 || !/^1\s*$/m.test(install.output)) throw new Error(`Installing the key on ${o.dstNode} did not work.`)
   const key: SendKey = { private: kp.private, public: kp.public, knownHosts, dstAddress }
   await setCredential(KEY_CATEGORY, pairProvider(o.src, o.dst), pairField(o.dstNode, root), JSON.stringify(key), true)
-  await auditCredentialUse('cluster.files.key', `cluster:${o.dst}`, { by: o.by, from: o.src, node: o.dstNode, folder: root })
+  await auditCredentialUse('cluster.files.key', `cluster:${o.dst}`, { ...auditBy(o.by), from: o.src, node: o.dstNode, folder: root })
   return { words: `${srcRow.name} can now send files to ${root} on ${o.dstNode} (${dstRow.name}). The key there can only write into that folder and cannot delete anything (it could overwrite a file there; HyperProx's copy never does).` }
 }
 
@@ -427,7 +428,7 @@ export async function startCopy(previewId: string, owner: string, via?: 'assista
     id: randomUUID(), mode: 'copy', srcCluster: i.src.cluster, srcNode: i.src.node, srcPath: i.src.path, dstCluster: i.dst.cluster, dstNode: i.dst.node, dstPath: i.dst.path,
     speedKBps: i.speedKBps, plexScan: i.plexScan, state: 'queued', preview: extra ? { ...p.result, ...extra } : p.result, progress: {}, error: null, attempts: 0, createdBy: owner, startedAt: null, finishedAt: null,
   })
-  await auditCredentialUse('cluster.files.copy', `cluster:${i.dst.cluster}`, { by: owner, from: i.src.cluster, files: p.result.files, ...(via ? { via, ok: true } : {}) })
+  await auditCredentialUse('cluster.files.copy', `cluster:${i.dst.cluster}`, { ...auditBy(owner), from: i.src.cluster, files: p.result.files, ...(via ? { via, ok: true } : {}) })
   return row
 }
 

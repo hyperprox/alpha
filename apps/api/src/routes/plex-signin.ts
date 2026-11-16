@@ -18,7 +18,8 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { auditOrThrow } from '../lib/audit'
 import { onLock } from '../lib/vault/state'
-import { hasRole } from '../lib/roles'
+import { isAdmin } from '../lib/http/request-actor'
+import { sendRefusal } from '../lib/failure'
 import { PLUGIN_CATEGORY, fetchWithTimeout, getSettings, saveSettings } from '../lib/plugin-host'
 import { getCredential, setCredential } from '../lib/credentials'
 import { PlexSignin, PlexSigninError, type PlexHttp, type SigninDeps } from '../lib/plex-signin'
@@ -68,18 +69,18 @@ export function buildPlexSigninRoutes(deps: {
     const known = deps.known ?? (async () => (await getSettings('plex').catch(() => ({} as Record<string, string>))).plex_url ?? null)
 
     const guard = (req: FastifyRequest, reply: FastifyReply): boolean => {
-      if (req.apiToken) { reply.status(403).send({ success: false, code: 'token_forbidden', error: 'An API token cannot sign in to Plex.' }); return false }
-      if (!req.session || !hasRole(req.session.role, 'admin')) { reply.status(403).send({ success: false, code: 'forbidden', error: 'This needs the admin role.' }); return false }
+      if (req.apiToken) { sendRefusal(reply, 403, 'token_forbidden', 'An API token cannot sign in to Plex.'); return false }
+      if (!isAdmin(req)) { sendRefusal(reply, 403, 'forbidden', 'This needs the admin role.'); return false }
       return true
     }
     const fail = (reply: FastifyReply, e: any) => {
-      if (e instanceof PlexSigninError) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, ...(e.tried ? { tried: e.tried } : {}), ...(e.skipped?.length ? { skipped: e.skipped } : {}) })
+      if (e instanceof PlexSigninError) return sendRefusal(reply, e.status, e.code, e.message, { ...(e.tried ? { tried: e.tried } : {}), ...(e.skipped?.length ? { skipped: e.skipped } : {}) })
       // A lock or an ended vault session mid-save: the gate's own answers (423, 401), as for any other route.
       if (e?.name === 'VaultLockedError' || e?.name === 'VaultSessionError') throw e
-      if (e?.name === 'PluginSettingsError') return reply.status(400).send({ success: false, code: 'credential_required', error: e.message })
+      if (e?.name === 'PluginSettingsError') return sendRefusal(reply, 400, 'credential_required', e.message)
       // Never echo an unknown error: it could carry a request's details.
       fastify.log.warn({ err: String(e?.name ?? 'Error') }, '[plex] sign-in failed')
-      return reply.status(500).send({ success: false, code: 'failed', error: 'The Plex sign-in failed. Try again.' })
+      return sendRefusal(reply, 500, 'failed', 'The Plex sign-in failed. Try again.')
     }
 
     fastify.post<{ Body: { known?: unknown } }>('/', async (req, reply) => {

@@ -27,6 +27,7 @@ import { moveNow, predictFailover } from './predict'
 import { readSnapshot, type HaPve } from './read'
 import { redactText } from './redact'
 import { HaRefusal, type Actor, type HaResource, type HaRule, type HaSnapshot, type HomeChoice, type NodeAffinityRule, type RuleProblem, type Sid } from './types'
+import { auditBy } from '../http/request-actor'
 
 // --- requests -----------------------------------------------------------------------------------------
 
@@ -606,22 +607,22 @@ export class HaPlanner {
     if (plan.createdBy !== actor.email) throw new HaRefusal('That preview belongs to someone else.', 403)
     this.plans.delete(plan.id)   // single use, whatever happens next
     if (this.d.isLocked?.()) {
-      await this.d.audit(`ha.${plan.action}`, 'ha', { by: actor.email, ok: false, refused: 'locked', plan: plan.title })
+      await this.d.audit(`ha.${plan.action}`, 'ha', { ...auditBy(actor), ok: false, refused: 'locked', plan: plan.title })
       throw new HaRefusal(LOCKED_WRITE, 423)
     }
     const pve = this.d.pve()
     const now = await readSnapshot(pve, { configs: 'none' })
     if (!now.quorate) {
-      await this.d.audit(`ha.${plan.action}`, 'ha', { by: actor.email, ok: false, refused: 'not quorate', plan: plan.title })
+      await this.d.audit(`ha.${plan.action}`, 'ha', { ...auditBy(actor), ok: false, refused: 'not quorate', plan: plan.title })
       throw new HaRefusal('The cluster is not quorate. Nothing was changed.', 409)
     }
     if (fingerprint(now) !== plan.fingerprint) {
-      await this.d.audit(`ha.${plan.action}`, 'ha', { by: actor.email, ok: false, refused: 'changed since preview', plan: plan.title })
+      await this.d.audit(`ha.${plan.action}`, 'ha', { ...auditBy(actor), ok: false, refused: 'changed since preview', plan: plan.title })
       throw new HaRefusal('The HA configuration changed after the preview. Nothing was changed; preview again.', 409)
     }
     const m = plan.expect.maintenance
     if (m && !(await (this.d.hostKeyPinned?.(m.node) ?? Promise.resolve(false)))) {
-      await this.d.audit(`ha.${plan.action}`, 'ha', { by: actor.email, ok: false, refused: 'host key not pinned', plan: plan.title })
+      await this.d.audit(`ha.${plan.action}`, 'ha', { ...auditBy(actor), ok: false, refused: 'host key not pinned', plan: plan.title })
       throw new HaRefusal(`${m.node}'s SSH host key is not pinned any more. Nothing was changed; pin it and preview again.`, 409)
     }
     const extra = m ? await (this.d.nodeSecrets?.(m.node) ?? Promise.resolve([])).catch(() => []) : []
@@ -639,7 +640,7 @@ export class HaPlanner {
       }
     } catch (e: any) {
       const why = redactText(String(e?.message ?? e), undefined, extra)
-      await this.d.audit(`ha.${plan.action}`, 'ha', { by: actor.email, ok: false, error: why, done, plan: plan.title })
+      await this.d.audit(`ha.${plan.action}`, 'ha', { ...auditBy(actor), ok: false, error: why, done, plan: plan.title })
       const partial = done.length ? ` These calls had already gone through: ${done.join('; ')}.` : ' Nothing was changed.'
       return { ok: false, planId: plan.id, message: `Proxmox refused: ${why}.${partial}`, mismatch: [], done }
     }
@@ -647,7 +648,7 @@ export class HaPlanner {
     const after = await readSnapshot(pve, { configs: 'none' })
     const mismatch = compare(plan.expect, after)
     const ok = mismatch.length === 0
-    await this.d.audit(`ha.${plan.action}`, 'ha', { by: actor.email, ok, mismatch, done, plan: plan.title, changes: plan.changes })
+    await this.d.audit(`ha.${plan.action}`, 'ha', { ...auditBy(actor), ok, mismatch, done, plan: plan.title, changes: plan.changes })
     return {
       ok, planId: plan.id, done, mismatch,
       message: ok ? `Done, and read back from Proxmox: ${plan.title}.` : `The change was sent, but Proxmox does not show what was planned: ${mismatch.join('; ')}.`,

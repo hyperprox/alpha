@@ -19,6 +19,7 @@
 
 import { hardware, detectNode, productionHardwareDeps, type HardwareDeps } from './hardware'
 import { auditCredentialUse } from './audit'
+import { auditBy } from './http/request-actor'
 
 export type IgpuState = 'open' | 'closed' | 'none'
 export interface IgpuResult { status: 'done' | 'already' | 'skipped' | 'failed'; reason: string; state: IgpuState }
@@ -45,7 +46,7 @@ export async function igpuAccess(node: string, deps: HardwareDeps = productionHa
   }
   const first = await read()
   const run = async (step: 'igpu-access' | 'igpu-access-undo'): Promise<IgpuResult> => {
-    await auditCredentialUse('node_login.use', `node:${node}`, { by, purpose: step === 'igpu-access' ? 'open built-in graphics to containers' : 'close built-in graphics to containers' })
+    await auditCredentialUse('node_login.use', `node:${node}`, { ...auditBy(by), purpose: step === 'igpu-access' ? 'open built-in graphics to containers' : 'close built-in graphics to containers' })
     let r: { status: IgpuResult['status']; reason: string }
     try {
       const out = await deps.exec(addr, cred, hardware.stepScript(step), 60_000)

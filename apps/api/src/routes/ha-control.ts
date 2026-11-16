@@ -13,7 +13,7 @@
 //  name from the allow-list (lib/ha-control/catalog.ts).
 // =============================================================================
 
-import { plainReason } from '../lib/failure'
+import { plainReason, sendRefusal } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { getCredential, setCredential, deleteProviderCredentials } from '../lib/credentials'
 import { auditCredentialUse } from '../lib/audit'
@@ -22,10 +22,11 @@ import { getCluster } from '../lib/clusters/registry'
 import { clusterContext } from '../lib/clusters/context'
 import { ActionRefusal } from '../lib/ha-control/catalog'
 import { InstanceInputError, InstanceStore, type InstanceMeta } from '../lib/ha-control/instances'
-import { HAControlService, type Actor } from '../lib/ha-control/service'
+import { HAControlService } from '../lib/ha-control/service'
 import { resolveHATarget, portOf } from '../lib/ha-control/target'
 import { probeCertificate } from '../lib/clusters/tls-pin'
 import { hasRole } from '../lib/roles'
+import { actorOf, isAdmin, auditBy } from '../lib/http/request-actor'
 
 declare module 'fastify' {
   interface FastifyRequest { haHandled?: boolean }
@@ -56,14 +57,9 @@ function scope(): string | null {
   return c && c.kind === 'remote' ? c.id : null
 }
 
-function actor(req: FastifyRequest): Actor {
-  const s = req.session!
-  return { sid: s.sid, email: s.email, role: s.role, token: req.apiToken?.name ?? null }
-}
-
 function fail(reply: FastifyReply, e: any) {
-  if (e instanceof ActionRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, ...e.extra })
-  if (e instanceof InstanceInputError) return reply.status(e.status).send({ success: false, code: 'bad_input', error: e.message })
+  if (e instanceof ActionRefusal) return sendRefusal(reply, e.status, e.code, e.message, e.extra)
+  if (e instanceof InstanceInputError) return sendRefusal(reply, e.status, 'bad_input', e.message)
   throw e   // the gate's error handler answers vault-locked and session errors
 }
 
@@ -71,7 +67,7 @@ function fail(reply: FastifyReply, e: any) {
 const isViewer = (req: FastifyRequest) => !hasRole(req.session?.role ?? 'viewer', 'operator')
 
 /** Below admin, a house's address and certificate pin are not shown (operators control it through HyperProx). */
-const belowAdmin = (req: FastifyRequest) => !hasRole(req.session?.role ?? 'viewer', 'admin')
+const belowAdmin = (req: FastifyRequest) => !isAdmin(req)
 
 function view(m: InstanceMeta & { url?: string; hasToken?: boolean }, viewer = false, hideAddress = viewer) {
   const c = svc().clusterOf(m)
@@ -106,7 +102,7 @@ async function countAnonymous(status: number): Promise<void> {
  * rules and limits as the house's Health tab. routes/plugins.ts answers through this.
  */
 export async function homeAssistantDetail(req: FastifyRequest) {
-  return svc().health('default', 20, null, { viewer: isViewer(req), actor: actor(req) })
+  return svc().health('default', 20, null, { viewer: isViewer(req), actor: actorOf(req) })
 }
 
 export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
@@ -125,7 +121,7 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
       return
     }
     const code = reply.statusCode === 403 ? 'gate_403' : `gate_${reply.statusCode}`
-    await svc().auditRefusal(m[1], { sid: s.sid, email: s.email, role: s.role, token: req.apiToken?.name ?? null },
+    await svc().auditRefusal(m[1], actorOf(req),
       (req.body ?? {}) as Record<string, unknown>, code).catch(() => {})
   })
 
@@ -149,7 +145,7 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
       // Everyday marks are recorded from the house itself, so they can only be made once it exists.
       if (everydayIds !== undefined) m = await store().update(m.id, { policy: { everyday: await svc().everydayMarks(m.id, everydayIds, []) } })
       await auditCredentialUse('ha.instance.create', `home-assistant:${m.id}`, {
-        by: req.session!.email, name: m.name, cluster: m.clusterId, normalRole: m.policy.normalRole,
+        ...auditBy(actorOf(req)), name: m.name, cluster: m.clusterId, normalRole: m.policy.normalRole,
         everyday: m.policy.everyday.map(e => e.entity_id), protected: m.policy.protected,
       })
       return reply.status(201).send({ success: true, data: view(m) })
@@ -169,7 +165,7 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
       }
       const m = await store().update(req.params.iid, b)
       await auditCredentialUse('ha.instance.update', `home-assistant:${m.id}`, {
-        by: req.session!.email, name: m.name, cluster: m.clusterId,
+        ...auditBy(actorOf(req)), name: m.name, cluster: m.clusterId,
         changed: Object.keys(b).filter(k => b[k] !== undefined && !(k === 'token' && b[k] === '')).map(k => k === 'token' ? 'credential' : k),
       })
       // Moving a device to everyday takes away its confirm step: its own audit row, entity by entity.
@@ -181,7 +177,7 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
       const roleLowered = prev.policy.normalRole === 'admin' && m.policy.normalRole === 'operator'
       if (demoted.length || protectedRemoved.length || domainsRemoved.length || roleLowered) {
         await auditCredentialUse('ha.instance.demote', `home-assistant:${m.id}`, {
-          by: req.session!.email, name: m.name, everydayAdded: demoted, protectedRemoved, domainsRemoved,
+          ...auditBy(actorOf(req)), name: m.name, everydayAdded: demoted, protectedRemoved, domainsRemoved,
           normalRole: roleLowered ? 'admin->operator' : null,
         })
       }
@@ -192,7 +188,7 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.delete<P>('/instances/:iid', async (req, reply) => {
     try {
       await store().remove(req.params.iid)
-      await auditCredentialUse('ha.instance.remove', `home-assistant:${req.params.iid}`, { by: req.session!.email })
+      await auditCredentialUse('ha.instance.remove', `home-assistant:${req.params.iid}`, { ...auditBy(actorOf(req)) })
       return { success: true }
     } catch (e) { return fail(reply, e) }
   })
@@ -202,7 +198,7 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
     // It makes HyperProx connect somewhere: people only, and not quickly.
     // A token only with the owner-granted plug-in settings permission (lib/gate.ts), to confirm a fingerprint before adding.
     if (req.apiToken && req.tokenPluginSettings?.kind !== 'probe') return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot probe certificates.' })
-    try { svc().limit(actor(req), 'probesPerMinute', 'Too many certificate reads; wait a moment.') } catch (e) { return fail(reply, e) }
+    try { svc().limit(actorOf(req), 'probesPerMinute', 'Too many certificate reads; wait a moment.') } catch (e) { return fail(reply, e) }
     try {
       const u = new URL(String(req.body?.url ?? ''))
       if (u.protocol !== 'https:') return reply.status(400).send({ success: false, code: 'bad_input', error: 'Only an https:// address has a certificate to pin.' })
@@ -216,14 +212,14 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get<P>('/instances/:iid/status', async (req, reply) => {
     try {
-      const st = await svc().status(req.params.iid, scope(), actor(req))
+      const st = await svc().status(req.params.iid, scope(), actorOf(req))
       // Whether the token is a Home Assistant admin is for the people who manage it.
       return { success: true, data: isViewer(req) ? { ...st, user: null } : st }
     } catch (e) { return fail(reply, e) }
   })
 
   fastify.get<P>('/instances/:iid/health', async (req, reply) => {
-    try { return { success: true, data: { ok: true, ...(await svc().health(req.params.iid, 20, scope(), { viewer: isViewer(req), actor: actor(req) })) } } }
+    try { return { success: true, data: { ok: true, ...(await svc().health(req.params.iid, 20, scope(), { viewer: isViewer(req), actor: actorOf(req) })) } } }
     catch (e: any) {
       if (e instanceof ActionRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
       return { success: true, data: { ok: false, error: plainReason(e, 'Home Assistant') } }
@@ -231,7 +227,7 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   fastify.get<P>('/instances/:iid/devices', async (req, reply) => {
-    try { return { success: true, data: await svc().devices(req.params.iid, scope(), { viewer: isViewer(req), actor: actor(req) }) } }
+    try { return { success: true, data: await svc().devices(req.params.iid, scope(), { viewer: isViewer(req), actor: actorOf(req) }) } }
     catch (e: any) {
       if (e instanceof ActionRefusal) return fail(reply, e)
       // Unreachable is a normal state for a house on the far side of a VPN: say so, do not fail the page.
@@ -241,13 +237,13 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/actions', async (req, reply) => {
     req.haHandled = true
-    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actor(req), false, scope()) } }
+    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actorOf(req), false, scope()) } }
     catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/secure-actions', async (req, reply) => {
     req.haHandled = true
-    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actor(req), true, scope()) } }
+    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actorOf(req), true, scope()) } }
     catch (e) { return fail(reply, e) }
   })
 }

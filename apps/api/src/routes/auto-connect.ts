@@ -10,20 +10,18 @@
 //  only against the address it was stored for.
 // =============================================================================
 
-import { sendFailure } from '../lib/failure'
+import { sendFailure, sendRefusal } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { PrismaRemoteStore } from '../lib/remote/store'
 import { setGuestExclusionSource } from '../lib/guest-guard'
 import { actorOf, actorWords } from '../lib/http/request-actor'
 import { AutoConnectError, autoConnect, onUnlock, setAutoConnectExclusionSource } from '../lib/auto-connect'
 
-/** Who asked, naming the API token whenever one was used (lib/http/request-actor.ts). */
-const by = (req: FastifyRequest) => actorWords(actorOf(req))
 const PLUGIN = /^[a-z][a-z0-9-]{0,40}$/
 const KEY = /^[A-Za-z0-9_.:@*#/[\]-]{1,200}$/
 
 function fail(reply: FastifyReply, e: any) {
-  if (e instanceof AutoConnectError) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
+  if (e instanceof AutoConnectError) return sendRefusal(reply, e.status, e.code, e.message)
   if (e?.name === 'VaultLockedError') throw e
   return sendFailure(reply.request, reply, e, 'That did not work. The details are in the log.', { adminDetail: true })
 }
@@ -62,14 +60,14 @@ export const autoConnectRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: { plugin?: unknown; key?: unknown; choice?: unknown } }>('/pick', async (req, reply) => {
     const plugin = String(req.body?.plugin ?? ''), key = String(req.body?.key ?? ''), choice = String(req.body?.choice ?? '')
     if (!PLUGIN.test(plugin) || !KEY.test(key) || !choice || choice.length > 300) return reply.status(400).send({ success: false, code: 'bad_input', error: 'Pick one of the listed options.' })
-    try { return { success: true, data: await autoConnect().pick(plugin, key, choice, by(req)) } }
+    try { return { success: true, data: await autoConnect().pick(plugin, key, choice, actorWords(actorOf(req))) } }
     catch (e) { return fail(reply, e) }
   })
 
   fastify.post<{ Body: { plugin?: unknown; key?: unknown } }>('/connect-again', async (req, reply) => {
     const plugin = String(req.body?.plugin ?? ''), key = String(req.body?.key ?? '')
     if (!PLUGIN.test(plugin) || !KEY.test(key)) return reply.status(400).send({ success: false, code: 'bad_input', error: 'Which one?' })
-    try { const r = await autoConnect().connectAgain(plugin, key, by(req)); return { success: true, data: { waited: r.waited } } }
+    try { const r = await autoConnect().connectAgain(plugin, key, actorWords(actorOf(req))); return { success: true, data: { waited: r.waited } } }
     catch (e) { return fail(reply, e) }
   })
 }

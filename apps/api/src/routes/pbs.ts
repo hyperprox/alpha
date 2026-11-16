@@ -18,8 +18,10 @@ import { auditCredentialUse } from '../lib/audit'
 import { hasRole } from '../lib/roles'
 import { coverageOf, detailOf, pbsService } from '../lib/pbs'
 import { PbsInputError, cleanUrl, type PbsMeta, type PbsView } from '../lib/pbs/instances'
-import { PbsRefusal, type Actor } from '../lib/pbs/service'
+import { PbsRefusal } from '../lib/pbs/service'
 import { ManageRefusal, MANAGE_CONSEQUENCE } from '../lib/pbs/manage'
+import { actorOf, auditBy } from '../lib/http/request-actor'
+import { sendRefusal } from '../lib/failure'
 
 declare module 'fastify' {
   interface FastifyRequest { pbsHandled?: boolean }
@@ -27,17 +29,12 @@ declare module 'fastify' {
 
 const svc = () => pbsService()
 
-function actor(req: FastifyRequest): Actor {
-  const s = req.session!
-  return { sid: s.sid, email: s.email, role: s.role, token: req.apiToken?.name ?? null }
-}
-
 const isViewer = (req: FastifyRequest) => !hasRole(req.session?.role ?? 'viewer', 'operator')
 
 function fail(reply: FastifyReply, e: any) {
-  if (e instanceof PbsRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, ...e.extra })
-  if (e instanceof PbsInputError) return reply.status(e.status).send({ success: false, code: 'bad_input', error: e.message })
-  if (e instanceof ManageRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, problems: e.problems })
+  if (e instanceof PbsRefusal) return sendRefusal(reply, e.status, e.code, e.message, e.extra)
+  if (e instanceof PbsInputError) return sendRefusal(reply, e.status, 'bad_input', e.message)
+  if (e instanceof ManageRefusal) return sendRefusal(reply, e.status, e.code, e.message, { problems: e.problems })
   throw e
 }
 
@@ -60,9 +57,9 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
     if ((!v && !mg) || !req.session || reply.statusCode === 401 || reply.statusCode === 423) return
     // A verify handler audits its own refusals; every manage and forget refusal (gate or handler) is recorded here.
     if (v && req.pbsHandled) return
-    if (v) await svc().auditRefusal(v[1], actor(req), 'verify', `gate_${reply.statusCode}`).catch(() => {})
+    if (v) await svc().auditRefusal(v[1], actorOf(req), 'verify', `gate_${reply.statusCode}`).catch(() => {})
     else await auditCredentialUse('pbs.manage', `pbs:${mg![1].replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, {
-      by: req.session.email, via: req.apiToken ? `api:${req.apiToken.name}` : 'session', action: mg![3] ?? (mg![2] === 'forget' ? 'forget' : 'manage'), result: `refused:http_${reply.statusCode}`,
+      ...auditBy(actorOf(req)), via: req.apiToken ? `api:${req.apiToken.name}` : 'session', action: mg![3] ?? (mg![2] === 'forget' ? 'forget' : 'manage'), result: `refused:http_${reply.statusCode}`,
     }).catch(() => {})
   })
 
@@ -77,7 +74,7 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
     // A token only with the owner-granted plug-in settings permission (lib/gate.ts), to confirm a fingerprint before adding.
     if (req.apiToken && req.tokenPluginSettings?.kind !== 'probe') return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot read certificates.' })
     try {
-      const p = await svc().presented(cleanUrl(req.body?.url), actor(req))
+      const p = await svc().presented(cleanUrl(req.body?.url), actorOf(req))
       return { success: true, data: { fingerprint: p.fingerprint, caVerified: p.caVerified, subject: p.subject ?? null, issuer: p.issuer ?? null, validTo: p.validTo ?? null } }
     } catch (e) { return fail(reply, e) }
   })
@@ -85,8 +82,8 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
   // Add: the address and token are checked, the certificate read and pinned, and a real read made, before saving.
   fastify.post<{ Body: Record<string, unknown> }>('/instances', async (req, reply) => {
     try {
-      const m = await svc().add(req.body ?? {}, actor(req))
-      await auditCredentialUse('pbs.instance.create', `pbs:${m.id}`, { by: req.session!.email, name: m.name, pin: m.pin?.source ?? null })
+      const m = await svc().add(req.body ?? {}, actorOf(req))
+      await auditCredentialUse('pbs.instance.create', `pbs:${m.id}`, { ...auditBy(actorOf(req)), name: m.name, pin: m.pin?.source ?? null })
       return reply.status(201).send({ success: true, data: view(m, false) })
     } catch (e) { return fail(reply, e) }
   })
@@ -96,7 +93,7 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
   // audits the attempt with the user name only).
   fastify.post<{ Body: Record<string, unknown> }>('/instances/signin', async (req, reply) => {
     try {
-      const m = await svc().addWithLogin(req.body ?? {}, actor(req))
+      const m = await svc().addWithLogin(req.body ?? {}, actorOf(req))
       return reply.status(201).send({ success: true, data: view(m, false) })
     } catch (e) { return fail(reply, e) }
   })
@@ -104,9 +101,9 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.put<P & { Body: Record<string, unknown> }>('/instances/:iid', async (req, reply) => {
     try {
       const b = (req.body ?? {}) as Record<string, unknown>
-      const { meta } = await svc().update(req.params.iid, b, actor(req))
+      const { meta } = await svc().update(req.params.iid, b, actorOf(req))
       await auditCredentialUse('pbs.instance.update', `pbs:${meta.id}`, {
-        by: req.session!.email, name: meta.name,
+        ...auditBy(actorOf(req)), name: meta.name,
         changed: Object.keys(b).filter(k => b[k] !== undefined && !(k === 'secret' && b[k] === '')).map(k => (k === 'secret' ? 'credential' : k)),
       })
       return { success: true, data: view(meta, false) }
@@ -117,7 +114,7 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       await svc().instances.remove(req.params.iid)
       svc().forget(req.params.iid)
-      await auditCredentialUse('pbs.instance.remove', `pbs:${req.params.iid}`, { by: req.session!.email })
+      await auditCredentialUse('pbs.instance.remove', `pbs:${req.params.iid}`, { ...auditBy(actorOf(req)) })
       return { success: true }
     } catch (e) { return fail(reply, e) }
   })
@@ -125,7 +122,7 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
   // The whole reading. A server that cannot be read is a normal state: 200 with ok:false and the reason.
   fastify.get<P & { Querystring: { fresh?: string } }>('/instances/:iid/reading', async (req, reply) => {
     try {
-      const r = await svc().reading(req.params.iid, { actor: actor(req), fresh: req.query.fresh === '1' })
+      const r = await svc().reading(req.params.iid, { actor: actorOf(req), fresh: req.query.fresh === '1' })
       return { success: true, data: { ok: true, reading: r } }
     } catch (e: any) {
       if (e instanceof PbsRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
@@ -137,7 +134,7 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const m = await svc().instances.get(req.params.iid)
       if (!m) return fail(reply, new PbsRefusal('no_instance', 'No such backup server.', 404))
-      return { success: true, data: { ok: true, ...detailOf(m.name, await svc().reading(m.id, { actor: actor(req) })) } }
+      return { success: true, data: { ok: true, ...detailOf(m.name, await svc().reading(m.id, { actor: actorOf(req) })) } }
     } catch (e: any) {
       if (e instanceof PbsRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
       return { success: true, data: { ok: false, error: e?.message ?? 'The backup server could not be read.' } }
@@ -161,14 +158,14 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const q = req.query
       if (!q.store || !q.type || !q.id) return reply.status(400).send({ success: false, error: 'Name the datastore and the group.' })
-      return { success: true, data: await svc().groupSnapshots(req.params.iid, { store: q.store, ns: q.ns ?? '', type: q.type, id: q.id }, actor(req)) }
+      return { success: true, data: await svc().groupSnapshots(req.params.iid, { store: q.store, ns: q.ns ?? '', type: q.type, id: q.id }, actorOf(req)) }
     } catch (e) { return fail(reply, e) }
   })
 
   // Turn management on (an admin sign-in, used once, and the datastores) or off (deletes the manage token on PBS).
   // Forget a server locally (it cannot be reached any more): admin, re-confirmed; the answer names tokens left there.
   fastify.post<P>('/instances/:iid/forget', async (req, reply) => {
-    try { const r = await svc().manager.forget(req.params.iid, actor(req)); svc().forget(req.params.iid); return { success: true, data: r } }
+    try { const r = await svc().manager.forget(req.params.iid, actorOf(req)); svc().forget(req.params.iid); return { success: true, data: r } }
     catch (e) { return fail(reply, e) }
   })
 
@@ -177,34 +174,34 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
       const b = req.body ?? {}
       const login = { username: b.username, realm: b.realm, password: b.password }
       const meta = b.enabled === true
-        ? await svc().manager.enable(req.params.iid, Array.isArray(b.stores) ? b.stores.filter((x): x is string => typeof x === 'string') : [], actor(req), { login })
-        : await svc().manager.disable(req.params.iid, actor(req), login)
+        ? await svc().manager.enable(req.params.iid, Array.isArray(b.stores) ? b.stores.filter((x): x is string => typeof x === 'string') : [], actorOf(req), { login })
+        : await svc().manager.disable(req.params.iid, actorOf(req), login)
       svc().forget(req.params.iid)
       return { success: true, data: { ...view(meta, false), consequence: MANAGE_CONSEQUENCE } }
     } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/manage/preview', async (req, reply) => {
-    try { return { success: true, data: await svc().manager.preview(req.params.iid, actor(req), req.body ?? {}) } }
+    try { return { success: true, data: await svc().manager.preview(req.params.iid, actorOf(req), req.body ?? {}) } }
     catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Body: { previewId?: unknown; acks?: unknown } }>('/instances/:iid/manage/apply', async (req, reply) => {
     try {
-      const r = await svc().manager.apply(req.params.iid, actor(req), String(req.body?.previewId ?? ''), req.body?.acks)
+      const r = await svc().manager.apply(req.params.iid, actorOf(req), String(req.body?.previewId ?? ''), req.body?.acks)
       svc().forget(req.params.iid)
       return { success: true, data: r }
     } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Body: { store?: unknown } }>('/instances/:iid/manage/gc', async (req, reply) => {
-    try { return { success: true, data: await svc().manager.gc(req.params.iid, actor(req), req.body?.store) } }
+    try { return { success: true, data: await svc().manager.gc(req.params.iid, actorOf(req), req.body?.store) } }
     catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/actions/verify', async (req, reply) => {
     req.pbsHandled = true
-    try { return { success: true, data: await svc().act(req.params.iid, 'verify', req.body ?? {}, actor(req)) } }
+    try { return { success: true, data: await svc().act(req.params.iid, 'verify', req.body ?? {}, actorOf(req)) } }
     catch (e) { return fail(reply, e) }
   })
 }

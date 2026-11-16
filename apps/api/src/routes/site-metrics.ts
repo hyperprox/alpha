@@ -38,6 +38,7 @@ import { liveAddresses } from '../lib/wizard-placement'
 import { proxyService } from '../lib/proxy'
 import { ownHeaders } from '../lib/own-user-agent'
 import { sendFailure } from '../lib/failure'
+import { actorOf, auditBy } from '../lib/http/request-actor'
 import { machineId } from '../lib/guest-id'
 import { shq } from '../lib/shell'
 
@@ -244,7 +245,6 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
   const d: SiteMetricsRouteDeps = { ...realDeps(), ...over }
   const plans = new Map<string, { siteId: string; plan: LogFormatPlan; expires: number; by: string }>()
   const stateFor = async (s: SiteRecord): Promise<SiteState> => (await d.store.getState(s.id)) ?? defaultState(s)
-  const who = (req: FastifyRequest) => req.session?.email ?? 'unknown'
   const candidateList = Object.keys(over).length ? candidateCache(d) : sharedCandidateCache()
 
   return async (fastify) => {
@@ -393,7 +393,7 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
         id: `a${randomBytes(6).toString('hex')}`, recipeId: i.app === 'ghost' ? 'adopted-ghost' : `adopted-${i.kind}`, name: i.name || g.name || u.hostname,
         vmid: g.vmid, node: g.node, ip: (await d.guestIp(g.node, g.vmid)) ?? undefined,
         domain: isPublic ? u.hostname : undefined, url: isPublic ? i.url : undefined, localUrl: isPublic ? undefined : i.url,
-        jobId: 'adopted', owner: who(req), createdAt: d.now().getTime(),
+        jobId: 'adopted', owner: actorOf(req).email, createdAt: d.now().getTime(),
       }
       await d.record(site)
       const st = defaultState(site)
@@ -401,7 +401,7 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       if (i.errorLog) st.errorLog = i.errorLog
       st.phpBin = i.phpBin
       await d.store.putState(st)
-      await d.audit('site.adopt', `site:${site.id}`, { by: who(req), vmid: site.vmid, node: site.node, kind: i.kind, logPath: i.logPath, errorLog: i.errorLog, phpBin: i.phpBin })
+      await d.audit('site.adopt', `site:${site.id}`, { ...auditBy(actorOf(req)), vmid: site.vmid, node: site.node, kind: i.kind, logPath: i.logPath, errorLog: i.errorLog, phpBin: i.phpBin })
       return reply.send({ success: true, data: { id: site.id } })
     })
 
@@ -412,7 +412,7 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       if (!isAdopted(site)) return reply.status(400).send({ success: false, error: 'Only an adopted site is forgotten here; a site HyperProx made is removed with its install.' })
       await d.forget(site.id)
       await d.store.deleteSite(site.id)
-      await d.audit('site.forget', `site:${site.id}`, { by: who(req), vmid: site.vmid })
+      await d.audit('site.forget', `site:${site.id}`, { ...auditBy(actorOf(req)), vmid: site.vmid })
       return reply.send({ success: true })
     })
 
@@ -434,7 +434,7 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       const now = d.now().getTime()
       for (const [k, v] of plans) if (v.expires < now) plans.delete(k)
       const id = plan.refusal ? null : planId(plan)
-      if (id) plans.set(id, { siteId: site.id, plan, expires: now + PLAN_TTL_MS, by: who(req) })
+      if (id) plans.set(id, { siteId: site.id, plan, expires: now + PLAN_TTL_MS, by: actorOf(req).email })
       return reply.send({ success: true, data: { planId: id, plan, expiresAt: id ? now + PLAN_TTL_MS : null } })
     })
 
@@ -455,7 +455,7 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
         req.log.error({ err: e, site: site.id }, '[site-metrics] log format change failed')
         res = { ok: false, backups: [], message: 'The change could not be made. The details are in the log.' }
       }
-      await d.audit('site.log-format', `site:${site.id}`, { by: who(req), ok: res.ok, files: Object.keys(p.plan.hashes), message: res.message })
+      await d.audit('site.log-format', `site:${site.id}`, { ...auditBy(actorOf(req)), ok: res.ok, files: Object.keys(p.plan.hashes), message: res.message })
       return reply.status(res.ok ? 200 : 502).send({ success: res.ok, data: res, ...(res.ok ? {} : { error: res.message }) })
     })
   }

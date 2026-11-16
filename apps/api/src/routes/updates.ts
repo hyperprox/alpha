@@ -17,7 +17,8 @@
 //  five minutes — which an API token can never do.
 // =============================================================================
 
-import { sendFailure } from '../lib/failure'
+import { sendFailure, sendRefusal } from '../lib/failure'
+import { actorOf, auditBy, isAdmin } from '../lib/http/request-actor'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import type { UpdatesInventory, UpdatesWsPayload } from '../lib/updates/types'
 import { hasRole } from '../lib/roles'
@@ -118,20 +119,20 @@ export function updatesSubscriberCount(): number { return subscribers.size }
 
 async function adminOnly(req: FastifyRequest, reply: FastifyReply) {
   const s = req.session
-  if (!s) return reply.status(401).send({ ok: false, code: 'unauthenticated', error: 'Authentication required' })
+  if (!s) return sendRefusal(reply, 401, 'unauthenticated', 'Authentication required')
   if (!hasRole(s.role, 'admin')) {
-    return reply.status(403).send({ ok: false, code: 'forbidden', error: 'Updates need the admin role', required: 'admin', role: s.role })
+    return sendRefusal(reply, 403, 'forbidden', 'Updates need the admin role', { required: 'admin', role: s.role })
   }
 }
 
-const RECONFIRM = { ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to change anything on a remote cluster' }
+const RECONFIRM = 'Re-enter your master password to change anything on a remote cluster'
 
 /** On a remote cluster a change needs a fresh re-confirmation; an API token never has one. */
 function remoteNeedsReconfirm(svc: ClusterUpdates, req: FastifyRequest): boolean {
   return svc.remote && !(req.session?.sid && isReconfirmed(req.session.sid))
 }
 
-const RECONFIRM_CHOSEN = { ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to run the chosen updates' }
+const RECONFIRM_CHOSEN = 'Re-enter your master password to run the chosen updates'
 
 /** Running chosen targets needs a fresh re-confirmation, on every cluster; an API token never has one. */
 const reconfirmed = (req: FastifyRequest) => Boolean(req.session?.sid && isReconfirmed(req.session.sid))
@@ -148,9 +149,9 @@ const CHECK_BUSY = 'The daily updates check is reading machines right now. Try a
 const isTokenSession = (req: FastifyRequest) => String(req.session?.sid ?? '').startsWith('token:')
 
 function sendError(reply: FastifyReply, e: any) {
-  if (e instanceof ActiveJobError) return reply.status(409).send({ error: e.message, runningJobId: e.runningJobId })
-  if (e instanceof PolicyRequiredError) return reply.status(400).send({ error: e.message })
-  if (e instanceof JobStateError) return reply.status(/^No (job|node)/.test(e.message) ? 404 : 409).send({ error: e.message })
+  if (e instanceof ActiveJobError) return sendRefusal(reply, 409, 'job_active', e.message, { runningJobId: e.runningJobId })
+  if (e instanceof PolicyRequiredError) return sendRefusal(reply, 400, 'policy_required', e.message)
+  if (e instanceof JobStateError) return /^No (job|node)/.test(e.message) ? sendRefusal(reply, 404, 'not_found', e.message) : sendRefusal(reply, 409, 'job_state', e.message)
   return sendFailure(reply.request, reply, e, undefined, { status: 503 })
 }
 
@@ -248,7 +249,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     // `approve` (comma separated approval ids) previews the plan a run with those approvals would get.
     fastify.get<{ Querystring: { scope?: string; approve?: string } }>('/plan', async (req, reply) => {
       const approvals = approvalsFrom(req.query.approve)
-      if (!approvals) return reply.status(400).send({ error: 'approve must be a comma-separated list of approval ids from the inventory' })
+      if (!approvals) return sendRefusal(reply, 400, 'invalid_request', 'approve must be a comma-separated list of approval ids from the inventory')
       try {
         const s = svc()
         const load = s.loadPolicy()
@@ -292,7 +293,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     // Read-only, like the inventory it is built from.
     fastify.get<{ Querystring: { refresh?: string; discover?: string } }>('/targets', async (req, reply) => {
       // Looking in every guest runs commands in each of them: an admin's act, on its own route (below).
-      if (req.query.discover !== undefined) return reply.status(400).send({ error: 'Looking for compose projects in every guest is POST /api/updates/targets/discover (admin).' })
+      if (req.query.discover !== undefined) return sendRefusal(reply, 400, 'invalid_request', 'Looking for compose projects in every guest is POST /api/updates/targets/discover (admin).')
       try {
         const s = svc()
         const inv = await s.inventory(req.query.refresh === '1' || req.query.refresh === 'true')
@@ -304,7 +305,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     // each), not only where the policy turns docker on. Admin (lib/roles.ts: a POST is admin unless listed): it runs
     // commands inside every guest, which a viewer's read must never cause.
     fastify.post('/targets/discover', async (req, reply) => {
-      if (!hasRole(req.session?.role ?? 'viewer', 'admin')) return reply.status(403).send({ error: 'Looking inside every guest is for admins.' })
+      if (!isAdmin(req)) return sendRefusal(reply, 403, 'forbidden', 'Looking inside every guest is for admins.')
       try {
         const s = svc()
         const inv = await s.inventory(false, true)
@@ -316,10 +317,10 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     // would be refused and why. Read-only (a POST only because a selection can be long).
     fastify.post<{ Body: { select?: unknown; approve?: unknown } }>('/preview', async (req, reply) => {
       const select = selectionFrom(req.body?.select)
-      if (!select) return reply.status(400).send({ error: `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets` })
+      if (!select) return sendRefusal(reply, 400, 'invalid_request', `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets`)
       const approve = req.body?.approve ?? []
       if (!Array.isArray(approve) || approve.length > 200 || !approve.every(a => typeof a === 'string' && APPROVAL_ID.test(a))) {
-        return reply.status(400).send({ error: 'approve must be a list of approval ids from the inventory' })
+        return sendRefusal(reply, 400, 'invalid_request', 'approve must be a list of approval ids from the inventory')
       }
       try {
         const s = svc()
@@ -338,32 +339,32 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
 
     fastify.post<{ Body: { mode?: string; scope?: string; approve?: unknown; select?: unknown } }>('/jobs', async (req, reply) => {
       const mode = req.body?.mode
-      if (mode !== 'run' && mode !== 'dry-run') return reply.status(400).send({ error: "mode must be 'run' or 'dry-run'" })
+      if (mode !== 'run' && mode !== 'dry-run') return sendRefusal(reply, 400, 'invalid_request', "mode must be 'run' or 'dry-run'")
       const scope = req.body?.scope ?? 'all'
-      if (scope !== 'all' && scope !== 'guests') return reply.status(400).send({ error: "scope must be 'all' or 'guests'" })
+      if (scope !== 'all' && scope !== 'guests') return sendRefusal(reply, 400, 'invalid_request', "scope must be 'all' or 'guests'")
       const approve = req.body?.approve ?? []
       if (!Array.isArray(approve) || approve.length > 200 || !approve.every(a => typeof a === 'string' && APPROVAL_ID.test(a))) {
-        return reply.status(400).send({ error: 'approve must be a list of approval ids from the inventory' })
+        return sendRefusal(reply, 400, 'invalid_request', 'approve must be a list of approval ids from the inventory')
       }
       const select = req.body?.select === undefined ? undefined : selectionFrom(req.body.select)
-      if (select === null) return reply.status(400).send({ error: `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets` })
+      if (select === null) return sendRefusal(reply, 400, 'invalid_request', `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets`)
       const s = svc()
-      if (mode === 'run' && remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
-      if (select && mode === 'run' && !reconfirmed(req)) return reply.status(403).send(RECONFIRM_CHOSEN)
+      if (mode === 'run' && remoteNeedsReconfirm(s, req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM)
+      if (select && mode === 'run' && !reconfirmed(req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM_CHOSEN)
       if (select) {
         // Refused before anything starts when nothing chosen could run (a held kernel package, unknown holds...).
         try {
           const inv = await s.inventory(false)
           const { load, selfVmid, guards } = treeFor(s, inv, await guardsFor(s))
           const pv = buildSelectedPlan(inv, load.policy, { ...guards, selection: select, approvals: approve as string[], selfVmid, remote: s.remote || undefined })
-          if (!pv.steps.length) return reply.status(400).send({ error: 'Nothing chosen can be updated', refused: pv.refused ?? [] })
+          if (!pv.steps.length) return sendRefusal(reply, 400, 'nothing_to_update', 'Nothing chosen can be updated', { refused: pv.refused ?? [] })
         } catch (e) { return sendError(reply, e) }
       }
       if (checker.running) {
         // A person's run takes precedence: the check stops at the next machine, keeping what it read.
         checker.abort('an Updates run was started')
         await Promise.race([checker.idle(), new Promise(r => setTimeout(r, 60_000).unref?.())])
-        if (checker.running) return reply.status(409).send({ error: 'The daily check is finishing the machine it is reading and stops after it. Try again in a minute.' })
+        if (checker.running) return sendRefusal(reply, 409, 'check_busy', 'The daily check is finishing the machine it is reading and stops after it. Try again in a minute.')
       }
       try {
         const job = await s.runner.start(mode, 'manual', req.session?.email, scope, approve as string[], select)
@@ -379,20 +380,20 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     fastify.get<{ Params: { id: string } }>('/jobs/:id', async (req, reply) => {
       const s = svc()
       const job = await s.store.getJob(req.params.id)
-      if (!job) return reply.status(404).send({ error: `No job ${req.params.id}` })
+      if (!job) return sendRefusal(reply, 404, 'not_found', `No job ${req.params.id}`)
       return { job: jobView(job, await s.store.getSteps(job.id)) }
     })
 
     for (const op of ['confirm', 'resume', 'cancel'] as const) {
       fastify.post<{ Params: { id: string } }>(`/jobs/:id/${op}`, async (req, reply) => {
         const s = svc()
-        if (op !== 'cancel' && remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
+        if (op !== 'cancel' && remoteNeedsReconfirm(s, req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM)
         if (op !== 'cancel' && !reconfirmed(req)) {
           // A run of chosen targets is confirmed and resumed with the master password re-entered, like its start.
           const j = await s.store.getJob(req.params.id).catch(() => null)
-          if (j && Array.isArray(j.plan?.items)) return reply.status(403).send(RECONFIRM_CHOSEN)
+          if (j && Array.isArray(j.plan?.items)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM_CHOSEN)
         }
-        if (op !== 'cancel' && checker.running) return reply.status(409).send({ error: CHECK_BUSY })
+        if (op !== 'cancel' && checker.running) return sendRefusal(reply, 409, 'check_busy', CHECK_BUSY)
         try {
           const job = await s.runner[op](req.params.id, req.session?.email)
           return { job: jobView(job, await s.store.getSteps(job.id)) }
@@ -403,10 +404,10 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     // Roll a guest back to the snapshot this job took, after one of its app steps failed. Paused jobs only.
     fastify.post<{ Params: { id: string }; Body: { target?: unknown } }>('/jobs/:id/rollback', async (req, reply) => {
       const target = req.body?.target
-      if (typeof target !== 'string' || !/^\d{1,9}$/.test(target)) return reply.status(400).send({ error: 'target must be a guest id' })
+      if (typeof target !== 'string' || !/^\d{1,9}$/.test(target)) return sendRefusal(reply, 400, 'invalid_request', 'target must be a guest id')
       const s = svc()
-      if (remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
-      if (checker.running) return reply.status(409).send({ error: CHECK_BUSY })
+      if (remoteNeedsReconfirm(s, req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM)
+      if (checker.running) return sendRefusal(reply, 409, 'check_busy', CHECK_BUSY)
       try {
         const job = await s.runner.rollbackGuest(req.params.id, target, req.session?.email)
         return reply.status(202).send({ job: jobView(job, await s.store.getSteps(job.id)) })
@@ -421,8 +422,8 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
 
     fastify.post<{ Params: { node: string } }>('/nodes/:node/reboot', async (req, reply) => {
       const s = svc()
-      if (remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
-      if (checker.running) return reply.status(409).send({ error: CHECK_BUSY })
+      if (remoteNeedsReconfirm(s, req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM)
+      if (checker.running) return sendRefusal(reply, 409, 'check_busy', CHECK_BUSY)
       try {
         const job = await s.runner.rebootNode(req.params.node, req.session?.email)
         return reply.status(202).send({ job: jobView(job, await s.store.getSteps(job.id)) })
@@ -436,14 +437,14 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     const manualAfter = () => (lastManual ? new Date(lastManual + manualGap).toISOString() : null)
     fastify.get('/check', async () => ({ ...checker.status(), manualAfter: manualAfter() }))
     fastify.post('/check', async (req, reply) => {
-      if (isTokenSession(req)) return reply.status(403).send({ ok: false, code: 'token_refused', error: 'An API token cannot start the updates check. Sign in to start one.' })
-      if (checker.running) return reply.status(409).send({ error: 'A check is already running.', status: checker.status() })
+      if (isTokenSession(req)) return sendRefusal(reply, 403, 'token_refused', 'An API token cannot start the updates check. Sign in to start one.')
+      if (checker.running) return sendRefusal(reply, 409, 'check_running', 'A check is already running.', { status: checker.status() })
       const wait = lastManual + manualGap - Date.now()
       if (lastManual && wait > 0) {
-        return reply.status(429).send({ error: `A check was started less than ${Math.round(manualGap / 60_000)} minutes ago. The next one can start in ${Math.ceil(wait / 60_000)} minute${Math.ceil(wait / 60_000) === 1 ? '' : 's'}.`, manualAfter: manualAfter() })
+        return sendRefusal(reply, 429, 'too_soon', `A check was started less than ${Math.round(manualGap / 60_000)} minutes ago. The next one can start in ${Math.ceil(wait / 60_000)} minute${Math.ceil(wait / 60_000) === 1 ? '' : 's'}.`, { manualAfter: manualAfter() })
       }
       lastManual = Date.now()
-      await store.audit('updates.check.start', 'check', { by: req.session?.email, clusters: 'all' })
+      await store.audit('updates.check.start', 'check', { ...auditBy(actorOf(req)), clusters: 'all' })
       checker.run('manual').catch(e => fastify.log.error(`[updates] check failed: ${e.message}`))
       return reply.status(202).send({ ...checker.status(), manualAfter: manualAfter() })
     })

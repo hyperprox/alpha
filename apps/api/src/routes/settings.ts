@@ -2,8 +2,9 @@
 //  HyperProx — Settings API Routes
 // =============================================================================
 
-import { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { sendFailure } from '../lib/failure'
+import { answerData } from '../lib/http/answer'
 import {
   getCategoryForUI,
   setCredential,
@@ -68,10 +69,7 @@ export function settingsSaveProblem(category: string, provider: string, stored: 
   return `${d.name}'s address now points somewhere else, so enter the ${labels.join(' and ')} again in the same save.`
 }
 
-const wrap = async (reply: any, fn: () => Promise<any>) => {
-  try   { return { success: true, data: await fn() } }
-  catch (e: any) { return sendFailure(reply.request, reply, e, 'The settings could not be read.') }
-}
+const wrap = (reply: FastifyReply, fn: () => Promise<unknown>) => answerData(reply, fn, { friendly: 'The settings could not be read.' })
 
 export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
 

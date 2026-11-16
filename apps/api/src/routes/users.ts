@@ -38,6 +38,7 @@ import { InvitationStore } from '../lib/users/invitations'
 import { auditOrThrow } from '../lib/audit'
 import { endSessionsOf } from '../lib/auth'
 import { requestHost } from '../lib/gate'
+import { auditBy, actorOf } from '../lib/http/request-actor'
 
 export interface UserRouteDeps {
   broker?(): VaultBroker
@@ -108,7 +109,7 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       if (b.removePendingMember) {
         for (const i of store.expired()) {
           if (needsVaultOwner(i.role) && !isOwner(req)) continue
-          try { await audit('users.invite.expired', `user:${i.email}`, { by: req.session!.email, role: i.role }) } catch { continue }
+          try { await audit('users.invite.expired', `user:${i.email}`, { ...auditBy(actorOf(req)), role: i.role }) } catch { continue }
           try { await b.removePendingMember(req.session!.sid, i.email); store.remove(i.hash) } catch { /* next visit */ }
         }
       }
@@ -128,7 +129,7 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       if (needsVaultOwner(role) && !isOwner(req)) return ownerRequired(reply)
       const b = broker()
       if (!b.inviteMember) return unsupported(reply)
-      const details = { by: req.session!.email, role }
+      const details = { ...auditBy(actorOf(req)), role }
       if (!(await audited(reply, 'users.invite', `user:${email}`, details))) return
       let reused = false
       try { reused = !!(await b.inviteMember(req.session!.sid, email, role))?.reused }
@@ -152,7 +153,7 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
         if (!member) return reply.status(404).send({ ok: false, error: 'No such member' })
         if (needsVaultOwner(member.role)) return ownerRequired(reply)
       }
-      const details = { by: req.session!.email, fingerprint: fp }
+      const details = { ...auditBy(actorOf(req)), fingerprint: fp }
       if (!(await audited(reply, 'users.confirm', `member:${id}`, details))) return
       try { await b.confirmMember(req.session!.sid, id, fp) }
       catch (e) { return failed(reply, e, { action: 'users.confirm', resource: `member:${id}`, details }) }
@@ -169,7 +170,7 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       let member
       try { member = b.members ? (await b.members(req.session!.sid)).find(m => m.id === id) : undefined } catch (e) { return failed(reply, e) }
       if (b.members && !member) return reply.status(404).send({ ok: false, error: 'No such member' })
-      if (!(await audited(reply, 'users.role', `member:${id}`, { by: req.session!.email, role }))) return
+      if (!(await audited(reply, 'users.role', `member:${id}`, { ...auditBy(actorOf(req)), role }))) return
       try { await b.setMemberRole(req.session!.sid, id, role as GrantableRole) } catch (e) { return failed(reply, e) }
       // Their sessions end, so the new role applies at once (a demotion included); they sign in again with it.
       const signedOut = member ? await endSessions({ userId: member.userId, email: member.email }) : 0
@@ -189,7 +190,7 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       if (member.role === 'owner') return reply.status(403).send({ ok: false, code: 'forbidden', error: 'The owner cannot be removed.' })
       if (member.email === req.session!.email) return reply.status(400).send({ ok: false, error: 'You cannot remove yourself.' })
       if (needsVaultOwner(member.role) && !isOwner(req)) return ownerRequired(reply)
-      const details = { by: req.session!.email, email: member.email, role: member.role }
+      const details = { ...auditBy(actorOf(req)), email: member.email, role: member.role }
       if (!(await audited(reply, 'users.remove', `member:${id}`, details))) return
       try { await b.removeMember(req.session!.sid, id) }
       catch (e) { return failed(reply, e, { action: 'users.remove', resource: `member:${id}`, details }) }
@@ -206,7 +207,7 @@ export function buildUserRoutes(deps: UserRouteDeps = {}): FastifyPluginAsync {
       if (needsVaultOwner(inv.role) && !isOwner(req)) return ownerRequired(reply)
       const b = broker()
       if (!b.removePendingMember) return unsupported(reply)
-      const details = { by: req.session!.email, email: inv.email, role: inv.role }
+      const details = { ...auditBy(actorOf(req)), email: inv.email, role: inv.role }
       if (!(await audited(reply, 'users.invite.withdraw', `invitation:${h.slice(0, 12)}`, details))) return
       // The vault's invited membership goes too; until it has, the link stays (and can be withdrawn again).
       try { await b.removePendingMember(req.session!.sid, inv.email) }

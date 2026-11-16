@@ -27,6 +27,7 @@ import type { QnapReading } from './parse'
 import { ClusterTransport, DirectTransport, QnapUnreachableError, type NodeScriptRunner, type QnapTransport } from './transport'
 import type { NotifyEventInput } from '../notify/types'
 import { remoteTargetProblem } from './target'
+import { auditBy } from '../http/request-actor'
 
 export interface Actor { sid: string; email: string; role: Role; token: string | null }
 
@@ -154,7 +155,7 @@ export class QnapService {
 
   async auditRefusal(id: string, actor: Actor | null, req: ActionRequest, code: string): Promise<void> {
     await this.d.audit('qnap.action', `qnap:${String(id).replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, {
-      by: actor?.email ?? 'anonymous', via: actor?.token ? `api:${actor.token}` : actor ? 'session' : 'none',
+      ...auditBy(actor ?? 'anonymous'), via: actor?.token ? `api:${actor.token}` : actor ? 'session' : 'none',
       action: typeof req.action === 'string' ? req.action.slice(0, 20) : '', result: `refused:${code}`,
     })
   }
@@ -163,7 +164,7 @@ export class QnapService {
     let m: QnapMeta
     try { m = await this.meta(id) } catch (e: any) { await this.auditRefusal(id, actor, req, e?.code ?? 'error'); throw e }
     const action = typeof req.action === 'string' ? req.action.slice(0, 20) : ''
-    const base = { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', nas: m.name, nasId: m.id, action }
+    const base = { ...auditBy(actor), via: actor.token ? `api:${actor.token}` : 'session', nas: m.name, nasId: m.id, action }
     const refuse = async (e: QnapRefusal): Promise<never> => {
       await this.d.audit('qnap.action', `qnap:${m.id}`, { ...base, result: `refused:${e.code}` })
       throw e

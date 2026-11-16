@@ -21,6 +21,7 @@ import {
   KIND_LABEL, PROXY_KINDS, ProxyRefusal,
   type ManagedRef, type ProxyCertificate, type ProxyHealth, type ProxyHostRecord, type ProxyHostView, type ProxyInstance, type ProxyKind, type ProxyProvider,
 } from './types'
+import { auditBy } from '../http/request-actor'
 
 export const LEGACY_NPM_ID = 'npm'
 const CACHE_MS = 20_000
@@ -259,7 +260,7 @@ export class ProxyService {
     // Secrets first: an instance row without its secrets would be listed and fail; secrets without a row are invisible.
     if (Object.keys(secrets).length) await this.d.secrets.set(id, secrets)
     const row = await this.d.store.create({ id, kind, name, url, mode, managed, settings, createdBy: actor.email })
-    await this.d.store.audit('proxy.instance.create', `proxy:${id}`, { kind, name, url, mode, by: actor.email, secrets: Object.keys(secrets) })
+    await this.d.store.audit('proxy.instance.create', `proxy:${id}`, { kind, name, url, mode, ...auditBy(actor), secrets: Object.keys(secrets) })
     return { instance: await this.view(row), health: await this.health(id) }
   }
 
@@ -294,7 +295,7 @@ export class ProxyService {
     if (Object.keys(secrets).length) await this.d.secrets.set(id, secrets)
     const row = await this.d.store.update(id, patch)
     this.invalidate(id)
-    await this.d.store.audit('proxy.instance.update', `proxy:${id}`, { by: actor.email, fields: Object.keys(patch), secrets: Object.keys(secrets) })
+    await this.d.store.audit('proxy.instance.update', `proxy:${id}`, { ...auditBy(actor), fields: Object.keys(patch), secrets: Object.keys(secrets) })
     return this.view(row)
   }
 
@@ -305,7 +306,7 @@ export class ProxyService {
     await this.d.store.remove(id)
     await this.d.secrets.remove(id).catch(() => undefined)
     this.invalidate(id)
-    await this.d.store.audit('proxy.instance.delete', `proxy:${id}`, { by: actor.email, kind: cur.kind, name: cur.name })
+    await this.d.store.audit('proxy.instance.delete', `proxy:${id}`, { ...auditBy(actor), kind: cur.kind, name: cur.name })
   }
 
   private resolver(): (h: string) => Promise<string[]> {
@@ -372,7 +373,7 @@ export class ProxyService {
     if (!provider.requestCertificate) throw new ProxyRefusal(`${KIND_LABEL[instance.kind]} gets its own certificates; HyperProx cannot request one there.`, 400)
     if (!/^[^@\s]+@[^@\s]+$/.test(email)) throw new ProxyRefusal('Let’s Encrypt needs an email address.', 400)
     const c = await provider.requestCertificate(domains, email)
-    await this.d.store.audit('proxy.certificate.request', `proxy:${instance.id}`, { by: actor.email, names: domains })
+    await this.d.store.audit('proxy.certificate.request', `proxy:${instance.id}`, { ...auditBy(actor), names: domains })
     return c
   }
 

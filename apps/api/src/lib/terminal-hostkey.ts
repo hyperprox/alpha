@@ -39,6 +39,7 @@ import { evidenceWords, type PinEvidence, type PinSource } from './hostkey-pins'
 import { probeKey, type PresentedKey } from './hostkey-verify'
 import type { Role } from './vault/broker'
 import { appLog } from './log-once'
+import { auditBy } from './http/request-actor'
 
 const NODE_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/
 const FP_RE = /^SHA256:[A-Za-z0-9+/]{43}$/
@@ -411,7 +412,7 @@ export async function trustVerdict(terminalId: string, target: { host: string; p
 
   // The audit row first: a re-pin that cannot be recorded does not happen.
   await deps.audit('host_key.repin', `host:${v.host}:${v.port}`, {
-    by: ctx.email, verdict: v.state, fingerprint: v.offered.fingerprint, keyType: v.offered.type, previous: v.pinned,
+    ...auditBy(ctx), verdict: v.state, fingerprint: v.offered.fingerprint, keyType: v.offered.type, previous: v.pinned,
     terminalId, guest: v.guest ? `${v.guest.type}:${v.guest.vmid}` : null, guestName: v.guest?.name ?? null,
     via: v.via ?? null, override: v.state !== 'verified', reason: v.reason ?? null,
   })

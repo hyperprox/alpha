@@ -26,6 +26,7 @@ import type { PreparedStore } from './prepared'
 import { resolveTargets, withoutClusterWords, promptOn, type ClusterRef, type Choice } from './clusters'
 import type { GuestType, PowerAction } from '../clusters/guest-actions'
 import { GuestActionRefusal, checkGuest } from '../clusters/guest-actions'
+import { auditBy } from '../http/request-actor'
 
 export type GuestVerb = 'start' | 'stop' | 'shutdown' | 'reboot' | 'snapshot' | 'backup' | 'delete'
 export type ActionKind = GuestVerb | 'copy' | 'monitoring-install' | 'monitoring-remove'
@@ -485,7 +486,7 @@ export async function applyAction(planId: unknown, body: { confirmName?: unknown
     if (!seen.audited && answer.body.ok !== true) {
       const p = seen.plan
       await d.audit(auditName(p), p ? `cluster:${p.clusterId}` : 'assistant', {
-        by: d.owner, via: 'assistant', ok: false, code: String(answer.body.code ?? 'failed'),
+        ...auditBy(d.owner), via: 'assistant', ok: false, code: String(answer.body.code ?? 'failed'),
         ...(p ? { action: p.kind, ...(p.guest ? { node: p.guest.node, guest: `${p.guest.type}/${p.guest.vmid}` } : {}) } : {}),
         ...(answer.body.code === 'wrong_cluster' ? { requestCluster: d.requestCluster } : {}),
       }).catch(() => undefined)
@@ -541,7 +542,7 @@ async function applyOnce(planId: unknown, body: { confirmName?: unknown }, d: Ap
   if (plan.kind === 'monitoring-install' || plan.kind === 'monitoring-remove') {
     if (!d.prepared.take(planId, d.owner)) return refuse(404, 'not_found', 'That plan has expired or was already used. Ask again.')
     const r = await d.applyMonitoring(plan.monitoringPlanId!, d.owner, plan.clusterId)
-    await d.audit('cluster.monitoring.apply', `cluster:${plan.clusterId}`, { by, via: 'assistant', ok: r.ok, nodes: r.results.map(x => x.node) })
+    await d.audit('cluster.monitoring.apply', `cluster:${plan.clusterId}`, { ...auditBy(by), via: 'assistant', ok: r.ok, nodes: r.results.map(x => x.node) })
     seen.audited = true
     const words = [...r.results.map(x => `${x.node}: ${x.status}${x.reason ? ` (${x.reason})` : ''}`), ...r.checks.map(c => c.words)].join(' ')
     return { status: r.ok ? 200 : 502, body: { ok: r.ok, cluster, words: words || 'Done.', ...(r.ok ? {} : { error: words, code: 'failed' }) } }
@@ -576,7 +577,7 @@ async function applyOnce(planId: unknown, body: { confirmName?: unknown }, d: Ap
     throw new Error('Unknown action.')
   })
   const leaf = LEAF[plan.kind as GuestVerb]
-  await d.audit(`cluster.guest.${leaf}`, `cluster:${plan.clusterId}`, { by, via: 'assistant', node: g.node, guest: `${g.type}/${g.vmid}`, ok: r.ok, ...(leaf === 'power' ? { action: plan.kind } : {}) })
+  await d.audit(`cluster.guest.${leaf}`, `cluster:${plan.clusterId}`, { ...auditBy(by), via: 'assistant', node: g.node, guest: `${g.type}/${g.vmid}`, ok: r.ok, ...(leaf === 'power' ? { action: plan.kind } : {}) })
   seen.audited = true
   return { status: r.ok ? 200 : 502, body: { ok: r.ok, cluster, words: r.words, ...(r.upid ? { upid: r.upid, node: g.node } : {}), ...(r.ok ? {} : { error: r.words, code: 'failed' }) } }
 }

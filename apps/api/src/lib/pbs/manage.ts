@@ -43,6 +43,7 @@ import { UPID_RE } from './client'
 import { PbsHttpError, PbsUnreachableError, type PbsPin } from './transport'
 import type { PbsInstanceStore, PbsMeta } from './instances'
 import type { Actor } from './service'
+import { auditBy } from '../http/request-actor'
 
 export const MANAGE_USER = 'hyperprox@pbs'
 export const MANAGE_TOKEN = 'manage'
@@ -196,7 +197,7 @@ export class PbsManager {
   }
 
   private async audit(serverId: string, actor: Actor, details: Record<string, unknown>): Promise<void> {
-    await this.d.audit('pbs.manage', `pbs:${serverId.replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', ...details })
+    await this.d.audit('pbs.manage', `pbs:${serverId.replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, { ...auditBy(actor), via: actor.token ? `api:${actor.token}` : 'session', ...details })
   }
 
   private async admin(meta: PbsMeta, url: string, login: { username?: unknown; realm?: unknown; password?: unknown }): Promise<PbsApi> {

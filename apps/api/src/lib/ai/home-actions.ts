@@ -23,6 +23,7 @@ import type { PreparedStore } from './prepared'
 import type { ActionCard } from './actions'
 import type { Choice, ClusterRef } from './clusters'
 import { stripAddresses } from '../redact-addresses'
+import { auditBy } from '../http/request-actor'
 
 export type HomeActionKind = 'site-pull' | 'qnap-smart'
 
@@ -216,7 +217,7 @@ export async function applyHomeAction(planId: unknown, d: HomeApplyDeps): Promis
       if (!d.prepared.take(planId, d.owner)) return (answer = refuse(404, 'not_found', 'That plan has expired or was already used. Ask again.'))
       const r = await d.pull(s.id)
       const ok = r.code === 0
-      await d.audit('site.pull', `site:${s.id}`, { by: d.owner, via: 'assistant', ok, ...(ok ? {} : { code: `exit ${r.code}` }) })
+      await d.audit('site.pull', `site:${s.id}`, { ...auditBy(d.owner), via: 'assistant', ok, ...(ok ? {} : { code: `exit ${r.code}` }) })
       audited = true
       const tail = stripAddresses(r.output.trim().split('\n').slice(-2).join(' ')).slice(0, 200)
       return (answer = { status: ok ? 200 : 502, body: { ok, words: ok ? `Pulled ${plan.siteName}.${tail ? ` ${tail}` : ''}` : `site-pull exited ${r.code}.`, ...(ok ? {} : { code: 'failed', error: `site-pull exited ${r.code}.` }) } })
@@ -233,7 +234,7 @@ export async function applyHomeAction(planId: unknown, d: HomeApplyDeps): Promis
   } finally {
     if (!audited && answer.body.ok !== true) {
       await d.audit(plan?.kind === 'site-pull' ? 'site.pull' : plan?.kind === 'qnap-smart' ? 'qnap.action' : 'assistant.apply', plan?.siteId ? `site:${plan.siteId}` : plan?.nasId ? `qnap:${plan.nasId}` : 'assistant',
-        { by: d.owner, via: 'assistant', ok: false, code: String(answer.body.code ?? 'failed') }).catch(() => undefined)
+        { ...auditBy(d.owner), via: 'assistant', ok: false, code: String(answer.body.code ?? 'failed') }).catch(() => undefined)
     }
   }
 }

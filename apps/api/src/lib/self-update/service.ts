@@ -26,6 +26,7 @@ import { inWindow, mergeSettings, SettingsError, SettingsStore, type SelfUpdateS
 import { effectiveChannel, installedLabel, type ChannelSource } from './channel'
 import type { Channel } from './state'
 import { upstreamAllowed } from './runner'
+import { auditBy } from '../http/request-actor'
 
 export interface Refusal { code: string; text: string; detail?: string[] }
 
@@ -128,7 +129,7 @@ export class SelfUpdateService {
     if (next.autoInstall) { const why = this.autoInstallBlocked(next); if (why) throw new SettingsError(why) }
     this.store.saveWithout(next, !chosen)
     const changed = Object.keys(next).filter(k => JSON.stringify((next as any)[k]) !== JSON.stringify((before as any)[k]))
-    await this.d.audit('self-update.settings', { by, changed, channel: next.channel, autoInstall: next.autoInstall, requireSigned: next.requireSigned })
+    await this.d.audit('self-update.settings', { ...auditBy(by), changed, channel: next.channel, autoInstall: next.autoInstall, requireSigned: next.requireSigned })
     return next
   }
 
@@ -348,7 +349,7 @@ export class SelfUpdateService {
     // after a restart (autoAttemptRefused).
     if (how === 'auto') this.recordAutoAttempt(sha)
     // Audited before anything starts: an update that cannot be recorded does not run.
-    await this.d.audit('self-update.start', { by, how, from: inst.sha, fromVersion: inst.version, to: job.target.sha, toLabel: job.target.label, channel: job.target.channel, job: id })
+    await this.d.audit('self-update.start', { ...auditBy(by), how, from: inst.sha, fromVersion: inst.version, to: job.target.sha, toLabel: job.target.label, channel: job.target.channel, job: id })
     fs.mkdirSync(this.p.jobs, { recursive: true, mode: 0o700 })
     fs.mkdirSync(this.p.logs, { recursive: true, mode: 0o700 })
     const jobFile = path.join(this.p.jobs, `${id}.json`)
@@ -399,7 +400,7 @@ export class SelfUpdateService {
     if (reported === s.id) return false
     writeJsonAtomic(this.p.reported, { id: s.id, at: this.now().toISOString() })
     await this.d.audit('self-update.finish', {
-      job: s.id, status: s.status, by: s.by, from: s.from.sha, to: s.target.sha, toLabel: s.target.label,
+      job: s.id, status: s.status, ...auditBy(s.by), from: s.from.sha, to: s.target.sha, toLabel: s.target.label,
       migrationsApplied: s.migrationsApplied, dbRestored: s.dbRestored, failedStep: s.steps.find(x => x.status === 'failed')?.id ?? null,
     }).catch(e => this.d.log?.(`[self-update] could not write the closing audit row: ${e?.message ?? e}`))
     const ok = s.status === 'succeeded'

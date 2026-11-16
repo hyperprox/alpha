@@ -34,6 +34,7 @@ import { DIAGNOSTIC_HOOKS, MAX_TOTAL_CHARS, MacMasker, redactAnswer } from './di
 import { DirectTransport, AsusUnreachableError, type AsusTransport } from './transport'
 import { portOf, resolveAsusTarget } from './target'
 import type { NotifyEventInput } from '../notify/types'
+import { auditBy } from '../http/request-actor'
 
 export interface Actor { sid: string; email: string; role: Role; token: string | null }
 
@@ -389,7 +390,7 @@ export class AsusService {
     this.limitKeys([`sid:${actor.sid}`, `router:${m.id}`], 'diagnosticsPerMinute', 'One diagnostics read at a time; wait a moment.', 60_000)
     const held = this.blockedReason(m.id)
     if (held) throw new AsusRefusal('login_held', held, 409)
-    await this.d.audit('asus.diagnostics', `asus:${m.id}`, { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', router: m.name })
+    await this.d.audit('asus.diagnostics', `asus:${m.id}`, { ...auditBy(actor), via: actor.token ? `api:${actor.token}` : 'session', router: m.name })
     const { client } = await this.client(m.id)
     const masks = new MacMasker()
     const calls = []
@@ -423,7 +424,7 @@ export class AsusService {
 
   async auditRefusal(id: string, actor: Actor | null, req: ActionRequest, code: string): Promise<void> {
     await this.d.audit('asus.action', `asus:${String(id).replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, {
-      by: actor?.email ?? 'anonymous', via: actor?.token ? `api:${actor.token}` : actor ? 'session' : 'none',
+      ...auditBy(actor ?? 'anonymous'), via: actor?.token ? `api:${actor.token}` : actor ? 'session' : 'none',
       action: typeof req.action === 'string' ? req.action.slice(0, 20) : '', result: `refused:${code}`,
     })
   }
@@ -432,7 +433,7 @@ export class AsusService {
     let m: AsusMeta
     try { m = await this.meta(id) } catch (e: any) { await this.auditRefusal(id, actor, req, e?.code ?? 'error'); throw e }
     const action = typeof req.action === 'string' ? req.action.slice(0, 20) : ''
-    const base = { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', router: m.name, routerId: m.id, action }
+    const base = { ...auditBy(actor), via: actor.token ? `api:${actor.token}` : 'session', router: m.name, routerId: m.id, action }
     const refuse = async (e: AsusRefusal): Promise<never> => {
       await this.d.audit('asus.action', `asus:${m.id}`, { ...base, result: `refused:${e.code}` })
       throw e
@@ -493,18 +494,18 @@ export class AsusService {
       const state = this.actions.get(m.id)
       if (restarted) {
         if (state) this.actions.set(m.id, { ...state, state: 'back', detail: `up again, uptime ${Math.round(r.uptimeSec!)} s` })
-        await this.d.audit('asus.action.verify', `asus:${m.id}`, { by: actor.email, router: m.name, routerId: m.id, action: 'reboot', result: 'back', uptimeSec: r.uptimeSec })
+        await this.d.audit('asus.action.verify', `asus:${m.id}`, { ...auditBy(actor), router: m.name, routerId: m.id, action: 'reboot', result: 'back', uptimeSec: r.uptimeSec })
         return
       }
       if (r.uptimeSec !== null && state?.state === 'unconfirmed') {
         this.actions.set(m.id, { ...state, state: 'not_back', detail: 'it answered without having restarted' })
-        await this.d.audit('asus.action.verify', `asus:${m.id}`, { by: actor.email, router: m.name, routerId: m.id, action: 'reboot', result: 'not_restarted', uptimeSec: r.uptimeSec })
+        await this.d.audit('asus.action.verify', `asus:${m.id}`, { ...auditBy(actor), router: m.name, routerId: m.id, action: 'reboot', result: 'not_restarted', uptimeSec: r.uptimeSec })
         return
       }
     }
     const state = this.actions.get(m.id)
     if (state) this.actions.set(m.id, { ...state, state: 'not_back', detail: 'not answering since the reboot' })
-    await this.d.audit('asus.action.verify', `asus:${m.id}`, { by: actor.email, router: m.name, routerId: m.id, action: 'reboot', result: 'not_back' })
+    await this.d.audit('asus.action.verify', `asus:${m.id}`, { ...auditBy(actor), router: m.name, routerId: m.id, action: 'reboot', result: 'not_back' })
     await this.notify(m, actor, 'not_back')
   }
 

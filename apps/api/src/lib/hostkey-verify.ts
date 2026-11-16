@@ -44,6 +44,7 @@ import { pinnedKey, pinSource, isConfirmedSource, recordVerified, evidenceWords,
 import { auditCredentialUse } from './audit'
 import { publish } from './notify'
 import { currentContext, requestContext } from './auth'
+import { auditBy } from './http/request-actor'
 
 const NODE_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/
 
@@ -771,7 +772,7 @@ async function oneRound(input: VerifyInput, deps: VerifyDeps): Promise<{ verdict
       if (v.get(n.name)?.state === 'blocked' || v.get(n.name)?.state === 'already') continue
       v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'blocked', fingerprint: presented.get(n.name)?.fingerprint, why: 'not verified: a mismatch was found in this cluster, so nothing was accepted' })
     }
-    await deps.audit('host_key.verify.blocked', `cluster:${input.cluster}`, { by: input.by, scope: input.scope, problems })
+    await deps.audit('host_key.verify.blocked', `cluster:${input.cluster}`, { ...auditBy(input.by), scope: input.scope, problems })
     await deps.alert(`Host key check failed on ${input.cluster}`, [...problems, `HyperProx accepted no key. ${CHANGED_ADVICE}`])
     return { verdicts: nodes.map(n => v.get(n.name)!), blocked: true }
   }
@@ -786,13 +787,13 @@ async function oneRound(input: VerifyInput, deps: VerifyDeps): Promise<{ verdict
     try {
       await deps.record(n.address, port(n), c.fp, c.evidence)
       const how = evidenceWords(c.evidence)
-      await deps.audit('host_key.verify', `host:${n.address}:${port(n)}`, { by: input.by, scope: input.scope, node: n.name, fingerprint: c.fp, evidence: c.evidence.kind, how })
+      await deps.audit('host_key.verify', `host:${n.address}:${port(n)}`, { ...auditBy(input.by), scope: input.scope, node: n.name, fingerprint: c.fp, evidence: c.evidence.kind, how })
       v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'verified', fingerprint: c.fp, evidence: c.evidence, why: how })
     } catch (e: any) {
       const why = e instanceof PinVerifyRefusal ? e.message : `could not record it: ${e?.message ?? e}`
       v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'blocked', fingerprint: c.fp, why })
       if (e instanceof PinVerifyRefusal) {
-        await deps.audit('host_key.verify.blocked', `host:${n.address}:${port(n)}`, { by: input.by, scope: input.scope, node: n.name, problems: [why] })
+        await deps.audit('host_key.verify.blocked', `host:${n.address}:${port(n)}`, { ...auditBy(input.by), scope: input.scope, node: n.name, problems: [why] })
         await deps.alert(`Host key check failed on ${input.cluster}`, [`${n.name}: ${why}`, CHANGED_ADVICE])
       }
     }

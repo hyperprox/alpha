@@ -8,7 +8,8 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
-import { currentContext } from '../lib/auth'
+import { contextActor } from '../lib/http/request-actor'
+import { answerData, type RefusalAnswer } from '../lib/http/answer'
 import { VaultLockedError } from '../lib/credentials'
 import {
   HaRefusal, badges, guestView, haPlanner, overview, preflightGrid, readConfig, readMigratePreconditions, readSnapshot, sidOf,
@@ -19,22 +20,17 @@ import { livePve } from '../lib/pve-env'
 import { normaliseRule } from '../lib/ha/plans'
 import { redactText } from '../lib/ha/redact'
 
-function actor() {
-  const c = currentContext()
-  return { email: c?.email ?? 'unknown', role: String(c?.role ?? 'viewer') }
+/** How HA's failures are answered. Its refusals keep their words; anything else is reported as Proxmox's answer. */
+function haRefusal(e: any): RefusalAnswer {
+  if (e instanceof HaRefusal) return { status: e.status, code: 'refused', error: redactText(e.message), extra: { problems: e.problems } }
+  // Locked: the Proxmox token is in the vault, so there is no status to show without it.
+  if (e instanceof VaultLockedError || /HyperProx is locked/.test(String(e?.message))) {
+    return { status: 423, code: 'locked', error: 'HyperProx is locked — sign in to see HA status.' }
+  }
+  return { status: 502, code: 'bad_gateway', error: redactText(e?.message ?? String(e)) }
 }
 
-async function wrap(reply: FastifyReply, fn: () => Promise<unknown>) {
-  try { return { success: true, data: await fn() } }
-  catch (e: any) {
-    if (e instanceof HaRefusal) return reply.status(e.status).send({ success: false, error: redactText(e.message), problems: e.problems })
-    // Locked: the Proxmox token is in the vault, so there is no status to show without it.
-    if (e instanceof VaultLockedError || /HyperProx is locked/.test(String(e?.message))) {
-      return reply.status(423).send({ success: false, error: 'HyperProx is locked — sign in to see HA status.' })
-    }
-    return reply.status(502).send({ success: false, error: redactText(e?.message ?? String(e)) })
-  }
-}
+const wrap = (reply: FastifyReply, fn: () => Promise<unknown>) => answerData(reply, fn, { refusal: haRefusal })
 
 const TYPES = new Set(['lxc', 'qemu'])
 
@@ -111,7 +107,7 @@ export function buildHaRoutes(deps: { planner?: () => HaPlanner; pve?: () => HaP
     }))
 
     fastify.post<{ Body: any }>('/preview', async (q, r) => wrap(r, async () => {
-      const plan = await plans().preview((q.body ?? {}) as any, actor())
+      const plan = await plans().preview((q.body ?? {}) as any, contextActor())
       cached = null
       return plan
     }))
@@ -121,7 +117,7 @@ export function buildHaRoutes(deps: { planner?: () => HaPlanner; pve?: () => HaP
     }))
     fastify.post<{ Params: { id: string } }>('/plans/:id/apply', async (q, r) => wrap(r, async () => {
       cached = null
-      return plans().apply(q.params.id, actor())
+      return plans().apply(q.params.id, contextActor())
     }))
   }
 }

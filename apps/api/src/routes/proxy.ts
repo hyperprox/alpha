@@ -7,29 +7,25 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
-import { currentContext } from '../lib/auth'
-import { hasRole, type Role } from '../lib/roles'
+import { contextActor, contextIsAdmin } from '../lib/http/request-actor'
+import { answerData, type RefusalAnswer } from '../lib/http/answer'
+import { codeForStatus } from '../lib/failure'
 import { VaultLockedError } from '../lib/credentials'
 import { proxyService, proxyPlanner, ProxyRefusal, type ProxyService, type ProxyPlanner, type ProxyHostView } from '../lib/proxy'
 import type { HostsResult, InstanceView } from '../lib/proxy/service'
 import { checkHostname } from '../lib/proxy/spec'
 
-function actor(): { email: string; role: Role } {
-  const c = currentContext()
-  return { email: c?.email ?? 'unknown', role: (c?.role ?? 'viewer') as Role }
+/**
+ * How the proxy's failures are answered. A proxy's own error text can quote its response; below admin, only
+ * HyperProx's own refusals are shown.
+ */
+function proxyRefusal(e: any): RefusalAnswer {
+  const status = e instanceof ProxyRefusal ? e.status : e instanceof VaultLockedError ? 423 : 502
+  const error = e instanceof ProxyRefusal || e instanceof VaultLockedError || contextIsAdmin() ? (e?.message ?? String(e)) : 'The proxy did not answer as expected.'
+  return { status, code: codeForStatus(status), error }
 }
 
-const isAdmin = () => hasRole(actor().role, 'admin')
-
-async function wrap(reply: FastifyReply, fn: () => Promise<unknown>) {
-  try { return { success: true, data: await fn() } }
-  catch (e: any) {
-    const status = e instanceof ProxyRefusal ? e.status : e instanceof VaultLockedError ? 423 : 502
-    // A proxy's own error text can quote its response; below admin, only HyperProx's own refusals are shown.
-    const error = e instanceof ProxyRefusal || e instanceof VaultLockedError || isAdmin() ? (e?.message ?? String(e)) : 'The proxy did not answer as expected.'
-    return reply.status(status).send({ success: false, error })
-  }
-}
+const wrap = (reply: FastifyReply, fn: () => Promise<unknown>) => answerData(reply, fn, { refusal: proxyRefusal })
 
 // --- what a viewer sees: names, targets, status, the certificate's name and expiry. Nothing else. ---------
 
@@ -65,31 +61,31 @@ export function buildProxyRoutes(deps: { service?: () => ProxyService; planner?:
     // Settings (SSH host, file paths, organisation ids) only for admins; everyone signed in sees what exists.
     fastify.get('/instances', async (_q, r) => wrap(r, async () => {
       const list = await svc().viewInstances()
-      return isAdmin() ? list : list.map(viewerInstance)
+      return contextIsAdmin() ? list : list.map(viewerInstance)
     }))
-    fastify.post<{ Body: any }>('/instances', async (q, r) => wrap(r, async () => svc().createInstance(q.body ?? {}, actor())))
-    fastify.put<{ Params: { id: string }; Body: any }>('/instances/:id', async (q, r) => wrap(r, async () => svc().updateInstance(q.params.id, q.body ?? {}, actor())))
-    fastify.delete<{ Params: { id: string } }>('/instances/:id', async (q, r) => wrap(r, async () => { await svc().deleteInstance(q.params.id, actor()); return { deleted: true } }))
+    fastify.post<{ Body: any }>('/instances', async (q, r) => wrap(r, async () => svc().createInstance(q.body ?? {}, contextActor())))
+    fastify.put<{ Params: { id: string }; Body: any }>('/instances/:id', async (q, r) => wrap(r, async () => svc().updateInstance(q.params.id, q.body ?? {}, contextActor())))
+    fastify.delete<{ Params: { id: string } }>('/instances/:id', async (q, r) => wrap(r, async () => { await svc().deleteInstance(q.params.id, contextActor()); return { deleted: true } }))
     fastify.get<{ Params: { id: string } }>('/instances/:id/health', async (q, r) => wrap(r, async () => {
       const h = await svc().health(q.params.id)
-      return isAdmin() ? h : { ok: h.ok, checks: h.checks.map(c => ({ name: c.name, ok: c.ok, warn: c.warn, detail: c.ok ? 'ok' : 'not ok' })) }
+      return contextIsAdmin() ? h : { ok: h.ok, checks: h.checks.map(c => ({ name: c.name, ok: c.ok, warn: c.warn, detail: c.ok ? 'ok' : 'not ok' })) }
     }))
 
     fastify.get('/hosts', async (_q, r) => wrap(r, async () => {
       const all = await svc().allHosts()
-      return isAdmin() ? { ...all, hosts: all.hosts.map(adminHost) } : { hosts: all.hosts.map(viewerHost), errors: viewerErrors(all.errors) }
+      return contextIsAdmin() ? { ...all, hosts: all.hosts.map(adminHost) } : { hosts: all.hosts.map(viewerHost), errors: viewerErrors(all.errors) }
     }))
     fastify.get<{ Params: { id: string } }>('/instances/:id/hosts', async (q, r) => wrap(r, async () => {
       const hosts = await svc().hosts(q.params.id)
-      return isAdmin() ? hosts.map(adminHost) : hosts.map(viewerHost)
+      return contextIsAdmin() ? hosts.map(adminHost) : hosts.map(viewerHost)
     }))
     // Certificates: never the native record (NPM keeps DNS-challenge credentials in its meta), for anyone.
     fastify.get('/certificates', async (_q, r) => wrap(r, async () => {
       const all = await svc().allCertificates()
-      return { certificates: all.certificates.map(isAdmin() ? adminCert : viewerCert), errors: isAdmin() ? all.errors : viewerErrors(all.errors) }
+      return { certificates: all.certificates.map(contextIsAdmin() ? adminCert : viewerCert), errors: contextIsAdmin() ? all.errors : viewerErrors(all.errors) }
     }))
     fastify.get<{ Params: { id: string } }>('/instances/:id/certificates', async (q, r) => wrap(r, async () =>
-      (await svc().certificates(q.params.id)).map(isAdmin() ? adminCert : viewerCert)))
+      (await svc().certificates(q.params.id)).map(contextIsAdmin() ? adminCert : viewerCert)))
 
     fastify.get('/stats', async (_q, r) => wrap(r, async () => {
       const { hosts, errors } = await svc().allHosts()
@@ -112,10 +108,10 @@ export function buildProxyRoutes(deps: { service?: () => ProxyService; planner?:
 
     // Writes: preview, then apply the preview by id.
     fastify.post<{ Params: { id: string }; Body: any }>('/instances/:id/preview', async (q, r) =>
-      wrap(r, async () => adminPlan(await plans().preview(q.params.id, (q.body ?? {}) as any, actor()))))
+      wrap(r, async () => adminPlan(await plans().preview(q.params.id, (q.body ?? {}) as any, contextActor()))))
     fastify.post<{ Params: { planId: string } }>('/plans/:planId/apply', async (q, r) =>
       wrap(r, async () => {
-        const res = await plans().apply(q.params.planId, actor())
+        const res = await plans().apply(q.params.planId, contextActor())
         return { ...res, after: adminHost(res.after), cleanup: adminPlan(res.cleanup) }
       }))
 
@@ -124,7 +120,7 @@ export function buildProxyRoutes(deps: { service?: () => ProxyService; planner?:
       const domains = (Array.isArray(b.domains) ? b.domains : []).map(checkHostname)
       if (!domains.length) throw new ProxyRefusal('Name at least one domain for the certificate.', 400)
       const email = String(b.email ?? process.env.LETSENCRYPT_EMAIL ?? '').trim()
-      return adminCert(await svc().requestCertificate(q.params.id, domains, email, actor()))
+      return adminCert(await svc().requestCertificate(q.params.id, domains, email, contextActor()))
     }))
   }
 }

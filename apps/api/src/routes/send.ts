@@ -9,14 +9,14 @@
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { currentContext } from '../lib/auth'
+import { contextActor } from '../lib/http/request-actor'
+import { sendRefusal } from '../lib/failure'
 import { ClusterRefusal, clusterRow, validClusterId } from '../lib/clusters/registry'
 import { discoverSend, browseSend, searchSend, previewSend, setupSend, sendNow, linkSpeed, setExclusionSource, planReadiness, type SendPlan } from '../lib/clusters/send-simple'
 import { PrismaRemoteStore } from '../lib/remote/store'
 import { setGuestExclusionSource } from '../lib/guest-guard'
 import { jobStore } from '../lib/clusters/files'
 import { PinConfirmRefusal } from '../lib/hostkey-pins'
-
-const who = () => currentContext()?.email ?? 'unknown'
 
 /** At most `max` calls a minute per signed-in session for the calls that open connections to every node. */
 const hits = new Map<string, number[]>()
@@ -30,10 +30,11 @@ function overLimit(key: string, max: number, now = Date.now()): boolean {
 
 function fail(reply: FastifyReply, e: any) {
   const msg = e?.message ?? String(e)
-  if (e?.name === 'VaultLockedError' || /HyperProx is locked/i.test(msg)) return reply.status(423).send({ success: false, locked: true, error: 'HyperProx is locked. Sign in to unlock it, then try again. Nothing was done.' })
-  if (e instanceof ClusterRefusal) return reply.status(e.code === 'not-found' ? 404 : e.code === 'conflict' ? 409 : e.code === 'confirm' ? 409 : 422).send({ success: false, code: e.code, error: msg })
-  if (e instanceof PinConfirmRefusal) return reply.status(409).send({ success: false, code: 'hostkey', error: msg })
-  return reply.status(502).send({ success: false, error: msg })
+  if (e?.name === 'VaultLockedError' || /HyperProx is locked/i.test(msg)) return sendRefusal(reply, 423, 'locked', 'HyperProx is locked. Sign in to unlock it, then try again. Nothing was done.', { locked: true })
+  if (e instanceof ClusterRefusal) return sendRefusal(reply, e.code === 'not-found' ? 404 : e.code === 'conflict' ? 409 : e.code === 'confirm' ? 409 : 422, e.code, msg)
+  if (e instanceof PinConfirmRefusal) return sendRefusal(reply, 409, 'hostkey', msg)
+  // Unchanged from before the shared envelope: the error's own text, as a 502.
+  return sendRefusal(reply, 502, 'bad_gateway', msg)
 }
 
 /** What the page needs from a plan: names, real paths, sizes, words. */
@@ -96,7 +97,7 @@ export const sendRoutes: FastifyPluginAsync = async (fastify) => {
     const row = remoteOr404(req.params.id, reply); if (!row) return
     if (limited('send-preview', reply, 10)) return
     const items = Array.isArray(req.body?.items) ? req.body!.items.slice(0, 21).map(String) : []
-    try { return { success: true, data: await previewSend(who(), row.id, items, String(req.body?.library ?? '')) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await previewSend(contextActor().email, row.id, items, String(req.body?.library ?? '')) } } catch (e) { return fail(reply, e) }
   })
 
   // First-time setup for what one preview showed, in one step. Re-confirmed (lib/roles.ts); never for an API token.
@@ -105,13 +106,13 @@ export const sendRoutes: FastifyPluginAsync = async (fastify) => {
     if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'Setting up sending needs a person with the master password, not an API token.' })
     const keys = Array.isArray(req.body?.confirmHostKeys) ? req.body!.confirmHostKeys.map(String).slice(0, 10) : []
     try {
-      const r = await setupSend(row.id, who(), { previewId: String(req.body?.previewId ?? ''), setupHash: String(req.body?.setupHash ?? ''), confirmHostKeys: keys })
+      const r = await setupSend(row.id, contextActor().email, { previewId: String(req.body?.previewId ?? ''), setupHash: String(req.body?.setupHash ?? ''), confirmHostKeys: keys })
       return { success: true, data: { words: r.words, ready: r.readiness.ready } }
     } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<{ Params: { id: string }; Body: { previewId?: string } }>('/:id/send', async (req, reply) => {
     const row = remoteOr404(req.params.id, reply); if (!row) return
-    try { return { success: true, data: await sendNow(who(), String(req.body?.previewId ?? ''), row.id) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await sendNow(contextActor().email, String(req.body?.previewId ?? ''), row.id) } } catch (e) { return fail(reply, e) }
   })
 }

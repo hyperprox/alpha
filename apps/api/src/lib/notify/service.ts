@@ -29,6 +29,7 @@ import {
   type QuietHours, type SendOutcome, type Severity, type Transport,
 } from './types'
 import { appLog, createLogOnce } from '../log-once'
+import { auditBy } from '../http/request-actor'
 
 type Env = Record<string, string | undefined>
 export interface Actor { email: string; role: 'owner' | 'admin' | 'operator' | 'viewer' }
@@ -399,7 +400,7 @@ export class NotifyService {
       await this.d.secrets.remove(rec).catch(() => undefined)
       throw e
     }
-    await this.d.store.audit('notify.channel.create', id, { name: row.name, kind: row.kind, by: actor.email })
+    await this.d.store.audit('notify.channel.create', id, { name: row.name, kind: row.kind, ...auditBy(actor) })
     return this.view(row)
   }
 
@@ -410,7 +411,7 @@ export class NotifyService {
     if (secret) await this.d.secrets.put(merged, secret)
     const row = await this.d.store.updateChannel(id, { ...fields, ...(secret ? { failingSince: null } : {}) })
     this.d.secrets.syncLocked(row)
-    await this.d.store.audit('notify.channel.update', id, { name: row.name, kind: row.kind, by: actor.email, ...(secret ? { secretChanged: true } : {}) })
+    await this.d.store.audit('notify.channel.update', id, { name: row.name, kind: row.kind, ...auditBy(actor), ...(secret ? { secretChanged: true } : {}) })
     return this.view(row)
   }
 
@@ -418,7 +419,7 @@ export class NotifyService {
     const prev = await this.mustGet(id)
     await this.d.secrets.remove(prev)
     await this.d.store.deleteChannel(id)
-    await this.d.store.audit('notify.channel.delete', id, { name: prev.name, kind: prev.kind, by: actor.email })
+    await this.d.store.audit('notify.channel.delete', id, { name: prev.name, kind: prev.kind, ...auditBy(actor) })
   }
 
   /** A real message through the same adapter and guard. Recorded as the channel's last result. */
@@ -438,7 +439,7 @@ export class NotifyService {
       status: out.ok ? 'sent' : 'failed', attempts: 1, httpStatus: out.status ?? null, errorCode: out.code ?? null,
       createdAt: now, nextAttemptAt: now, sentAt: out.ok ? now : null,
     }])
-    await this.d.store.audit('notify.channel.test', id, { name: c.name, kind: c.kind, by: actor.email, ok: out.ok, ...(out.status ? { status: out.status } : {}) })
+    await this.d.store.audit('notify.channel.test', id, { name: c.name, kind: c.kind, ...auditBy(actor), ok: out.ok, ...(out.status ? { status: out.status } : {}) })
     return { ok: out.ok, ...(out.status ? { status: out.status } : {}), ...(out.code ? { code: out.code } : {}), text: describeResult(lastResult) }
   }
 

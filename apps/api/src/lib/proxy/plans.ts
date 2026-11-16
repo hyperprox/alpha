@@ -16,6 +16,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import { fieldChanges, differences, mergeSpec, parseHostPatch, parseHostSpec, specOf, words } from './spec'
 import type { ProxyService, Actor } from './service'
 import { KIND_LABEL, ProxyRefusal, type FieldChange, type HostSpec, type ProxyHostRecord, type ProxyInstance } from './types'
+import { auditBy } from '../http/request-actor'
 
 export type PlanAction = 'create' | 'update' | 'delete' | 'enable' | 'disable'
 
@@ -212,7 +213,7 @@ export class ProxyPlanner {
       }
     } catch (e: any) {
       this.svc.invalidate(instance.id)
-      await this.svc.audit(`proxy.host.${plan.action}`, `proxy:${instance.id}/${hostId ?? 'new'}`, { by: actor.email, ok: false, error: e.message, names: plan.spec?.domains ?? plan.before?.domains })
+      await this.svc.audit(`proxy.host.${plan.action}`, `proxy:${instance.id}/${hostId ?? 'new'}`, { ...auditBy(actor), ok: false, error: e.message, names: plan.spec?.domains ?? plan.before?.domains })
       if (plan.action === 'create') return this.afterFailedCreate(plan, instance, hosts, e, actor)
       throw e
     }
@@ -226,7 +227,7 @@ export class ProxyPlanner {
     else if (!after) mismatch = [`${instance.name} has no host ${hostId} after the write`]
     else mismatch = differences(expect, after)
     const ok = mismatch.length === 0
-    await this.svc.audit(`proxy.host.${plan.action}`, `proxy:${instance.id}/${hostId}`, { by: actor.email, ok, mismatch, names: expect?.domains ?? plan.before?.domains })
+    await this.svc.audit(`proxy.host.${plan.action}`, `proxy:${instance.id}/${hostId}`, { ...auditBy(actor), ok, mismatch, names: expect?.domains ?? plan.before?.domains })
     return {
       ok, planId, hostId, after, mismatch,
       message: ok ? `Done, and read back from ${instance.name}: ${plan.changes.join('; ')}.`

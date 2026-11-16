@@ -30,6 +30,7 @@ import { listPins, pinId, confirmPin, PinConfirmRefusal, pinnedKey, pinSource, i
 import { probeHostKey } from './node-exec'
 import { verifyNodes, productionVerifyDeps, saveAnchors, ANCHOR_COMMAND, VerifyRefusal, AnchorReplaceRefusal, type NodeVerdict, type VerifyDeps } from './hostkey-verify'
 import { publish } from './notify'
+import { auditBy } from './http/request-actor'
 
 const run = promisify(execFile)
 
@@ -314,7 +315,7 @@ export async function startItem(id: ItemId, body: any, by: string, deps: Checkli
     try { domains = await deps.testDnsKey(key, secret) }
     catch (e: any) { throw new ChecklistRefusal(`GoDaddy did not accept that key (${e?.response?.status ?? e?.message ?? 'no answer'}). Use a Production key.`) }
     await deps.saveDnsKey(key, secret)
-    await auditCredentialUse('dns_key.save', 'dns:godaddy', { by, domains })
+    await auditCredentialUse('dns_key.save', 'dns:godaddy', { ...auditBy(by), domains })
     const job: Job = { id: randomUUID(), item: id, status: 'done', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
       results: [{ label: 'GoDaddy key', status: 'done', reason: `kept in the vault; ${domains} domain(s) found` }], checks: [] }
     jobs.set(job.id, job)
@@ -350,7 +351,7 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
       job.results.push({ node: p.node, label: hardware.STEP_LABEL[p.step], status: 'skipped', reason: 'no node login saved for this node' })
     }
     const results = await hardware.runNodeWork(runnable, async (node, script) => {
-      await auditCredentialUse('node_login.use', `node:${node}`, { by, purpose: `setup checklist: ${id}` })
+      await auditCredentialUse('node_login.use', `node:${node}`, { ...auditBy(by), purpose: `setup checklist: ${id}` })
       return deps.hardware.exec(det.addresses[node] ?? node, creds.get(node)!, script)
     })
     for (const r of results) job.results.push({ node: r.node, label: r.label, status: r.status, reason: r.reason })
@@ -405,7 +406,7 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
       try { shred(f); job.results.push({ label: path.basename(f), status: 'done', reason: 'overwritten and deleted (copies may remain in snapshots or backups)' }) }
       catch (e: any) { job.results.push({ label: path.basename(f), status: 'failed', reason: e?.message ?? String(e) }) }
     }
-    await auditCredentialUse('env_backup.shred', 'system:env', { by, files: job.results.map(r => r.label) })
+    await auditCredentialUse('env_backup.shred', 'system:env', { ...auditBy(by), files: job.results.map(r => r.label) })
     return
   }
   if (id === 'targets') {
@@ -491,7 +492,7 @@ export async function saveHostKeyAnchor(input: any, by: string, o: { replaceInst
   if (!output.trim()) throw new ChecklistRefusal('Paste what the command printed.')
   try {
     const r = await saveAnchors('home', output, 'pasted', o)
-    await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by, source: 'pasted', nodes: r.nodes, added: r.added, skipped: r.skipped })
+    await auditCredentialUse('host_key.anchor.save', 'cluster:home', { ...auditBy(by), source: 'pasted', nodes: r.nodes, added: r.added, skipped: r.skipped })
     if (r.replaced.length) await anchorReplaced('Home cluster', 'cluster:home', by, r.replaced)
     return r
   } catch (e: any) {
@@ -503,7 +504,7 @@ export async function saveHostKeyAnchor(input: any, by: string, o: { replaceInst
 
 /** A pasted anchor replaced different keys: audited, and an alert goes out (it may be a rebuild, or not). */
 export async function anchorReplaced(cluster: string, resource: string, by: string, nodes: string[]): Promise<void> {
-  await auditCredentialUse('host_key.anchor.replace', resource, { by, nodes })
+  await auditCredentialUse('host_key.anchor.replace', resource, { ...auditBy(by), nodes })
   await publish({ type: 'hostkey.anchor', severity: 'warning', title: `${cluster}: the host keys HyperProx checks against were replaced`,
     lines: [`By ${by}, for ${nodes.join(', ')}. If you did not just paste a node's output yourself, check the keys on each node's own console.`],
     where: 'Setup checklist', link: '/settings/setup-checklist', fingerprint: `hostkey-anchor:${resource}` }).catch(() => undefined)
@@ -517,7 +518,7 @@ export async function confirmHostKey(input: any, by: string, deps: ChecklistDeps
   if (!host || !Number.isInteger(port) || port < 1 || port > 65535) throw new ChecklistRefusal('host and port are required')
   try {
     const r = await confirmPin(host, port, fingerprint, deps.presentedKey)
-    await auditCredentialUse('host_key.confirm', `host:${host}:${port}`, { by, fingerprint, result: r })
+    await auditCredentialUse('host_key.confirm', `host:${host}:${port}`, { ...auditBy(by), fingerprint, result: r })
     return { host, port, fingerprint, result: r }
   } catch (e: any) {
     if (e instanceof PinConfirmRefusal) throw new ChecklistRefusal(e.message, 409)
@@ -570,7 +571,7 @@ export async function saveNodeLoginForAll(input: any, by: string, deps: Checklis
       const r = await deps.hardware.exec(addrs[node] ?? node, cred, 'pveversion\n', 20_000)
       if (r.code !== 0 || !/pve-manager/.test(r.output)) { rows.push({ node, ok: false, reason: 'signed in, but this does not look like a Proxmox node' }); continue }
       await deps.saveNodeLogin(node, cred)
-      await auditCredentialUse('node_login.save', `node:${node}`, { by, source: 'setup checklist' })
+      await auditCredentialUse('node_login.save', `node:${node}`, { ...auditBy(by), source: 'setup checklist' })
       rows.push({ node, ok: true, reason: r.output.trim().split('\n')[0] })
     } catch (e: any) {
       rows.push({ node, ok: false, reason: /authentication/i.test(e?.message ?? '') ? 'that login was not accepted' : `could not connect: ${e?.message ?? e}` })

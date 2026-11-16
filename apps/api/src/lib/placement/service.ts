@@ -1280,7 +1280,7 @@ export class PlacementService {
       const needSec = Number(p.snapshot?.needSec) || 600
       const quiet = quietStatus({ now: this.now(), tz: r.tz, jobs: r.jobs, settings: s, needSec, jobsRead: r.jobsRead })
       if (!quiet.quietNow) { await skip(`Not run: it is not a quiet window for the whole plan (${quiet.nowWhy.join('; ')}).`); continue }
-      try { await this.d.audit('placement.plan.scheduled-run', 'balance', { id: p.id, by: p.by }) }
+      try { await this.d.audit('placement.plan.scheduled-run', 'balance', { id: p.id, ...auditBy(p.by) }) }
       catch { await skip('Not run: the audit row could not be written.'); continue }
       if (this.planSlot) continue
       this.planSlot = p.id
@@ -1321,7 +1321,7 @@ export class PlacementService {
         catch (e: any) { await skip(`Not run: ${String(e?.message ?? e).slice(0, 300)}`); continue }
         const why = !plan.allowed ? plan.refusals.join(' ') : !plan.quiet.quietNow ? `it is not a quiet window for the whole move (${plan.quiet.nowWhy.join('; ')})` : plan.from !== m.fromNode ? `it moved to ${plan.from} in the meantime` : null
         if (why) { await skip(`Not run: ${why}`); continue }
-        try { await this.d.audit('placement.move.scheduled-run', m.sid, { id: m.id, by: m.by, to: m.toNode }) }
+        try { await this.d.audit('placement.move.scheduled-run', m.sid, { id: m.id, ...auditBy(m.by), to: m.toNode }) }
         catch { await skip('Not run: the audit row could not be written.'); continue }
         // Claim: the slot here, then scheduled → running in the database. Losing either is "someone else has it".
         if (this.slot) continue

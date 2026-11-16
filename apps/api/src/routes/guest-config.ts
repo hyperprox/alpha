@@ -11,7 +11,8 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import type { PrismaClient } from '@prisma/client'
 import { currentContext } from '../lib/auth'
 import { ownerOf } from './ai'
-import { hasRole } from '../lib/roles'
+import { contextIsAdmin } from '../lib/http/request-actor'
+import { sendRefusal } from '../lib/failure'
 import { GuestConfigService, GuestConfigRefusal, PORTABLE_REFRESH_MS, type GuestId, type PreviewInput, type Preview } from '../lib/guest-config/service'
 import { redactForViewer } from '../lib/guest-config/devices'
 import { redactText, redactValue } from '../lib/guest-config/secrets'
@@ -90,10 +91,11 @@ const STATUS: Record<GuestConfigRefusal['code'], number> = { 'not-found': 404, e
 function fail(reply: FastifyReply, e: unknown) {
   // The Proxmox token and node logins come from the vault; while it is locked nothing here can run.
   if (/HyperProx is locked|VaultLocked/i.test(String((e as Error)?.message ?? '')) || (e as Error)?.name === 'VaultLockedError')
-    return reply.status(423).send({ success: false, locked: true, error: 'HyperProx is locked — sign in to read or edit guest configs.' })
-  if (e instanceof GuestExcludedRefusal || e instanceof ExclusionsUnknownRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
-  if (e instanceof GuestConfigRefusal) return reply.status(STATUS[e.code]).send({ success: false, code: e.code, error: e.message, problems: e.problems })
-  return reply.status(500).send({ success: false, error: (e as Error)?.message ?? String(e) })
+    return sendRefusal(reply, 423, 'locked', 'HyperProx is locked — sign in to read or edit guest configs.', { locked: true })
+  if (e instanceof GuestExcludedRefusal || e instanceof ExclusionsUnknownRefusal) return sendRefusal(reply, e.status, e.code, e.message)
+  if (e instanceof GuestConfigRefusal) return sendRefusal(reply, STATUS[e.code], e.code, e.message, { problems: e.problems })
+  // Unchanged from before the shared envelope: the error's own text (a follow-up may make this sendFailure).
+  return sendRefusal(reply, 500, 'internal', (e as Error)?.message ?? String(e))
 }
 
 function guestOf(p: { node: string; type: string; vmid: string }): GuestId {
@@ -244,6 +246,6 @@ export const guestConfigRoutes: FastifyPluginAsync = async (fastify) => {
     // The request's cluster (lib/clusters/context.ts); home unless a remote cluster's page asked.
     service: (() => { const r = currentRemote(); return r ? remoteGuestConfigService(fastify.prisma, r.id) : service })(),
     whoami: () => ownerOf(currentContext()),
-    isAdmin: () => { const c = currentContext(); return !!c && hasRole(c.role, 'admin') },
+    isAdmin: () => contextIsAdmin(),
   })))
 }

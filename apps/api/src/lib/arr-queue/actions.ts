@@ -23,6 +23,7 @@
 import type { CoreEndpointClient } from '../plugin-host'
 import { collapseByDownload, importHint, isDone, isDoneMusic, problemOf, readAllQueue, stripPaths, type AlbumInfo, type FileInfo } from './logic'
 import { FileCache, readAlbumInfo, readEpisodeInfo, readMovieInfo } from './lookup'
+import { auditBy } from '../http/request-actor'
 export { importHint }
 
 export type Instance = 'sonarr' | 'radarr' | 'lidarr'
@@ -295,7 +296,7 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
   if (opts.preview) return { plan }
 
   const named = plan.items.map(i => i.name.slice(0, 120)).slice(0, 20)
-  const base = { action: req.action, instance: req.instance, by: who.slice(0, 120), downloads: plan.items.length, rows: plan.rowIds.length, blocklist: plan.blocklist, names: named, search: plan.commands.map(c => c.name).join(',') }
+  const base = { action: req.action, instance: req.instance, ...auditBy(who.slice(0, 120)), downloads: plan.items.length, rows: plan.rowIds.length, blocklist: plan.blocklist, names: named, search: plan.commands.map(c => c.name).join(',') }
   const res: ActionResult = { action: req.action, instance: req.instance, done: false, summary: '', removed: [], searched: [], notes: [], packsBefore: plan.packsBefore }
 
   if (req.action === 'swap-check') {

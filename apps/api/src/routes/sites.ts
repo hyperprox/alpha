@@ -34,6 +34,7 @@ import {
 import { getProviderCredentials } from '../lib/credentials'
 import { ghostStats, type GhostStatsDeps } from '../lib/ghost/stats'
 import { sendFailure } from '../lib/failure'
+import { auditBy } from '../lib/http/request-actor'
 
 export interface SiteRouteDeps {
   whoami(): string
@@ -171,7 +172,7 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
         const keys = checkChoice(held.preview, q.body ?? {})
         const out = await runDelete(site, held, keys, by, await deletion())
         const ok = out.results.every(r => r.outcome !== 'failed')
-        await d.audit('site.delete', `site:${site.id}`, { by, ok, items: out.results.map(r => `${r.key}: ${r.outcome}`), recordRemoved: out.recordRemoved })
+        await d.audit('site.delete', `site:${site.id}`, { ...auditBy(by), ok, items: out.results.map(r => `${r.key}: ${r.outcome}`), recordRemoved: out.recordRemoved })
         return reply.status(ok ? 200 : 207).send({ success: ok, data: out, ...(ok ? {} : { error: 'Not everything was removed. Each item says what happened; preview again to retry what is left.' }) })
       } catch (e) { return refused(reply, e) }
     })
@@ -230,11 +231,11 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
         const r = await d.run(site, made.script)
         if (r.code !== 0) throw new Error(`storing the sign-in in WordPress exited ${r.code}`)
       } catch (e: any) {
-        await d.audit('site.admin-login', `site:${site.id}`, { by: d.whoami(), ok: false, error: e.message })
+        await d.audit('site.admin-login', `site:${site.id}`, { ...auditBy(d.whoami()), ok: false, error: e.message })
         return sendFailure(reply.request, reply, e)
       }
       // The token is in this answer only: not in the audit, the log or any store.
-      await d.audit('site.admin-login', `site:${site.id}`, { by: d.whoami(), ok: true, user: site.adminUser, expires: made.expiresAt })
+      await d.audit('site.admin-login', `site:${site.id}`, { ...auditBy(d.whoami()), ok: true, user: site.adminUser, expires: made.expiresAt })
       reply.header('Cache-Control', 'no-store')
       return reply.send({ success: true, data: { postUrl: made.postUrl, token: made.token, expiresAt: made.expiresAt } })
     })

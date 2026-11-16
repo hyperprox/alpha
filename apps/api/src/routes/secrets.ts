@@ -14,6 +14,7 @@ import { getBroker, type SecretItem } from '../lib/vault/broker'
 import { cachedSecret, cachedSecrets, putCachedSecret, removeCachedSecret } from '../lib/vault/state'
 import { auditOrThrow } from '../lib/audit'
 import { ITEM_PREFIX } from '../lib/credentials'
+import { auditBy, actorOf } from '../lib/http/request-actor'
 
 const CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_.!@#%^*+='
 
@@ -128,7 +129,7 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
     const item = all.find(i => i.id === id)
     if (!item || item.name !== name) return reply.status(404).send({ ok: false, error: 'No such secret (it may have been changed or deleted since the page loaded)' })
     try {
-      await auditOrThrow('secret.delete', `vault:${name}`, { by: req.session!.email, id: item.id, name: item.name, fields: Object.keys(item.fields) })
+      await auditOrThrow('secret.delete', `vault:${name}`, { ...auditBy(actorOf(req)), id: item.id, name: item.name, fields: Object.keys(item.fields) })
     } catch {
       return reply.status(503).send({ ok: false, error: 'The audit log could not be written, so nothing was deleted. Try again.' })
     }

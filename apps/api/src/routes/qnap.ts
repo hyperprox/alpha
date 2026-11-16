@@ -13,17 +13,18 @@
 //  action is one of four names.
 // =============================================================================
 
-import { plainReason } from '../lib/failure'
+import { plainReason, sendRefusal } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
 import { probeCertificate } from '../lib/clusters/tls-pin'
 import { hasRole } from '../lib/roles'
 import { detailOf, qnapService, startQnapAlerts, viewerReading } from '../lib/qnap'
 import { QnapInputError, effectiveReach, type QnapView, type QnapMeta } from '../lib/qnap/instances'
-import { QnapRefusal, confirmPhrase, type Actor } from '../lib/qnap/service'
+import { QnapRefusal, confirmPhrase } from '../lib/qnap/service'
 import { QnapLoginError } from '../lib/qnap/client'
 import { QnapUnreachableError } from '../lib/qnap/transport'
 import { portOf, resolveQnapTarget } from '../lib/qnap/target'
+import { actorOf, auditBy } from '../lib/http/request-actor'
 
 declare module 'fastify' {
   interface FastifyRequest { qnapHandled?: boolean }
@@ -31,16 +32,11 @@ declare module 'fastify' {
 
 const svc = () => qnapService()
 
-function actor(req: FastifyRequest): Actor {
-  const s = req.session!
-  return { sid: s.sid, email: s.email, role: s.role, token: req.apiToken?.name ?? null }
-}
-
 const isViewer = (req: FastifyRequest) => !hasRole(req.session?.role ?? 'viewer', 'operator')
 
 function fail(reply: FastifyReply, e: any) {
-  if (e instanceof QnapRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
-  if (e instanceof QnapInputError) return reply.status(e.status).send({ success: false, code: 'bad_input', error: e.message })
+  if (e instanceof QnapRefusal) return sendRefusal(reply, e.status, e.code, e.message)
+  if (e instanceof QnapInputError) return sendRefusal(reply, e.status, 'bad_input', e.message)
   throw e
 }
 
@@ -73,7 +69,7 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
     if (req.method !== 'POST' || req.qnapHandled || reply.statusCode < 400) return
     const m = /\/instances\/([^/]+)\/(actions|secure-actions)$/.exec(req.url.split('?')[0])
     if (!m || !req.session || reply.statusCode === 401 || reply.statusCode === 423) return
-    await svc().auditRefusal(m[1], actor(req), (req.body ?? {}) as Record<string, unknown>, `gate_${reply.statusCode}`).catch(() => {})
+    await svc().auditRefusal(m[1], actorOf(req), (req.body ?? {}) as Record<string, unknown>, `gate_${reply.statusCode}`).catch(() => {})
   })
 
   fastify.get('/instances', async (req, reply) => {
@@ -84,7 +80,7 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: Record<string, unknown> }>('/instances', async (req, reply) => {
     try {
       const m = await svc().instances.create(req.body ?? {})
-      await auditCredentialUse('qnap.instance.create', `qnap:${m.id}`, { by: req.session!.email, name: m.name, cluster: m.clusterId, reach: m.reach })
+      await auditCredentialUse('qnap.instance.create', `qnap:${m.id}`, { ...auditBy(actorOf(req)), name: m.name, cluster: m.clusterId, reach: m.reach })
       return reply.status(201).send({ success: true, data: view(m, false) })
     } catch (e) { return fail(reply, e) }
   })
@@ -95,7 +91,7 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
       const { meta, loginChanged } = await svc().instances.update(req.params.iid, b)
       if (loginChanged) svc().forget(meta.id)
       await auditCredentialUse('qnap.instance.update', `qnap:${meta.id}`, {
-        by: req.session!.email, name: meta.name, cluster: meta.clusterId,
+        ...auditBy(actorOf(req)), name: meta.name, cluster: meta.clusterId,
         changed: Object.keys(b).filter(k => b[k] !== undefined && !(k === 'password' && b[k] === '')).map(k => k === 'password' ? 'credential' : k),
       })
       return { success: true, data: view(meta, false) }
@@ -106,7 +102,7 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       await svc().instances.remove(req.params.iid)
       svc().forget(req.params.iid)
-      await auditCredentialUse('qnap.instance.remove', `qnap:${req.params.iid}`, { by: req.session!.email })
+      await auditCredentialUse('qnap.instance.remove', `qnap:${req.params.iid}`, { ...auditBy(actorOf(req)) })
       return { success: true }
     } catch (e) { return fail(reply, e) }
   })
@@ -115,7 +111,7 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: { url?: unknown } }>('/instances/probe-certificate', async (req, reply) => {
     // A token only with the owner-granted plug-in settings permission (lib/gate.ts), to confirm a fingerprint before adding.
     if (req.apiToken && req.tokenPluginSettings?.kind !== 'probe') return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot probe certificates.' })
-    try { svc().limit(actor(req), 'probesPerMinute', 'Too many certificate reads; wait a moment.') } catch (e) { return fail(reply, e) }
+    try { svc().limit(actorOf(req), 'probesPerMinute', 'Too many certificate reads; wait a moment.') } catch (e) { return fail(reply, e) }
     try {
       const u = new URL(String(req.body?.url ?? ''))
       if (u.protocol !== 'https:') return reply.status(400).send({ success: false, code: 'bad_input', error: 'Only an https:// address has a certificate to pin.' })
@@ -130,7 +126,7 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
   // The whole reading. A NAS that cannot be read is a normal state (it may be off, or beyond a VPN): 200 with ok:false.
   fastify.get<P & { Querystring: { fresh?: string } }>('/instances/:iid/reading', async (req, reply) => {
     try {
-      const r = await svc().reading(req.params.iid, { actor: actor(req), fresh: req.query.fresh === '1' })
+      const r = await svc().reading(req.params.iid, { actor: actorOf(req), fresh: req.query.fresh === '1' })
       return { success: true, data: { ok: true, reading: isViewer(req) ? viewerReading(r) : r } }
     } catch (e: any) {
       if (e instanceof QnapRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
@@ -144,7 +140,7 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const m = await svc().instances.get(req.params.iid)
       if (!m) return fail(reply, new QnapRefusal('no_instance', 'No such NAS.', 404))
-      const r = await svc().reading(m.id, { actor: actor(req) })
+      const r = await svc().reading(m.id, { actor: actorOf(req) })
       return { success: true, data: { ok: true, ...detailOf(m.name, isViewer(req) ? viewerReading(r) : r) } }
     } catch (e: any) {
       if (e instanceof QnapRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
@@ -154,13 +150,13 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/actions', async (req, reply) => {
     req.qnapHandled = true
-    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actor(req), false) } }
+    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actorOf(req), false) } }
     catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/secure-actions', async (req, reply) => {
     req.qnapHandled = true
-    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actor(req), true) } }
+    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actorOf(req), true) } }
     catch (e) { return fail(reply, e) }
   })
 }

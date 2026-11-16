@@ -6,7 +6,7 @@ import { strictParams } from '../lib/route-params'
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { getGPUInfo }         from '../lib/gpu'
 import { NPMClient }          from '../lib/npm-client'
-import { withCephMon, CephUnavailableError } from '../lib/ceph'
+import { withCephMon, cephRefusal } from '../lib/ceph'
 import { noteHomeClusterName } from '../lib/clusters/registry'
 import { getProviderCredentials } from '../lib/credentials'
 import { pveFromEnv } from '../lib/pve-env'
@@ -15,6 +15,7 @@ import { isRemoteContext } from '../lib/clusters/context'
 import { guardRawCreate } from '../lib/naming'
 import { auditCredentialUse } from '../lib/audit'
 import { sendFailure } from '../lib/failure'
+import { answerData } from '../lib/http/answer'
 import { ProxmoxUnreachableError, proxmoxUnanswered } from '../lib/proxmox-client'
 
 // Not cached here: the token arrives from the vault after start-up and can change (lib/pve-env.ts).
@@ -28,23 +29,13 @@ async function getNPM(): Promise<NPMClient | null> {
   } catch { return null }
 }
 
-const wrap = async (reply: FastifyReply, fn: () => Promise<any>, friendly = "HyperProx couldn't get that from Proxmox.") => {
-  try   { return { success: true, data: await fn() } }
-  catch (e: any) { return sendFailure(reply.request, reply, e, friendly) }
-}
+const wrap = (reply: FastifyReply, fn: () => Promise<unknown>, friendly = "HyperProx couldn't get that from Proxmox.") => answerData(reply, fn, { friendly })
 
 // A cluster with no CEPH is a normal configuration, not a server fault — 503
 // with a readable reason, so the UI can hide the panel instead of showing a
 // stack trace about an empty node name.
-const wrapCeph = async (reply: FastifyReply, fn: () => Promise<any>) => {
-  try { return { success: true, data: await fn() } }
-  catch (e: any) {
-    if (e instanceof CephUnavailableError) {
-      return reply.status(503).send({ success: false, error: e.message, cephAvailable: false })
-    }
-    return sendFailure(reply.request, reply, e, "HyperProx couldn't read Ceph's status from Proxmox.")
-  }
-}
+const wrapCeph = (reply: FastifyReply, fn: () => Promise<unknown>) =>
+  answerData(reply, fn, { refusal: cephRefusal, friendly: "HyperProx couldn't read Ceph's status from Proxmox." })
 
 export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
   strictParams(fastify)   // node, vmid, type and snapshot names are checked before any handler (lib/route-params.ts)

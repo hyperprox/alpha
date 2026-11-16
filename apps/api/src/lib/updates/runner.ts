@@ -52,6 +52,7 @@ import { type AppEnv, APPROVAL_ID, runAppStep } from './apps'
 import { ActiveJobError, TERMINAL, jobView, stepView, type JobRecord, type StepRecord, type UpdatesStore } from './store'
 import type { UpdatesJobStatus } from './types'
 import type { NotifyEventInput, Severity } from '../notify/types'
+import { auditBy } from '../http/request-actor'
 
 export class PolicyRequiredError extends Error {
   constructor(detail?: string) {
@@ -230,7 +231,7 @@ export class UpdatesRunner {
       plan: { steps: [], warnings: [] },
     })
     await this.store.audit(`updates.job.${mode === 'dry-run' ? 'dry-run' : 'start'}`, job.id, {
-      trigger, scope, by: actor ?? 'scheduler', ...(approvals.length ? { approvals } : {}), ...(selection ? { selection } : {}),
+      trigger, scope, ...auditBy(actor ?? 'scheduler'), ...(approvals.length ? { approvals } : {}), ...(selection ? { selection } : {}),
     })
     await this.emitJob(job)
     this.drive(job.id, () => this.prepare(job.id, mode, trigger, scope, approvals, selection))
@@ -244,7 +245,7 @@ export class UpdatesRunner {
     const next = await this.transition(id, ['awaiting-confirm'], { status: 'running', pauseReason: null })
     if (!next) throw new JobStateError(`Job ${id} is ${(await this.mustGet(id)).status}, not awaiting confirmation`)
     this.cancelRequested.delete(id)
-    await this.store.audit('updates.job.confirm', id, { by: actor })
+    await this.store.audit('updates.job.confirm', id, { ...auditBy(actor) })
     this.drive(id, () => this.execute(id))
     return next
   }
@@ -262,7 +263,7 @@ export class UpdatesRunner {
       const retry = s.status === 'failed' || (s.status === 'skipped' && retryable(s.reason))
       if (retry) await this.setStep(s, { status: 'pending', reason: null })
     }
-    await this.store.audit('updates.job.resume', id, { by: actor })
+    await this.store.audit('updates.job.resume', id, { ...auditBy(actor) })
     if ((await this.nooutGate(id)).reason === STALE_NOOUT) await this.announceStaleNoout(id, 'when the run was resumed')
     this.drive(id, () => this.execute(id))
     return next
@@ -271,7 +272,7 @@ export class UpdatesRunner {
   async cancel(id: string, actor?: string): Promise<JobRecord> {
     const job = await this.mustGet(id)
     if (TERMINAL.includes(job.status)) throw new JobStateError(`Job ${id} has already finished (${job.status})`)
-    await this.store.audit('updates.job.cancel', id, { by: actor })
+    await this.store.audit('updates.job.cancel', id, { ...auditBy(actor) })
     if (job.status !== 'running') {
       const done = await this.finish(id, 'cancelled', 'Cancelled before it ran further', undefined, ['planned', 'awaiting-confirm', 'paused'])
       if (done) return done
@@ -297,7 +298,7 @@ export class UpdatesRunner {
     // Asked for by name: it reboots whether or not the node says it needs to (the plan's `forced`, never its words).
     const plan: UpdatesPlan = { steps: [step], warnings: [], forced: [1], stepOffset: 1 }
     const job = await this.store.createJob({ trigger: 'manual', status: 'running', plan })
-    await this.store.audit('updates.node.reboot', job.id, { node, by: actor })
+    await this.store.audit('updates.node.reboot', job.id, { node, ...auditBy(actor) })
     await this.store.addSteps(job.id, [
       { seq: 1, target: 'cluster', action: 'preflight', detail: 'quorum, Ceph, HA' },
       { ...step, seq: 2, detail: step.detail + ' (forced)' },
@@ -355,7 +356,7 @@ export class UpdatesRunner {
     if (!standalone) throw new JobStateError(`${node} is part of a cluster. On a remote cluster HyperProx reboots only one-node servers; reboot ${node} by hand after moving its guests.`)
     const step = { seq: 1, target: node, action: 'node-reboot' as const, detail: `${DETAIL.rebootStandalone} — requested by hand; its running guests stop until it is back` }
     const job = await this.store.createJob({ trigger: 'manual', status: 'running', plan: { steps: [step], warnings: [] } })
-    await this.store.audit('updates.node.reboot', job.id, { node, by: actor, cluster: this.cluster.id })
+    await this.store.audit('updates.node.reboot', job.id, { node, ...auditBy(actor), cluster: this.cluster.id })
     await this.store.addSteps(job.id, [
       { seq: 1, target: 'cluster', action: 'preflight', detail: 'one-node server: no quorum or HA to check; the node answers' },
       { ...step, seq: 2 },
@@ -758,7 +759,7 @@ export class UpdatesRunner {
     }
     const claimed = await this.transition(id, ['paused'], { status: 'running', pauseReason: `rolling ${target} back to ${snap}` })
     if (!claimed) throw new JobStateError(`Job ${id} is no longer paused`)
-    await this.store.audit('updates.app.rollback', id, { target, snapshot: snap, by: actor })
+    await this.store.audit('updates.app.rollback', id, { target, snapshot: snap, ...auditBy(actor) })
     this.drive(id, async () => {
       try {
         await this.exec.rollbackSnapshot(guest, snap)

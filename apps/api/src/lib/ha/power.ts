@@ -26,6 +26,7 @@ import { sidOf, formBody, buildSnapshot } from './parse'
 import type { HaPve } from './read'
 import { redactText } from './redact'
 import type { Actor, GuestType } from './types'
+import { auditBy } from '../http/request-actor'
 
 export type PowerAction = 'start' | 'stop' | 'shutdown' | 'reboot'
 
@@ -61,7 +62,7 @@ export async function haPowerHook(req: { node: string; vmid: number; type: Guest
   const snap = buildSnapshot({ resources, rules: [], status, nodes: [], vms: [], storage: [] })
   const label = `${req.type === 'lxc' ? 'Container' : 'VM'} ${req.vmid}`
   if (!snap.quorate) {
-    await d.audit(`ha.power.${req.action}`, sid, { by: actor.email, ok: false, refused: 'not quorate' })
+    await d.audit(`ha.power.${req.action}`, sid, { ...auditBy(actor), ok: false, refused: 'not quorate' })
     return { handled: true, ok: false, status: 409, sid, state: target, message: `${label} is an HA guest and the cluster is not quorate, so HA cannot ${req.action} it now. Nothing was changed.` }
   }
   const svc = snap.services.find(s => s.sid === sid)
@@ -77,14 +78,14 @@ export async function haPowerHook(req: { node: string; vmid: number; type: Guest
     await pve.fetchStrict(`/cluster/ha/resources/${encodeURIComponent(sid)}`, 'PUT', formBody({ state: target, ...(res.digest ? { digest: String(res.digest) } : {}) }))
   } catch (e: any) {
     const why = redactText(String(e?.message ?? e))
-    await d.audit(`ha.power.${req.action}`, sid, { by: actor.email, ok: false, error: why })
+    await d.audit(`ha.power.${req.action}`, sid, { ...auditBy(actor), ok: false, error: why })
     return { handled: true, ok: false, status: 502, sid, state: target, message: `${label} is an HA guest; Proxmox refused the HA state change: ${why}` }
   }
   // Outcome, not self-report: read the requested state back.
   const back = await pve.fetchStrict<any[]>('/cluster/ha/resources').catch(() => [])
   const now = (back ?? []).find(r => String(r.sid) === sid)
   const ok = now?.state === target
-  await d.audit(`ha.power.${req.action}`, sid, { by: actor.email, ok, from: res.state, to: target, node: req.node })
+  await d.audit(`ha.power.${req.action}`, sid, { ...auditBy(actor), ok, from: res.state, to: target, node: req.node })
   const what = target === 'started' ? 'start it' : 'shut it down (forced off if it does not stop in time) and keep it off'
   return ok
     ? { handled: true, ok, status: 200, sid, state: target, message: `${label} is an HA guest, so this went through HA: HA will ${what}.` }

@@ -27,6 +27,7 @@ import { installScript } from './monitoring'
 import type { PresentedCertificate } from './tls-pin'
 import { ClusterRefusal, looksLikeHome, HOME_DUPLICATE, homeAddressSet, homeAddressAmong, type ClusterIdentity, type ClusterInfo, type NewRemote } from './registry'
 import { isTailnetAddress, tailnetIdentity, refuseTokenContext, TAILSCALE_DEV, type TailnetStatus, type TailnetWhois, type NodeVerdict, type VerifyInput } from '../hostkey-verify'
+import { auditBy } from '../http/request-actor'
 
 export interface TokenCheck {
   version: string
@@ -207,7 +208,7 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
     const local = t.identity.local ?? (t.nodes.length === 1 ? t.nodes[0] : null)
     if (!local || !certNames(presented).includes(local.toLowerCase())) {
       const why = `The server at ${address} says it is ${local ?? 'an unnamed node'}, but its certificate is for ${certNames(presented).join(', ') || 'no name'}. Nothing was saved.`
-      await deps.audit('cluster.add.blocked', `address:${address}`, { by: input.by, reason: 'the API node name is not in the certificate', device: device.device, node: local ?? '' })
+      await deps.audit('cluster.add.blocked', `address:${address}`, { ...auditBy(input.by), reason: 'the API node name is not in the certificate', device: device.device, node: local ?? '' })
       await deps.alert('A server being added did not match its own certificate', [why])
       throw new IdentityMismatch(why)
     }
@@ -226,8 +227,8 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
   const resume = !!prior && prior.name.trim().toLowerCase() === input.name.trim().toLowerCase() && prior.cert.fingerprint === fp
   if (resume) await deps.replaceToken(prior!.id, input.tokenId, input.tokenSecret)
   const c = resume ? prior! : await deps.createRemote({ name: input.name, address, port, note: input.note, fingerprint: fp, verified, tokenId: input.tokenId, tokenSecret: input.tokenSecret, by: input.by })
-  if (resume) await deps.audit('cluster.add.resume', `cluster:${c.id}`, { by: input.by, name: c.name })
-  else await deps.audit('cluster.add', `cluster:${c.id}`, { by: input.by, name: c.name, nodes: t.nodes.length, version: t.version, certificate: verified ? 'verified automatically' : 'compared by the owner', how: verified ?? 'fingerprint compared by hand' })
+  if (resume) await deps.audit('cluster.add.resume', `cluster:${c.id}`, { ...auditBy(input.by), name: c.name })
+  else await deps.audit('cluster.add', `cluster:${c.id}`, { ...auditBy(input.by), name: c.name, nodes: t.nodes.length, version: t.version, certificate: verified ? 'verified automatically' : 'compared by the owner', how: verified ?? 'fingerprint compared by hand' })
 
   // 3. Where each node is.
   const status = await deps.tailnet().catch(() => null)
@@ -250,7 +251,7 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
       const ok = await deps.testLogin(c.id, v.host, cred).catch(() => false)
       if (ok) {
         await deps.saveLogin(c.id, n, cred)
-        await deps.audit('cluster.node_login.save', `cluster:${c.id}`, { by: input.by, node: n, source: 'add server' })
+        await deps.audit('cluster.node_login.save', `cluster:${c.id}`, { ...auditBy(input.by), node: n, source: 'add server' })
         saved++
       }
       nodes.push({ node: n, address: v.host, key: v.state, how: v.why, login: ok ? 'saved' : 'not-saved' })

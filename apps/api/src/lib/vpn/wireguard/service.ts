@@ -37,6 +37,7 @@ import {
 } from './routeros'
 import type { WgPeer, WgServer, WgStore } from './store'
 import { appLog } from '../../log-once'
+import { auditBy } from '../../http/request-actor'
 
 /** The node's wireguard module, seen from inside a container (one shared kernel). Prints HPX_WG_MOD=yes|no. */
 export const WG_MODULE_SCRIPT = 'if [ -d /sys/module/wireguard ]; then echo HPX_WG_MOD=yes; else echo HPX_WG_MOD=no; fi\n'
@@ -194,7 +195,7 @@ export class WireguardService {
     if (up.code !== 0 || parsePublicKey(up.output) !== publicKey) throw new Error(`${iface} did not come up with its key`)
     const server = await this.d.store.addServer({ machineId: m.id, iface, listenPort, address: o.address, endpoint: o.endpoint, publicKey, keyBackedUp: false })
     if (o.backupKey) await this.backupServerKey(server.id, by, job)
-    await this.d.store.audit('wireguard.server.create', m.id, { by, iface, listenPort, backupKey: !!o.backupKey })
+    await this.d.store.audit('wireguard.server.create', m.id, { ...auditBy(by), iface, listenPort, backupKey: !!o.backupKey })
     return { ...(await this.server(server.id)), log: job.log }
   }
 
@@ -224,7 +225,7 @@ export class WireguardService {
       if (addr !== o.address) throw new WgInputError(`${iface} on ${m.name} has the address ${addr ?? 'none'}, not ${o.address}; not adopted`)
     }
     const server = await this.d.store.addServer({ machineId: m.id, iface, listenPort: port, address: o.address, endpoint: o.endpoint, publicKey, keyBackedUp: false })
-    await this.d.store.audit('wireguard.server.adopt', m.id, { by, iface })
+    await this.d.store.audit('wireguard.server.adopt', m.id, { ...auditBy(by), iface })
     return server
   }
 
@@ -236,7 +237,7 @@ export class WireguardService {
     const priv = parsePrivateKey(r.output)
     if (!priv || !isWgKey(priv) || publicOf(priv) !== s.publicKey) throw new Error('the server key could not be read for the backup')
     await this.d.vault.put(serverItem(s.id), { private_key: priv })
-    await this.d.store.audit('wireguard.vault.write', serverItem(s.id), { by, what: 'server key backup' })
+    await this.d.store.audit('wireguard.vault.write', serverItem(s.id), { ...auditBy(by), what: 'server key backup' })
     // Only now that the vault has it does the table say so.
     await this.d.store.updateServer(s.id, { keyBackedUp: true })
   }
@@ -283,7 +284,7 @@ export class WireguardService {
     const config = renderClientConfig({ privateKey: keys.privateKey, address, serverPublicKey: s.publicKey, endpoint: s.endpoint, allowedIps: clientAllowed, keepalive: draft.keepalive, dns: o.dns })
     // The vault first: a peer whose config cannot be kept is not created.
     await this.d.vault.put(peerItem(draft.id), { private_key: keys.privateKey, config })
-    await this.d.store.audit('wireguard.vault.write', peerItem(draft.id), { by, what: 'client config' })
+    await this.d.store.audit('wireguard.vault.write', peerItem(draft.id), { ...auditBy(by), what: 'client config' })
     try {
       await this.applyServer(job, s, draft)
     } catch (e) {
@@ -292,7 +293,7 @@ export class WireguardService {
     }
     const { createdAt: _c, ...row } = draft
     const peer = await this.d.store.addPeer(row)
-    await this.d.store.audit('wireguard.peer.add', peer.id, { by, server: s.id, name: o.name, keygen: o.keygen ?? 'browser' })
+    await this.d.store.audit('wireguard.peer.add', peer.id, { ...auditBy(by), server: s.id, name: o.name, keygen: o.keygen ?? 'browser' })
     return { peer, config }
   }
 
@@ -301,7 +302,7 @@ export class WireguardService {
     const p = await this.peer(peerId)
     if (p.kind !== 'device') throw new WgInputError('Only a phone or laptop peer has a config in the vault')
     const v = await this.d.vault.get(peerItem(p.id))
-    await this.d.store.audit('wireguard.vault.read', peerItem(p.id), { by, what: 'client config' })
+    await this.d.store.audit('wireguard.vault.read', peerItem(p.id), { ...auditBy(by), what: 'client config' })
     if (!v.config) throw new WgNotFoundError('This peer has no config in the vault')
     return { config: v.config, rotatedConfig: v.previous_config ?? null }
   }
@@ -319,10 +320,10 @@ export class WireguardService {
       const v = await this.d.vault.get(peerItem(p.id))
       if (v.private_key) {
         await this.d.vault.put(peerItem(p.id), { ...v, config: renderClientConfig({ privateKey: v.private_key, address: next.address, serverPublicKey: s.publicKey, endpoint: s.endpoint, allowedIps: next.clientAllowedIps, keepalive: next.keepalive }) })
-        await this.d.store.audit('wireguard.vault.write', peerItem(p.id), { by, what: 'client config' })
+        await this.d.store.audit('wireguard.vault.write', peerItem(p.id), { ...auditBy(by), what: 'client config' })
       }
     }
-    await this.d.store.audit('wireguard.peer.update', p.id, { by, ...o })
+    await this.d.store.audit('wireguard.peer.update', p.id, { ...auditBy(by), ...o })
     return next
   }
 
@@ -334,9 +335,9 @@ export class WireguardService {
     if (p.serverId) await this.applyServer(job, await this.server(p.serverId))
     if (p.kind === 'device') {
       await this.d.vault.remove(peerItem(p.id)).catch(() => undefined)
-      await this.d.store.audit('wireguard.vault.remove', peerItem(p.id), { by })
+      await this.d.store.audit('wireguard.vault.remove', peerItem(p.id), { ...auditBy(by) })
     }
-    await this.d.store.audit('wireguard.peer.remove', p.id, { by, name: p.name })
+    await this.d.store.audit('wireguard.peer.remove', p.id, { ...auditBy(by), name: p.name })
   }
 
   // ── Rotation ──────────────────────────────────────────────────────────────
@@ -355,11 +356,11 @@ export class WireguardService {
       private_key: keys.privateKey, config,
       ...(v.private_key ? { previous_private_key: v.private_key, previous_config: v.config ?? '', rotated_at: new Date(this.now()).toISOString(), status_previous: 'rotated' } : {}),
     })
-    await this.d.store.audit('wireguard.vault.write', peerItem(p.id), { by, what: 'rotated client config' })
+    await this.d.store.audit('wireguard.vault.write', peerItem(p.id), { ...auditBy(by), what: 'rotated client config' })
     const next = { ...p, publicKey: keys.publicKey }
     try { await this.applyServer(job, s, next) } catch (e) { await this.d.vault.put(peerItem(p.id), v); throw e }
     const peer = await this.d.store.updatePeer(p.id, { publicKey: keys.publicKey, previousPublicKey: p.publicKey, previousUntil: until, rotatedAt: new Date(this.now()) })
-    await this.d.store.audit('wireguard.peer.rotate', p.id, { by })
+    await this.d.store.audit('wireguard.peer.rotate', p.id, { ...auditBy(by) })
     return { peer, config }
   }
 
@@ -372,9 +373,9 @@ export class WireguardService {
     if (!v.previous_private_key) throw new WgInputError('The previous key is no longer in the vault')
     await this.applyServer(this.job('undo rotation', by), s, { ...p, publicKey: p.previousPublicKey })
     await this.d.vault.put(peerItem(p.id), { private_key: v.previous_private_key, config: v.previous_config ?? '' })
-    await this.d.store.audit('wireguard.vault.write', peerItem(p.id), { by, what: 'rotation undone' })
+    await this.d.store.audit('wireguard.vault.write', peerItem(p.id), { ...auditBy(by), what: 'rotation undone' })
     const peer = await this.d.store.updatePeer(p.id, { publicKey: p.previousPublicKey, previousPublicKey: null, previousUntil: null })
-    await this.d.store.audit('wireguard.peer.rotate.undo', p.id, { by })
+    await this.d.store.audit('wireguard.peer.rotate.undo', p.id, { ...auditBy(by) })
     return peer
   }
 
@@ -497,7 +498,7 @@ export class WireguardService {
       throw e
     }
 
-    await this.d.store.audit('wireguard.machine.connect', m.id, { by, iface, target: o.serverId ? `server:${o.serverId}` : `router:${o.router!.iface}`, rebuilt: !!existing && existing.publicKey !== publicKey })
+    await this.d.store.audit('wireguard.machine.connect', m.id, { ...auditBy(by), iface, target: o.serverId ? `server:${o.serverId}` : `router:${o.router!.iface}`, rebuilt: !!existing && existing.publicKey !== publicKey })
     return { peer: peer!, log: job.log }
   }
 
@@ -521,7 +522,7 @@ export class WireguardService {
       }
     }
     if (u.server) await quiet(() => this.applyServer(job, u.server!))
-    await this.d.store.audit('wireguard.machine.connect.undone', u.existing?.id ?? u.peer?.id ?? '', { by: u.by, restoredOldKey: !!u.existing })
+    await this.d.store.audit('wireguard.machine.connect.undone', u.existing?.id ?? u.peer?.id ?? '', { ...auditBy(u.by), restoredOldKey: !!u.existing })
   }
 
   // ── Status ────────────────────────────────────────────────────────────────
@@ -589,7 +590,7 @@ export class WireguardService {
     const made = await api.write.put('/rest/interface/wireguard/peers', body)
     const back = mapPeers(await api.read('/rest/interface/wireguard/peers')).find(p => p.publicKey === o.publicKey && p.comment === body.comment)
     if (!back) throw new Error('The router did not show the new peer when read back')
-    await this.d.store.audit('wireguard.router.peer.add', back.id, { by, iface: o.iface, credential: 'remote/routeros-write', made: !!made })
+    await this.d.store.audit('wireguard.router.peer.add', back.id, { ...auditBy(by), iface: o.iface, credential: 'remote/routeros-write', made: !!made })
     return back
   }
 
@@ -602,7 +603,7 @@ export class WireguardService {
     if (!peer.managed) throw new WgInputError(`Router peer ${routerPeerId} was not created by HyperProx (no ${MARK} comment), so it is left alone`)
     await api.write.del(`/rest/interface/wireguard/peers/${encodeURIComponent(routerPeerId)}`)
     if (mapPeers(await api.read('/rest/interface/wireguard/peers')).some(p => p.id === routerPeerId)) throw new Error('The router still shows the peer after removing it')
-    await this.d.store.audit('wireguard.router.peer.remove', routerPeerId, { by, credential: 'remote/routeros-write' })
+    await this.d.store.audit('wireguard.router.peer.remove', routerPeerId, { ...auditBy(by), credential: 'remote/routeros-write' })
   }
 
   /** A phone or laptop on the router's WireGuard: browser keypair into the vault, peer on the router, config once. */
@@ -618,7 +619,7 @@ export class WireguardService {
     const id = randomUUID()
     const config = renderClientConfig({ privateKey: o.privateKey, address: o.address, serverPublicKey: rif.publicKey, endpoint: o.endpoint, allowedIps: o.allowedIps, keepalive: o.keepalive ?? 25, dns: o.dns })
     await this.d.vault.put(peerItem(id), { private_key: o.privateKey, config })
-    await this.d.store.audit('wireguard.vault.write', peerItem(id), { by, what: 'client config' })
+    await this.d.store.audit('wireguard.vault.write', peerItem(id), { ...auditBy(by), what: 'client config' })
     let added: RouterWgPeer
     try {
       added = await this.addRouterPeer({ iface: o.iface, publicKey: o.publicKey, allowedAddress: [o.address], keepalive: null, id, name: o.name }, by)

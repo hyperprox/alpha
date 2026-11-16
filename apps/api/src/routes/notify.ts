@@ -8,6 +8,8 @@
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { currentContext, isReconfirmed } from '../lib/auth'
+import { contextActor } from '../lib/http/request-actor'
+import { sendRefusal } from '../lib/failure'
 import { getNotifyService } from '../lib/notify'
 import {
   NotifyForbiddenError, NotifyInputError, NotifyNotFoundError, NotifyUnavailableError, publicUrlFrom,
@@ -28,14 +30,14 @@ function pick(body: unknown): ChannelInput {
 }
 
 function fail(reply: FastifyReply, e: unknown) {
-  if (e instanceof NotifyInputError) return reply.status(400).send({ ok: false, error: e.message })
-  if (e instanceof NotifyForbiddenError) return reply.status(403).send({ ok: false, error: e.message })
-  if (e instanceof NotifyNotFoundError) return reply.status(404).send({ ok: false, error: e.message })
-  if (e instanceof NotifyUnavailableError) return reply.status(409).send({ ok: false, error: e.message })
-  if ((e as Error)?.name === 'VaultLockedError') return reply.status(409).send({ ok: false, error: 'The vault cannot be written right now; sign in again and retry.' })
+  if (e instanceof NotifyInputError) return sendRefusal(reply, 400, 'bad_input', e.message)
+  if (e instanceof NotifyForbiddenError) return sendRefusal(reply, 403, 'forbidden', e.message)
+  if (e instanceof NotifyNotFoundError) return sendRefusal(reply, 404, 'not_found', e.message)
+  if (e instanceof NotifyUnavailableError) return sendRefusal(reply, 409, 'unavailable', e.message)
+  if ((e as Error)?.name === 'VaultLockedError') return sendRefusal(reply, 409, 'vault_unwritable', 'The vault cannot be written right now; sign in again and retry.')
   // Anything else could carry an address or a token in its message: say nothing specific.
   reply.log?.warn?.(`[notify] request failed: ${(e as any)?.code ?? (e as Error)?.name ?? 'error'}`)
-  return reply.status(500).send({ ok: false, error: 'Could not complete that; nothing was sent.' })
+  return sendRefusal(reply, 500, 'internal', 'Could not complete that; nothing was sent.')
 }
 
 export function buildNotifyRoutes(deps: { service?: NotifyService } = {}): FastifyPluginAsync {
@@ -45,10 +47,10 @@ export function buildNotifyRoutes(deps: { service?: NotifyService } = {}): Fasti
       if (!s) throw new NotifyUnavailableError('Notifications are not running.')
       return s
     }
+    /** Who asked (lib/http/request-actor.ts); outside a signed-in request, nothing here runs. */
     const actor = (): Actor => {
-      const c = currentContext()
-      if (!c) throw new NotifyForbiddenError('Sign in first.')
-      return { email: c.email, role: c.role }
+      if (!currentContext()) throw new NotifyForbiddenError('Sign in first.')
+      return contextActor()
     }
 
     fastify.get('/channels', async (_req, reply) => {

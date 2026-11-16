@@ -30,7 +30,7 @@
 //
 // =============================================================================
 
-import { sendFailure } from '../lib/failure'
+import { sendFailure, sendRefusal } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { auditCredentialUse, auditOrThrow } from '../lib/audit'
 import { hasRole } from '../lib/roles'
@@ -44,6 +44,7 @@ import { FileNewStore, startNewWatcher, type NewStore, type NewWatcherDeps } fro
 import type { NotifyEventInput } from '../lib/notify/types'
 import { publish } from '../lib/notify'
 import { isUnlocked, onLock } from '../lib/vault/state'
+import { auditBy } from '../lib/http/request-actor'
 
 /** Names of who watched what, or whose next episode it is, are for operators and up: a viewer gets the counts only. */
 export function forRole<T extends { watchedBy?: unknown; nextUpFor?: unknown }>(rows: T[], role: string | undefined): T[] {
@@ -82,7 +83,7 @@ let sharedLibrary: LibraryService | null = null
 export const libraryService = (): LibraryService => (sharedLibrary ??= new LibraryService(clearoutService()))
 
 function fail(reply: FastifyReply, e: any) {
-  if (e instanceof ClearoutRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
+  if (e instanceof ClearoutRefusal) return sendRefusal(reply, e.status, e.code, e.message)
   return sendFailure(reply.request, reply, e, 'Plex did not answer as expected. The details are in the log.', { status: 502 })
 }
 
@@ -259,7 +260,7 @@ async function summary(action: string, by: string, out: { preview: { items: unkn
 }
 async function writeSummary(action: string, by: string, out: { preview: { items: unknown[] }; results: Array<{ removed: boolean; title: string; via: string; sizeBytes: number }> }, removed: typeof out.results) {
   await auditOrThrow(action, 'plugin:plex', {
-    by, asked: out.preview.items.length, removed: removed.length, failed: out.results.length - removed.length,
+    ...auditBy(by), asked: out.preview.items.length, removed: removed.length, failed: out.results.length - removed.length,
     bytes: removed.reduce((a, r) => a + (r.sizeBytes ?? 0), 0),
     titles: out.results.map(r => `${r.removed ? 'removed' : 'kept'}: ${r.title} (${r.via})`),
   })

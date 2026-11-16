@@ -28,6 +28,7 @@ import type { VaultChoice } from './vault-match'
 import { appLog, createLogOnce } from '../log-once'
 import { inCidrs, invalidCidrs, parseIPv4, splitCidrList } from '../net/ip'
 import { guestExcluded } from '../guest-guard'
+import { auditBy } from '../http/request-actor'
 
 export const SYSTEM_ACTOR = 'system (auto-connect)'
 export const AUTO_TICK_MS = 5 * 60_000
@@ -265,7 +266,7 @@ export class Reconciler {
     const k = sid(plugin, key)
     await this.mutate(async s => {
       if (!s.dismissed[k]) throw new AutoConnectError('not_dismissed', 'That one was not disconnected.', 404)
-      await this.d.audit('autoconnect.connect_again', k, { by, label: s.dismissed[k].label })
+      await this.d.audit('autoconnect.connect_again', k, { ...auditBy(by), label: s.dismissed[k].label })
       delete s.dismissed[k]
       delete s.connected[k]
     })
@@ -286,9 +287,9 @@ export class Reconciler {
     try { excluded = await this.d.excluded() } catch { throw new AutoConnectError('exclusions_unknown', 'Remote access\'s exclusion list could not be read, so nothing is connected until it can.', 503) }
     if (!this.live) await this.mutate(() => undefined)
     // The person's pick, audited as theirs; the connecting itself is the adapter's read-only connect.
-    await this.d.audit('autoconnect.pick', k, { by, choice: choiceId, choiceKind: p.choiceKind })
+    await this.d.audit('autoconnect.pick', k, { ...auditBy(by), choice: choiceId, choiceKind: p.choiceKind })
     const ctx = this.context(excluded, subnets, plugin)
-    const o = await a.pick(key, choiceId, { ...ctx, audit: (ac, r, det) => this.d.audit(ac, r, { ...det, by }) }, by)
+    const o = await a.pick(key, choiceId, { ...ctx, audit: (ac, r, det) => this.d.audit(ac, r, { ...det, ...auditBy(by) }) }, by)
     await this.mutate(s => {
       this.apply(s, plugin, [o], null)
       if (o.did !== 'ambiguous' || o.key !== key) delete s.pending[k]

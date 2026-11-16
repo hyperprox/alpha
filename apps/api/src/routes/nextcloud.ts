@@ -14,24 +14,19 @@
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
-import { actorOf, isAdmin } from '../lib/http/request-actor'
+import { actorOf, isAdmin, auditBy } from '../lib/http/request-actor'
+import { sendRefusal } from '../lib/failure'
 import { nextcloudService, registerNextcloudComposeOwner } from '../lib/nextcloud'
-import { NcRefusal, type Actor, type Reading } from '../lib/nextcloud/types'
+import { NcRefusal, type Reading } from '../lib/nextcloud/types'
 import { OccRefusal } from '../lib/nextcloud/occ'
 import { UpdateRefusal } from '../lib/nextcloud/update'
 import { PrismaRemoteStore } from '../lib/remote/store'
 import { setGuestExclusionSource } from '../lib/guest-guard'
 
-/** Who asked, with the API token's name whenever one was used (lib/http/request-actor.ts). */
-function actor(req: FastifyRequest): Actor {
-  const a = actorOf(req)
-  return { sid: a.sid, email: a.email, role: a.role, token: a.token }
-}
-
 function fail(reply: FastifyReply, e: any) {
-  if (e instanceof NcRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, ...e.extra })
-  if (e instanceof OccRefusal || e instanceof UpdateRefusal) return reply.status(400).send({ success: false, code: 'refused', error: e.message })
-  if (e?.name === 'TransportError') return reply.status(502).send({ success: false, code: 'unreachable', error: e.message })
+  if (e instanceof NcRefusal) return sendRefusal(reply, e.status, e.code, e.message, e.extra)
+  if (e instanceof OccRefusal || e instanceof UpdateRefusal) return sendRefusal(reply, 400, 'refused', e.message)
+  if (e?.name === 'TransportError') return sendRefusal(reply, 502, 'unreachable', e.message)
   throw e
 }
 
@@ -80,7 +75,7 @@ export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
     const m = /\/instances\/([^/]+)\/(actions|secure-actions)\/([a-z0-9-]{1,40})$/.exec(req.url.split('?')[0])
     if (!m) return
     await auditCredentialUse('nextcloud.action.refused', `nextcloud:${m[1].replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, {
-      by: req.session.email, via: req.apiToken ? `api:${req.apiToken.name}` : 'session', action: m[3], result: `refused:http_${reply.statusCode}`,
+      ...auditBy(actorOf(req)), via: req.apiToken ? `api:${req.apiToken.name}` : 'session', action: m[3], result: `refused:http_${reply.statusCode}`,
     }).catch(() => {})
   })
 
@@ -98,20 +93,20 @@ export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Read-only detection in one guest (admin, POST because it runs a script there; not re-confirmed: it changes nothing).
   fastify.post<{ Body: { guest?: unknown } }>('/detect', async (req, reply) => {
-    try { return { success: true, data: await svc().detect(req.body?.guest, actor(req)) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().detect(req.body?.guest, actorOf(req)) } } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<{ Body: Record<string, unknown> }>('/instances', async (req, reply) => {
-    try { return reply.status(201).send({ success: true, data: await svc().add(req.body ?? {}, actor(req)) }) } catch (e) { return fail(reply, e) }
+    try { return reply.status(201).send({ success: true, data: await svc().add(req.body ?? {}, actorOf(req)) }) } catch (e) { return fail(reply, e) }
   })
 
   fastify.put<P & { Body: Record<string, unknown> }>('/instances/:iid', async (req, reply) => {
-    try { return { success: true, data: await svc().update(req.params.iid, req.body ?? {}, actor(req)) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().update(req.params.iid, req.body ?? {}, actorOf(req)) } } catch (e) { return fail(reply, e) }
   })
 
   // ?force=1 removes even when the app password HyperProx made cannot be revoked (the answer says it is left).
   fastify.delete<P & { Querystring: { force?: string } }>('/instances/:iid', async (req, reply) => {
-    try { return { success: true, data: await svc().remove(req.params.iid, actor(req), req.query.force === '1') } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().remove(req.params.iid, actorOf(req), req.query.force === '1') } } catch (e) { return fail(reply, e) }
   })
 
   // The whole reading. One that cannot be read is a normal state: 200 with ok:false and the reason.
@@ -127,29 +122,29 @@ export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   fastify.get<P>('/instances/:iid/two-factor', async (req, reply) => {
-    try { return { success: true, data: await svc().twoFactorUsers(req.params.iid, actor(req)) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().twoFactorUsers(req.params.iid, actorOf(req)) } } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P>('/instances/:iid/update/preview', async (req, reply) => {
-    try { return { success: true, data: await svc().updatePreview(req.params.iid, actor(req)) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().updatePreview(req.params.iid, actorOf(req)) } } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Body: { check?: unknown; days?: unknown } }>('/instances/:iid/snooze', async (req, reply) => {
-    try { return { success: true, data: await svc().snooze(req.params.iid, req.body?.check, req.body?.days, actor(req)) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().snooze(req.params.iid, req.body?.check, req.body?.days, actorOf(req)) } } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Params: { action: string }; Body: Record<string, unknown> }>('/instances/:iid/actions/:action', async (req, reply) => {
-    try { return { success: true, data: await svc().act(req.params.iid, req.params.action, req.body ?? {}, actor(req), false) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().act(req.params.iid, req.params.action, req.body ?? {}, actorOf(req), false) } } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Params: { action: string }; Body: Record<string, unknown> }>('/instances/:iid/secure-actions/:action', async (req, reply) => {
-    try { return { success: true, data: await svc().act(req.params.iid, req.params.action, req.body ?? {}, actor(req), true) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().act(req.params.iid, req.params.action, req.body ?? {}, actorOf(req), true) } } catch (e) { return fail(reply, e) }
   })
 
   // For a job HyperProx can no longer reach: ends its record and clears its busy marker (deploys and HyperProx's own
   // update are allowed again). Admin, master password, audited. The guest is not touched.
   fastify.post<P & { Params: { jobId: string } }>('/instances/:iid/jobs/:jobId/stop-watching', async (req, reply) => {
-    try { return { success: true, data: await svc().stopWatching(req.params.iid, req.params.jobId, actor(req)) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await svc().stopWatching(req.params.iid, req.params.jobId, actorOf(req)) } } catch (e) { return fail(reply, e) }
   })
 
   fastify.get<P & { Params: { jobId: string } }>('/instances/:iid/jobs/:jobId', async (req, reply) => {

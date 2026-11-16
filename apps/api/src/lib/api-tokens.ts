@@ -35,6 +35,7 @@ import { z } from 'zod'
 import { PrismaClient } from '@prisma/client'
 import type { Role } from './vault/broker'
 import { normalisePath } from './roles'
+import { auditBy } from './http/request-actor'
 
 export const TOKEN_PREFIX = 'hpx_'
 const TOKEN_RE = /^hpx_[A-Za-z0-9_-]{43}$/
@@ -310,7 +311,7 @@ export async function createApiToken(
     expiresAt: opts.expiresInMs !== undefined ? new Date(now + opts.expiresInMs)
       : expiresDays ? new Date(now + expiresDays * 86_400_000) : null,
   })
-  await s.audit('api_token.create', name, { id: record.id, role, by: createdBy, expiresAt: iso(record.expiresAt) })
+  await s.audit('api_token.create', name, { id: record.id, role, ...auditBy(createdBy), expiresAt: iso(record.expiresAt) })
   return { token, record }
 }
 
@@ -321,7 +322,7 @@ export async function revokeApiToken(idOrName: string, by: string, s: ApiTokenSt
   forgetToken(row.id)
   if (row.revokedAt) return row
   const out = await s.revoke(row.id, new Date())
-  await s.audit('api_token.revoke', row.name, { id: row.id, by })
+  await s.audit('api_token.revoke', row.name, { id: row.id, ...auditBy(by) })
   return out
 }
 
@@ -345,7 +346,7 @@ export async function setTokenPluginSettings(
   const out = await s.setPluginSettings(row.id, enabled, by, new Date(now))
   forgetToken(row.id)
   if (audit) await s.audit(audit.action, row.name, { id: row.id, ...audit.details })
-  else await s.audit(enabled ? 'api_token.plugin_settings.grant' : 'api_token.plugin_settings.remove', row.name, { id: row.id, by })
+  else await s.audit(enabled ? 'api_token.plugin_settings.grant' : 'api_token.plugin_settings.remove', row.name, { id: row.id, ...auditBy(by) })
   return out
 }
 

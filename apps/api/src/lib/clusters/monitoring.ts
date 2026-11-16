@@ -34,6 +34,7 @@ import { auditCredentialUse } from '../audit'
 
 export { assertSafeScript, assertAptInstallOnly } from './script-guard'
 import { assertSafeScript, assertAptInstallOnly } from './script-guard'
+import { auditBy } from '../http/request-actor'
 
 const COMMON = () => fs.readFileSync(path.join(hardware.NODE_DIR, 'common.sh'), 'utf8')
 
@@ -551,7 +552,7 @@ export async function applyMonitoring(planId: string, owner: string, deps: Monit
         results.push({ node: s.node, status: 'skipped', reason: 'Intel GPU figures were not set up, because node_exporter did not install on this node' })
         continue
       }
-      await auditCredentialUse('node_login.use', `node:${s.node}`, { purpose: `monitoring ${plan.kind}`, cluster: plan.clusterId, by: owner })
+      await auditCredentialUse('node_login.use', `node:${s.node}`, { purpose: `monitoring ${plan.kind}`, cluster: plan.clusterId, ...auditBy(owner) })
       let out: { code: number; output: string }
       try { out = await deps.run(s.address, s.script) } catch (e: any) { results.push({ node: s.node, status: 'failed', reason: e?.message ?? String(e) }); continue }
       const r = hardware.parseResult(out.output, out.code)

@@ -45,6 +45,7 @@ import { EXCLUSION_WORDS, IGNORE_TAG } from '../guest-guard'
 import { matchVault, pickVault, type VaultChoice } from '../auto-connect/vault-match'
 import { NcRefusal, type Actor, type BusyHoursLike, type CheckView, type GuestRef, type Job, type JobStep, type NcMeta, type Reading } from './types'
 import { machineId } from '../guest-id'
+import { auditBy } from '../http/request-actor'
 
 export interface GuestRow {
   kind: 'lxc' | 'qemu'; vmid: number; name: string; node: string; running: boolean
@@ -241,7 +242,7 @@ export class NextcloudService {
       const revoke = async (why: string) => {
         if (!made) return
         if (made.id) {
-          await this.d.audit('nextcloud.app_password.revoke', `guest:${machineKey(guest)}`, { by: actor.email, user: made.uid, token: made.id, why }).catch(() => {})
+          await this.d.audit('nextcloud.app_password.revoke', `guest:${machineKey(guest)}`, { ...auditBy(actor), user: made.uid, token: made.id, why }).catch(() => {})
           await this.run(guest, occScript(dep.occ, 'delete-app-password', { uid: made.uid, id: made.id }), 60_000).catch(() => {})
         }
       }
@@ -250,7 +251,7 @@ export class NextcloudService {
           const b = batch(dep.occ, [{ key: 't', id: 'auth-tokens', params: { uid: user } }])
           const t0 = b.parse((await this.run(guest, b.script)).output).t
           const known = t0 ? parseAuthTokens(t0.output).map(k => k.id) : []
-          await this.d.audit('nextcloud.app_password.create', `guest:${machineKey(guest)}`, { by: actor.email, user })
+          await this.d.audit('nextcloud.app_password.create', `guest:${machineKey(guest)}`, { ...auditBy(actor), user })
           const r = await this.run(guest, occScript(dep.occ, 'add-app-password', { uid: user }), 60_000)
           appPassword = APP_PASSWORD_OUT.exec(r.output)?.[1] ?? null
           if (r.code !== 0 || !appPassword) throw new NcRefusal('app_password_failed', 'Nextcloud did not make the app password (is that user an admin?).', 502)
@@ -266,7 +267,7 @@ export class NextcloudService {
           await this.testLogin(url, user, appPassword)
           if (!create) tokenId = await this.tokenIdFor(guest, dep.occ, user, since).catch(() => null)
         }
-        await this.d.audit('nextcloud.instance.create', `guest:${machineKey(guest)}`, { by: actor.email, name, guest: machineKey(guest), deployment: dep.kind, ocs: !!appPassword })
+        await this.d.audit('nextcloud.instance.create', `guest:${machineKey(guest)}`, { ...auditBy(actor), name, guest: machineKey(guest), deployment: dep.kind, ocs: !!appPassword })
         return await this.d.store.create({ name, guest, deployment: dep, url, user, appPassword, tokenId, made: create })
       } catch (e: any) {
         await revoke(String(e?.message ?? 'the add failed').slice(0, 200))
@@ -299,7 +300,7 @@ export class NextcloudService {
       const dep = body.redetect === true ? await this.detectIn(prev.guest) : undefined
       // The app password HyperProx made is replaced (or the login removed): revoke it in Nextcloud first.
       if (login.made && (newPw || body.url === '')) await this.revokeMade(prev, login, actor.email)
-      await this.d.audit('nextcloud.instance.update', `nextcloud:${id}`, { by: actor.email, changed: Object.keys(body).filter(k => ['name', 'url', 'user', 'appPassword', 'redetect'].includes(k)).map(k => (k === 'appPassword' ? 'credential' : k)) })
+      await this.d.audit('nextcloud.instance.update', `nextcloud:${id}`, { ...auditBy(actor), changed: Object.keys(body).filter(k => ['name', 'url', 'user', 'appPassword', 'redetect'].includes(k)).map(k => (k === 'appPassword' ? 'credential' : k)) })
       // The web login cleared by a person: auto-connect must not make it again by itself.
       if (body.url === '' && login.appPassword && prev.autoConnected) await this.d.dismissed?.(`${machineKey(prev.guest)}#web-login`, `${prev.name}: web login`, actor.email)
       const meta = await this.d.store.update(id, { ...body, ...(tokenId !== undefined ? { tokenId } : {}) })
@@ -320,7 +321,7 @@ export class NextcloudService {
     const m = await this.meta(id)
     if (this.busy.has(id)) throw new NcRefusal('busy', 'A Nextcloud action is still running here; remove it when that has finished.', 409)
     const login = await this.d.store.login(id)
-    await this.d.audit('nextcloud.instance.remove', `nextcloud:${id}`, { by: actor.email, force })
+    await this.d.audit('nextcloud.instance.remove', `nextcloud:${id}`, { ...auditBy(actor), force })
     let left = false
     if (login.made) {
       try { await this.revokeMade(m, login, actor.email) } catch (e: any) {
@@ -340,7 +341,7 @@ export class NextcloudService {
     if (!login.made) return
     if (!login.user || !login.tokenId) throw new Error('its token id is not known')
     const dep = m.deployment ?? await this.detectIn(m.guest, m.name)
-    await this.d.audit('nextcloud.app_password.revoke', `nextcloud:${m.id}`, { by, user: login.user, credentialId: login.tokenId, why: 'removed or replaced' })
+    await this.d.audit('nextcloud.app_password.revoke', `nextcloud:${m.id}`, { ...auditBy(by), user: login.user, credentialId: login.tokenId, why: 'removed or replaced' })
     const r = await this.run(m.guest, occScript(dep.occ, 'delete-app-password', { uid: login.user, id: login.tokenId }), 60_000)
     // Already gone (deleted by hand) counts as revoked.
     if (r.code !== 0 && !/not found|does not exist|no such/i.test(r.output)) throw new Error(`occ exited ${r.code}`)
@@ -596,7 +597,7 @@ export class NextcloudService {
       const cur = (await this.d.store.get(m.id))?.autoConnected
       if (cur) await this.d.store.setAutoConnected(m.id, { ...cur, orphans: [...(cur.orphans ?? []), { user, id, at: new Date(this.now()).toISOString() }].slice(-20) })
     } catch { /* the instance may be gone (a forced remove): the audit row and the alert still say it */ }
-    await this.d.audit('nextcloud.app_password.left', `nextcloud:${m.id}`, { by, user, credentialId: id, why: why.slice(0, 200) }).catch(() => {})
+    await this.d.audit('nextcloud.app_password.left', `nextcloud:${m.id}`, { ...auditBy(by), user, credentialId: id, why: why.slice(0, 200) }).catch(() => {})
     await this.d.alert?.(`An app password HyperProx made in ${m.name} is still there`, [
       `HyperProx could not revoke the app password named HyperProx for ${user}${id ? ` (token ${id})` : ''}: ${why.slice(0, 160)}`,
       `Delete it under that user's Security settings in Nextcloud.`,
@@ -635,7 +636,7 @@ export class NextcloudService {
     if (typeof check !== 'string' || !/^[A-Za-z0-9_\\:-]{1,160}$/.test(check)) throw new NcRefusal('bad_input', 'Which check?')
     const until = days === 0 ? null : days === null || days === 'forever' ? 'forever' : [1, 7, 30, 90].includes(Number(days)) ? new Date(this.now() + Number(days) * 86_400_000).toISOString() : undefined
     if (until === undefined) throw new NcRefusal('bad_input', 'Snooze for 1, 7, 30 or 90 days, or dismiss it.')
-    await this.d.audit('nextcloud.check.snooze', `nextcloud:${id}`, { by: actor.email, check, until })
+    await this.d.audit('nextcloud.check.snooze', `nextcloud:${id}`, { ...auditBy(actor), check, until })
     const m = await this.d.store.snooze(id, check, until)
     this.cache.delete(id)
     return m
@@ -856,7 +857,7 @@ export class NextcloudService {
       }
       // Checks that read the instance first (2FA), then the audit: no row, no action.
       if (action === 'enforce-2fa') params.values = { ...params.values, ...(await this.enforcePlan(m, dep, body, params.values.exclude as string[])) }
-      await this.d.audit(`nextcloud.action.${action}`, `nextcloud:${id}`, { by: actor.email, via: 'session', params: params.audit })
+      await this.d.audit(`nextcloud.action.${action}`, `nextcloud:${id}`, { ...auditBy(actor), via: 'session', params: params.audit })
       if (spec.long) { handedToJob = true; return await this.startJob(m, action, actor, params.audit, async (io) => this.runLong(m, dep, action, io)) }
       const msg = await this.runShort(m, dep, action, params, actor)
       this.cache.delete(id)
@@ -1081,7 +1082,7 @@ export class NextcloudService {
     this.long.end(j.id)
     this.busy.delete(j.instanceId)
     this.cache.delete(j.instanceId)
-    await this.d.audit(`nextcloud.action.${j.action}.${j.state}`, `nextcloud:${j.instanceId}`, { by: j.by, job: j.id, ...(j.state === 'failed' ? { error: (j.result ?? '').slice(0, 200) } : {}), ...audit }).catch(() => {})
+    await this.d.audit(`nextcloud.action.${j.action}.${j.state}`, `nextcloud:${j.instanceId}`, { ...auditBy(j.by), job: j.id, ...(j.state === 'failed' ? { error: (j.result ?? '').slice(0, 200) } : {}), ...audit }).catch(() => {})
     this.prune()
   }
 
@@ -1182,7 +1183,7 @@ export class NextcloudService {
     this.mustPerson(actor)
     const j = await this.job(id, jobId)
     if (j.state !== 'running') throw new NcRefusal('not_running', 'That job is not running.', 409)
-    await this.d.audit('nextcloud.job.stop_watching', `nextcloud:${id}`, { by: actor.email, job: j.id, action: j.action })
+    await this.d.audit('nextcloud.job.stop_watching', `nextcloud:${id}`, { ...auditBy(actor), job: j.id, action: j.action })
     this.abandoned.add(j.id)
     this.jobs.set(j.id, j)
     j.state = 'failed'
@@ -1358,7 +1359,7 @@ export class NextcloudService {
     if (pre.problems.length || !pre.plan) throw new NcRefusal('preflight', pre.problems[0] ?? 'The update cannot run now.', 409, { problems: pre.problems })
     if (body.confirmBackupDir !== pre.plan.backupDir) throw new NcRefusal('confirm', 'Confirm the update from its check screen (it shows where the database dump goes).', 400)
     const plan = pre.plan
-    await this.d.audit('nextcloud.action.update', `nextcloud:${m.id}`, { by: actor.email, via: 'session', from: plan.from, offered: plan.offered, source: plan.source, backupDir: plan.backupDir })
+    await this.d.audit('nextcloud.action.update', `nextcloud:${m.id}`, { ...auditBy(actor), via: 'session', from: plan.from, offered: plan.offered, source: plan.source, backupDir: plan.backupDir })
     const job = this.newJob(m, 'update', actor, rollbackWords(plan, null), { guest: m.guest, backupDir: plan.backupDir })
     // Registered before it starts: from here until it is seen to finish, no deploy restarts the API.
     this.long.register({ id: job.id, owner: 'nextcloud', label: `Nextcloud ${m.name}: update ${plan.from} to ${plan.offered}`, detached: true, guest: m.guest })
@@ -1398,7 +1399,7 @@ export class NextcloudService {
     if (n === null) throw new NcRefusal('preflight', 'HyperProx could not tell whether a Talk call is running, so it did not touch the signalling server.', 409)
     if (n > 0) throw new NcRefusal('preflight', `${n} Talk call${n === 1 ? ' is' : 's are'} running. Update the signalling server when nobody is in a call.`, 409)
     const plan: HpbPlan = { container: s.container, service: s.service, image: s.image, imageId: s.imageId, workdir: s.workdir, configFile: s.configFile, project: s.project, from: s.version }
-    await this.d.audit('nextcloud.action.hpb-update', `nextcloud:${m.id}`, { by: actor.email, via: 'session', image: s.image, from: s.version })
+    await this.d.audit('nextcloud.action.hpb-update', `nextcloud:${m.id}`, { ...auditBy(actor), via: 'session', image: s.image, from: s.version })
     return this.startJob(m, 'hpb-update', actor, { from: s.version }, async io => {
       io.step('preflight', 'done', 'no call running')
       const r = await runHpbUpdate(plan, io)

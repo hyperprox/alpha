@@ -50,6 +50,7 @@ import {
 } from './types'
 import { changedMessage } from '../log-once'
 import { shq } from '../shell'
+import { auditBy } from '../http/request-actor'
 
 // ── records ──────────────────────────────────────────────────────────────────
 
@@ -276,7 +277,7 @@ export class HomepageService {
       if (existing) return existing
       const m = await this.machine({ machineId, name: machineId })
       if (auto) await this.d.audit('homepage.auto_connect', `homepage:${machineId}`, { by: SYSTEM_ACTOR, evidence: auto.evidence, container: container ?? null })
-      else await this.d.audit('homepage.connect', `homepage:${machineId}`, { by: actorLabel(actor) })
+      else await this.d.audit('homepage.connect', `homepage:${machineId}`, { ...auditBy(actorLabel(actor)) })
       const found = (await this.locate(m)).filter(l => !container || l.container === container)
       if (!found.length) throw new HomepageRefusal('not_found', `No Homepage container on ${m.name}.`, 404)
       if (found.length > 1 && !container) throw new HomepageRefusal('several', `${m.name} runs ${found.length} Homepage containers; pick one: ${found.map(f => f.container).join(', ')}.`, 409)
@@ -402,7 +403,7 @@ export class HomepageService {
     return this.withLock(id, async () => {
       const i = await this.instance(id)
       if (i.proxmoxToken) throw new HomepageRefusal('token_live', 'Revoke the Proxmox token made for this dashboard first, so it is not left behind.', 409)
-      await this.d.audit('homepage.disconnect', `homepage:${i.machineId}`, { by: actorLabel(actor), keys: Object.keys(i.exported).length, force })
+      await this.d.audit('homepage.disconnect', `homepage:${i.machineId}`, { ...auditBy(actorLabel(actor)), keys: Object.keys(i.exported).length, force })
       let removed: string[] = [], left: string[] = []
       if (Object.keys(i.exported).length) {
         try { removed = await this.removeKeys(i, Object.keys(i.exported)) }
@@ -457,7 +458,7 @@ export class HomepageService {
       }
       const autoSync = body.autoSync === undefined ? i.autoSync : body.autoSync === true
       const next: HomepageInstance = { ...i, options: o, autoSync, state, lastFingerprint: null }
-      await this.d.audit('homepage.settings', `homepage:${i.machineId}`, { by: actorLabel(actor), autoSync, subnets: o.excludeSubnets.length, hiddenGroups: o.hiddenGroups.length,
+      await this.d.audit('homepage.settings', `homepage:${i.machineId}`, { ...auditBy(actorLabel(actor)), autoSync, subnets: o.excludeSubnets.length, hiddenGroups: o.hiddenGroups.length,
         hiddenEntries: o.hiddenEntries.length, bareGuests: o.includeBareGuests, takeOver: body.takeOver === undefined ? null : String(body.takeOver),
         manageAgain: body.manageAgain === undefined ? null : String(body.manageAgain) })
       await this.d.store.put(next)
@@ -477,7 +478,7 @@ export class HomepageService {
       const i = await this.instance(id)
       const wanted = new Set(list)
       const drop = Object.keys(i.exported).filter(v => ![...wanted].some(w => v.startsWith(varName(w, 'X').slice(0, -1))))
-      await this.d.audit('homepage.widgets', `homepage:${i.machineId}`, { by: actorLabel(actor), widgets: list, keysRemoved: drop, force })
+      await this.d.audit('homepage.widgets', `homepage:${i.machineId}`, { ...auditBy(actorLabel(actor)), widgets: list, keysRemoved: drop, force })
       // The keys of widgets turned off come off the guest first; only then is the choice saved. A guest that cannot
       // be reached keeps the old choice, unless `force` says to save it and leave those keys there.
       if (drop.length) {
@@ -605,7 +606,7 @@ export class HomepageService {
     const changed = p.files.filter(f => f.changed)
     // Before anything changes: the audit row, or nothing happens.
     await this.d.audit('homepage.write', `homepage:${i.machineId}`, {
-      by, files: changed.map(f => f.name), groups: Object.keys(p.counts), entries: p.entries.length, widgets: p.entries.filter(e => e.widget).length,
+      ...auditBy(by), files: changed.map(f => f.name), groups: Object.keys(p.counts), entries: p.entries.length, widgets: p.entries.filter(e => e.widget).length,
       ...(anyway ? { applyAnyway: true, missingSources: p.failed } : {}),
     })
     const wrote: string[] = [], backups: string[] = []
@@ -806,7 +807,7 @@ export class HomepageService {
       if (!c.wired) throw new HomepageRefusal('env_not_wired', `Homepage's compose file does not pass ${KEY_FILE} to the container. Use "Let Homepage read its key file" first.`, 409)
       const pruned = pruneEnv(c.keyFile.text, names)
       const next = mergeEnv(pruned.text, values)
-      await this.d.audit('homepage.export_keys', `homepage:${i.machineId}`, { by: actorLabel(actor), vars: names, removed: pruned.removed, missing: missing.length })
+      await this.d.audit('homepage.export_keys', `homepage:${i.machineId}`, { ...auditBy(actorLabel(actor)), vars: names, removed: pruned.removed, missing: missing.length })
       const out = parseWrite(await this.run(m, writeScript({ dir: i.composeDir!, file: KEY_FILE, content: next, expectSha: c.keyFile.sha, mode: '0600', stamp: stampOf(this.d.now()) })), next)
       if (!out.ok) throw new HomepageRefusal('write_failed', `${KEY_FILE}: ${out.message}`, 409)
       const restarted = await this.recreate(m, i, c.service)
@@ -826,7 +827,7 @@ export class HomepageService {
       const m = await this.machine(i)
       const c = await this.compose(m, i)
       if (c.wired) return { message: `Homepage already reads ${KEY_FILE}.` }
-      await this.d.audit('homepage.wire_env', `homepage:${i.machineId}`, { by: actorLabel(actor), file: c.name })
+      await this.d.audit('homepage.wire_env', `homepage:${i.machineId}`, { ...auditBy(actorLabel(actor)), file: c.name })
       const stamp = stampOf(this.d.now())
       // The edit is worked out (and refused, with the line to add by hand) before anything is written.
       wireEnvText(c.file.text, c.service)
@@ -851,7 +852,7 @@ export class HomepageService {
       const i = await this.instance(id)
       if (i.proxmoxToken) throw new HomepageRefusal('exists', `This dashboard already has a token (${i.proxmoxToken.tokenId}). Revoke it to make a new one.`, 409)
       const name = `homepage-${i.vmid}-${i.id.slice(0, 6)}`
-      await this.d.audit('homepage.proxmox_token.create', `homepage:${i.machineId}`, { by: actorLabel(actor), name, role: 'PVEAuditor', path: '/' })
+      await this.d.audit('homepage.proxmox_token.create', `homepage:${i.machineId}`, { ...auditBy(actorLabel(actor)), name, role: 'PVEAuditor', path: '/' })
       const t = await this.d.proxmox.createAuditorToken(name, `Homepage dashboard on ${i.name}: read-only (PVEAuditor), made by HyperProx`)
       // From here a failure takes the token back again, so none is left that HyperProx has no record of.
       const undo = async () => { await this.d.proxmox.revokeToken(t.tokenId).catch(() => {}); await this.d.proxmox.saveSecret(i.id, null).catch(() => {}) }
@@ -872,7 +873,7 @@ export class HomepageService {
     return this.withLock(id, async () => {
       const i = await this.instance(id)
       if (!i.proxmoxToken) throw new HomepageRefusal('none', 'This dashboard has no Proxmox token.', 404)
-      await this.d.audit('homepage.proxmox_token.revoke', `homepage:${i.machineId}`, { by: actorLabel(actor), tokenId: i.proxmoxToken.tokenId })
+      await this.d.audit('homepage.proxmox_token.revoke', `homepage:${i.machineId}`, { ...auditBy(actorLabel(actor)), tokenId: i.proxmoxToken.tokenId })
       try { await this.d.proxmox.revokeToken(i.proxmoxToken.tokenId) }
       catch (e: any) { if (!TOKEN_GONE.test(String(e?.message ?? e))) throw e }
       await this.d.proxmox.saveSecret(i.id, null)
@@ -970,7 +971,7 @@ export class HomepageService {
     return this.withLock(id, async () => {
       const i = await this.instance(id)
       const m = await this.machine(i)
-      await this.d.audit('homepage.fix', `homepage:${i.machineId}`, { by: actorLabel(actor), fix: f })
+      await this.d.audit('homepage.fix', `homepage:${i.machineId}`, { ...auditBy(actorLabel(actor)), fix: f })
       if (f === 'relocate') {
         const found = await this.locate(m)
         const l = found.find(x => x.container === i.container) ?? (found.length === 1 ? found[0] : undefined)
@@ -1005,7 +1006,7 @@ export class HomepageService {
       const i = await this.instance(id)
       if (!i.composeDir) throw new HomepageRefusal('no_compose', 'This container was not started with Docker Compose.', 409)
       const m = await this.machine(i)
-      await this.d.audit('homepage.purge_key_backups', `homepage:${i.machineId}`, { by: actorLabel(actor) })
+      await this.d.audit('homepage.purge_key_backups', `homepage:${i.machineId}`, { ...auditBy(actorLabel(actor)) })
       const n = Number(/^HPX_PURGED (\d+)$/m.exec(await this.run(m, purgeBackupsScript(i.composeDir, KEY_FILE)))?.[1] ?? 0)
       return { message: `Deleted ${plural(n, 'old copy')} of ${KEY_FILE}.` }
     })

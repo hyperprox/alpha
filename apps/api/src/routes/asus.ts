@@ -22,11 +22,13 @@ import { auditCredentialUse } from '../lib/audit'
 import { hasRole } from '../lib/roles'
 import { asusService, detailOf, stopAsus, viewerReading } from '../lib/asus'
 import { AsusInputError, type AsusMeta, type AsusView } from '../lib/asus/instances'
-import { AsusRefusal, confirmPhrase, viewerAction, type Actor } from '../lib/asus/service'
+import { AsusRefusal, confirmPhrase, viewerAction } from '../lib/asus/service'
 import { AsusLoginError } from '../lib/asus/client'
 import { AsusUnreachableError } from '../lib/asus/transport'
 import { findAsusRouters } from '../lib/asus/detect'
 import { addressLike } from '../lib/asus/parse'
+import { actorOf, auditBy } from '../lib/http/request-actor'
+import { sendRefusal } from '../lib/failure'
 
 declare module 'fastify' {
   interface FastifyRequest { asusHandled?: boolean }
@@ -34,16 +36,11 @@ declare module 'fastify' {
 
 const svc = () => asusService()
 
-function actor(req: FastifyRequest): Actor {
-  const s = req.session!
-  return { sid: s.sid, email: s.email, role: s.role, token: req.apiToken?.name ?? null }
-}
-
 const isViewer = (req: FastifyRequest) => !hasRole(req.session?.role ?? 'viewer', 'operator')
 
 function fail(reply: FastifyReply, e: any) {
-  if (e instanceof AsusRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
-  if (e instanceof AsusInputError) return reply.status(e.status).send({ success: false, code: 'bad_input', error: e.message })
+  if (e instanceof AsusRefusal) return sendRefusal(reply, e.status, e.code, e.message)
+  if (e instanceof AsusInputError) return sendRefusal(reply, e.status, 'bad_input', e.message)
   throw e
 }
 
@@ -73,7 +70,7 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
     if (req.method !== 'POST' || req.asusHandled || reply.statusCode < 400) return
     const m = /\/instances\/([^/]+)\/actions$/.exec(req.url.split('?')[0])
     if (!m || !req.session || reply.statusCode === 401 || reply.statusCode === 423) return
-    await svc().auditRefusal(m[1], actor(req), (req.body ?? {}) as Record<string, unknown>, `gate_${reply.statusCode}`).catch(() => {})
+    await svc().auditRefusal(m[1], actorOf(req), (req.body ?? {}) as Record<string, unknown>, `gate_${reply.statusCode}`).catch(() => {})
   })
 
   fastify.get('/instances', async (req, reply) => {
@@ -83,21 +80,21 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
 
   // The default gateway's login page, if it is an ASUS router: prefills the Add form.
   fastify.post('/detect', async (req, reply) => {
-    try { svc().limit(actor(req), 'setupsPerMinute', 'Too many searches; wait a moment.') } catch (e) { return fail(reply, e) }
+    try { svc().limit(actorOf(req), 'setupsPerMinute', 'Too many searches; wait a moment.') } catch (e) { return fail(reply, e) }
     return { success: true, data: await findAsusRouters().catch(() => []) }
   })
 
   // The certificate an https router presents now, for a person to compare and pin (admin; address rules first).
   fastify.post<{ Body: { url?: unknown } }>('/instances/probe-certificate', async (req, reply) => {
     if (req.apiToken && req.tokenPluginSettings?.kind !== 'probe') return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot read router certificates.' })
-    try { return { success: true, data: await svc().probeCertificate(req.body?.url, actor(req)) } }
+    try { return { success: true, data: await svc().probeCertificate(req.body?.url, actorOf(req)) } }
     catch (e) { return fail(reply, e) }
   })
 
   fastify.post<{ Body: Record<string, unknown> }>('/instances', async (req, reply) => {
     try {
-      const { meta, pinnedNow } = await svc().add(req.body ?? {}, actor(req))
-      await auditCredentialUse('asus.instance.create', `asus:${meta.id}`, { by: req.session!.email, name: meta.name, model: meta.model, pinned: pinnedNow })
+      const { meta, pinnedNow } = await svc().add(req.body ?? {}, actorOf(req))
+      await auditCredentialUse('asus.instance.create', `asus:${meta.id}`, { ...auditBy(actorOf(req)), name: meta.name, model: meta.model, pinned: pinnedNow })
       return reply.status(201).send({ success: true, data: { ...view(meta, false), pinnedNow } })
     } catch (e) { return fail(reply, e) }
   })
@@ -105,9 +102,9 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.put<P & { Body: Record<string, unknown> }>('/instances/:iid', async (req, reply) => {
     try {
       const b = (req.body ?? {}) as Record<string, unknown>
-      const { meta, pinnedNow } = await svc().edit(req.params.iid, b, actor(req))
+      const { meta, pinnedNow } = await svc().edit(req.params.iid, b, actorOf(req))
       await auditCredentialUse('asus.instance.update', `asus:${meta.id}`, {
-        by: req.session!.email, name: meta.name, pinned: pinnedNow,
+        ...auditBy(actorOf(req)), name: meta.name, pinned: pinnedNow,
         changed: Object.keys(b).filter(k => b[k] !== undefined && !(k === 'password' && b[k] === '')).map(k => k === 'password' ? 'credential' : k),
       })
       return { success: true, data: { ...view(meta, false), pinnedNow } }
@@ -118,7 +115,7 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       await svc().instances.remove(req.params.iid)
       svc().forget(req.params.iid)
-      await auditCredentialUse('asus.instance.remove', `asus:${req.params.iid}`, { by: req.session!.email })
+      await auditCredentialUse('asus.instance.remove', `asus:${req.params.iid}`, { ...auditBy(actorOf(req)) })
       return { success: true }
     } catch (e) { return fail(reply, e) }
   })
@@ -126,7 +123,7 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
   // The whole reading. A router that cannot be read is a normal state: 200 with ok:false.
   fastify.get<P & { Querystring: { fresh?: string } }>('/instances/:iid/reading', async (req, reply) => {
     try {
-      const r = await svc().reading(req.params.iid, { actor: actor(req), fresh: req.query.fresh === '1' })
+      const r = await svc().reading(req.params.iid, { actor: actorOf(req), fresh: req.query.fresh === '1' })
       // The name may have just changed to the unit's own (it is read on the 5-minute cycle): send it with the reading.
       const m = await svc().instances.get(req.params.iid)
       const named = m ? { name: view(m, isViewer(req)).name, phrase: view(m, isViewer(req)).phrase } : {}
@@ -142,7 +139,7 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const m = await svc().instances.get(req.params.iid)
       if (!m) return fail(reply, new AsusRefusal('no_instance', 'No such router.', 404))
-      const r = await svc().reading(m.id, { actor: actor(req) })
+      const r = await svc().reading(m.id, { actor: actorOf(req) })
       return { success: true, data: { ok: true, ...detailOf(m.name, isViewer(req) ? viewerReading(r) : r) } }
     } catch (e: any) {
       if (e instanceof AsusRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
@@ -153,7 +150,7 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Admin (lib/roles.ts), API tokens allowed, reads only: every hook's raw answer with secrets and MACs removed.
   fastify.get<P>('/instances/:iid/diagnostics', async (req, reply) => {
-    try { return { success: true, data: await svc().diagnostics(req.params.iid, actor(req)) } }
+    try { return { success: true, data: await svc().diagnostics(req.params.iid, actorOf(req)) } }
     catch (e: any) {
       if (e instanceof AsusRefusal || e instanceof AsusInputError) return fail(reply, e)
       const known = e instanceof AsusUnreachableError || e instanceof AsusLoginError
@@ -163,7 +160,7 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/actions', async (req, reply) => {
     req.asusHandled = true
-    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actor(req)) } }
+    try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actorOf(req)) } }
     catch (e) { return fail(reply, e) }
   })
 }

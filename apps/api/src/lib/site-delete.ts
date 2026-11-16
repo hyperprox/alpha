@@ -31,6 +31,7 @@ import type { DnsLike, PublishLedger, SiteRecord } from './sites'
 import {
   backupJobsWith, destroyOwned, guestName, inHa, removeFromBackupJobs, type ActionDeps,
 } from './clusters/guest-actions'
+import { auditBy } from './http/request-actor'
 
 export const DELETE_PREVIEW_TTL_MS = 10 * 60_000
 
@@ -422,12 +423,12 @@ export async function runDelete(site: SiteRecord, held: Held, keys: Set<string>,
 async function runItem(site: SiteRecord, it: DeleteItem, t: Target, by: string, d: SiteDeleteDeps): Promise<ItemResult> {
   const resource = `site:${site.id}`
   const r = (outcome: ItemResult['outcome'], words: string): ItemResult => ({ key: it.key, kind: it.kind, outcome, words })
-  try { await d.audit('site.delete.item.start', resource, { by, item: it.key, detail: it.detail }) }
+  try { await d.audit('site.delete.item.start', resource, { ...auditBy(by), item: it.key, detail: it.detail }) }
   catch (e: any) { return r('failed', `Not removed: the audit log could not be written (${e.message}), so HyperProx did not change anything for this item.`) }
   let out: ItemResult
   try { out = await doItem(site, it, t, by, d, r) }
   catch (e: any) { out = r('failed', `${it.label} was not removed: ${String(e?.message ?? e).slice(0, 300)}`) }
-  await d.audit('site.delete.item.result', resource, { by, item: it.key, outcome: out.outcome, words: out.words }).catch(() => {})
+  await d.audit('site.delete.item.result', resource, { ...auditBy(by), item: it.key, outcome: out.outcome, words: out.words }).catch(() => {})
   return out
 }
 

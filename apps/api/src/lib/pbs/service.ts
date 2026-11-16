@@ -25,6 +25,7 @@ import { PbsHttpError, PbsUnreachableError, type PbsPin } from './transport'
 import { cleanName, cleanSecret, cleanStaleHours, cleanTokenId, cleanUrl, PbsInputError, type PbsInput, type PbsInstanceStore, type PbsMeta } from './instances'
 import { DEFAULT_STALE_HOURS } from './parse'
 import { PbsManager } from './manage'
+import { auditBy } from '../http/request-actor'
 
 export interface Actor { sid: string; email: string; role: Role; token: string | null }
 
@@ -179,7 +180,7 @@ export class PbsService {
     const user = typeof input.username === 'string' ? input.username.trim() : ''
     const realm = typeof input.realm === 'string' && input.realm.trim() ? input.realm.trim() : 'pam'
     const audit = (result: string, extra: Record<string, unknown> = {}) =>
-      this.d.audit('pbs.instance.signin', 'pbs:signin', { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', login: /^[A-Za-z0-9._-]{1,64}$/.test(user) ? `${user}@${realm.slice(0, 32)}` : 'invalid', result, ...extra })
+      this.d.audit('pbs.instance.signin', 'pbs:signin', { ...auditBy(actor), via: actor.token ? `api:${actor.token}` : 'session', login: /^[A-Za-z0-9._-]{1,64}$/.test(user) ? `${user}@${realm.slice(0, 32)}` : 'invalid', result, ...extra })
     try { this.limit(actor, 'signinsPerMinute', 'Too many sign-ins in a minute; wait a moment.') } catch (e) { await audit('refused:rate_limited'); throw e }
     if (actor.token) { await audit('refused:token_forbidden'); throw new PbsRefusal('token_forbidden', 'API tokens cannot sign in to a backup server.', 403) }
     if (!hasRole(actor.role, 'admin')) { await audit('refused:forbidden'); throw new PbsRefusal('forbidden', 'Adding a backup server needs the admin role.', 403) }
@@ -341,7 +342,7 @@ export class PbsService {
 
   async auditRefusal(id: string, actor: Actor | null, action: string, code: string): Promise<void> {
     await this.d.audit('pbs.action', `pbs:${String(id).replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, {
-      by: actor?.email ?? 'anonymous', via: actor?.token ? `api:${actor.token}` : actor ? 'session' : 'none',
+      ...auditBy(actor ?? 'anonymous'), via: actor?.token ? `api:${actor.token}` : actor ? 'session' : 'none',
       action: String(action).replace(/[^a-z]/g, '').slice(0, 10), result: `refused:${code}`,
     })
   }
@@ -350,7 +351,7 @@ export class PbsService {
     let m: PbsMeta
     try { m = await this.meta(id) } catch (e: any) { await this.auditRefusal(id, actor, action, e?.code ?? 'error'); throw e }
     const store = typeof body.store === 'string' ? body.store.slice(0, 64) : ''
-    const base = { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', server: m.name, serverId: m.id, action: action.slice(0, 10), store }
+    const base = { ...auditBy(actor), via: actor.token ? `api:${actor.token}` : 'session', server: m.name, serverId: m.id, action: action.slice(0, 10), store }
     const refuse = async (e: PbsRefusal): Promise<never> => {
       await this.d.audit('pbs.action', `pbs:${m.id}`, { ...base, result: `refused:${e.code}` })
       throw e

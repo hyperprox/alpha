@@ -13,7 +13,8 @@ import { pbsMountCleanup } from '../lib/pbs/setup-deps'
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { currentContext, requestContext } from '../lib/auth'
 import { strictParams } from '../lib/route-params'
-import { hasRole } from '../lib/roles'
+import { auditBy, contextActor, contextIsAdmin } from '../lib/http/request-actor'
+import { codeForStatus, sendRefusal } from '../lib/failure'
 import { auditCredentialUse } from '../lib/audit'
 import {
   listClusters, clusterRow, createRemote, updateCluster, removeCluster, confirmFingerprint, replaceRemoteToken,
@@ -42,8 +43,6 @@ import { scanMonitoring, previewMonitoring, applyMonitoring, planSteps, Monitori
 import { afterCopyScan } from '../lib/clusters/send-simple'
 import { sendRoutes } from './send'
 
-const who = () => currentContext()?.email ?? 'unknown'
-
 /** At most `max` calls a minute per signed-in session for the routes that open connections on request. */
 const hits = new Map<string, number[]>()
 export function overLimit(key: string, max = 10, windowMs = 60_000, now = Date.now()): boolean {
@@ -59,26 +58,33 @@ const limited = (route: string, reply: FastifyReply) => {
   return true
 }
 
-/** A failure as the status and body the page gets: shared by the routes and the add job. */
+/**
+ * How a cluster route's failures are answered: shared by the routes and the add job. `code` is absent where these
+ * routes have never sent one (the add job keeps its body exactly as before; a reply gets one by its status).
+ */
+function clusterRefusal(e: any): { status: number; code?: string; error: string; extra?: Record<string, unknown> } {
+  const msg = e?.message ?? String(e)
+  if (e?.name === 'VaultLockedError' || /HyperProx is locked/i.test(msg)) return { status: 423, error: 'HyperProx is locked. Sign in to unlock it, then try again. Nothing was done.', extra: { locked: true } }
+  if (e instanceof ClusterRefusal) return { status: e.code === 'not-found' ? 404 : e.code === 'conflict' ? 409 : 422, code: e.code, error: msg }
+  if (e instanceof GuestActionRefusal) return { status: e.code === 'not-found' ? 404 : e.code === 'confirm' ? 428 : 422, code: e.code, error: msg }
+  if (e instanceof CertificateChangedError) return { status: 409, code: 'cert_changed', error: msg, extra: { presented: e.presented } }
+  if (e instanceof CertificateNotConfirmedError) return { status: 409, code: 'cert_unconfirmed', error: msg }
+  if (e instanceof MonitoringRefusal) return { status: 409, code: 'monitoring', error: msg }
+  if (e instanceof PinConfirmRefusal || e instanceof PinVerifyRefusal) return { status: 409, code: 'hostkey', error: msg }
+  if (e instanceof IdentityMismatch) return { status: 409, code: 'identity_mismatch', error: msg }
+  if (e instanceof VerifyRefusal) return { status: 403, code: 'token_forbidden', error: msg }
+  return { status: 502, error: msg }
+}
+
+/** A failure as the status and body the add job keeps for the page (it is read inside the job's own answer). */
 function failure(e: any): { status: number; body: Record<string, unknown> } {
-  let out: { status: number; body: Record<string, unknown> } | null = null
-  const fake: any = { status(s: number) { return { send(b: any) { out = { status: s, body: b }; return out } } } }
-  fail(fake, e)
-  return out!
+  const r = clusterRefusal(e)
+  return { status: r.status, body: { success: false, ...(r.code ? { code: r.code } : {}), error: r.error, ...r.extra } }
 }
 
 function fail(reply: FastifyReply, e: any) {
-  const msg = e?.message ?? String(e)
-  if (e?.name === 'VaultLockedError' || /HyperProx is locked/i.test(msg)) return reply.status(423).send({ success: false, locked: true, error: 'HyperProx is locked. Sign in to unlock it, then try again. Nothing was done.' })
-  if (e instanceof ClusterRefusal) return reply.status(e.code === 'not-found' ? 404 : e.code === 'conflict' ? 409 : 422).send({ success: false, code: e.code, error: msg })
-  if (e instanceof GuestActionRefusal) return reply.status(e.code === 'not-found' ? 404 : e.code === 'confirm' ? 428 : 422).send({ success: false, code: e.code, error: msg })
-  if (e instanceof CertificateChangedError) return reply.status(409).send({ success: false, code: 'cert_changed', error: msg, presented: e.presented })
-  if (e instanceof CertificateNotConfirmedError) return reply.status(409).send({ success: false, code: 'cert_unconfirmed', error: msg })
-  if (e instanceof MonitoringRefusal) return reply.status(409).send({ success: false, code: 'monitoring', error: msg })
-  if (e instanceof PinConfirmRefusal || e instanceof PinVerifyRefusal) return reply.status(409).send({ success: false, code: 'hostkey', error: msg })
-  if (e instanceof IdentityMismatch) return reply.status(409).send({ success: false, code: 'identity_mismatch', error: msg })
-  if (e instanceof VerifyRefusal) return reply.status(403).send({ success: false, code: 'token_forbidden', error: msg })
-  return reply.status(502).send({ success: false, error: msg })
+  const r = clusterRefusal(e)
+  return sendRefusal(reply, r.status, r.code ?? codeForStatus(r.status), r.error, r.extra)
 }
 
 function clusterOr404(id: string, reply: FastifyReply) {
@@ -159,7 +165,7 @@ function addServerDeps(log: (m: string) => void): AddServerDeps {
       const plan = planSteps(p.planId)
       if (!plan.length || plan.some(s => s.what !== 'node-exporter' || scriptHash(s.script) !== shown)) return 'Monitoring was not installed: what it would run is not what you were shown. The Edit page shows it again.'
       const r = await applyMonitoring(p.planId, by, undefined, id)
-      await auditCredentialUse('cluster.monitoring.apply', `cluster:${id}`, { by, ok: r.ok, nodes: r.results.map(x => x.node), source: 'add server' })
+      await auditCredentialUse('cluster.monitoring.apply', `cluster:${id}`, { ...auditBy(by), ok: r.ok, nodes: r.results.map(x => x.node), source: 'add server' })
       const failed = r.results.filter(x => x.status === 'failed').map(x => x.node)
       return r.ok ? `Monitoring installed on ${r.results.map(x => x.node).filter(Boolean).join(', ')}, and Prometheus is collecting from it.`
         : failed.length ? `Monitoring did not install on ${failed.join(', ')}; the Edit page shows why and can try again.`
@@ -190,10 +196,9 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Addresses, folders, Plex, the token id and the certificate are for admins. Everyone else sees which
   // clusters exist and how they are doing, nothing about how to reach them.
-  const isAdmin = () => { const c = currentContext(); return !!c && hasRole(c.role, 'admin') }
 
   fastify.get('/', async () => {
-    if (!isAdmin()) return { success: true, data: listClusters().map(c => ({ id: c.id, name: c.name, kind: c.kind })) }
+    if (!contextIsAdmin()) return { success: true, data: listClusters().map(c => ({ id: c.id, name: c.name, kind: c.kind })) }
     return {
       success: true,
       data: listClusters().map(c => ({ ...c, token: c.kind === 'remote' ? { saved: hasRemoteToken(c.id), id: remoteTokenId(c.id) } : null })),
@@ -204,7 +209,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/overview', async (_req, reply) => {
     try {
       const data = await commandCenter()
-      if (isAdmin()) return { success: true, data }
+      if (contextIsAdmin()) return { success: true, data }
       // Connection errors can name addresses and fingerprints: below admin they become plain words.
       const plain = (t: string) => (/certificate/i.test(t) ? 'Its certificate changed; an admin needs to check it.' : 'Not answering right now.')
       const scrub = (a: any) => (a.severity === 'crit' && /answer|connect|certificate/i.test(a.title) ? { ...a, detail: plain(`${a.title} ${a.detail}`) } : a)
@@ -253,7 +258,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       const login = b.login && typeof b.login === 'object' && (b.login.password || b.login.privateKey) ? b.login : null
       const input = {
         name: String(b.name ?? ''), address, port, note: b.note, tokenId: String(b.tokenId ?? ''), tokenSecret: String(b.tokenSecret ?? ''),
-        fingerprint: fp, login, monitoring: b.monitoring !== false, sending: b.sending !== false, previewHash: typeof b.previewHash === 'string' ? b.previewHash : null, by: who(),
+        fingerprint: fp, login, monitoring: b.monitoring !== false, sending: b.sending !== false, previewHash: typeof b.previewHash === 'string' ? b.previewHash : null, by: contextActor().email,
       }
       // The work (certificate, token, keys, logins, monitoring) can take minutes: it runs as a job, as this signed-in
       // person (whose vault session it needs), and the page polls GET /add-jobs/:id for the answer.
@@ -300,7 +305,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     if (other.length) return reply.status(422).send({ success: false, error: `Change ${other.join(', ')} through the connection settings (they need your master password), not here.` })
     try {
       const c = await updateCluster(row.id, { name: b.name, note: b.note })
-      await auditCredentialUse('cluster.edit', `cluster:${row.id}`, { by: who(), fields: Object.keys(b) })
+      await auditCredentialUse('cluster.edit', `cluster:${row.id}`, { ...auditBy(contextActor()), fields: Object.keys(b) })
       return { success: true, data: c }
     } catch (e) { return fail(reply, e) }
   })
@@ -324,7 +329,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }
       forgetRemoteClient(row.id)
-      await auditCredentialUse('cluster.connection.edit', `cluster:${row.id}`, { by: who(), fields: Object.keys(b).filter(k => b[k] !== undefined), cleared })
+      await auditCredentialUse('cluster.connection.edit', `cluster:${row.id}`, { ...auditBy(contextActor()), fields: Object.keys(b).filter(k => b[k] !== undefined), cleared })
       return { success: true, data: c, certNeedsConfirming: c.kind === 'remote' && !c.cert.fingerprint, loginsCleared: cleared }
     } catch (e) { return fail(reply, e) }
   })
@@ -356,23 +361,23 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
         const local = t.identity.local ?? (t.nodes.length === 1 ? t.nodes[0] : null)
         if (!local || !names.includes(local.toLowerCase())) {
           const why = `The server at ${row.address} says it is ${local ?? 'an unnamed node'}, but its certificate is for ${names.join(', ') || 'no name'}. Nothing was changed.`
-          await auditCredentialUse('cluster.certificate.blocked', `cluster:${row.id}`, { by: who(), device: device.device, node: local ?? '' })
+          await auditCredentialUse('cluster.certificate.blocked', `cluster:${row.id}`, { ...auditBy(contextActor()), device: device.device, node: local ?? '' })
           await v.alert(`${row.name}: the certificate check failed`, [why])
           return reply.status(409).send({ success: false, code: 'identity_mismatch', error: why })
         }
         const how = `${device.how}; its certificate is for ${device.device}, which its own API confirms`
-        const c = await confirmFingerprint(row.id, now.fingerprint, who(), how)
+        const c = await confirmFingerprint(row.id, now.fingerprint, contextActor().email, how)
         forgetRemoteClient(row.id)
-        await auditCredentialUse('cluster.certificate.verify', `cluster:${row.id}`, { by: who(), how })
+        await auditCredentialUse('cluster.certificate.verify', `cluster:${row.id}`, { ...auditBy(contextActor()), how })
         return { success: true, data: c }
       }
       const fp = normaliseFingerprint(String(req.body?.fingerprint ?? ''))
       if (!fp) throw new ClusterRefusal('That is not a SHA-256 certificate fingerprint.')
       const now = await probeCertificate(row.address, row.port)
       if (now.fingerprint !== fp) return reply.status(409).send({ success: false, code: 'cert_changed', error: `The server presents ${now.fingerprint} right now, not the fingerprint you confirmed. Nothing was changed.`, presented: now.fingerprint })
-      const c = await confirmFingerprint(row.id, fp, who())
+      const c = await confirmFingerprint(row.id, fp, contextActor().email)
       forgetRemoteClient(row.id)
-      await auditCredentialUse('cluster.certificate.confirm', `cluster:${row.id}`, { by: who() })
+      await auditCredentialUse('cluster.certificate.confirm', `cluster:${row.id}`, { ...auditBy(contextActor()) })
       return { success: true, data: c }
     } catch (e) { return fail(reply, e) }
   })
@@ -390,7 +395,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       if (t.missing.length) throw new ClusterRefusal(`That token lacks administrator rights (${t.missing.join(', ')}). Nothing was changed.`)
       await replaceRemoteToken(row.id, String(req.body?.tokenId ?? ''), String(req.body?.tokenSecret ?? ''))
       forgetRemoteClient(row.id)
-      await auditCredentialUse('cluster.token.replace', `cluster:${row.id}`, { by: who() })
+      await auditCredentialUse('cluster.token.replace', `cluster:${row.id}`, { ...auditBy(contextActor()) })
       return { success: true, data: { saved: true } }
     } catch (e) { return fail(reply, e) }
   })
@@ -410,7 +415,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       await removeCluster(row.id)
       forgetRemoteClient(row.id)
       forgetRemoteGuestConfigService(row.id)
-      await auditCredentialUse('cluster.remove', `cluster:${row.id}`, { by: who(), name: row.name })
+      await auditCredentialUse('cluster.remove', `cluster:${row.id}`, { ...auditBy(contextActor()), name: row.name })
       const [user, token] = (tokenId ?? 'hyperprox@pve!main').split('!')
       return { success: true, data: { removed: true, cleanup: [`pveum user token remove ${user} ${token}`, `pveum user delete ${user}`], sendingKeysRemoved: sending.removed, sendingKeysManual: sending.manual } }
     } catch (e) { return fail(reply, e) }
@@ -444,20 +449,20 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
         : null
       if (typeof req.body?.record === 'string' && req.body.record.trim()) {
         const anchored = await saveAnchors(row.id, req.body.record, 'pasted')
-        await auditCredentialUse('host_key.anchor.save', `cluster:${row.id}`, { by: who(), source: 'pasted', nodes: anchored.nodes, added: anchored.added, skipped: anchored.skipped })
-        if (anchored.replaced.length) await anchorReplaced(row.name, `cluster:${row.id}`, who(), anchored.replaced)
+        await auditCredentialUse('host_key.anchor.save', `cluster:${row.id}`, { ...auditBy(contextActor()), source: 'pasted', nodes: anchored.nodes, added: anchored.added, skipped: anchored.skipped })
+        if (anchored.replaced.length) await anchorReplaced(row.name, `cluster:${row.id}`, contextActor().email, anchored.replaced)
       }
       const out = await runInCluster(row.id, async () => {
         const names = ((await pveFromEnv().fetchStrict<any[]>('/nodes').catch(() => [])) ?? []).map(n => String(n.node))
         const nodes = await Promise.all(names.filter(n => row.nodeAddresses[n]).map(async n => ({ name: n, address: row.nodeAddresses[n], cred: given ?? await nodeCredential(n).catch(() => null) })))
-        const verdicts = await verifyNodes({ cluster: row.name, anchorScope: row.id, scope: 'remote', nodes, by: who() })
+        const verdicts = await verifyNodes({ cluster: row.name, anchorScope: row.id, scope: 'remote', nodes, by: contextActor().email })
         const saved: string[] = []
         if (given) for (const v of verdicts) {
           if (v.state !== 'verified' && v.state !== 'already') continue
           const r = await execOnNode({ host: v.host, cred: given, command: 'true', requirePin: true, timeoutMs: 20_000 }).catch(() => null)
           if (r?.code !== 0) continue
           await saveRemoteNodeLogin(row.id, v.node, JSON.stringify(given))
-          await auditCredentialUse('cluster.node_login.save', `cluster:${row.id}`, { by: who(), node: v.node, source: 'verify keys' })
+          await auditCredentialUse('cluster.node_login.save', `cluster:${row.id}`, { ...auditBy(contextActor()), node: v.node, source: 'verify keys' })
           saved.push(v.node)
         }
         return { nodes: verdicts.map(v => ({ node: v.node, state: v.state, how: v.why, login: saved.includes(v.node) ? 'saved' : null })), missingAddress: names.filter(n => !row.nodeAddresses[n]),
@@ -498,7 +503,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       const r = await runInCluster(row.id, () => execOnNode({ host: addr, cred, command: 'true', requirePin: true, timeoutMs: 20_000 }))
       if (r.code !== 0) throw new ClusterRefusal('The login was accepted but a test command failed. Nothing was saved.')
       await saveRemoteNodeLogin(row.id, node, JSON.stringify(cred))
-      await auditCredentialUse('cluster.node_login.save', `cluster:${row.id}`, { by: who(), node })
+      await auditCredentialUse('cluster.node_login.save', `cluster:${row.id}`, { ...auditBy(contextActor()), node })
       return { success: true, data: { saved: true } }
     } catch (e: any) {
       if (/authentication/i.test(String(e?.message))) return reply.status(422).send({ success: false, error: 'That login was refused. Nothing was saved.' })
@@ -510,7 +515,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     try {
       await removeRemoteNodeLogin(row.id, req.params.node)
-      await auditCredentialUse('cluster.node_login.remove', `cluster:${row.id}`, { by: who(), node: req.params.node })
+      await auditCredentialUse('cluster.node_login.remove', `cluster:${row.id}`, { ...auditBy(contextActor()), node: req.params.node })
       return { success: true }
     } catch (e) { return fail(reply, e) }
   })
@@ -533,14 +538,14 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     const kind = req.body?.kind === 'remove' ? 'remove' : 'install'
     const answers = Object.fromEntries(Object.entries(req.body?.answers ?? {}).map(([k, v]) => [k, v === true]))
-    try { return { success: true, data: await previewMonitoring(row.id, who(), kind, answers) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await previewMonitoring(row.id, contextActor().email, kind, answers) } } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<{ Params: { id: string }; Body: { planId?: string } }>('/:id/monitoring/apply', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     try {
-      const r = await applyMonitoring(String(req.body?.planId ?? ''), who(), undefined, row.id)
-      await auditCredentialUse('cluster.monitoring.apply', `cluster:${row.id}`, { by: who(), ok: r.ok, nodes: r.results.map(x => x.node) })
+      const r = await applyMonitoring(String(req.body?.planId ?? ''), contextActor().email, undefined, row.id)
+      await auditCredentialUse('cluster.monitoring.apply', `cluster:${row.id}`, { ...auditBy(contextActor()), ok: r.ok, nodes: r.results.map(x => x.node) })
       return { success: true, data: r }
     } catch (e) { return fail(reply, e) }
   })
@@ -563,7 +568,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Body: { src?: string; dst?: string; dstNode?: string; root?: string } }>('/files/keys', async (req, reply) => {
     const b = req.body ?? {}
-    try { return { success: true, data: await setupSending({ src: String(b.src ?? ''), dst: String(b.dst ?? ''), dstNode: String(b.dstNode ?? ''), root: String(b.root ?? ''), by: who() }) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await setupSending({ src: String(b.src ?? ''), dst: String(b.dst ?? ''), dstNode: String(b.dstNode ?? ''), root: String(b.root ?? ''), by: contextActor().email }) } } catch (e) { return fail(reply, e) }
   })
 
   const endpoint = (x: any) => ({ cluster: String(x?.cluster ?? ''), node: String(x?.node ?? ''), path: String(x?.path ?? '') })
@@ -572,12 +577,12 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     if (b.mode && b.mode !== 'copy') return reply.status(422).send({ success: false, error: 'Only Copy is offered. Sync and Move are coming soon.' })
     try {
       const input: CopyInput = { src: endpoint(b.src), dst: endpoint(b.dst), speedKBps: Math.round(Number(b.speedKBps ?? 0)), plexScan: b.plexScan === true }
-      return { success: true, data: await previewCopy(who(), input) }
+      return { success: true, data: await previewCopy(contextActor().email, input) }
     } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<{ Body: { previewId?: string } }>('/files/jobs', async (req, reply) => {
-    try { const j = await startCopy(String(req.body?.previewId ?? ''), who()); void copies.tick(); return { success: true, data: j } } catch (e) { return fail(reply, e) }
+    try { const j = await startCopy(String(req.body?.previewId ?? ''), contextActor().email); void copies.tick(); return { success: true, data: j } } catch (e) { return fail(reply, e) }
   })
   fastify.get('/files/jobs', async (_req, reply) => {
     try { return { success: true, data: await jobStore().list() } } catch (e) { return fail(reply, e) }
@@ -604,7 +609,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       if (moved) await deletePlexToken(row.id)
       await updateClusterRow(row.id, { plexUrl: url })
       if (req.body?.token) await savePlex(row.id, String(req.body.token))
-      await auditCredentialUse('cluster.plex.save', `cluster:${row.id}`, { by: who(), tokenDropped: moved && !req.body?.token })
+      await auditCredentialUse('cluster.plex.save', `cluster:${row.id}`, { ...auditBy(contextActor()), tokenDropped: moved && !req.body?.token })
       return { success: true, data: { tokenDropped: moved && !req.body?.token } }
     } catch (e) { return fail(reply, e) }
   })
@@ -618,7 +623,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const g = checkGuest(req.params.node, req.params.type, req.params.vmid)
         const out = await runInCluster(row.id, () => fn(g, req.body ?? {}, row.name))
-        await auditCredentialUse(`cluster.guest.${action}`, `cluster:${row.id}`, { by: who(), node: g.node, guest: `${g.type}/${g.vmid}`, ok: out?.ok ?? null, ...(req.body?.action ? { action: String(req.body.action) } : {}) })
+        await auditCredentialUse(`cluster.guest.${action}`, `cluster:${row.id}`, { ...auditBy(contextActor()), node: g.node, guest: `${g.type}/${g.vmid}`, ok: out?.ok ?? null, ...(req.body?.action ? { action: String(req.body.action) } : {}) })
         return reply.status(out?.ok === false ? 502 : 200).send({ success: out?.ok !== false, data: { ...out, cluster: row.name }, ...(out?.ok === false ? { error: out.words } : {}) })
       } catch (e) { return fail(reply, e) }
     }

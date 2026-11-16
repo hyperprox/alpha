@@ -15,6 +15,7 @@ import { spawn, execFile } from 'child_process'
 import { randomBytes } from 'crypto'
 import { getCredential, setCredential } from './credentials'
 import { auditCredentialUse } from './audit'
+import { auditBy } from './http/request-actor'
 
 export interface GrafanaAdminDeps {
   running(): Promise<boolean>
@@ -69,7 +70,7 @@ export async function ensureGrafanaAdmin(d: GrafanaAdminDeps | null = syncDeps, 
   let made = false
   if (!pw) { pw = d.generate(); await store(d, pw); made = true }
   await d.apply(pw)
-  await auditCredentialUse(made ? 'grafana_admin.generate' : 'grafana_admin.apply', 'system:grafana', { by })
+  await auditCredentialUse(made ? 'grafana_admin.generate' : 'grafana_admin.apply', 'system:grafana', { ...auditBy(by) })
   return made ? 'generated' : 'applied'
 }
 
@@ -84,5 +85,5 @@ export async function resetGrafanaAdmin(d: GrafanaAdminDeps = productionGrafanaD
     await d.write(old ?? '').catch(() => undefined)
     throw e
   }
-  await auditCredentialUse('grafana_admin.reset', 'system:grafana', { by })
+  await auditCredentialUse('grafana_admin.reset', 'system:grafana', { ...auditBy(by) })
 }

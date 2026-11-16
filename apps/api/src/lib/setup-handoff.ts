@@ -19,6 +19,7 @@ import { parseAnchorOutput, saveAnchors } from './hostkey-verify'
 import { setCredentials } from './credentials'
 import { requestContext, type RequestContext } from './auth'
 import { auditCredentialUse } from './audit'
+import { auditBy } from './http/request-actor'
 
 export interface HeldNodeLogin {
   username: string
@@ -154,7 +155,7 @@ export async function flushHeldSecrets(as: RequestContext): Promise<{ stored: st
       try {
         const { nodes: n, skipped } = await saveAnchors('home', held.hostRecord, 'installer')
         // The nodes whose own key files the installer could not read, and why, are kept in the audit row.
-        await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by: as.email, source: 'installer', nodes: n, skipped })
+        await auditCredentialUse('host_key.anchor.save', 'cluster:home', { ...auditBy(as), source: 'installer', nodes: n, skipped })
         stored.push(`host-key record for ${n.length} node${n.length === 1 ? '' : 's'}`)
         delete held.hostRecord
       } catch { failed.push('host-key record') }
@@ -172,7 +173,7 @@ export async function flushHeldSecrets(as: RequestContext): Promise<{ stored: st
         }
         try {
           await saveCredential(`node-${node}`, { username: nl.username, password: nl.password, privateKey: nl.privateKey, passphrase: nl.passphrase, port: 22 } as any)
-          await auditCredentialUse('node_login.save', `node:${node}`, { by: as.email, source: 'setup wizard' })
+          await auditCredentialUse('node_login.save', `node:${node}`, { ...auditBy(as), source: 'setup wizard' })
           stored.push(`node login for ${node}`)
         } catch { ok = false; failed.push(`node login for ${node}`) }
       }
@@ -181,7 +182,7 @@ export async function flushHeldSecrets(as: RequestContext): Promise<{ stored: st
     if (held.godaddy) {
       try {
         await setCredentials('dns', 'godaddy', { api_key: held.godaddy.key, api_secret: held.godaddy.secret })
-        await auditCredentialUse('dns_key.save', 'dns:godaddy', { by: as.email, source: 'setup wizard' })
+        await auditCredentialUse('dns_key.save', 'dns:godaddy', { ...auditBy(as), source: 'setup wizard' })
         stored.push('GoDaddy key')
         delete held.godaddy
       } catch { failed.push('GoDaddy key') }

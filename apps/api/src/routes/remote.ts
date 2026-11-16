@@ -11,6 +11,7 @@
 // =============================================================================
 
 import { sendFailure } from '../lib/failure'
+import { actorOf, isAdmin } from '../lib/http/request-actor'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
 import { isUnlocked, onUnlock } from '../lib/vault/state'
@@ -127,13 +128,11 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
     }
     fastify.addHook('onClose', async () => service.close())
 
-    const by = (req: FastifyRequest) => req.session?.email ?? 'unknown'
-
     // Viewer and up. The gate has already required a session.
     // Below admin: overlay status, version and connection only; no LAN or cluster addresses.
     fastify.get('/overview', async (req, reply) => {
       // Only an admin's read may start the read-only probe (and only when its cache has aged out).
-      const admin = !!req.session && hasRole(req.session.role, 'admin')
+      const admin = isAdmin(req)
       try { return overviewForRole(await service.overview({ mayProbe: admin }), admin) }
       catch (e) { return sendError(reply, e) }
     })
@@ -150,7 +149,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       try { return { machineIds: await service.getExclusions(), tag: IGNORE_TAG } } catch (e) { return sendError(reply, e) }
     })
     fastify.put<{ Body: { machineIds?: unknown } }>('/exclusions', { preHandler: adminOnly }, async (req, reply) => {
-      try { return { machineIds: await service.setExclusions(req.body?.machineIds as string[], by(req)), tag: IGNORE_TAG } }
+      try { return { machineIds: await service.setExclusions(req.body?.machineIds as string[], actorOf(req).email), tag: IGNORE_TAG } }
       catch (e) { return sendError(reply, e) }
     })
 
@@ -166,7 +165,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
         const job = service.startJob({
           action: 'install', provider: b.provider as any, machineIds: b.machineIds as any, tags: b.tags, mode: b.mode, existing: b.existing,
           auth: b.auth, acceptDns: b.acceptDns,
-        }, by(req))
+        }, actorOf(req).email)
         return reply.status(202).send({ job })
       } catch (e) { return sendError(reply, e) }
     })
@@ -175,7 +174,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       fastify.post<{ Params: MachineParams }>(`/machines/:id/:provider/${action}`, { preHandler: adminOnly }, async (req, reply) => {
         try {
           const { id, provider } = params(req)
-          return reply.status(202).send({ job: service.startJob({ action, provider, machineIds: [id] }, by(req)) })
+          return reply.status(202).send({ job: service.startJob({ action, provider, machineIds: [id] }, actorOf(req).email) })
         } catch (e) { return sendError(reply, e) }
       })
     }
@@ -189,7 +188,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
           const job = service.startJob({
             action: 'routing', provider, machineIds: [id],
             subnets: (b.subnets as string[] | undefined) ?? [], exitNode: b.exitNode === true, acknowledge: b.acknowledge === true,
-          }, by(req))
+          }, actorOf(req).email)
           return reply.status(202).send({ job })
         } catch (e) { return sendError(reply, e) }
       })
@@ -197,14 +196,14 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
     fastify.delete<{ Params: MachineParams }>('/machines/:id/:provider', { preHandler: adminOnly }, async (req, reply) => {
       try {
         const { id, provider } = params(req)
-        return reply.status(202).send({ job: service.startJob({ action: 'uninstall', provider, machineIds: [id] }, by(req)) })
+        return reply.status(202).send({ job: service.startJob({ action: 'uninstall', provider, machineIds: [id] }, actorOf(req).email) })
       } catch (e) { return sendError(reply, e) }
     })
 
     fastify.post<{ Params: { id: string } }>('/machines/:id/tun', { preHandler: adminOnly }, async (req, reply) => {
       try {
         if (!MACHINE_ID.test(req.params.id)) throw new RemoteInputError('Unknown machine id format')
-        return await service.applyTun(req.params.id, by(req))
+        return await service.applyTun(req.params.id, actorOf(req).email)
       } catch (e) { return sendError(reply, e) }
     })
 
@@ -216,7 +215,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       try {
         const { id, provider } = params(req)
         if (req.body?.confirm !== true) throw new RemoteInputError('Send { confirm: true } after showing the preview')
-        return await service.addFirewallRule(id, provider, by(req))
+        return await service.addFirewallRule(id, provider, actorOf(req).email)
       } catch (e) { return sendError(reply, e) }
     })
 
@@ -231,7 +230,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       try {
         if (!MACHINE_ID.test(req.params.id)) throw new RemoteInputError('Unknown machine id format')
         if (typeof req.body?.fingerprint !== 'string') throw new RemoteInputError('fingerprint is required')
-        return await service.pinHostKey(req.params.id, req.body.fingerprint, by(req))
+        return await service.pinHostKey(req.params.id, req.body.fingerprint, actorOf(req).email)
       } catch (e) { return sendError(reply, e) }
     })
 
@@ -241,14 +240,14 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       try {
         const { id, provider } = params(req)
         if (typeof req.body?.disabled !== 'boolean') throw new RemoteInputError('disabled must be true or false')
-        return { message: await service.setKeyExpiry(id, provider, req.body.disabled, by(req)) }
+        return { message: await service.setKeyExpiry(id, provider, req.body.disabled, actorOf(req).email) }
       } catch (e) { return sendError(reply, e) }
     })
 
     fastify.post<{ Params: MachineParams; Body: { tags?: unknown } }>('/machines/:id/:provider/tags', { preHandler: adminOnly }, async (req, reply) => {
       try {
         const { id, provider } = params(req)
-        return { message: await service.setTags(id, provider, req.body?.tags as string[], by(req)) }
+        return { message: await service.setTags(id, provider, req.body?.tags as string[], actorOf(req).email) }
       } catch (e) { return sendError(reply, e) }
     })
 
@@ -257,7 +256,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       try {
         const { id, provider } = params(req)
         reply.header('cache-control', 'no-store')
-        const v = await service.revealLogin(id, provider, by(req))
+        const v = await service.revealLogin(id, provider, actorOf(req).email)
         if (!v) return reply.status(404).send({ error: 'No sign-in link is waiting for this machine (they expire after about ten minutes).' })
         return v
       } catch (e) { return sendError(reply, e) }
@@ -267,13 +266,13 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
     fastify.post<{ Params: { provider: string; deviceId: string } }>('/devices/:provider/:deviceId/approve', { preHandler: adminOnly }, async (req, reply) => {
       try {
         if (!isProviderId(req.params.provider) || !DEVICE.test(req.params.deviceId)) throw new RemoteInputError('Unknown provider or device id')
-        return { message: await service.approveDevice(req.params.provider, req.params.deviceId, by(req)) }
+        return { message: await service.approveDevice(req.params.provider, req.params.deviceId, actorOf(req).email) }
       } catch (e) { return sendError(reply, e) }
     })
     fastify.delete<{ Params: { provider: string; deviceId: string } }>('/devices/:provider/:deviceId', { preHandler: adminOnly }, async (req, reply) => {
       try {
         if (!isProviderId(req.params.provider) || !DEVICE.test(req.params.deviceId)) throw new RemoteInputError('Unknown provider or device id')
-        return { message: await service.removeDevice(req.params.provider, req.params.deviceId, by(req)) }
+        return { message: await service.removeDevice(req.params.provider, req.params.deviceId, actorOf(req).email) }
       } catch (e) { return sendError(reply, e) }
     })
 
@@ -281,7 +280,6 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
     //  Documented in docs/remote-access.md, "API for other pages". Status is for every role (role-filtered);
     //  everything that changes something is admin, and install, uninstall and settings are re-confirmed.
 
-    const isAdmin = (req: FastifyRequest) => !!req.session && hasRole(req.session.role, 'admin')
     const statusOf = (m: RemoteMachineRow, admin: boolean) => ({
       machineId: m.id, kind: m.kind, name: m.name, node: m.node ?? null, vmid: m.vmid ?? null, running: m.running, self: !!m.self,
       providers: Object.fromEntries(Object.entries(m.cells).map(([p, c]) => [p, {
@@ -314,13 +312,13 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       try {
         const { id, provider } = params(req)
         if (req.body?.confirm !== true) throw new RemoteInputError('Send { confirm: true } after showing the install preview')
-        return reply.status(202).send({ job: await service.oneClickInstall(id, provider, by(req)) })
+        return reply.status(202).send({ job: await service.oneClickInstall(id, provider, actorOf(req).email) })
       } catch (e) { return sendError(reply, e) }
     })
     fastify.delete<{ Params: MachineParams }>('/v1/machines/:id/:provider', { preHandler: adminOnly }, async (req, reply) => {
       try {
         const { id, provider } = params(req)
-        return reply.status(202).send({ job: service.startJob({ action: 'uninstall', provider, machineIds: [id] }, by(req)) })
+        return reply.status(202).send({ job: service.startJob({ action: 'uninstall', provider, machineIds: [id] }, actorOf(req).email) })
       } catch (e) { return sendError(reply, e) }
     })
     fastify.get<{ Params: MachineParams }>('/v1/machines/:id/:provider/settings', { preHandler: adminOnly }, async (req, reply) => {
@@ -333,7 +331,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       try {
         const { id, provider } = params(req)
         if (req.body?.confirm !== true) throw new RemoteInputError('Send { confirm: true } after showing the settings preview')
-        return reply.status(202).send({ job: service.startJob({ action: 'configure', provider, machineIds: [id], prefs: req.body?.prefs, acknowledge: req.body?.acknowledge === true }, by(req)) })
+        return reply.status(202).send({ job: service.startJob({ action: 'configure', provider, machineIds: [id], prefs: req.body?.prefs, acknowledge: req.body?.acknowledge === true }, actorOf(req).email) })
       } catch (e) { return sendError(reply, e) }
     })
     fastify.get<{ Params: { id: string } }>('/v1/jobs/:id', { preHandler: adminOnly }, async (req, reply) => {
@@ -348,7 +346,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
         const { id, provider } = params(req)
         const tags = req.body?.tags
         if (tags !== undefined && (!Array.isArray(tags) || !tags.every(t => typeof t === 'string'))) throw new RemoteInputError('tags must be a list')
-        const out = await service.manualKey(id, provider, tags as string[] | undefined, by(req))
+        const out = await service.manualKey(id, provider, tags as string[] | undefined, actorOf(req).email)
         reply.header('cache-control', 'no-store')
         return out
       } catch (e) { return sendError(reply, e) }

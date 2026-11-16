@@ -11,7 +11,7 @@ import * as net from 'net'
 import { getProviderCredentials } from '../lib/credentials'
 import { ProxmoxClient } from '../lib/proxmox-client'
 import { hardware, gpuBadges } from '../lib/hardware'
-import { sendFailure } from '../lib/failure'
+import { answerData } from '../lib/http/answer'
 
 export type GPUType = 'nvidia' | 'amd' | 'intel-igpu' | 'intel-arc' | 'unknown'
 
@@ -51,10 +51,6 @@ export async function detectNodeGPUs(nodeName: string, client: ProxmoxClient): P
   }
 }
 
-const wrap = async (reply: any, fn: () => Promise<any>) => {
-  try   { return { success: true, data: await fn() } }
-  catch (e: any) { return sendFailure(reply.request, reply, e) }
-}
 
 // Where each vendor's figures are served. AMD's come from node_exporter's drm collector, on its own port.
 const EXPORTER_PORTS: Record<GPUType, number> = { nvidia: 9835, amd: 9100, 'intel-igpu': 8081, 'intel-arc': 8081, unknown: 0 }
@@ -63,26 +59,26 @@ const SETUP_HINT = { title: 'Not monitored yet', steps: ['Open Settings → Setu
 export const gpuRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /api/gpu — all GPUs across all nodes
-  fastify.get('/', async (_, r) => wrap(r, async () => {
+  fastify.get('/', async (_, r) => answerData(r, async () => {
     const client = await getProxmoxClient()
     const nodes  = await client.getNodes()
     return (await Promise.all(nodes.map((n: any) => detectNodeGPUs(n.node, client)))).flat()
   }))
 
   // GET /api/gpu/badges — [{ node, gpus: [{ vendor, kind, name }] }] for the Infrastructure badges
-  fastify.get('/badges', async (_, r) => wrap(r, () => gpuBadges()))
+  fastify.get('/badges', async (_, r) => answerData(r, () => gpuBadges()))
 
   // GET /api/gpu/:node — GPUs for a specific node
-  fastify.get('/:node', async (req: any, r) => wrap(r, async () => detectNodeGPUs(req.params.node, await getProxmoxClient())))
+  fastify.get('/:node', async (req: any, r) => answerData(r, async () => detectNodeGPUs(req.params.node, await getProxmoxClient())))
 
   // GET /api/gpu/:node/metrics-status — is its exporter answering
-  fastify.get('/:node/metrics-status', async (req: any, r) => wrap(r, async () => {
+  fastify.get('/:node/metrics-status', async (req: any, r) => answerData(r, async () => {
     const client = await getProxmoxClient()
     return statusFor(req.params.node, client, await nodeAddresses(client))
   }))
 
   // GET /api/gpu/all/metrics-status — every node
-  fastify.get('/all/metrics-status', async (_, r) => wrap(r, async () => {
+  fastify.get('/all/metrics-status', async (_, r) => answerData(r, async () => {
     const client = await getProxmoxClient()
     const [nodes, addrs] = await Promise.all([client.getNodes(), nodeAddresses(client)])
     return Promise.all(nodes.map((n: any) => statusFor(n.node, client, addrs)))

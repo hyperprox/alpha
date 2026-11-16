@@ -38,6 +38,7 @@ import {
   q, rootFor, containmentScript, parseContainment, CONTAINMENT_LINE, liveNodeRunner, sendKey, setupSending, previewCopy, startCopy, jobStore, kickCopies,
   fmtDuration, plexScan, privateAddress, type NodeRunner, type JobRow, type SendKey,
 } from './files'
+import { auditBy } from '../http/request-actor'
 
 // ---------------------------------------------------------------------------
 //  What a node tells us
@@ -770,11 +771,11 @@ export async function setupSend(dstId: string, by: string, o: { previewId: strin
     if (dstAllowed.length !== dRow.allowedRoots.length) { await updateCluster(dstId, { allowedRoots: dstAllowed }); changed.push(`${lib.name} allowed`) }
     if (keyNeeded) await deps.setupKey({ src: HOME_ID, dst: dstId, dstNode: lib.node, root: lib.path, by, dstAddress })
   } catch (e: any) {
-    await auditCredentialUse('cluster.files.setup', `cluster:${dstId}`, { by, ok: false, done: changed.length })
+    await auditCredentialUse('cluster.files.setup', `cluster:${dstId}`, { ...auditBy(by), ok: false, done: changed.length })
     if (!changed.length && e instanceof ClusterRefusal) throw new ClusterRefusal(`${e.message} Nothing was changed.`, e.code)
     throw new ClusterRefusal(`Setup stopped part way (${changed.length ? `${changed.join(', ')}; ` : ''}the sending key was not made): ${e?.message ?? e} Press Send again to finish.`)
   }
-  await auditCredentialUse('cluster.files.setup', `cluster:${dstId}`, { by, ok: true, sourceNode: plan.sourceNode, homeFolders: srcRoots.length, keysMade: keyNeeded ? 1 : 0, hostKeysConfirmed: r.hostKeys.length })
+  await auditCredentialUse('cluster.files.setup', `cluster:${dstId}`, { ...auditBy(by), ok: true, sourceNode: plan.sourceNode, homeFolders: srcRoots.length, keysMade: keyNeeded ? 1 : 0, hostKeysConfirmed: r.hostKeys.length })
   return { words: `Ready. Your home library can now be sent to ${dRow.name}'s ${lib.name}.`, readiness: await readinessFor(plan, srcRoots, [lib], deps) }
 }
 
