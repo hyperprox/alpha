@@ -109,7 +109,7 @@ export default function ClusterPage() {
   const remote = k === 'remote'
   // The Home Assistant tab shows only when a house is linked to this server (home: or not linked at all).
   const hasHouse = (houses ?? []).some(i => i.clusterId === c.id || (!remote && !i.clusterId))
-  const tabs = (remote ? TABS : TABS.filter(t => ['overview', 'hardware', 'files', 'home', 'settings'].includes(t.id))).filter(t => t.id !== 'home' || hasHouse)
+  const tabs = (remote ? TABS : TABS.filter(t => ['hardware', 'files', 'home', 'settings'].includes(t.id))).filter(t => t.id !== 'home' || hasHouse)
   const current = tabs.find(t => t.id === tab) ? tab : tabs[0].id
 
   return (

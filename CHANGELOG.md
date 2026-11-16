@@ -24,8 +24,8 @@ know or do before they install. Newest entry at the top.
 ## 2026-11-16 — Opening the home cluster
 
 ### Fixed
-- **Open on your home cluster now opens its page.** On the dashboard and the Command center, Open on the home cluster went back to the dashboard, so it seemed to do nothing. It now opens the cluster page, with an Overview tab beside Hardware, Files and Settings.
-  - Technical: `openHref` in `components/clusters/CommandCenter.tsx` always links `/clusters/<id>`; the home cluster keeps the `overview` tab in `app/clusters/[id]/page.tsx`.
+- **Open on your home cluster now takes you to its dials.** On the dashboard and the Command center, Open on the home cluster went back to the dashboard and seemed to do nothing. It now opens the dashboard with More detail unfolded and in view: the cluster dials, the GPU dials and the connected services.
+  - Technical: `openHref` in `components/clusters/CommandCenter.tsx` links the home cluster to `/dashboard?more=1`; `app/dashboard/page.tsx` opens `details#more` and scrolls to it once the first numbers arrive.
 
 ## 2026-11-16 — K3s (Kubernetes) in the Catalogue, with its own plug-in
 

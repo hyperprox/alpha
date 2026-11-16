@@ -605,6 +605,19 @@ export default function DashboardView() {
     return () => { alive = false; clearInterval(id) }
   }, [])
 
+  // Open on the home cluster lands here with ?more=1: unfold "More detail" (the dials and the GPU) and bring it into view,
+  // once the numbers are in and the section exists.
+  const moreDone = useRef(false)
+  useEffect(() => {
+    if (moreDone.current || !fast || typeof window === 'undefined') return
+    if (new URLSearchParams(window.location.search).get('more') !== '1') return
+    const el = document.getElementById('more') as HTMLDetailsElement | null
+    if (!el) return
+    moreDone.current = true
+    el.open = true
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [fast])
+
   // The GPU card's figures (load, clocks, temperature, guests) are not on the WebSocket feed: ask again every 15 seconds,
   // and keep the last answer when one try fails.
   useEffect(() => {
@@ -711,7 +724,7 @@ export default function DashboardView() {
       <DashboardSitesCard/>
 
       {/* The dials, GPU, links and Ceph: detail rather than status, so folded away until asked for. */}
-      <details className="hx-more">
+      <details className="hx-more" id="more">
         <summary className="font-mono" style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-soft)', padding: '8px 0' }}>More detail: cluster dials, GPU, network, Ceph, HA</summary>
         <div className="flex flex-col gap-4 mt-3">
       {/* The dials, the GPU and the services this install talks to */}

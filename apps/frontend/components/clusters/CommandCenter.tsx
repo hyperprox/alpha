@@ -92,7 +92,8 @@ function Card({ value, label }: { value: string; label: string }) {
   )
 }
 
-const openHref = (p: { id: string }) => `/clusters/${p.id}`
+// The home cluster opens the dashboard with More detail (its dials and GPU) unfolded; a remote server opens its own page.
+const openHref = (p: { id: string; kind: string }) => (p.kind === 'home' ? '/dashboard?more=1' : `/clusters/${p.id}`)
 
 export function PanelView({ p, houses = [] }: { p: ClusterPanel; houses?: Instance[] }) {
   const k = p.kind
