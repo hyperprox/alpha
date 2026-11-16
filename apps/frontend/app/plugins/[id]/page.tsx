@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, use } from 'react'
 import type { PluginVisual } from '@hyperprox/types'
 import { HomeAssistantPage } from '@/components/plugins/home-assistant/HomeAssistant'
 import { QnapPage } from '@/components/plugins/qnap/QnapPage'
+import { DnsBlockerPage } from '@/components/plugins/dns-blocker/DnsBlockerPage'
 import { AsusPage } from '@/components/plugins/asus/AsusPage'
 import { PbsPage } from '@/components/plugins/pbs/PbsPage'
 import { NextcloudPage } from '@/components/plugins/nextcloud/NextcloudPage'
@@ -524,6 +525,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
 export default function PluginPage(props: { params: Promise<{ id: string }> }) {
   const params = use(props.params)
   if (params.id === 'qnap') return <QnapPage />
+  if (params.id === 'pihole' || params.id === 'adguard') return <DnsBlockerPage kind={params.id} />
   if (params.id === 'asus') return <AsusPage />
   if (params.id === 'pbs') return <PbsPage />
   if (params.id === 'nextcloud') return <NextcloudPage />

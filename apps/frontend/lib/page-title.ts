@@ -13,7 +13,7 @@ export interface PageMeta { crumb: string; title: string; crumbHref?: string }
 export const PLUGIN_NAMES: Record<string, string> = {
   'home-assistant': 'Home Assistant', plex: 'Plex', arrstack: 'Arr Stack', unmanic: 'Unmanic',
   mikrotik: 'MikroTik', meshcentral: 'MeshCentral', qnap: 'QNAP', asus: 'ASUS',
-  pbs: 'Proxmox Backup Server',
+  pbs: 'Proxmox Backup Server', pihole: 'Pi-hole', adguard: 'AdGuard Home',
 }
 
 /** The plug-in a path is for (/plugins/<id>), or null. */
