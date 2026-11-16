@@ -1029,6 +1029,10 @@ such as "this node only gets `apt upgrade`" or "check these package holds" go in
 `config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
 Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled.
 
+**Package cache.** With the package cache from the Catalogue, each package is downloaded once for all your guests:
+Updates points each guest's apt at it just before apt runs, with a fallback to going direct whenever the cache does
+not answer. Nodes are left alone unless you include them. See [Package cache](#package-cache-apt-cacher-ng).
+
 **Choose what to update.** Every node, package, guest, compose project and app is a row in a tree,
 each with its own count and preview. Tick any mix, or press **Update this** on one row. The page shows the
 order before you confirm, asks for your master password, and runs each item on its own, so one failure
@@ -1174,8 +1178,8 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, HAProxy, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr, Plex and the 3proxy
-forward proxy (below), and three proxies: NGINX, Caddy and Envoy (see [NGINX, Caddy and Envoy](#nginx-caddy-and-envoy)). Websites are not listed here: they have their own section,
+Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr, Plex, the 3proxy
+forward proxy and a package cache for Updates (below), and three proxies: NGINX, Caddy and Envoy (see [NGINX, Caddy and Envoy](#nginx-caddy-and-envoy)). Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
@@ -1848,6 +1852,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 | Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; read-only unless you turn on backup management, which adds deleting, pruning and clean-up (see below) |
 | Pi-hole and AdGuard Home | Each DNS blocker as a shield with the share of queries blocked, a 24-hour chart, the domains blocked most (an Allow button each), the busiest devices (hideable), each upstream DNS server with its state and answer time, how old the block lists are, and whether blocking is on; every problem has a fix button (see below) |
 | 3proxy | A forward proxy: open connections per protocol (HTTP and SOCKS5), traffic, refusals and who used it; restart, users and allowed networks (see below) |
+| Package cache | How much of what your guests download comes from the cache, hour by hour, the cache disk, the busiest packages and repositories, which guests use it (by name), and the last clean-up; with Updates' **Use the package cache** switch and a fix button for every problem (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
@@ -2978,6 +2983,50 @@ its Details show totals and refusals only, never a user name or a client address
 
 Adding, removing or resetting a user and changing the settings ask for your master password. Every action is
 audited. HyperProx changes the proxy only through its helper's fixed commands, with checked names and networks.
+
+#### Package cache (apt-cacher-ng)
+
+When Updates updates many guests, the package cache makes each Debian or Ubuntu package come from the internet
+once, not once per guest. Install it from the Catalogue (Apps, Package cache). It goes into its own unprivileged
+container with apt-cacher-ng from Debian 13's own archive, and keeps the packages on a disk of its own, sized at
+install (50 GB unless you pick another size) and left out of backups, as everything on it can be downloaded again.
+It listens only on its own address on your network, on port 3142, and only the networks you pick may use it: the
+container's own network unless you say otherwise, private networks only, never wider than their private range
+(10/8, 172.16/12 and 192.168/16), and written as the network, not an address in it. HyperProx refuses to
+install it on a public address. Its statistics page can stay on your network or be taken off it; its actions (like
+the clean-up) always need a password HyperProx makes and keeps in the vault. The install ends with a check run in the
+container (it listens only where it should, refuses other networks, fetches a Debian index through itself, passes
+HTTPS through, and keeps its actions behind the password), and the plug-in then connects by itself.
+
+**What it caches.** The plain-HTTP Debian and Ubuntu archives that a stock guest uses: `deb.debian.org`, Debian's
+security updates, `archive.ubuntu.com` and their mirrors. HTTPS repositories (Docker, NodeSource and the like) cannot
+be cached; guests keep fetching those directly. Any other plain-HTTP repository goes direct too: the cache serves only
+the archives it knows. Anything sent to it for an HTTPS site gets a tunnel only to a host name on port 443, never to an
+address written as numbers; a name that resolves to an address on your network is not refused by apt-cacher-ng itself,
+but only your allowed networks can ask. It needs a fixed address (not DHCP), and Updates uses it only while that address
+matches the container's Proxmox config.
+
+**Updates uses it by itself.** Updates' **Use the package cache** setting is on the plug-in page, per cluster:
+**Automatic** (the default on the home cluster: on while a cache is connected and answering), **On** or **Off** (the
+default on a remote cluster). Just before apt runs in a guest, Updates adds one apt setting of its own,
+`/etc/apt/apt.conf.d/01hyperprox-cache`, with a small script that names the cache only when it answers within three
+seconds and otherwise tells apt to go direct, and only for the Debian and Ubuntu archives it serves. A dead cache never
+stops an update, and a sick one (its disk full, or failing its check) is skipped once HyperProx notices.
+A guest that already has its own apt proxy is left alone. Turning the setting off takes HyperProx's setting out of
+each guest the next time Updates runs there, and **Remove from all guests** does it at once. Proxmox nodes are left
+alone unless you also tick **Proxmox nodes too**: then the same single setting is added on a node, and no repository
+file is changed and no package is held or released. Every command goes through the same door as Updates itself, so a
+guest you told HyperProx to leave alone is never entered.
+
+**The page** shows how much came from the cache (by bytes and by requests) as a flow from the internet through the
+cache to your guests, hour by hour over the last 6 hours to 30 days, the cache disk, the busiest packages (by name),
+traffic per repository, which guests use it (by guest name; addresses are added up inside the container and never
+shown), and when the daily clean-up last ran. Every problem has a fix button: start it again, run the clean-up, grow
+its disk (through the same guest settings change as elsewhere in HyperProx, with a preview first), and **Repair guests'
+setting**, which writes the setting again everywhere and checks each guest can reach the cache. Everything is admin
+only; changing who may use it, the Updates setting and the actions on every guest also ask for your master password,
+and API tokens cannot change anything here. Every action is written to the audit log first, and nothing is done when
+it cannot be.
 
 ### Settings
 
