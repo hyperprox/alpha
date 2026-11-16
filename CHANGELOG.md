@@ -33,7 +33,8 @@ know or do before they install. Newest entry at the top.
 - A Given up list shows each item with its tries, how long it has been missing, the reason and what was done, with Try again: it searches again, or adds a removed film or album back with the same profile and folder. A whole old season that is missing shows as one line.
 - See what's available: on any missing or given-up item, an admin can run one search and see every release found, best first, with its quality, source, codec, size, seeders or age, indexer, language, and in plain English why it was turned down. Download this grabs that exact release even when it was turned down, and the confirm says when it is below your quality profile. HyperProx then checks the download reached the queue.
   - Technical: one interactive search per item at most every ten minutes (the last answer is reused in between), six new searches a minute per person, admin only and refused to API tokens. The grab sends only the release's guid and indexer; the queue is filtered by HyperProx, never by the query.
-- AV1, 3D and 48 fps releases are never offered, torrents with no seeders are hidden unless you ask, and a release with a program file in its name cannot be downloaded. If a downloaded torrent turns out to contain a program file, HyperProx removes it and blocklists it.
+- AV1, 3D and 48 fps releases are never offered, torrents with no seeders are hidden unless you ask, and a release with a program file in its name cannot be downloaded. If a downloaded torrent turns out to contain a program file, HyperProx removes it and blocklists it; when its files could not be checked, it says so.
+  - Technical: qBittorrent's file list is read when the download appears, then again after 1, 3 and 10 minutes while it has none; a program file is judged by the final extension of each file's own name.
 - The Missing panel now shows missing and given-up counts side by side.
 
 ## 2026-11-16 — Internal tidy-up

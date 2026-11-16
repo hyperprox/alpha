@@ -1915,7 +1915,8 @@ imported, or nothing usable found.
   and HyperProx checks again first), and an import-list exclusion stops your lists adding it back. It is off until you
   turn it on.
 - **Preview first.** Turning a rule on shows exactly what it would give up on today, "This would give up on 12 TV
-  episodes (3 series), 4 films", with the list and the reasons, and you confirm that preview. Then it runs once a day.
+  episodes (3 series), 4 films", with the list and the reasons, and you confirm that preview. Then it runs once each
+  calendar day (UTC); a run that stops part-way keeps what it already did and is not repeated that day.
   A whole old season with every episode missing is shown as one line, "Season 2 (10 episodes)", though each episode
   is still counted on its own.
 - **Never touched**: anything with a file, anything downloading, quality profiles (a show on a deliberately strict
@@ -1936,7 +1937,9 @@ imported, or nothing usable found.
 - **Never offered**: AV1, 3D and 48 fps releases are hidden (with a count), torrents with no seeders are hidden unless
   you ask to see them, and a release with a program file (.exe, .scr, .bat, .msi, .lnk, .js and the like) in its name
   cannot be downloaded. Indexers do not list a torrent's files before it is downloaded, so after a download starts
-  HyperProx reads its file list from qBittorrent and removes and blocklists it if a program file is in it.
+  HyperProx reads its file list from qBittorrent, and again after 1, 3 and 10 minutes while qBittorrent does not have
+  it yet, and removes and blocklists the download if a program file is in it. When no check is possible (a usenet
+  download, no qBittorrent connection, or no file list in time) the result says plainly that its files were not checked.
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.
 
