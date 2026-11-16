@@ -50,6 +50,7 @@ import { mailWanted } from './ghost/recipe'
 import { HAPROXY_SETUP_STEPS, runHaproxySetup, type HaproxySetupDeps } from './haproxy/setup'
 import { HaproxyInstanceStore } from './haproxy/instances'
 import { ownScrapers } from './haproxy/recipe'
+import { BALANCE_STEP, balancePreview, runInstallBalance, realBalanceDeps, realBalanceCheckDeps, type InstallBalance, type BalanceDeps, type BalanceCheckDeps } from './haproxy/install-balance'
 import {
   planPublish, runPublish, cleanupPublish, recordSite, realPublishDeps, PUBLISH_STEPS,
   type PublishDeps, type PublishPlan, type PublishLedger, type PublishInput,
@@ -163,6 +164,10 @@ export interface InstallDeps {
   haproxySetup?: () => HaproxySetupDeps
   /** HyperProx's own addresses, which may read HAProxy's /metrics. */
   scrapers?:   () => string[]
+  /** HAProxy's optional "Load-balance an app now": the plug-in's own service and publish (lib/haproxy/install-balance.ts). */
+  haproxyBalance?: () => Promise<BalanceDeps>
+  /** What the preview checks that step's guests and public name against. */
+  haproxyBalanceCheck?: () => Promise<BalanceCheckDeps>
 }
 
 /** HAProxy's setup as it runs for real: the Proxy service, the plug-in's store, the audit log and Prometheus. */
@@ -393,7 +398,7 @@ async function preflight(d: InstallDeps, intoVmid: number): Promise<{ node: stri
   return { node: g.node, vmid: Number(g.vmid) }
 }
 
-const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan): InstallStep[] => [
+const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan, balance?: boolean): InstallStep[] => [
   { id: 'container', label: first, status: 'pending' },
   { id: 'network',   label: 'Wait for an address',   status: 'pending' },
   { id: 'install',   label: `Install ${recipe.name}`, status: 'pending' },
@@ -403,6 +408,7 @@ const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan): I
     // HAProxy's own setup takes the place of the generic wiring.
     ...(recipe.setup === 'haproxy' ? HAPROXY_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase }))
       : [{ id: 'wire',      label: 'Configure the integration', status: 'pending' as Phase }]),
+    ...(balance && recipe.setup === 'haproxy' ? [{ ...BALANCE_STEP, status: 'pending' as Phase }] : []),
   ]),
   ...(publish ? PUBLISH_STEPS.map(s => ({ id: s.id, label: s.label, status: 'pending' as Phase })) : []),
 ]
@@ -449,10 +455,10 @@ export async function startInstall(opts: {
   return job
 }
 
-function newJob(recipe: CatalogueRecipe, owner: string, first: string, publish?: PublishPlan): InstallJob {
+function newJob(recipe: CatalogueRecipe, owner: string, first: string, publish?: PublishPlan, balance?: boolean): InstallJob {
   const job: InstallJob = {
     jobId: randomUUID(), owner, recipeId: recipe.id, status: 'running', log: '', startedAt: Date.now(),
-    steps: STEPS(recipe, first, publish), ...(publish ? { publish, ledger: {} } : {}),
+    steps: STEPS(recipe, first, publish, balance), ...(publish ? { publish, ledger: {} } : {}),
   }
   JOBS.set(job.jobId, job)
   return job
@@ -466,7 +472,7 @@ async function runJob(
   job: InstallJob, recipe: CatalogueRecipe, deps: InstallDeps,
   container: () => Promise<{ distro: Distro; ip?: string }>,
   onSettled: () => Promise<void> | void = () => {},
-  ctx: { options?: Record<string, string>; publish?: PublishPlan; arrPublish?: ArrPublishPlan[] } = {},
+  ctx: { options?: Record<string, string>; publish?: PublishPlan; arrPublish?: ArrPublishPlan[]; balance?: InstallBalance } = {},
 ): Promise<void> {
   const options = ctx.options ?? {}
   const tc = isTranscode(recipe) ? kindOf(recipe.id) : null
@@ -667,6 +673,12 @@ async function runJob(
       }, id => step(job, id), (deps.haproxySetup ?? realHaproxySetupDeps)())
       // The Proxy page's instance holds the login now; the install's own copy is gone (or the step said why not).
       if (out.vaultCopyRemoved) job.vaultItem = undefined
+      // The optional step: an app balanced now, through the plug-in's own service. Done only once it reads back healthy.
+      if (ctx.balance) {
+        const sb = step(job, BALANCE_STEP.id)
+        const lb = await runInstallBalance({ pluginInstanceId: out.pluginInstanceId, balance: ctx.balance, owner: job.owner || 'hyperprox', haproxyIp: job.ip.split('/')[0] }, sb, await (deps.haproxyBalance ?? realBalanceDeps)())
+        if (lb.url) job.url = lb.url
+      }
     } else {
       const s5 = step(job, 'wire')
       s5.detail = url ? await wireUp(recipe, url) : 'no address, so nothing was configured'
@@ -809,10 +821,12 @@ export interface InstallPlan {
   publish?: PublishPlan
   /** An Arr Stack's public names, one per app, each checked like a website's. */
   arrPublish?: ArrPublishPlan[]
+  /** HAProxy's optional step: the app to load-balance once it is installed, exactly as checked. */
+  balance?: InstallBalance
   unprivileged: true
 }
 
-export type WizardInput = Omit<InstallPlan, 'template' | 'downloadTemplate' | 'unprivileged' | 'publish' | 'options' | 'arrPublish'> & {
+export type WizardInput = Omit<InstallPlan, 'template' | 'downloadTemplate' | 'unprivileged' | 'publish' | 'options' | 'arrPublish' | 'balance'> & {
   options?: Record<string, unknown>
   /** An Arr Stack's VPN login. Never kept in the plan: the preview puts it in the vault. */
   arrVpn?: Record<string, unknown>
@@ -822,6 +836,8 @@ export type WizardInput = Omit<InstallPlan, 'template' | 'downloadTemplate' | 'u
   publish?: PublishInput
   /** Ghost's SMTP password. Never kept in the plan: the preview puts it in the vault. */
   ghostSmtpPassword?: unknown
+  /** HAProxy's optional "Load-balance an app now", as the plug-in's button sends it. Checked into `balance` by the preview. */
+  balance?: unknown
 }
 
 export interface Preview {
@@ -1390,6 +1406,18 @@ export async function previewInstall(
       publish = pp.plan
     }
   }
+  // HAProxy's optional step: the plug-in's own checks, against the cluster as it is now.
+  let balance: InstallBalance | undefined
+  if (input.balance !== undefined && input.balance !== null) {
+    if (recipe.setup !== 'haproxy') r.errors.push(`${recipe.name} has no "Load-balance an app now" step; only HAProxy does.`)
+    else {
+      const b = await balancePreview(input.balance, await (deps.haproxyBalanceCheck ?? realBalanceCheckDeps)())
+      r.errors.push(...b.errors); r.checks.push(...b.checks)
+      // A public name points at HAProxy's address, which a fixed address (not DHCP) gives it.
+      if (b.value?.publish && input.ip === 'dhcp') r.errors.push('A public name points at HAProxy\'s address, so HAProxy needs a fixed address, not DHCP.')
+      balance = b.value
+    }
+  }
   if (!r.errors.length && recipe.setup === 'pbs') {
     const pc = await pbsPreview(input, recipe, deps)
     r.errors.push(...pc.errors); r.warnings.push(...pc.warnings); r.checks.push(...pc.checks)
@@ -1413,6 +1441,7 @@ export async function previewInstall(
       ...(input.ip !== 'dhcp' && input.addressAck?.length ? { addressAck: [...input.addressAck].sort() } : {}),
       ...(recipe.options?.length ? { options: checkOptions(recipe, input.options).values } : {}),
       ...(publish ? { publish } : {}),
+      ...(balance ? { balance } : {}),
       ...(arr?.publish?.length ? { arrPublish: arr.publish } : {}),
       template: t.template, ...(t.download ? { downloadTemplate: true } : {}), unprivileged: true,
     },
@@ -1474,6 +1503,11 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       r.errors.push(...again.errors.map(e => `${ap.plan.domain}: ${e}`))
       if (again.plan && again.plan.record.data !== ap.plan.record.data) r.errors.push(`The public address changed from ${ap.plan.record.data} to ${again.plan.record.data} since the preview.`)
     }
+    if (plan.balance) {
+      // The guests and the public name are checked again, so a guest that is now left alone or gone refuses the apply.
+      const again = await balancePreview({ ...plan.balance, ...(plan.balance.publish ? { publish: true, zone: plan.balance.publish.zone, proxyInstanceId: plan.balance.publish.proxyInstanceId } : {}) }, await (deps.haproxyBalanceCheck ?? realBalanceCheckDeps)())
+      r.errors.push(...again.errors)
+    }
     if (r.errors.length) {
       throw new WizardRefusal('The cluster changed since the preview, so nothing was created.', 'changed', r.errors)
     }
@@ -1484,7 +1518,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     }
     CREATING.add(plan.vmid)
 
-    const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`, plan.publish)
+    const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`, plan.publish, !!plan.balance)
     job.vmid = plan.vmid; job.node = plan.node; job.hostname = plan.hostname
     if (recipe.stack === 'arr') job.steps = arrJobSteps(job.steps, plan.options ?? {}, plan.arrPublish)
     if (isTranscode(recipe)) job.steps = tcJobSteps(job.steps, kindOf(recipe.id))
@@ -1523,7 +1557,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       // container showed up must still be refused.
       CREATING.delete(plan.vmid)
       await store.delete(markId).catch(e => installerLog.warn({ err: e }, 'could not remove an install create mark'))
-    }, { options: plan.options ?? {}, publish: plan.publish, arrPublish: plan.arrPublish })
+    }, { options: plan.options ?? {}, publish: plan.publish, arrPublish: plan.arrPublish, balance: plan.balance })
     return job
   } finally {
     APPLYING.delete(id)

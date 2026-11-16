@@ -339,6 +339,8 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       ...(b.arrNames && typeof b.arrNames === 'object' && !Array.isArray(b.arrNames) && b.arrNames.names && typeof b.arrNames.names === 'object'
         ? { arrNames: { zone: String(b.arrNames.zone ?? ''), instanceId: String(b.arrNames.instanceId ?? ''),
             names: Object.fromEntries(Object.entries(b.arrNames.names as Record<string, unknown>).filter(([k, v]) => /^[a-z]{3,16}$/.test(k) && typeof v === 'string').slice(0, 12)) as Record<string, string> } } : {}),
+      // HAProxy's optional step, as the plug-in's button sends it; its guests and name are checked by the preview.
+      ...(b.balance && typeof b.balance === 'object' && !Array.isArray(b.balance) ? { balance: b.balance } : {}),
       // Ghost's SMTP password: straight to the vault by the preview, never kept in the plan.
       ...(typeof b.ghostSmtpPassword === 'string' && b.ghostSmtpPassword ? { ghostSmtpPassword: b.ghostSmtpPassword } : {}),
     }
