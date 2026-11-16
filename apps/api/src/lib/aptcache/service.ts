@@ -61,6 +61,9 @@ export interface Store {
   putUse(clusterId: string, s: CacheUseSetting): Promise<void>
   getClients(): Promise<ClientRegistry>
   putClients(r: ClientRegistry): Promise<void>
+  /** Caches whose last self-check failed: kept, so a HyperProx restart does not make a sick cache look healthy. */
+  getFailedChecks(): Promise<string[]>
+  putFailedChecks(ids: string[]): Promise<void>
 }
 
 /** A guest or node the "repair" and "remove from all" actions reach, through the Updates executor. */
@@ -115,7 +118,7 @@ export class AptCacheService {
   private cache = new Map<string, { at: number; hours: number; reading: CacheReading }>()
   private health = new Map<string, { at: number; ok: boolean; why: string }>()
   /** A self-check that failed (from its page) marks the cache unhealthy until one passes again. */
-  private selfTestFailed = new Set<string>()
+  private selfTestFailed: Set<string> | null = null
   private busy = new Set<string>()
 
   constructor(private d: AptCacheDeps) {}
@@ -160,6 +163,7 @@ export class AptCacheService {
   private async rawReading(i: CacheInstance, hours: number, fresh: boolean): Promise<CacheReading> {
     const hit = this.cache.get(i.id)
     if (!fresh && hit && hit.hours === hours && this.d.now() - hit.at < READ_TTL_MS) return hit.reading
+    await this.failedChecks()
     const reading = parseStats(await this.run(i, `${HELPER} stats ${hours}`, 60_000), this.d.now())
     this.cache.set(i.id, { at: this.d.now(), hours, reading })
     this.health.set(i.id, { at: this.d.now(), ...this.healthOf(i, reading) })
@@ -268,7 +272,9 @@ export class AptCacheService {
       await this.audit('selftest', res, by)
       const checks = parseSelfTest(await this.run(i, `${HELPER} selftest`, 3 * 60_000))
       const failed = checks.filter(c => c.state === 'fail')
-      if (failed.length || !checks.length) this.selfTestFailed.add(i.id); else this.selfTestFailed.delete(i.id)
+      const marked = await this.failedChecks()
+      if (failed.length || !checks.length) marked.add(i.id); else marked.delete(i.id)
+      await this.d.store.putFailedChecks([...marked])
       this.health.delete(i.id)
       return { checks, message: failed.length ? `${failed.length} check${failed.length === 1 ? '' : 's'} failed: ${failed.map(c => CHECK_TITLE[c.id] ?? c.id).join(', ')}.` : 'Every check passed.' }
     }
@@ -363,13 +369,21 @@ export class AptCacheService {
    */
   healthOf(i: CacheInstance, r: CacheReading): { ok: boolean; why: string } {
     if (!r.active) return { ok: false, why: 'it is not running' }
+    if (r.listening === false) return { ok: false, why: 'it is not listening on its address' }
     if (!r.listen || !i.listen || r.listen !== i.listen || !isPrivateV4(r.listen)) return { ok: false, why: 'it does not listen on the address HyperProx recorded' }
     if (r.disk && r.disk.sizeKb > 0 && r.disk.usedKb / r.disk.sizeKb >= 0.97) return { ok: false, why: 'its disk is full' }
-    if (this.selfTestFailed.has(i.id)) return { ok: false, why: 'its last self-check failed' }
+    if (this.selfTestFailed?.has(i.id)) return { ok: false, why: 'its last self-check failed' }
     return { ok: true, why: '' }
   }
 
+  /** The persisted failed self-checks, read once and kept in step with the store. */
+  private async failedChecks(): Promise<Set<string>> {
+    if (!this.selfTestFailed) this.selfTestFailed = new Set(await this.d.store.getFailedChecks().catch(() => []))
+    return this.selfTestFailed
+  }
+
   private async health_(i: CacheInstance): Promise<{ ok: boolean; why: string }> {
+    await this.failedChecks()
     const h = this.health.get(i.id)
     if (h && this.d.now() - h.at < HEALTH_TTL_MS) return h
     try { await this.rawReading(i, 1, true); return this.health.get(i.id)! }
@@ -428,14 +442,16 @@ export class AptCacheService {
     }
     return this.once('fleet', async () => {
       const reg = (await this.d.store.getClients()).home ?? {}
-      const nodesHad = Object.entries(reg).some(([k, v]) => k.startsWith('node:') && v.state === 'set')
+      // A node HyperProx set, or one whose removal did not finish: both are reached again.
+      const mayHave = (v?: ClientRecord) => v?.state === 'set' || v?.state === 'failed'
+      const nodesHad = Object.entries(reg).some(([k, v]) => k.startsWith('node:') && mayHave(v))
       await this.audit(kind === 'repair' ? 'repair_guests' : 'remove_guests', 'updates:home', by, { nodes: kind === 'repair' ? s.nodes : nodesHad })
       const fleet = await this.d.fleet({ nodes: kind === 'repair' ? s.nodes : nodesHad })
       const results: Array<{ name: string; outcome: string }> = []
       const pickId = kind === 'repair' ? (await this.pick(s))?.id : undefined
       for (const t of fleet) {
         if (kind === 'repair' && t.key === pickId) continue
-        if (kind === 'remove' && t.kind === 'node' && reg[t.key]?.state !== 'set') continue
+        if (kind === 'remove' && t.kind === 'node' && !mayHave(reg[t.key])) continue
         try {
           const r = await t.run(kind === 'repair' ? ensureScript(target!.host!, target!.port!) : REMOVE_SCRIPT)
           if (kind === 'repair') {

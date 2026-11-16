@@ -72,6 +72,7 @@ export function parseStats(output: string, nowMs: number): CacheReading {
     active: kv.active === '1',
     version: kv.version && /^[0-9A-Za-z.+:~-]{1,40}$/.test(kv.version) ? kv.version : null,
     listen: /^\d{1,3}(\.\d{1,3}){3}$/.test(kv.listen ?? '') ? kv.listen : null,
+    listening: kv.listening === '1' ? true : kv.listening === '0' ? false : null,
     allow: (kv.allow ?? '').split(/\s+/).filter(Boolean),
     report: kv.report === '1',
     hours: window,

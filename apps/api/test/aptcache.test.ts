@@ -170,7 +170,7 @@ test('drop-in: only the auto-detect line; the scripts are valid bash and refuse 
   assert.doesNotMatch(e + REMOVE_SCRIPT, /apt-mark|sources\.list|hold/, 'never holds anything or touches a repository file')
   assert.match(REMOVE_SCRIPT, new RegExp(`rm -f "\\$D" "\\$S"`))
   assert.ok(REMOVE_SCRIPT.includes(`D=${DROPIN}`))
-  for (const bad of ['10.0.0.1; rm -rf /', '$(id)', 'cache.example.net', '999.1.1.1']) assert.throws(() => ensureScript(bad, 3142), bad)
+  for (const bad of ['10.0.0.1; rm -rf /', '$(id)', 'cache.example.net', '999.1.1.1', '010.0.0.1', '10.0.0.01']) assert.throws(() => ensureScript(bad, 3142), bad)
   assert.throws(() => ensureScript('10.0.0.1', 0))
 })
 
@@ -190,7 +190,14 @@ test('detect script: only the archives the cache serves, only when the cache ans
       assert.equal(await run(up, 'http://DEB.DEBIAN.ORG/debian/'), `http://127.0.0.1:${port}`, 'host names in any case')
       assert.equal(await run(up, 'http://de.archive.ubuntu.com/ubuntu/'), `http://127.0.0.1:${port}`)
       assert.equal(await run(up, 'http://security.ubuntu.com/ubuntu/'), `http://127.0.0.1:${port}`)
-      for (const direct of ['https://deb.debian.org/', 'http://download.example.net/debian/', 'http://snapshot.debian.org/', 'http://ports.ubuntu.com/']) {
+      for (const cached of ['http://ftp.de.debian.org/debian/dists/trixie/Release', 'http://deb.debian.org/debian-security/dists/x', 'http://security.debian.org/dists/trixie-security/Release', 'http://security.debian.org/debian-security/pool/x']) {
+        assert.equal(await run(up, cached), `http://127.0.0.1:${port}`, cached)
+      }
+      // Only a host and path the cache serves (its own mirror lists): debug and ports archives, unknown mirrors, other
+      // paths and other hosts go direct.
+      for (const direct of ['https://deb.debian.org/', 'http://download.example.net/debian/', 'http://snapshot.debian.org/', 'http://ports.ubuntu.com/',
+        'http://deb.debian.org/debian-debug/dists/x', 'http://deb.debian.org/debian-ports/dists/x', 'http://deb.debian.org/', 'http://ftp.zz.debian.org/debian/',
+        'http://ftp.de.debian.org/debian-security/', 'http://zz9.archive.ubuntu.com/ubuntu/', 'http://archive.ubuntu.com/ubuntu-ports/', 'http://ftp.de.debian.org.example.net/debian/']) {
         assert.equal(await run(up, direct), 'DIRECT', direct)
       }
     } finally { await new Promise(r => srv.close(r)) }
@@ -243,6 +250,19 @@ test('ensure, run for real in a scratch apt tree: writes its two files, or takes
     own(path.join(conf, '90proxy'), 'acquire::HTTP::proxy "http://10.9.9.9:3128";\n')
     own(path.join(conf, '90proxy'), 'Acquire {\n  HTTP {\n    proxy "http://10.9.9.9:3128";\n  };\n};\n')
     own(path.join(conf, '00early'), 'Acquire::http::Proxy-Auto-Detect "/usr/local/bin/someone-elses";\n')
+    own(path.join(conf, '80proxy.conf'), 'Acquire::http {\n  Proxy "http://10.9.9.9:3128"; // the office proxy\n};\n')
+    // Not a hand-set http proxy: a proxy key in another block, a comment, a file apt does not read.
+    const notOwn = (file: string, text: string) => {
+      fs.writeFileSync(file, text)
+      assert.match(go().stdout, /^result=(set|unchanged)$/m, text)
+      fs.rmSync(file)
+    }
+    notOwn(path.join(conf, '90ftp'), 'Acquire {\n  ftp {\n    Proxy "http://10.9.9.9:3128";\n  };\n};\n')
+    notOwn(path.join(conf, '90https'), 'Acquire::https::Proxy "http://10.9.9.9:3128";\n')
+    notOwn(path.join(conf, '90comment'), '// Acquire::http::Proxy "http://10.9.9.9:3128";\n# Acquire::http::Proxy "x";\n/* Acquire::http::Proxy "y"; */\n')
+    notOwn(path.join(conf, '90proxy.bak'), 'Acquire::http::Proxy "http://10.9.9.9:3128";\n')
+    notOwn(path.join(conf, '90proxy.dpkg-old'), 'Acquire::http::Proxy "http://10.9.9.9:3128";\n')
+    notOwn(path.join(conf, '90proxy.ucf-dist'), 'Acquire::http::Proxy "http://10.9.9.9:3128";\n')
     fs.writeFileSync(env, 'PATH=/usr/bin\nhttp_proxy=http://10.9.9.9:3128\n')
     assert.match(go().stdout, /^result=own-proxy$/m)
     assert.match(go().stdout, /^own=.*environment$/m)
@@ -271,12 +291,12 @@ test('ensure and remove: what the guest printed', () => {
 interface World {
   deps: AptCacheDeps; scripts: string[]; audits: Array<[string, string, any]>; store: Map<string, CacheInstance>
   use: Map<string, CacheUseSetting>; clients: ClientRegistry; guests: GuestRow[]; installs: InstallRow[]
-  fleetRuns: Array<[string, string]>; busy: boolean; auditFails: boolean; down: boolean; dismissed: string[]; cfgIp: string | null; removeOut: string
+  fleetRuns: Array<[string, string]>; busy: boolean; auditFails: boolean; down: boolean; dismissed: string[]; cfgIp: string | null; removeOut: string; failed: string[]
 }
 
 function world(o: { connected?: boolean; tags?: string[] } = {}): World {
   const w: World = {
-    scripts: [], audits: [], store: new Map(), use: new Map(), clients: {}, fleetRuns: [], busy: false, auditFails: false, down: false, dismissed: [], cfgIp: '10.20.30.40', removeOut: 'result=removed\n',
+    scripts: [], audits: [], store: new Map(), use: new Map(), clients: {}, fleetRuns: [], busy: false, auditFails: false, down: false, dismissed: [], cfgIp: '10.20.30.40', removeOut: 'result=removed\n', failed: [],
     guests: [{ type: 'lxc', vmid: 9300, node: 'n1', name: 'pkgcache', running: true, tags: o.tags ?? [] }],
     installs: [{ recipeId: 'apt-cacher-ng', vmid: 9300, status: 'completed', hostname: 'pkgcache', ip: '10.20.30.40/24', vaultItem: { category: 'apps', provider: 'apt-cacher-ng-9300' } }],
     deps: null as any,
@@ -292,6 +312,7 @@ function world(o: { connected?: boolean; tags?: string[] } = {}): World {
       list: async () => [...w.store.values()], delete: async id => { w.store.delete(id) },
       getUse: async id => w.use.get(id) ?? null, putUse: async (id, s) => { w.use.set(id, s) },
       getClients: async () => structuredClone(w.clients), putClients: async r => { w.clients = structuredClone(r) },
+      getFailedChecks: async () => [...w.failed], putFailedChecks: async ids => { w.failed = [...ids] },
     },
     guests: async () => w.guests,
     exclusions: async () => [],
@@ -434,6 +455,29 @@ test('the leave-alone rule: a tagged cache container is never entered', async ()
   const w = world({ tags: ['hyperprox-ignore'] }); const s = new AptCacheService(w.deps)
   await assert.rejects(s.reading('lxc-9300'), (e: any) => e.code === 'excluded')
   assert.equal(w.scripts.length, 0)
+})
+
+test('a sick cache stays sick across a restart, and one not listening on its address is skipped', async () => {
+  const w = world(); w.deps.exec = async (_g, script) => ({ code: 0, output: / stats /.test(script) ? STATS : SELFTEST.replace('check=admin ok', 'check=admin fail') })
+  const before = new AptCacheService(w.deps)
+  await before.action('lxc-9300', 'selftest', admin)
+  assert.deepEqual(w.failed, ['lxc-9300'], 'the failed check is kept in the store')
+  const after = new AptCacheService(w.deps)
+  assert.match((await after.decide('home', G(101))).reason, /self-check failed/, 'a new HyperProx process still skips it')
+  w.deps.exec = async (_g, script) => ({ code: 0, output: / stats /.test(script) ? STATS : SELFTEST })
+  await after.action('lxc-9300', 'selftest', admin)
+  assert.deepEqual(w.failed, [])
+  const deaf = world(); deaf.deps.exec = async () => ({ code: 0, output: STATS.replace('listen=10.20.30.40', 'listen=10.20.30.40\nlistening=0') })
+  assert.match((await new AptCacheService(deaf.deps).decide('home', G(101))).reason, /not listening/)
+  const ok = world(); ok.deps.exec = async () => ({ code: 0, output: STATS.replace('listen=10.20.30.40', 'listen=10.20.30.40\nlistening=1') })
+  assert.equal((await new AptCacheService(ok.deps).decide('home', G(101))).action, 'ensure')
+})
+
+test('remove from all guests also reaches a node whose earlier removal did not finish', async () => {
+  const w = world(); const s = new AptCacheService(w.deps)
+  await s.record('home', 'node:n1', { kind: 'node', name: 'n1', state: 'failed', src: null, at: 1 })
+  await s.fleetAction('remove', admin)
+  assert.ok(w.fleetRuns.some(r => r[0] === 'node:n1' && r[1] === REMOVE_SCRIPT))
 })
 
 test('repair and remove from all guests: refused during an Updates job; remove reaches nodes only where it was put', async () => {

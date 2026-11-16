@@ -45,7 +45,7 @@ export const CHECK_TITLE: Record<string, string> = {
 /** apt-cacher-ng's own short names for the archives it knows. */
 const REPO_NAME: Record<string, string> = {
   debrep: 'Debian', secdeb: 'Debian security', uburep: 'Ubuntu', klxrep: 'Kali', alxrep: 'Arch Linux', cygwin: 'Cygwin',
-  sfnet: 'SourceForge', ubusec: 'Ubuntu security', fedora: 'Fedora', epel: 'EPEL', slrep: 'Scientific Linux', gentoo: 'Gentoo',
+  sfnet: 'SourceForge', ubusec: 'Ubuntu security', debdbg: 'Debian debug symbols', debports: 'Debian ports', fedora: 'Fedora', epel: 'EPEL', slrep: 'Scientific Linux', gentoo: 'Gentoo',
 }
 export const repoName = (n: string) => REPO_NAME[n] ?? n
 
