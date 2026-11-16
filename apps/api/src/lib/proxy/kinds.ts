@@ -7,6 +7,7 @@ import { TraefikProvider } from './providers/traefik'
 import { CaddyProvider } from './providers/caddy'
 import { HaproxyProvider } from './providers/haproxy'
 import { PangolinProvider } from './providers/pangolin'
+import { NginxProvider, NGINX_HOSTS_FILE } from './providers/nginx'
 import { GuestFileTransport, SshFileTransport, guestFetch, type FileTransport, type GuestExec } from './transport'
 import type { FetchLike } from './http'
 import { KIND_LABEL, ProxyRefusal, type ProxyInstance, type ProxyKind, type ProxyProvider } from './types'
@@ -94,6 +95,15 @@ export const KINDS: Record<ProxyKind, KindInfo> = {
     ],
     notes: ['A Pangolin host has one name, under one of the organisation’s domains.'],
   },
+  nginx: {
+    kind: 'nginx', label: KIND_LABEL.nginx, urlLabel: 'Address (not used)', urlHint: 'http://127.0.0.1',
+    fields: [
+      { key: 'file', label: 'HyperProx’s server file', secret: false, required: true, default: NGINX_HOSTS_FILE,
+        help: 'A file of its own in a folder NGINX includes inside its http block. HyperProx rewrites it whole.' },
+    ],
+    notes: ['Managed only: HyperProx writes its file through the container the Catalogue installed, and checks every change with nginx -t before NGINX reloads.',
+      'Server blocks in other files are shown read-only.'],
+  },
 }
 
 export function settingKeys(kind: ProxyKind): string[] { return KINDS[kind].fields.filter(f => !f.secret).map(f => f.key) }
@@ -145,6 +155,11 @@ export function buildProvider(inst: ProxyInstance, secrets: Record<string, strin
     case 'haproxy':
       return new HaproxyProvider({ url: inst.url, frontend: s.frontend || undefined, owned,
         auth: { basic: { user: need('user', s.user, 'the Data Plane user'), password: need('password', secrets.password, 'the Data Plane password') } } }, apiFetch())
+    case 'nginx': {
+      if (inst.mode !== 'managed' || !inst.managed) throw new ProxyRefusal(`${inst.name}: NGINX is driven through its container, so it must be a Managed instance.`, 400)
+      if (!deps.guestExec) throw new ProxyRefusal(`${inst.name}: reaching the container is not available here.`, 400)
+      return new NginxProvider({ file: need('file', s.file, 'the server file'), exec: deps.guestExec(inst.managed.node, inst.managed.vmid), lockKey: inst.id })
+    }
     case 'pangolin':
       return new PangolinProvider({ url: inst.url, apiKey: need('api_key', secrets.api_key, 'the API key'),
         orgId: need('org_id', s.org_id, 'the organisation id'), siteId: s.site_id ? Number(s.site_id) : undefined, owned }, deps.fetch)

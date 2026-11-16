@@ -19,8 +19,11 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { CatalogueRecipe } from '../catalogue'
 import type { InstanceInput } from './service'
+import { NGINX_HOSTS_FILE } from './providers/nginx'
 
-export type ManagedKind = 'traefik' | 'caddy' | 'haproxy'
+export type ManagedKind = 'traefik' | 'caddy' | 'haproxy' | 'nginx'
+/** The kinds with a Docker Compose recipe here (NGINX and Caddy are also Catalogue script recipes: lib/webproxy/recipes.ts). */
+export type ComposeKind = Exclude<ManagedKind, 'nginx'>
 
 /** What the Catalogue's installer hands registration once a proxy recipe answers on its own address. */
 export interface ManagedProxyRegistration {
@@ -38,7 +41,7 @@ const base = { category: 'proxy' as const, needsDocker: true, firstRun: { kind: 
 
 const TRAEFIK_FILE_DIR = '/opt/traefik/dynamic'
 
-export function managedProxyRecipe(kind: ManagedKind, secret: string): CatalogueRecipe {
+export function managedProxyRecipe(kind: ComposeKind, secret: string): CatalogueRecipe {
   if (!/^[A-Za-z0-9_-]{16,}$/.test(secret)) throw new Error('The managed secret must be at least 16 URL-safe characters')
   switch (kind) {
     case 'traefik':
@@ -85,7 +88,7 @@ export function managedProxyRecipe(kind: ManagedKind, secret: string): Catalogue
 }
 
 /** The files a Managed install writes beside its compose file (configuration the service starts from). */
-export function managedProxyFiles(kind: ManagedKind, secret: string): Record<string, string> {
+export function managedProxyFiles(kind: ComposeKind, secret: string): Record<string, string> {
   if (!/^[A-Za-z0-9_-]{16,}$/.test(secret)) throw new Error('The managed secret must be at least 16 URL-safe characters')
   switch (kind) {
     case 'traefik': {
@@ -157,5 +160,7 @@ export function managedInstanceInput(kind: ManagedKind, o: { name: string; ip: s
     case 'caddy': return { kind, name: o.name, url: 'http://127.0.0.1:2019', mode: 'managed', managed, settings: { api_via: 'guest' }, secrets: {} }
     case 'haproxy': return { kind, name: o.name, url: 'http://127.0.0.1:5555', mode: 'managed', managed,
       settings: { api_via: 'guest', user: 'hyperprox', frontend: 'http' }, secrets: { password: o.secret } }
+    // No API: HyperProx writes its own server file through the container and checks it with nginx -t.
+    case 'nginx': return { kind, name: o.name, url: 'http://127.0.0.1', mode: 'managed', managed, settings: { file: NGINX_HOSTS_FILE }, secrets: {} }
   }
 }

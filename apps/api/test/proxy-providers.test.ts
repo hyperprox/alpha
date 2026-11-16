@@ -142,7 +142,7 @@ test('Pangolin: one name per host, under one of the organisation’s domains', a
 test('instances: bad input is refused with the reason; the legacy NPM is managed in Settings', async () => {
   const w = await world()
   const bad = async (input: any, re: RegExp) => assert.rejects(w.service.createInstance(input, actor), re)
-  await bad({ kind: 'nginx', name: 'x', url: 'http://192.0.2.1' }, /kind is one of/)
+  await bad({ kind: 'apache', name: 'x', url: 'http://192.0.2.1' }, /kind is one of/)
   await bad({ kind: 'caddy', name: 'x', url: 'ftp://192.0.2.1' }, /must start with http/)
   await bad({ kind: 'caddy', name: 'x', url: 'http://u:p@192.0.2.1' }, /not in the URL/)
   await bad({ kind: 'haproxy', name: 'x', url: 'http://192.0.2.1:5555', settings: { user: 'a' } }, /Data Plane password is required/)

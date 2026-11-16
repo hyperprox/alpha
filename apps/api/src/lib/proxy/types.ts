@@ -2,7 +2,7 @@
 //  HyperProx — Proxy providers: the one interface
 //
 //  Every reverse proxy HyperProx drives (Nginx Proxy Manager, Traefik, Caddy,
-//  HAProxy, Pangolin) is reached through ProxyProvider. The Proxy page, the
+//  HAProxy, Pangolin, NGINX) is reached through ProxyProvider. The Proxy page, the
 //  AI wizard's proxy step and the certificate inventory all read and write
 //  through it, so a second NPM, or a Caddy beside an NPM, is just another
 //  instance in the registry.
@@ -13,11 +13,11 @@
 //  the provider is asked, and each provider refuses again.
 // =============================================================================
 
-export type ProxyKind = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin'
-export const PROXY_KINDS: ProxyKind[] = ['npm', 'traefik', 'caddy', 'haproxy', 'pangolin']
+export type ProxyKind = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin' | 'nginx'
+export const PROXY_KINDS: ProxyKind[] = ['npm', 'traefik', 'caddy', 'haproxy', 'pangolin', 'nginx']
 
 export const KIND_LABEL: Record<ProxyKind, string> = {
-  npm: 'Nginx Proxy Manager', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin',
+  npm: 'Nginx Proxy Manager', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin', nginx: 'NGINX',
 }
 
 /** NPM-only options a host may carry; the other providers ignore them. Omitted keys keep the host's value. */

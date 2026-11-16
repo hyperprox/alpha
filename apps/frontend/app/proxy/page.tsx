@@ -19,7 +19,7 @@ import { Details, HudHeader, Page, Panel, Pill, styles, type PillTone, type Stat
 //  Types (the API's shapes, apps/api/src/lib/proxy/types.ts)
 // ---------------------------------------------------------------------------
 
-type Kind = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin'
+type Kind = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin' | 'nginx'
 
 interface HostView {
   id: string; instanceId: string; instanceName: string; kind: Kind
@@ -41,8 +41,8 @@ interface Health { ok: boolean; version?: string; checks: { name: string; ok: bo
 interface Plan { id: string; instanceName: string; action: string; changes: string[]; consequences: string[]; warnings: string[]; expiresAt: string }
 interface ApplyResult { ok: boolean; message: string; mismatch: string[]; cleanup?: Plan }
 
-const KIND_SHORT: Record<Kind, string> = { npm: 'NPM', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin' }
-const KIND_COLOR: Record<Kind, string> = { npm: 'var(--accent)', traefik: 'var(--accent-2)', caddy: 'var(--good)', haproxy: 'var(--violet-2)', pangolin: 'var(--warn-2)' }
+const KIND_SHORT: Record<Kind, string> = { npm: 'NPM', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin', nginx: 'NGINX' }
+const KIND_COLOR: Record<Kind, string> = { npm: 'var(--accent)', traefik: 'var(--accent-2)', caddy: 'var(--good)', haproxy: 'var(--violet-2)', pangolin: 'var(--warn-2)', nginx: 'var(--good-2, var(--good))' }
 
 // ---------------------------------------------------------------------------
 //  Style
