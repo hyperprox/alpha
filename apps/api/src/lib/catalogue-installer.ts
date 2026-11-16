@@ -678,6 +678,8 @@ async function runJob(
         const sb = step(job, BALANCE_STEP.id)
         const lb = await runInstallBalance({ pluginInstanceId: out.pluginInstanceId, balance: ctx.balance, owner: job.owner || 'hyperprox', haproxyIp: job.ip.split('/')[0] }, sb, await (deps.haproxyBalance ?? realBalanceDeps)())
         if (lb.url) job.url = lb.url
+        // What the publish made (proxy host, DNS record, certificate) is on this job's ledger too, so clean-up removes it with the install.
+        if (lb.ledger) { job.ledger = { ...(job.ledger ?? {}), ...lb.ledger }; await persistJob(job).catch(e => persistFailed(job, e)) }
       }
     } else {
       const s5 = step(job, 'wire')

@@ -14,7 +14,7 @@
 //  Skipped, the install behaves exactly as before.
 // =============================================================================
 
-import type { PublishDeps } from '../sites'
+import type { PublishDeps, PublishLedger } from '../sites'
 import type { PublishJob } from './index'
 import type { Reading } from './model'
 import { ALGORITHMS } from './dataplane'
@@ -118,7 +118,7 @@ export function backendProblem(reading: Reading, backend: string, expected: stri
  */
 export async function runInstallBalance(
   o: { pluginInstanceId: string; balance: InstallBalance; owner: string; haproxyIp: string }, s: Step, d: BalanceDeps,
-): Promise<{ backend: string; url?: string }> {
+): Promise<{ backend: string; url?: string; ledger?: PublishLedger }> {
   const actor: Actor = { email: o.owner }
   const body = bodyOf(o.balance)
   const publish = body.publish === true ? await d.planPublish(body, actor) : undefined
@@ -137,18 +137,18 @@ export async function runInstallBalance(
   }
 
   // A name being published is waited for either way, so nothing is left running after the step ends.
-  let url: string | undefined, publishFailure: string | undefined
+  let url: string | undefined, ledger: PublishLedger | undefined, publishFailure: string | undefined
   if (saved.publishJob) {
     let job = d.publishJob(saved.publishJob)
     for (let i = 0; i < PUBLISH_TRIES && job?.status === 'running'; i++) { await d.wait(READBACK_MS); job = d.publishJob(saved.publishJob) }
-    if (job?.status === 'done') url = job.url
+    if (job?.status === 'done') { url = job.url; ledger = structuredClone(job.ledger) }
     else publishFailure = job?.status === 'failed' ? `${job.error ?? 'it failed'}${job.cleanup?.length ? ` ${job.cleanup.join(' ')}` : ''}` : 'it did not finish in time'
   }
   if (!ok) throw new Error(`HAProxy was installed and ${saved.backend} was saved, but it is not done: ${last}`)
   if (publishFailure) throw new Error(`HAProxy is balancing ${saved.backend} (${found.healthy} of ${found.present} servers healthy), but publishing ${o.balance.hostname} failed: ${publishFailure}`)
   s.status = 'done'
   s.detail = `${saved.backend}: ${found.present} servers, ${found.healthy} healthy${url ? `; published at ${url}` : o.balance.hostname ? '' : `, on ${o.haproxyIp}`}`
-  return { backend: saved.backend, ...(url ? { url } : {}) }
+  return { backend: saved.backend, ...(url ? { url } : {}), ...(ledger ? { ledger } : {}) }
 }
 
 /** The step as it runs for real: the plug-in's own service, its publish, its reading and the cluster's guests. */

@@ -207,3 +207,18 @@ test('backendProblem: absent backend, missing server, none healthy, healthy', ()
   assert.match(backendProblem(rd([['a', 'down']]), 'b', ['a']).problem!, /no server in b answers/)
   assert.deepEqual(backendProblem(rd([['a', 'up'], ['c', 'down']]), 'b', ['a', 'c']), { problem: null, healthy: 1, present: 2 })
 })
+
+test('a published name: what the publish made is copied to the install job\'s ledger, so clean-up removes it with the install', async () => {
+  const f = new FakePve(), r = rig()
+  const made = { proxyHost: { instanceId: 'npm-1', hostId: '77' }, dnsRecord: { zone: 'example.com', type: 'A' as const, name: 'shop', data: '203.0.113.7' }, certificate: { instanceId: 'npm-1', id: '9' } }
+  const done = { id: 'j2', status: 'done', url: 'https://shop.example.com', steps: [], domain: 'shop.example.com', owner: OWNER, startedAt: 0, ledger: made }
+  const bal: BalanceDeps = { ...r.balance, publishJob: () => done as any,
+    loadBalance: (id, body, actor, publish) => r.balance.loadBalance(id, body, actor, async ip => { await publish!(ip); return { jobId: 'j2' } }) }
+  const { d } = installDeps(f, r, { haproxyBalance: async () => bal })
+  const p = await previewInstall(HAPROXY_INPUT({ balance: { ...GOOD, hostname: 'shop.example.com', publish: true, zone: 'example.com', proxyInstanceId: 'npm-1' } }), OWNER, d)
+  const job = await settled((await applyPreview(p.preview!.id, OWNER, d)).jobId)
+  assert.equal(job.status, 'completed', job.error)
+  assert.equal(job.url, 'https://shop.example.com')
+  assert.deepEqual(job.ledger, made)
+  assert.notEqual(job.ledger!.proxyHost, made.proxyHost, 'a copy, not the publish job\'s own object')
+})
