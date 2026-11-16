@@ -8,9 +8,11 @@
 //                                      fingerprint, how it was connected. No
 //                                      address, no credential.
 //    plugin/k3s.<id>       url, ca, reader_token (masked): every read.
-//    plugin/k3s.<id>.admin operator_token (masked): the confirmed actions only.
-//                          kubeconfig (masked): K3s's admin login, for the person
-//                          (and for removing HyperProx's accounts again).
+//    plugin/k3s.<id>.operator  operator_token (masked): the confirmed actions only,
+//                          in an item of its own.
+//    plugin/k3s.<id>.admin kubeconfig (masked): K3s's admin login, rebuilt from the
+//                          checked values, for the person (and for removing
+//                          HyperProx's accounts again).
 //                          node_token (masked): what an agent joins with.
 //
 //  Nothing here is ever written to disk outside the vault, the database the
@@ -56,6 +58,7 @@ export class K3sInputError extends Error {
 
 export const providerFor = (id: string) => `${PLUGIN_ID}.${id}`
 export const adminProviderFor = (id: string) => `${PLUGIN_ID}.${id}.admin`
+export const operatorProviderFor = (id: string) => `${PLUGIN_ID}.${id}.operator`
 export const validInstanceId = (id: string) => ID_RE.test(id)
 
 export function cleanName(v: unknown): string {
@@ -129,7 +132,8 @@ export class K3sInstanceStore {
       for (const [k, v] of Object.entries(values)) await this.io.set(CATEGORY, provider, k, v, k !== 'url' && k !== 'ca')
     }
     await w(providerFor(id), { url: s.url, ca: s.ca, reader_token: s.readerToken })
-    await w(adminProviderFor(id), { operator_token: a.operatorToken, kubeconfig: a.kubeconfig, ...(a.nodeToken ? { node_token: a.nodeToken } : {}) })
+    await w(operatorProviderFor(id), { operator_token: a.operatorToken })
+    await w(adminProviderFor(id), { kubeconfig: a.kubeconfig, ...(a.nodeToken ? { node_token: a.nodeToken } : {}) })
   }
 
   async secrets(id: string): Promise<K3sSecrets | null> {
@@ -140,12 +144,13 @@ export class K3sInstanceStore {
 
   async adminSecrets(id: string): Promise<K3sAdminSecrets | null> {
     const p = adminProviderFor(id)
-    const [operatorToken, kubeconfig, nodeToken] = await Promise.all([this.io.get(CATEGORY, p, 'operator_token'), this.io.get(CATEGORY, p, 'kubeconfig'), this.io.get(CATEGORY, p, 'node_token')])
+    const [operatorToken, kubeconfig, nodeToken] = await Promise.all([this.io.get(CATEGORY, operatorProviderFor(id), 'operator_token'), this.io.get(CATEGORY, p, 'kubeconfig'), this.io.get(CATEGORY, p, 'node_token')])
     return operatorToken && kubeconfig ? { operatorToken, kubeconfig, nodeToken: nodeToken || null } : null
   }
 
   async remove(id: string): Promise<void> {
     await this.mutate(list => { const i = list.findIndex(x => x.id === id); if (i >= 0) list.splice(i, 1) })
+    await this.io.remove(CATEGORY, operatorProviderFor(id)).catch(() => {})
     await this.io.remove(CATEGORY, adminProviderFor(id)).catch(() => {})
     await this.io.remove(CATEGORY, providerFor(id)).catch(() => {})
   }

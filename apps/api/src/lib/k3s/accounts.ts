@@ -7,9 +7,11 @@
 //
 //    hyperprox-reader     get/list/watch on what the K3s page shows, and pod
 //                         logs. Never secrets or config maps. Every read uses it.
-//    hyperprox-operator   exactly the confirmed actions: restart, roll back and
-//                         scale a workload, delete a pod, cordon/uncordon a
-//                         node and evict pods to drain it. Used by nothing else.
+//    hyperprox-operator   the rights the confirmed actions need (patch workloads
+//                         and their scale, delete and evict pods, patch nodes),
+//                         narrowed by two admission policies (below): no
+//                         privileged containers, host access or new capabilities
+//                         on a workload, nothing but cordoning on a node.
 //
 //  Each gets a long-lived token Secret (type service-account-token), which
 //  Kubernetes fills in. Server-side apply makes all of it idempotent: running
@@ -41,9 +43,78 @@ export const OPERATOR_RULES = [
   { apiGroups: [''], resources: ['nodes'], verbs: ['get', 'patch'] },
 ]
 
-/** Every object HyperProx makes, as server-side-apply bodies with their API paths. */
+// ── the guard on the action account ──────────────────────────────────────────
+//
+// RBAC cannot say "patch a deployment, but only its restart annotation or its template's image". So two
+// ValidatingAdmissionPolicies (admissionregistration.k8s.io/v1, Kubernetes 1.30 and later) watch every update the
+// action account sends: a workload's pod template may not gain privileged containers, host paths, the host's network,
+// PID or IPC namespaces, or added capabilities the old object did not already have; on a node, nothing may change but
+// whether it takes new pods. Made before any token exists, removed with the accounts.
+
+export const OPERATOR_USER = `system:serviceaccount:${NS}:${OPERATOR}`
+export const WORKLOAD_POLICY = 'hyperprox-operator-workloads'
+export const NODE_POLICY = 'hyperprox-operator-nodes'
+
+/** CEL: the pod spec's containers (init containers too) of `o` (object or oldObject). */
+const containers = (o: string) => `${o}.spec.template.spec.containers + (has(${o}.spec.template.spec.initContainers) ? ${o}.spec.template.spec.initContainers : [])`
+const flag = (o: string, f: string) => `(has(${o}.spec.template.spec.${f}) && ${o}.spec.template.spec.${f} == true)`
+const capsOf = (c: string) => `(has(${c}.securityContext) && has(${c}.securityContext.capabilities) && has(${c}.securityContext.capabilities.add) ? ${c}.securityContext.capabilities.add : [])`
+const same = (path: string, empty: string) => `(has(object.${path}) ? object.${path} : ${empty}) == (has(oldObject.${path}) ? oldObject.${path} : ${empty})`
+
+export function guardPolicies(): Array<{ path: string; body: Record<string, unknown> }> {
+  const labels = { ...MANAGED_BY }
+  const match = [{ name: 'is-hyperprox-operator', expression: `request.userInfo.username == '${OPERATOR_USER}'` }]
+  const workloads = {
+    apiVersion: 'admissionregistration.k8s.io/v1', kind: 'ValidatingAdmissionPolicy', metadata: { name: WORKLOAD_POLICY, labels },
+    spec: {
+      failurePolicy: 'Fail',
+      matchConstraints: { resourceRules: [{ apiGroups: ['apps'], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['deployments', 'statefulsets', 'daemonsets'] }] },
+      matchConditions: match,
+      variables: [
+        { name: 'newC', expression: containers('object') },
+        { name: 'oldC', expression: containers('oldObject') },
+      ],
+      validations: [
+        { expression: `!variables.newC.exists(c, has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged == true) || variables.oldC.exists(c, has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged == true)`,
+          message: 'HyperProx may not make a container privileged.' },
+        { expression: `!(has(object.spec.template.spec.volumes) && object.spec.template.spec.volumes.exists(v, has(v.hostPath))) || (has(oldObject.spec.template.spec.volumes) && oldObject.spec.template.spec.volumes.exists(v, has(v.hostPath)))`,
+          message: 'HyperProx may not give a workload a host path.' },
+        { expression: `!${flag('object', 'hostNetwork')} || ${flag('oldObject', 'hostNetwork')}`, message: 'HyperProx may not put a workload on the host network.' },
+        { expression: `!${flag('object', 'hostPID')} || ${flag('oldObject', 'hostPID')}`, message: 'HyperProx may not give a workload the host PID namespace.' },
+        { expression: `!${flag('object', 'hostIPC')} || ${flag('oldObject', 'hostIPC')}`, message: 'HyperProx may not give a workload the host IPC namespace.' },
+        { expression: `variables.newC.all(c, ${capsOf('c')}.all(x, variables.oldC.exists(o, x in ${capsOf('o')})))`, message: 'HyperProx may not add a capability a container did not already have.' },
+      ],
+    },
+  }
+  const nodes = {
+    apiVersion: 'admissionregistration.k8s.io/v1', kind: 'ValidatingAdmissionPolicy', metadata: { name: NODE_POLICY, labels },
+    spec: {
+      failurePolicy: 'Fail',
+      matchConstraints: { resourceRules: [{ apiGroups: [''], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['nodes'] }] },
+      matchConditions: match,
+      validations: [
+        { expression: [same('metadata.labels', '{}'), same('metadata.annotations', '{}'), same('metadata.finalizers', '[]'), same('metadata.ownerReferences', '[]'),
+          same('spec.taints', '[]'), same('spec.podCIDR', "''"), same('spec.podCIDRs', '[]'), same('spec.providerID', "''")].join(' && '),
+          message: 'HyperProx may change only whether a node takes new pods.' },
+      ],
+    },
+  }
+  const binding = (name: string) => ({
+    apiVersion: 'admissionregistration.k8s.io/v1', kind: 'ValidatingAdmissionPolicyBinding', metadata: { name, labels },
+    spec: { policyName: name, validationActions: ['Deny'] },
+  })
+  const base = '/apis/admissionregistration.k8s.io/v1'
+  return [
+    { path: `${base}/validatingadmissionpolicies/${WORKLOAD_POLICY}`, body: workloads },
+    { path: `${base}/validatingadmissionpolicybindings/${WORKLOAD_POLICY}`, body: binding(WORKLOAD_POLICY) },
+    { path: `${base}/validatingadmissionpolicies/${NODE_POLICY}`, body: nodes },
+    { path: `${base}/validatingadmissionpolicybindings/${NODE_POLICY}`, body: binding(NODE_POLICY) },
+  ]
+}
+
+/** Every object HyperProx makes, as server-side-apply bodies with their API paths: the guard first, so no action token ever exists without it. */
 export function accountObjects(): Array<{ path: string; body: Record<string, unknown> }> {
-  const out: Array<{ path: string; body: Record<string, unknown> }> = []
+  const out: Array<{ path: string; body: Record<string, unknown> }> = [...guardPolicies()]
   for (const [name, rules] of [[READER, READER_RULES], [OPERATOR, OPERATOR_RULES]] as const) {
     const labels = { ...MANAGED_BY }
     out.push({ path: `/api/v1/namespaces/${NS}/serviceaccounts/${name}`, body: { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name, namespace: NS, labels } } })

@@ -20,7 +20,7 @@ import type { AdapterContext, Outcome } from '../auto-connect/core'
 import { EXCLUSION_WORDS, IGNORE_TAG } from '../guest-guard'
 import { exclusionOf } from '../auto-connect/core'
 import { K3sTransport, K3sHttpError, K3sUnreachableError, type K3sTransportOptions, type Call } from './transport'
-import { parseKubeconfig, rewriteServer, caFingerprint, KubeconfigError, type AdminLogin } from './kubeconfig'
+import { parseKubeconfig, buildKubeconfig, caFingerprint, KubeconfigError, type AdminLogin } from './kubeconfig'
 import { ensureAccounts, removeAccounts, parseLoginOutput, NS } from './accounts'
 import { K3sInstanceStore, K3sInputError, cleanName, type K3sMeta, type GuestRef } from './instances'
 import { readingOf, NAME_RE, NAMESPACE_RE, CONTAINER_RE, type Reading, type RawLists, type FixAction } from './parse'
@@ -157,7 +157,8 @@ export class K3sService {
     const raw: RawLists = { version, nodes, nodeMetrics, namespaces, pods, replicaSets: replicaSets ?? { items: [] }, deployments, statefulSets, daemonSets, events, services, ingresses, latest: await this.latestStable(), missing }
     const r = readingOf(raw, this.now())
     // The last lines of the first few failing pods' logs (the previous run's for a crash loop).
-    await Promise.all(r.problems.filter(p => p.container && p.state !== 'pending').slice(0, 6).map(async p => {
+    // Names come from the cluster: checked against Kubernetes' own rules before they go into a path.
+    await Promise.all(r.problems.filter(p => p.container && p.state !== 'pending' && NAMESPACE_RE.test(p.namespace) && NAME_RE.test(p.name) && CONTAINER_RE.test(p.container)).slice(0, 6).map(async p => {
       p.lastLines = await this.tail(t, p.namespace, p.name, p.container!, p.state === 'crashloop' || p.state === 'oom' || p.state === 'restarting', 12).catch(() => undefined)
     }))
     this.cache.set(id, { at: this.now(), reading: r })
@@ -196,7 +197,7 @@ export class K3sService {
     const p = await t.call<any>({ path: `/api/v1/namespaces/${ns}/pods/${pod}` }).catch(e => { throw new K3sRefusal('not_found', plainK3s(e, `Pod ${pod}`), 404) })
     const names: string[] = (p?.spec?.containers ?? []).map((c: any) => String(c?.name ?? ''))
     const c = container || names[0]
-    if (!c || !names.includes(c)) throw new K3sInputError(`${pod} has no container called ${container}.`)
+    if (!c || !names.includes(c) || !CONTAINER_RE.test(c)) throw new K3sInputError(`${pod} has no container called ${container ?? c}.`)
     await this.d.audit('k3s.logs.read', `k3s:${id}`, { ...auditBy(actor), namespace: ns, pod, container: c, previous })
     return { container: c, lines: await this.tail(t, ns, pod, c, previous, 200) }
   }
@@ -334,7 +335,7 @@ export class K3sService {
     return this.d.store.create(
       { name: cleanName(o.name), guest: o.guest, agents: [], caFingerprint: fp, via: o.via },
       { url, ca: login.ca, readerToken: tokens.reader },
-      { operatorToken: tokens.operator, kubeconfig: rewriteServer(o.kubeconfig, url), nodeToken: o.nodeToken ?? null },
+      { operatorToken: tokens.operator, kubeconfig: buildKubeconfig(login, url), nodeToken: o.nodeToken ?? null },
     )
   }
 
@@ -350,9 +351,9 @@ export class K3sService {
   async rename(id: string, name: unknown, actor: Actor): Promise<K3sMeta> {
     this.mustAdmin(actor)
     await this.meta(id)
-    const m = await this.d.store.update(id, { name: cleanName(name) })
-    await this.d.audit('k3s.cluster.rename', `k3s:${id}`, { ...auditBy(actor), name: m.name })
-    return m
+    const clean = cleanName(name)
+    await this.d.audit('k3s.cluster.rename', `k3s:${id}`, { ...auditBy(actor), name: clean })
+    return this.d.store.update(id, { name: clean })
   }
 
   /**
@@ -366,16 +367,18 @@ export class K3sService {
     const s = await this.d.store.secrets(id)
     const a = await this.d.store.adminSecrets(id)
     let left: string[] = []
+    // Recorded before anything is deleted in the cluster; the outcome gets its own row below.
+    await this.d.audit('k3s.cluster.remove', `k3s:${id}`, { ...auditBy(actor), name: m.name, force })
     try {
       if (!s || !a) throw new Error('its admin login is not in the vault')
       const l = parseKubeconfig(a.kubeconfig)
       left = await removeAccounts(this.transport({ url: s.url, ca: l.ca, cert: l.cert, key: l.key, token: l.token }))
       if (left.length) throw new Error(`${left.length} of its objects could not be deleted`)
     } catch (e: any) {
-      if (!force) throw new K3sRefusal('revoke_failed', `HyperProx could not remove its accounts from ${m.name} (${plainK3s(e, 'the cluster')}). Try again when it answers, or remove anyway and delete the hyperprox-reader and hyperprox-operator service accounts in kube-system yourself.`, 409)
+      if (!force) throw new K3sRefusal('revoke_failed', `HyperProx could not remove its accounts from ${m.name} (${plainK3s(e, 'the cluster')}). Try again when it answers, or remove anyway and delete the hyperprox-reader and hyperprox-operator service accounts (kube-system) and the hyperprox-operator-workloads and hyperprox-operator-nodes admission policies yourself.`, 409)
       if (!left.length) left = ['hyperprox-reader', 'hyperprox-operator']
     }
-    await this.d.audit('k3s.cluster.remove', `k3s:${id}`, { ...auditBy(actor), name: m.name, force, left })
+    await this.d.audit('k3s.cluster.removed', `k3s:${id}`, { ...auditBy(actor), name: m.name, force, left })
     if (m.guest) await this.d.dismissed?.(machineKey(m.guest), m.name, actor.email)
     await this.d.store.remove(id)
     this.cache.delete(id)

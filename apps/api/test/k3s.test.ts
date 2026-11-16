@@ -9,8 +9,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { readingOf, podProblem, versionKey, newer, cpuMilli, memBytes, warningsOf, type RawLists } from '../src/lib/k3s/parse'
-import { parseKubeconfig, rewriteServer, KubeconfigError } from '../src/lib/k3s/kubeconfig'
-import { accountObjects, READER_RULES, OPERATOR_RULES, removeAccounts } from '../src/lib/k3s/accounts'
+import { parseKubeconfig, buildKubeconfig, KubeconfigError } from '../src/lib/k3s/kubeconfig'
+import { accountObjects, guardPolicies, READER_RULES, OPERATOR_RULES, OPERATOR_USER, removeAccounts } from '../src/lib/k3s/accounts'
 import { K3sInstanceStore, parseIndex } from '../src/lib/k3s/instances'
 import { K3sService, K3sRefusal, classifyDrain, cleanTarget } from '../src/lib/k3s/service'
 import { K3sHttpError, type Call } from '../src/lib/k3s/transport'
@@ -117,14 +117,50 @@ test('a kubeconfig gives its server, CA and client certificate; dangerous or inc
   assert.match(l.ca, /BEGIN CERTIFICATE/)
   assert.match(l.cert!, /BEGIN CERTIFICATE/)
   assert.match(l.key!, /PRIVATE KEY/)
-  assert.match(rewriteServer(KUBECONFIG, 'https://10.0.0.40:6443'), /server: https:\/\/10\.0\.0\.40:6443\n/)
   const bad = (text: string, why: RegExp) => assert.throws(() => parseKubeconfig(text), (e: any) => e instanceof KubeconfigError && why.test(e.message))
   bad('', /Paste the kubeconfig/)
   bad('just: text', /no clusters and users/)
   bad(KUBECONFIG.replace(/client-certificate-data: \S+\n\s+client-key-data: \S+/, 'exec:\n      command: aws'), /running a program/)
-  bad(KUBECONFIG.replace(/certificate-authority-data: \S+/, 'certificate-authority: /etc/ca.pem'), /points at files/)
+  bad(KUBECONFIG.replace(/certificate-authority-data: \S+/, 'certificate-authority: /etc/ca.pem'), /uses certificate-authority/)
   bad(KUBECONFIG.replace(/certificate-authority-data: \S+/, 'insecure-skip-tls-verify: true'), /certificate checks off|no cluster CA/)
   bad(KUBECONFIG.replace(/server: \S+/, 'server: http://127.0.0.1:6443'), /not an https/)
+})
+
+/** The fixture with one more user (and a context for it) that is never the current one. */
+const withOtherUser = (user: string) => KUBECONFIG.replace('users:\n', `users:\n- name: other\n  user:\n${user}\n`)
+
+test('every entry is checked, not only the one used: proxies, turned-off checks in any spelling, exec anywhere, merge keys', () => {
+  const bad = (text: string, why: RegExp) => assert.throws(() => parseKubeconfig(text), (e: any) => e instanceof KubeconfigError && why.test(e.message), why.source)
+  bad(KUBECONFIG.replace(/(server: \S+)/, '$1\n    proxy-url: http://10.0.0.9:3128'), /proxy-url/)
+  bad(KUBECONFIG.replace('current-context: default', 'current-context: default\nextensions:\n- name: x\n  extension:\n    proxy-url: http://10.0.0.9:3128'), /proxy-url/)
+  for (const v of ['True', 'true', 'TRUE', 'yes', '1', 'on', '"true"']) {
+    bad(KUBECONFIG.replace(/(server: \S+)/, `$1\n    insecure-skip-tls-verify: ${v}`), /certificate checks off/)
+  }
+  // An explicit "false" is the default and harmless.
+  assert.ok(parseKubeconfig(KUBECONFIG.replace(/(server: \S+)/, '$1\n    insecure-skip-tls-verify: false')))
+  bad(withOtherUser('    exec:\n      command: /bin/sh\n      apiVersion: client.authentication.k8s.io/v1'), /user other signs in by running a program/)
+  bad(withOtherUser('    auth-provider:\n      name: gcp'), /running a program or a cloud login/)
+  bad(withOtherUser('    tokenFile: /var/run/token'), /tokenFile/)
+  bad(withOtherUser('    client-key: /etc/key.pem'), /client-key/)
+  bad(withOtherUser('    as: system:admin'), /another identity/)
+  bad(KUBECONFIG.replace('clusters:\n', 'clusters:\n- name: spare\n  cluster:\n    server: https://10.0.0.9:6443\n    certificate-authority: /etc/ca.pem\n'), /cluster spare uses certificate-authority/)
+  // Exec hidden behind a merge key: refused for the merge key itself, in block and flow form.
+  bad(KUBECONFIG.replace('users:\n', 'x-base: &b\n  exec:\n    command: /bin/sh\nusers:\n- name: other\n  user:\n    <<: *b\n'), /merge key/)
+  bad(KUBECONFIG.replace('users:\n', 'users:\n- name: other\n  user: {<<: {exec: {command: sh}}}\n'), /merge key/)
+})
+
+test('what is kept is a minimal kubeconfig rebuilt from the checked values, never the text that came in', () => {
+  const extra = KUBECONFIG.replace('preferences: {}', 'preferences:\n  colors: true\n# a comment that must not survive')
+  const l = parseKubeconfig(extra)
+  const kept = buildKubeconfig(l, 'https://10.0.0.40:6443')
+  assert.ok(!/preferences|colors|comment|127\.0\.0\.1|NOT A SECRET/.test(kept))
+  assert.deepEqual(kept.split('\n').filter(x => /^[a-z]/.test(x)), ['apiVersion: v1', 'kind: Config', 'clusters:', 'users:', 'contexts:', 'current-context: k3s'])
+  assert.match(kept, /server: https:\/\/10\.0\.0\.40:6443\n/)
+  // It reads back as the same login.
+  const again = parseKubeconfig(kept)
+  assert.deepEqual({ ...again, server: l.server }, l)
+  assert.equal(again.server, 'https://10.0.0.40:6443')
+  assert.throws(() => buildKubeconfig(l, 'https://10.0.0.40:6443\n    proxy-url: x'), /https:\/\/host:port/)
 })
 
 // ── accounts ─────────────────────────────────────────────────────────────────
@@ -138,8 +174,41 @@ test('HyperProx\'s read-only account never reads secrets or config maps; the act
   assert.ok(!op.some(x => x.verbs.some(v => ['create', 'update', '*'].includes(v)) && x.res !== 'pods/eviction'))
   assert.deepEqual(op.find(x => x.res === 'pods')!.verbs, ['get', 'list', 'delete'])
   const objs = accountObjects()
-  assert.equal(objs.length, 8)
+  assert.equal(objs.length, 12)
+  assert.ok(objs.slice(0, 4).every(o => o.path.startsWith('/apis/admissionregistration.k8s.io/v1/')), 'the guard is made before any token exists')
   assert.ok(objs.every(o => (o.body.metadata as any).labels['app.kubernetes.io/managed-by'] === 'hyperprox'))
+})
+
+test('the admission guard on the action account: what each policy refuses, in Kubernetes\' own shape', () => {
+  const [wp, wb, np, nb] = guardPolicies().map(o => o.body as any)
+  for (const p of [wp, np]) {
+    assert.equal(p.apiVersion, 'admissionregistration.k8s.io/v1')
+    assert.equal(p.kind, 'ValidatingAdmissionPolicy')
+    assert.equal(p.spec.failurePolicy, 'Fail')
+    assert.deepEqual(p.spec.matchConditions, [{ name: 'is-hyperprox-operator', expression: `request.userInfo.username == '${OPERATOR_USER}'` }])
+  }
+  assert.equal(OPERATOR_USER, 'system:serviceaccount:kube-system:hyperprox-operator')
+  assert.deepEqual(wp.spec.matchConstraints.resourceRules, [{ apiGroups: ['apps'], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['deployments', 'statefulsets', 'daemonsets'] }])
+  const rules = wp.spec.validations.map((v: any) => v.expression).join('\n')
+  for (const k of ['privileged', 'hostPath', 'hostNetwork', 'hostPID', 'hostIPC', 'capabilities.add']) assert.ok(rules.includes(k), k)
+  // Each one allows what the old object already had: "unless the old object already had them".
+  for (const v of wp.spec.validations.slice(0, 5)) assert.match(v.expression, /oldObject|variables\.oldC/)
+  assert.deepEqual(np.spec.matchConstraints.resourceRules, [{ apiGroups: [''], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['nodes'] }])
+  assert.ok(!np.spec.validations[0].expression.includes('unschedulable'), 'the one field it may change is not compared')
+  for (const f of ['metadata.labels', 'metadata.annotations', 'spec.taints', 'spec.providerID']) assert.ok(np.spec.validations[0].expression.includes(`has(object.${f})`), f)
+  assert.deepEqual([wb.kind, wb.spec], ['ValidatingAdmissionPolicyBinding', { policyName: 'hyperprox-operator-workloads', validationActions: ['Deny'] }])
+  assert.deepEqual([nb.kind, nb.spec], ['ValidatingAdmissionPolicyBinding', { policyName: 'hyperprox-operator-nodes', validationActions: ['Deny'] }])
+})
+
+test('the K3s release HyperProx installs serves both admission kinds at v1 (recorded from it)', () => {
+  const d = JSON.parse(fs.readFileSync(path.join(FX, 'admissionregistration-v1.json'), 'utf8'))
+  assert.equal(d.groupVersion, 'admissionregistration.k8s.io/v1')
+  for (const name of ['validatingadmissionpolicies', 'validatingadmissionpolicybindings']) {
+    const r = d.resources.find((x: any) => x.name === name)
+    assert.ok(r, name)
+    for (const verb of ['get', 'patch', 'delete']) assert.ok(r.verbs.includes(verb), `${name} ${verb}`)
+  }
+  for (const o of guardPolicies()) assert.ok(d.resources.some((r: any) => o.path.endsWith(`/${r.name}/${(o.body as any).metadata.name}`)), o.path)
 })
 
 // ── the service, with a stand-in cluster ─────────────────────────────────────
@@ -210,13 +279,15 @@ test('connecting makes both accounts with the admin login and keeps only tokens,
   const audits: string[] = []
   const svc = new K3sService({ store, transport: fc.transport, audit: async a => { audits.push(a) }, wait: async () => {}, now: () => NOW })
   const m = await svc.connect({ kubeconfig: KUBECONFIG, address: 'https://10.0.0.40:6443', nodeToken: 'K10made-up::server:abcdefabcdef', name: 'lab', guest: { kind: 'lxc', vmid: 240 }, via: 'catalogue' }, admin)
-  assert.equal(fc.writes.length, 8)
+  assert.equal(fc.writes.length, 12)
   assert.ok(fc.writes.every(w => w.who === 'admin' && w.method === 'PATCH' && w.contentType === 'application/apply-patch+yaml'))
   assert.deepEqual(audits, ['k3s.cluster.connect'])
   assert.deepEqual([...mem.keys()].sort(), [
-    `plugin/k3s.${m.id}.admin/kubeconfig`, `plugin/k3s.${m.id}.admin/node_token`, `plugin/k3s.${m.id}.admin/operator_token`,
+    `plugin/k3s.${m.id}.admin/kubeconfig`, `plugin/k3s.${m.id}.admin/node_token`, `plugin/k3s.${m.id}.operator/operator_token`,
     `plugin/k3s.${m.id}/ca`, `plugin/k3s.${m.id}/reader_token`, `plugin/k3s.${m.id}/url`, 'plugin/k3s/instances'])
-  assert.match(mem.get(`plugin/k3s.${m.id}.admin/kubeconfig`)!, /server: https:\/\/10\.0\.0\.40:6443/)
+  const kept = mem.get(`plugin/k3s.${m.id}.admin/kubeconfig`)!
+  assert.equal(kept, buildKubeconfig(parseKubeconfig(KUBECONFIG), 'https://10.0.0.40:6443'), 'the rebuilt minimal form, not the text that came in')
+  assert.ok(!/NOT A SECRET|preferences/.test(kept))
   const index = mem.get('plugin/k3s/instances')!
   assert.ok(!/token|BEGIN|10\.0\.0\.40/.test(index), 'the list holds no credential and no address')
   assert.deepEqual(parseIndex(index)[0].guest, { kind: 'lxc', vmid: 240 })
@@ -300,7 +371,13 @@ test('a reading carries the failing pods\' last lines for admins only; viewers l
   const { svc, m } = await connected()
   const r = await svc.reading(m.id, { fresh: true })
   assert.ok(r.problems.find(p => p.state === 'crashloop')!.lastLines!.length > 0)
-  assert.ok(readingFor(r, false).problems.every(p => !('lastLines' in p)))
+  const v = readingFor(r, false)
+  assert.ok(v.problems.every(p => !('lastLines' in p)))
+  assert.ok(v.nodes.every(n => n.ip === null))
+  assert.ok(v.ingresses.every(i => !i.hosts.length && !i.addresses.length && !i.paths.length))
+  assert.ok(v.services.every(x => x.clusterIP === null && !x.external.length))
+  assert.ok(v.events.every(e => e.message === ''))
+  assert.ok(!JSON.stringify(v).includes('10.0.0.40'), 'no address reaches a viewer')
   assert.ok(readingFor(r, true).problems.some(p => p.lastLines))
   assert.equal('url' in viewOf({ id: 'k1', url: 'https://10.0.0.40:6443' }, false), false)
   const tile = tileOf([{ id: m.id, name: 'lab', reading: r, error: null }])
@@ -312,14 +389,30 @@ test('remove deletes HyperProx\'s accounts with the kept admin login, then the v
   const { svc, m, fc, mem } = await connected()
   const dismissed: string[] = []
   ;(svc.d as any).dismissed = async (k: string) => { dismissed.push(k) }
+  ;(svc.d as any).audit = async (a: string) => { fc.writes.push({ who: 'audit', method: a, path: '' }) }
   const r = await svc.remove(m.id, admin)
   assert.deepEqual(r.left, [])
-  assert.equal(fc.writes.length, 8)
+  assert.deepEqual(fc.writes.map(w => w.who === 'audit' ? w.method : w.method).filter(x => x.startsWith('k3s.')), ['k3s.cluster.remove', 'k3s.cluster.removed'])
+  assert.equal(fc.writes[0].method, 'k3s.cluster.remove', 'recorded before anything is deleted')
+  const deletes = fc.writes.filter(w => w.method === 'DELETE')
+  assert.equal(deletes.length, 12)
+  fc.writes.splice(0, 1); fc.writes.pop()
+  assert.ok(fc.writes.slice(-4).every(w => w.path.includes('admissionregistration')), 'the guard goes last, after every token')
   assert.ok(fc.writes.every(w => w.who === 'admin' && w.method === 'DELETE'))
   assert.equal([...mem.keys()].filter(k => k.includes(m.id)).length, 0)
   assert.deepEqual(dismissed, ['lxc-240'])
   const left = await removeAccounts({ call: async () => { throw new K3sHttpError(404, 'NotFound', '') } })
   assert.deepEqual(left, [], 'already gone counts as removed')
+})
+
+test('rename is admin, recorded before it is saved', async () => {
+  const { svc, m, store } = await connected()
+  const seen: string[] = []
+  ;(svc.d as any).audit = async (a: string) => { seen.push(`${a} (saved name: ${(await store.get(m.id))!.name})`) }
+  await svc.rename(m.id, 'Lab cluster', admin)
+  assert.deepEqual(seen, ['k3s.cluster.rename (saved name: lab)'])
+  assert.equal((await store.get(m.id))!.name, 'Lab cluster')
+  await assert.rejects(svc.rename(m.id, 'x', { email: 'v', role: 'viewer' }), /Only an admin/)
 })
 
 test('remove refuses when the cluster cannot be reached, unless forced', async () => {
