@@ -47,6 +47,7 @@ import { nextcloudRoutes }      from './routes/nextcloud'
 import { haproxyRoutes }        from './routes/haproxy'
 import { homepageRoutes }       from './routes/homepage'
 import { autoConnectRoutes } from './routes/auto-connect'
+import { removedGuestsRoutes } from './routes/removed-guests'
 import { catalogueRoutes } from './routes/catalogue'
 import { siteRoutes } from './routes/sites'
 // Site metrics (lib/site-metrics): routes under /api/site-metrics and the five-minute collector.
@@ -202,6 +203,7 @@ async function main() {
   await server.register(haproxyRoutes,         { prefix: '/api/plugins/haproxy' })
   await server.register(homepageRoutes,        { prefix: '/api/plugins/homepage' })
   await server.register(autoConnectRoutes,     { prefix: '/api/auto-connect' })
+  await server.register(removedGuestsRoutes,   { prefix: '/api/removed-guests' })
   // Local plug-ins in the git-ignored apps/api/src/local-plugins (none: nothing is registered but an empty list).
   await registerLocalPlugins(server, loadLocalPlugins(undefined, PLUGINS.map(p => p.manifest.id)))
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })

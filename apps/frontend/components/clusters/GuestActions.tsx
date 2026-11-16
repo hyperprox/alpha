@@ -28,6 +28,8 @@ export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, on
   const [storages, setStorages] = useState<Array<{ storage: string; type: string; availBytes: number; preferred?: boolean; note?: string }> | null>(null)
   const [storage, setStorage] = useState('')
   const [typed, setTyped] = useState('')
+  // Delete: also remove the proxy host and DNS name its install made (off: the name stays for a new install).
+  const [removePublished, setRemovePublished] = useState(false)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
   const [task, setTask] = useState<{ node: string; upid: string } | null>(null)
@@ -64,7 +66,7 @@ export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, on
     const [path, body] = act.kind === 'power' ? [`${base}/power`, { action: act.action }]
       : act.kind === 'snapshot' ? [`${base}/snapshot`, { name: snapName }]
       : act.kind === 'backup' ? [`${base}/backup`, { storage }]
-      : [`${base}/delete`, { confirmName: typed }]
+      : [`${base}/delete`, { confirmName: typed, removePublished }]
     const r = await apiJson<{ data: any }>(path, 'POST', body)
     setBusy(false)
     if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void apply()); return }
@@ -77,7 +79,7 @@ export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, on
   const impact = act.kind === 'power' ? powerWords[act.action].impact
     : act.kind === 'snapshot' ? 'A point you can roll back to. It is kept on the same storage as the guest. (A guest with a bind mount cannot be snapshotted.)'
     : act.kind === 'backup' ? 'A full backup to the storage you pick. It runs in the background on that server.'
-    : 'The guest and its disks are destroyed. This cannot be undone. It must be stopped first, and not under HA.'
+    : `The guest and its disks are destroyed. This cannot be undone. It must be stopped first, and not under HA.${kind === 'home' ? ' What HyperProx kept for it (a plug-in connected to it, its install record, its ID in a backup job) is cleaned up with it.' : ''}`
   const canApply = !busy && !task && !(result?.ok) && (act.kind !== 'delete' || typed === g.name) && (act.kind !== 'backup' || !!storage) && (act.kind !== 'snapshot' || /^[A-Za-z][A-Za-z0-9_-]{1,39}$/.test(snapName))
 
   return (
@@ -94,6 +96,12 @@ export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, on
         </div>
       ))}
       {act.kind === 'delete' && <div><label style={LABEL}>Type <b style={{ color: 'var(--text-bright)' }}>{g.name}</b> to delete it</label><input style={INPUT} value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" /></div>}
+      {act.kind === 'delete' && kind === 'home' && (
+        <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
+          <input type="checkbox" checked={removePublished} onChange={e => setRemovePublished(e.target.checked)} />
+          <span>Also remove the proxy host and DNS name HyperProx made for it, if its install made any. Leave this unticked to keep the name for a new install.</span>
+        </label>
+      )}
       {result && <Notice kind={result.ok ? 'info' : 'error'}>{result.text}</Notice>}
       {task && <BusyNote>Backing up… (you can close this; the backup carries on)</BusyNote>}
       <div className="flex gap-2 items-center flex-wrap">

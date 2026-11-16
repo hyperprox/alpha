@@ -10,6 +10,7 @@
 import { homePve } from './pve-env'
 import type { ProxmoxClient } from './proxmox-client'
 import { pbsMountCleanup, homeNodeRunner } from './pbs/setup-deps'
+import { forgetAfterDelete } from './removed-guests/after-delete'
 import { proxyService } from './proxy'
 import type { NpmProvider } from './proxy/providers/npm'
 import type { ProxyHostView } from './proxy/types'
@@ -92,6 +93,9 @@ export function realSiteDeleteDeps(): SiteDeleteDeps {
       } as unknown as ProxmoxClient,
       // The NAS mount clean-up finds the node on the home cluster, with the home login and a pinned key only.
       afterDestroy: g => pbsMountCleanup(g, homeNodeRunner({ pve: homePve() })),
+      // What else HyperProx held for the container (a plug-in connected to it, HA, a backup job). The site's own
+      // record, install record and published names are this delete's own items, so they are left to it.
+      forget: (g, name) => forgetAfterDelete({ except: ['site', 'install', 'published'] })(g, name),
     },
     async ledger(site) {
       if (site.published) return site.published

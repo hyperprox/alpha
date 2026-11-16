@@ -340,6 +340,45 @@ export class WireguardService {
     await this.d.store.audit('wireguard.peer.remove', p.id, { ...auditBy(by), name: p.name })
   }
 
+  /**
+   * A machine was removed from Proxmox (lib/removed-guests). Its tunnels to servers on other machines are taken off
+   * those servers, exactly as Remove does. A server it ran is forgotten with the peers of it and their saved configs
+   * (nothing is left for them to reach); a machine elsewhere that connected to it keeps its own interface, and the
+   * answer names it.
+   */
+  async forgetMachine(machineId: string, by: string): Promise<string> {
+    const servers = (await this.d.store.listServers()).filter(s => s.machineId === machineId)
+    const dead = new Set(servers.map(s => s.id))
+    const peers = await this.d.store.listPeers()
+    const words: string[] = []
+    for (const p of peers.filter(x => x.machineId === machineId && !(x.serverId && dead.has(x.serverId)))) {
+      // The live side changes first; the row goes only once it has. A server that cannot be updated keeps the peer
+      // row (put back as it was), so HyperProx never forgets a peer that is still configured there.
+      if (p.routerIface && p.routerPeerId) await this.removeRouterPeer(p.routerPeerId, by)
+      await this.d.store.removePeer(p.id)
+      if (p.serverId) {
+        try { await this.applyServer(this.job('forget removed machine', by), await this.server(p.serverId)) }
+        catch (e) { const { createdAt: _made, ...back } = p; await this.d.store.addPeer(back); throw e }
+      }
+      await this.d.store.audit('wireguard.peer.remove', p.id, { ...auditBy(by), name: p.name, why: 'its machine was removed from Proxmox' })
+      words.push(`Took the tunnel ${p.name} off its server.`)
+    }
+    for (const s of servers) {
+      const own = peers.filter(p => p.serverId === s.id)
+      for (const p of own) {
+        await this.d.store.removePeer(p.id)
+        if (p.kind === 'device') await this.d.vault.remove(peerItem(p.id)).catch(() => undefined)
+        await this.d.store.audit('wireguard.peer.forget', p.id, { ...auditBy(by), name: p.name, why: 'its server was removed from Proxmox' })
+      }
+      const elsewhere = [...new Set(own.filter(p => p.kind === 'machine' && p.machineId && p.machineId !== machineId).map(p => p.machineId as string))]
+      await this.d.store.removeServer(s.id)
+      if (s.keyBackedUp) await this.d.vault.remove(serverItem(s.id)).catch(() => undefined)
+      await this.d.store.audit('wireguard.server.forget', s.id, { ...auditBy(by), machineId, iface: s.iface, why: 'removed from Proxmox' })
+      words.push(`Forgot the WireGuard server ${s.iface} and ${own.length === 1 ? 'its one peer' : `its ${own.length} peers`}.${elsewhere.length ? ` ${elsewhere.join(', ')} still ${elsewhere.length === 1 ? 'has an interface' : 'have interfaces'} pointing at it.` : ''}`)
+    }
+    return words.join(' ') || 'Nothing of WireGuard was left for it.'
+  }
+
   // ── Rotation ──────────────────────────────────────────────────────────────
 
   /** A new keypair for a client. The vault item is replaced; the previous key is kept seven days, marked rotated. */

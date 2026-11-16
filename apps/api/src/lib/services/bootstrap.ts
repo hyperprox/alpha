@@ -39,13 +39,15 @@
 //    7. homepage       Auto-sync's timer (each pass skips while locked).
 //    8. auto-connect   Its timer, plus a pass on every unlock; each pass
 //                      needs an unlocked vault.
+//    9. removed-guests The removed-guest watch (lib/removed-guests): its timer,
+//                      plus a look on every unlock; each look needs the vault.
 //
 //   When the server is ready (onReady), as before:
-//    9. updates-recover   A job cut off by a restart is paused (the database
+//   10. updates-recover   A job cut off by a restart is paused (the database
 //                         needs no vault).
-//   10. updates-timers    The home scheduler and the daily check (each tick
+//   11. updates-timers    The home scheduler and the daily check (each tick
 //                         skips while locked).
-//   11. placement         Load balancing's scheduler: one pass, then every
+//   12. placement         Load balancing's scheduler: one pass, then every
 //                         minute (a pass does nothing while locked).
 //
 //  On close, everything started here is stopped, in reverse.
@@ -72,11 +74,12 @@ import { PrismaStore } from '../updates/store'
 import { UpdatesRuntime, setUpdatesRuntime } from '../updates/runtime'
 import { broadcast } from '../updates/broadcast'
 import { jobLog, type LogLike } from '../log-once'
+import { removedGuests } from '../removed-guests'
 
 /** The steps, by name, in the order they run (the list above). */
 export type BootStep =
   | 'exclusions' | 'compose-owners' | 'dismissed' | 'updates' | 'install-hook'
-  | 'nextcloud' | 'homepage' | 'auto-connect'
+  | 'nextcloud' | 'homepage' | 'auto-connect' | 'removed-guests'
   | 'updates-recover' | 'updates-timers' | 'placement'
 
 /**
@@ -97,6 +100,7 @@ export interface BootstrapDeps {
   homepage?: { start(): () => void }
   autoConnect?: { start(onUnlock: (cb: () => void) => void): () => void }
   placement?: { start(): Promise<() => void> }
+  removedGuests?: { start(onUnlock: (cb: () => void) => void): () => void }
   /** Registers a callback for every unlock. Default: the vault's. */
   onUnlock?: (cb: () => void) => void
 }
@@ -174,7 +178,11 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
   const unlock = deps.onUnlock ?? onUnlock
   stops.push((deps.autoConnect ?? autoConnect()).start(cb => unlock(() => cb())))
 
-  // 9–11. When the server is ready, as the routes did it: Updates' recovery, then its timers, then load balancing.
+  // 9. The removed-guest watch: its timer, and a look after every unlock.
+  steps.push('removed-guests')
+  stops.push((deps.removedGuests ?? removedGuests(prisma, deps.log)).start(cb => unlock(() => cb())))
+
+  // 10–12. When the server is ready, as the routes did it: Updates' recovery, then its timers, then load balancing.
   const u = updates
   app.addHook('onReady', async () => {
     steps.push('updates-recover')

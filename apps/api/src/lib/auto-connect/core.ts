@@ -261,6 +261,22 @@ export class Reconciler {
     })
   }
 
+  /**
+   * Forget what auto-connect remembers about these keys (connected, pending, dismissed): the guest they named was
+   * removed from Proxmox (lib/removed-guests), so a new install there starts with nothing remembered.
+   */
+  async forget(entries: Array<{ plugin: string; key: string }>): Promise<void> {
+    if (!entries.length) return
+    await this.mutate(s => {
+      for (const e of entries) {
+        const k = sid(e.plugin, e.key)
+        delete s.dismissed[k]
+        delete s.connected[k]
+        delete s.pending[k]
+      }
+    })
+  }
+
   /** "Connect again": forget the dismissal, then run a fresh pass (never one that started before this). */
   async connectAgain(plugin: string, key: string, by: string): Promise<RunResult> {
     const k = sid(plugin, key)

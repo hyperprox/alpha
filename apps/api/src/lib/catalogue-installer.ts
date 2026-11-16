@@ -1633,6 +1633,22 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   return msg
 }
 
+/**
+ * The container this install made was removed from Proxmox (lib/removed-guests): forget the install's record, and the
+ * login vault item it made itself (one that existed before the install is kept). What it published is not touched
+ * here; the removed-guest clean-up offers that separately.
+ */
+export async function forgetInstallRecord(jobId: string, over: Partial<WizardDeps> = {}): Promise<string> {
+  const row = await wizardStore().get(jobId)
+  const job = JOBS.get(jobId) ?? (row?.kind === 'job' ? (row.data as InstallJob) : null)
+  if (!job) return 'The install record is already gone.'
+  if (job.status === 'running') throw new WizardRefusal('That install is still running, so its record is kept.', 'changed')
+  const vault = await removeVaultItem(job, wizardDeps(over))
+  JOBS.delete(jobId)
+  await wizardStore().delete(jobId)
+  return `Forgot the ${job.recipeId} install record.${vault}`
+}
+
 // ── Proxmox Backup Server: the NAS datastore on the node ─────────────────────
 
 /** The preview's checks of where the backups will live (lib/pbs/catalogue.ts), with the NFS look run on the node. */

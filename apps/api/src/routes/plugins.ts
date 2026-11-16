@@ -10,14 +10,19 @@ import { PLUGIN_IDEAS, repoSlug } from '../lib/plugin-wishlist'
 import { sharedServiceScan, pluginFindings } from '../lib/service-scan'
 import { homeAssistantDetail }  from './ha-control'
 import {
-  describeSettings, getSettings, missingSettings, pluginConfigured, pluginNeeds, runPlugin, runPluginDetail,
+  PLUGIN_CATEGORY, describeSettings, getSettings, missingSettings, pluginConfigured, pluginNeeds, runPlugin, runPluginDetail,
   runPluginMetrics, renderExposition, saveSettings,
   type PluginMetric,
-  runPluginRescueScan, runPluginRescueRun, PluginSettingsError,
+  runPluginRescueScan, runPluginRescueRun, PluginSettingsError, PluginNotConfigured,
 } from '../lib/plugin-host'
 import { siteMetricsExposition } from '../lib/site-metrics'
 import { apiTokenStore } from '../lib/api-tokens'
-import { sendFailure } from '../lib/failure'
+import { sendFailure, sendRefusal } from '../lib/failure'
+import { deleteProviderCredentials } from '../lib/credentials'
+import { auditOrThrow } from '../lib/audit'
+import { rememberDismissed } from '../lib/auto-connect'
+import { actorOf, actorWords } from '../lib/http/request-actor'
+import { PluginDisconnectRefusal, disconnectPlugin } from '../lib/plugin-disconnect'
 
 export function metricsTokenMatches(offered: string, expected: string): boolean {
   if (!offered || !expected) return false
@@ -51,7 +56,9 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
         const rows = await runPluginMetrics(p)
         rows.forEach(metric => samples.push({ plugin: p.manifest.id, metric }))
         up[p.manifest.id] = true
-      } catch {
+      } catch (e) {
+        // A plug-in that is not set up (never, or disconnected) is not scraped at all: no "down" line for it.
+        if (e instanceof PluginNotConfigured) return
         up[p.manifest.id] = false
       }
     }))
@@ -191,6 +198,28 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
       }
     },
   )
+
+  // Disconnect: forget every setting and the vault item, remember each address as dismissed so auto-connect does not
+  // put it back, and stop reading it (dashboard, metrics). A person's decision: never an API token's. Re-confirmed.
+  fastify.delete<{ Params: { id: string } }>('/:id/settings', async (req, reply) => {
+    const plugin = findPlugin(req.params.id)
+    if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })
+    if (req.apiToken) return sendRefusal(reply, 403, 'token_forbidden', 'API tokens cannot disconnect plug-ins.')
+    try {
+      const r = await disconnectPlugin(plugin.manifest, actorWords(actorOf(req)), {
+        settings: getSettings,
+        forgetAll: id => deleteProviderCredentials(PLUGIN_CATEGORY, id),
+        dismiss: rememberDismissed,
+        audit: auditOrThrow,
+      })
+      fastify.log.info({ plugin: plugin.manifest.id, settings: r.forgot.length }, '[plugin] disconnected')
+      return { success: true, data: r }
+    } catch (e: any) {
+      if (e instanceof PluginDisconnectRefusal) return sendRefusal(reply, e.status, e.code, e.message)
+      if (e?.name === 'VaultLockedError') throw e
+      return sendFailure(reply.request, reply, e, `${plugin.manifest.name} was not disconnected. The details are in the log.`)
+    }
+  })
 
   // Live data for a card or a tile. A plug-in that cannot reach its device is a
   // normal state, not a server fault — 200 with ok:false, so the card can show

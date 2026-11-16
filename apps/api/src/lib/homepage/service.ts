@@ -419,6 +419,25 @@ export class HomepageService {
     })
   }
 
+  /**
+   * The guest this dashboard ran in was removed from Proxmox (lib/removed-guests): forget it. Nothing is left on a
+   * guest to take off; the Proxmox token made for it is revoked (one already gone counts) and its secret leaves the
+   * vault. No dismissal is kept: a new Homepage on that ID is a new install, and connects by itself.
+   */
+  async forgetRemoved(id: string, by: string): Promise<string> {
+    return this.withLock(id, async () => {
+      const i = await this.instance(id)
+      await this.d.audit('homepage.forget_removed', `homepage:${i.machineId}`, { by, name: i.name, token: i.proxmoxToken?.tokenId ?? null })
+      if (i.proxmoxToken) {
+        try { await this.d.proxmox.revokeToken(i.proxmoxToken.tokenId) }
+        catch (e: any) { if (!TOKEN_GONE.test(String(e?.message ?? e))) throw e }
+        await this.d.proxmox.saveSecret(i.id, null)
+      }
+      await this.d.store.delete(id)
+      return `Homepage forgot ${i.name}${i.proxmoxToken ? ', and its Proxmox token was revoked' : ''}.`
+    })
+  }
+
   // ── settings ─────────────────────────────────────────────────────────────
 
   async saveSettings(id: string, body: Record<string, unknown>, actor: Actor): Promise<HomepageInstance> {

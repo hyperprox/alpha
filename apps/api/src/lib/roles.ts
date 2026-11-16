@@ -212,6 +212,10 @@ const HAPROXY = /^\/api\/plugins\/haproxy\/(instances|guests|publish-jobs)(\/|$)
 // item names). A pick or "connect again" is the same read-only connect the background pass makes, so it is not
 // re-confirmed; every write and fix those plug-ins have keeps its own rule above.
 const AUTO_CONNECT = /^\/api\/auto-connect(\/|$)/
+// Removed guests (routes/removed-guests.ts): admin for every method, reads included (it names guests, addresses and
+// backup jobs). Clean up is re-confirmed: it deletes vault items and changes the cluster's backup jobs and HA list.
+const REMOVED_GUESTS = /^\/api\/removed-guests(\/|$)/
+const REMOVED_GUESTS_CLEAN = /^\/api\/removed-guests\/\d{1,9}\/clean-up$/
 const HOMEPAGE_RECONFIRM = /^\/api\/plugins\/homepage\/instances\/[^/]+\/(widgets|secrets|proxmox-token|wire-env|purge-key-backups)$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
@@ -373,6 +377,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (HOMEPAGE.test(p)) return 'admin'
   if (HAPROXY.test(p)) return 'admin'
   if (AUTO_CONNECT.test(p)) return 'admin'
+  if (REMOVED_GUESTS.test(p)) return 'admin'
   if (CATALOGUE_DETECTED.test(p)) return 'admin'
   if (PLEX_SIGNIN.test(p)) return 'admin'
   if (SITES.test(p)) return 'admin'
@@ -456,6 +461,9 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m !== 'GET' && m !== 'HEAD' && NEXTCLOUD_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HOMEPAGE_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
+  // Disconnecting a plug-in deletes its vault item (every key it had).
+  if (m === 'DELETE' && PLUGIN_SETTINGS.test(p)) return true
+  if (m === 'POST' && REMOVED_GUESTS_CLEAN.test(p)) return true
   if (m === 'POST' && PLEX_SIGNIN_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true

@@ -33,6 +33,7 @@ import { jobStore, previewCopy, startCopy, kickCopies } from '../lib/clusters/fi
 import { scanCluster }        from '../lib/clusters/scan'
 import { previewMonitoring, applyMonitoring } from '../lib/clusters/monitoring'
 import { power, snapshot, backupNow, backupStorages, destroy } from '../lib/clusters/guest-actions'
+import { forgetAfterDelete } from '../lib/removed-guests/after-delete'
 import { isReconfirmed }      from '../lib/auth'
 import { auditCredentialUse } from '../lib/audit'
 import type { Role }          from '../lib/roles'
@@ -271,7 +272,8 @@ function defaultDeps(): AiRouteDeps {
         power: (pve, g, a) => power({ pve }, g, a),
         snapshot: (pve, g, name) => snapshot({ pve }, g, name),
         backupNow: (pve, g, storage) => backupNow({ pve }, g, storage),
-        destroy: (pve, g, name) => destroy({ pve }, g, name),
+        // What HyperProx held for the guest is cleaned up after it (never what its install published: that is asked).
+        destroy: (pve, g, name) => destroy({ pve, forget: forgetAfterDelete({ published: false }) }, g, name),
       },
       applyMonitoring: (planId, owner, clusterId) => applyMonitoring(planId, owner, undefined, clusterId),
       // Started now, not at the runner's next tick.

@@ -336,6 +336,19 @@ export class NextcloudService {
     return { appPasswordLeft: left }
   }
 
+  /**
+   * The guest this instance ran in was removed from Proxmox (lib/removed-guests): forget it and its saved logins.
+   * There is no guest left to revoke an app password on, and no dismissal is kept (a new install there is new).
+   */
+  async forgetRemoved(id: string, by: string): Promise<string> {
+    const m = await this.meta(id)
+    if (this.busy.has(id)) throw new NcRefusal('busy', 'A Nextcloud action is still running here; try again when it has finished.', 409)
+    await this.d.audit('nextcloud.instance.forget_removed', `nextcloud:${id}`, { by, name: m.name, guest: machineKey(m.guest) })
+    await this.d.store.remove(id)
+    this.cache.delete(id)
+    return `Nextcloud forgot "${m.name}" and its saved logins.`
+  }
+
   /** Revoke the app password HyperProx made (by its token id, never by name). Throws when it could not. */
   private async revokeMade(m: NcMeta, login: { user: string | null; tokenId: number | null; made: boolean }, by: string): Promise<void> {
     if (!login.made) return

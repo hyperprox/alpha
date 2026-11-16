@@ -23,6 +23,7 @@ import { BusyNote, CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, Primary
 import { HudHeader, Icon, Panel, Pill, styles as vs } from '@/components/visual/kit'
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import { AutoConnectPanel, AutoConnectedNote } from '@/components/plugins/AutoConnect'
+import { RemovedGuestsNotice } from '@/components/removed-guests/RemovedGuestsNotice'
 import n from './nextcloud.module.css'
 import { CheckGroups, JobView, LogView, Steps, SystemView, TalkView, UpdateCheckView, VersionTrack } from './parts'
 import {
@@ -499,6 +500,7 @@ export function NextcloudPage() {
         <PluginSwitcher current="nextcloud" />
         {error && <Notice kind="error">{error}</Notice>}
         {!list && !error && <BusyNote>Reading…</BusyNote>}
+        {admin && <RemovedGuestsNotice plugin="nextcloud" />}
         {admin && <AutoConnectPanel plugins={['nextcloud']} onChanged={() => void reload()} />}
         {adding && <InstanceForm inst={null} onCancel={() => setAdding(false)} onSaved={() => { setAdding(false); void reload() }} />}
         {list && list.length === 0 && !adding && <Notice kind="info">No Nextcloud found yet. HyperProx connects one by itself as soon as it finds it{admin ? ': install one from the Catalogue, or add one by hand if it is somewhere the scan cannot see.' : '.'}</Notice>}

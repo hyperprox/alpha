@@ -893,3 +893,23 @@ test('G3: a pick is refused for a guest that is excluded (list, tag or subnet) o
   assert.equal((await t.svc.instances()).length, 0)
   assert.equal((await t.svc.autoPick('lxc-130', 'app-homepage-1', acx())).did, 'connected')
 })
+
+test('removed guest: forgetting a dashboard revokes its Proxmox token, empties its vault item, keeps no dismissal and runs nothing in the guest', async () => {
+  const t = setup({ inv: () => inventory({ services: [{ key: 'proxmox', url: 'https://10.0.0.2:8006', guest: null, source: 'cluster' }] }) })
+  const remembered: string[] = []
+  ;(t.svc as any).d.dismissed = async (id: string) => { remembered.push(id) }
+  // An invented guest for this test (the shared fixture's machine, under another ID).
+  ;(t.svc as any).d.exec.listMachines = async () => [{ ...machine, id: 'lxc-9105', vmid: 9105 }]
+  const i = await t.svc.connect('lxc-9105', me)
+  assert.equal(i.vmid, 9105)
+  await t.svc.createProxmoxToken(i.id, me)
+  const scripts = t.guest.scripts.length
+  const words = await t.svc.forgetRemoved(i.id, 'admin@example.org')
+  assert.match(words, /Homepage forgot homepage, and its Proxmox token was revoked/)
+  assert.deepEqual(t.tokens, [])
+  assert.equal(t.vault.has(i.id), false)
+  assert.equal(await t.store.get(i.id), null)
+  assert.deepEqual(remembered, [], 'a new Homepage on that ID connects by itself')
+  assert.equal(t.guest.scripts.length, scripts, 'the guest is gone: nothing is run in it')
+  assert.ok(t.audits.some(a => a.action === 'homepage.forget_removed'))
+})

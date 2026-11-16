@@ -86,6 +86,15 @@ export async function productionRouter(): Promise<RouterApi | null> {
   }
 }
 
+/** WireGuard as the VPN page builds it (also used by the removed-guest clean-up, lib/removed-guests). */
+export function productionWireguard(prisma: unknown, log: (m: string) => void = () => {}, stores: { remoteStore?: PrismaRemoteStore; wgStore?: PrismaWgStore } = {}): WireguardService {
+  const remote = new RemoteAccessService({
+    store: stores.remoteStore ?? new PrismaRemoteStore(prisma as any), exec: productionRemoteExecutor(livePve()),
+    provider: id => providerFromVault(id), providerSettings: id => providerSettingsFromVault(id), log,
+  })
+  return new WireguardService({ remote, exec: productionRemoteExecutor(livePve()), store: stores.wgStore ?? new PrismaWgStore(prisma as any), vault: vaultWg, router: productionRouter, lan: hyperproxLan })
+}
+
 async function adminOnly(req: FastifyRequest, reply: FastifyReply) {
   const s = req.session
   if (!s) return reply.status(401).send({ ok: false, code: 'unauthenticated', error: 'Authentication required' })
@@ -108,11 +117,7 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
     const service = deps.service ?? (() => {
       const remoteStore = new PrismaRemoteStore((fastify as any).prisma)
       const wgStore = new PrismaWgStore((fastify as any).prisma)
-      const remote = new RemoteAccessService({
-        store: remoteStore, exec: productionRemoteExecutor(livePve()),
-        provider: id => providerFromVault(id), providerSettings: id => providerSettingsFromVault(id), log: m => fastify.log.info(m),
-      })
-      const wg = new WireguardService({ remote, exec: productionRemoteExecutor(livePve()), store: wgStore, vault: vaultWg, router: productionRouter, lan: hyperproxLan })
+      const wg = productionWireguard((fastify as any).prisma, m => fastify.log.info(m), { remoteStore, wgStore })
       if (deps.handoff === undefined) {
         handoff = { wg: { listServers: () => wgStore.listServers(), adoptServer: (o, by) => wg.adoptServer(o, by) },
           remote: remoteStore, tailscaleStatus: localTailscaleStatus, log: m => fastify.log.info(m) }

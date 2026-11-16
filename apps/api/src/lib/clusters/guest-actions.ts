@@ -35,6 +35,11 @@ export interface ActionDeps {
    * fstab line, lib/pbs/nfs.ts). Returns a sentence to append, or ''. It never fails the delete.
    */
   afterDestroy?: (g: { node: string; type: GuestType; vmid: number }) => Promise<string>
+  /**
+   * After any guest is deleted (read back gone): forget what HyperProx held for it, the same clean-up the Removed
+   * guests notice offers (lib/removed-guests/after-delete.ts). Returns a sentence to append, or ''. Never fails the delete.
+   */
+  forget?: (g: { node: string; type: GuestType; vmid: number }, name: string) => Promise<string>
 }
 
 async function statusOf(pve: ProxmoxClient, g: { node: string; type: GuestType; vmid: number }): Promise<{ status: string; name: string; ha: boolean }> {
@@ -148,7 +153,8 @@ export async function destroy(d: ActionDeps, g: { node: string; type: GuestType;
   const left = await d.pve.fetchStrict<any[]>('/cluster/resources?type=vm')
   const gone = !(left ?? []).some(r => Number(r?.vmid) === g.vmid)
   const after = gone && g.type === 'lxc' && d.afterDestroy ? await d.afterDestroy(g).catch(() => ' HyperProx could not check its node for a leftover NAS mount.') : ''
-  return { ok: gone, words: gone ? `${name} (${g.vmid}) is deleted: it is no longer listed.${after}` : `Proxmox finished, but ${g.vmid} is still listed.` }
+  const forgot = gone && d.forget ? await d.forget(g, name).catch(() => ' HyperProx could not clean up what it held for it; the Removed guests notice offers it again.') : ''
+  return { ok: gone, words: gone ? `${name} (${g.vmid}) is deleted: it is no longer listed.${after}${forgot}` : `Proxmox finished, but ${g.vmid} is still listed.` }
 }
 
 // ── For a guest HyperProx made and is now removing whole (a website's container) ──────────────────────────

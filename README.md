@@ -533,7 +533,8 @@ from the container's CPU limit (`OLLAMA_CPUS`); `OLLAMA_NUM_THREAD` overrides it
 Plug-ins publish metrics at `/api/plugins/metrics`, and a **HyperProx — Plug-ins** Grafana dashboard
 is provisioned for them. The endpoint asks for a bearer token, `METRICS_TOKEN` in `.env`. The installer
 generates it once and gives Prometheus the same value in `config/prometheus/secrets/metrics_token`;
-an existing install gets it on its next `deploy.sh`. It is never rotated.
+an existing install gets it on its next `deploy.sh`. It is never rotated. A plug-in that is not set up
+(or was disconnected) is left out of the scrape.
 
 ## Using HyperProx
 
@@ -2131,6 +2132,38 @@ press:
   that scheme's default port.
 - **Something you disconnect or clear stays that way.** HyperProx remembers it and shows **Connect again**
   instead of adding it back.
+
+**Disconnecting a plug-in.** A plug-in you set up in its settings (Arr Stack, Unmanic, Plex, MikroTik,
+MeshCentral) has **Disconnect** at the bottom of its settings. It forgets every setting and the keys in the
+vault, after asking for the master password again; nothing changes on the device itself. The plug-in then
+shows as not set up, leaves the dashboard and is no longer read for metrics, and auto-connect does not add
+the same address back by itself (**Connect again** does). A plug-in with its own list (Homepage, Nextcloud,
+Proxmox Backup Server, QNAP, ASUS, Home Assistant) removes each dashboard, instance or device on its own
+page, which also undoes what HyperProx set up there.
+
+**Removed guests.** When a container or VM is removed from Proxmox, HyperProx notices and says so on the
+dashboard, the Plug-ins page and the page of each plug-in that was connected to it: which guest, when it was
+removed, and what HyperProx still keeps for it. A guest counts as removed only when every node is online and
+none lists it on three reads over at least ten minutes, Proxmox answers that its config does not exist, and
+never while it is being migrated or restored, so a slow or failed read never starts a clean-up. If several
+guests vanish at once, HyperProx asks Proxmox about each: those it says are gone are counted as usual, and
+any it will not answer for are named in one alert asking you to check its Proxmox token's permissions. **Clean up** (admins, master password) reads the cluster again first and stops if
+it cannot confirm the guest is gone; if another guest has taken its ID, only the old guest's own records go.
+It then removes, in one go:
+
+- HyperProx's own records: a connected Homepage or Nextcloud, the Catalogue install record and the login it
+  made, the Sites entry, plug-in addresses and keys that pointed at it (only when a fresh scan shows no guest
+  uses that address now), the Terminal's saved address, its Remote access and WireGuard entries, a scheduled balancing move, and what auto-connect
+  remembered about it. Their vault items go with them.
+- The cluster's config, shown line by line first: its HA entry, and its ID in each backup job (Proxmox
+  otherwise reports the whole job as failed on every node). Only that ID leaves each job; a job that would
+  back up nothing is deleted only if you tick it.
+- Separately, and unticked: the proxy host and DNS record its install made. Leave them to keep the name for
+  a new install. HyperProx only offers names its own records say it made, never ones guessed from an address.
+
+A backup job that names a guest which no longer exists also sends one alert to your notification channels,
+for any guest, including one HyperProx never knew about. Deleting a guest from HyperProx runs the same
+clean-up straight away, with the same choice for its proxy host and DNS name.
 
 Each connection is in the audit log as the system, with how it was found and, when one was used, the
 vault item's name and id (never its value). **Scan for services** runs a scan now, connects what it can,

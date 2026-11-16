@@ -23,6 +23,7 @@ import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } fro
 import { HudHeader, Icon, Panel, Pill, styles as vs } from '@/components/visual/kit'
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import { AutoConnectPanel, AutoConnectedNote } from '@/components/plugins/AutoConnect'
+import { RemovedGuestsNotice } from '@/components/removed-guests/RemovedGuestsNotice'
 import h from './homepage.module.css'
 import {
   KEYS_WARNING, SOURCE_NAME, SOURCE_WORD, applyGate, diffStats, foldDiff, grouped, keptWords, monogram, plural, syncWords, validSubnets,
@@ -173,6 +174,7 @@ export function HomepagePage() {
       {note && <p className="text-sm" role="status" style={{ color: note.ok ? 'var(--good)' : 'var(--warn-2)' }}>{note.text}</p>}
       {!data && !error && <BusyNote>Looking for Homepage on the cluster…</BusyNote>}
 
+      <RemovedGuestsNotice plugin="homepage" />
       <AutoConnectPanel plugins={['homepage']} onChanged={() => void reload()} />
 
       {data && (unconnected.length > 0 || !instances.length) && (
