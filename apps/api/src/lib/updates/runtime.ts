@@ -30,6 +30,7 @@ import { buildTargets, type GuardContext } from './targets'
 import { guardsFrom, homeGuards } from './guards'
 import { lastComposeOwnership } from '../compose-owners'
 import { busyJobs } from '../long-jobs'
+import { productionAptCacheHook, type AptCacheHook } from './apt-cache'
 import type { UpdatesInventory, UpdatesWsPayload } from './types'
 
 export interface UpdatesRuntimeDeps {
@@ -56,6 +57,8 @@ export interface UpdatesRuntimeDeps {
   emit?:       (payload: UpdatesWsPayload) => void
   /** What the plug-ins say about home guests (lib/updates/guards.ts); default read live. Tests set it. */
   guards?:     () => Promise<GuardContext>
+  /** The package cache step before apt. Default: the package cache's service, but only with the production executor. */
+  aptCache?:   AptCacheHook
   log:         (msg: string, level?: 'warn' | 'error') => void
 }
 
@@ -88,6 +91,7 @@ export class UpdatesRuntime {
       hostname: d.hostname, timing: d.timing, apps: this.apps,
       publish, emit: d.emit,
       log: d.log, connection: d.connection, guards: d.guards,
+      aptCache: d.aptCache ?? (d.exec ? undefined : productionAptCacheHook()),
     })
     this.runner = this.services.get(HOME_ID).runner
     this.checker = new UpdatesChecker({

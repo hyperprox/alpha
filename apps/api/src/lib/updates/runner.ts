@@ -21,6 +21,7 @@
 import type { UpdatesClusterRef, UpdatesItemOutcome, UpdatesPlan, UpdatesPlanItem, UpdatesRebootPreview, UpdatesReport, UpdatesStepAction, UpdatesWsPayload } from './types'
 import type { UpdatesExecutor, GuestListing, LineSink } from './executor'
 import { parseOsdOkToStop, parseCephState, parseOsdFlags, judgeRestoredState, type CephState } from './ceph-safety'
+import { prepareAptCache, type AptCacheHook } from './apt-cache'
 import { SAFETY_SKIP, osdVerdict, osdNames, monVerdict, annotatePlanSafety, withoutSafetyNote } from './ceph-checks'
 import { type PolicyLoad, type Policy, guestPolicy, nodePolicy, effectiveUpgrade } from './policy'
 import { shortReason } from '../redact-addresses'
@@ -126,6 +127,11 @@ export interface RunnerDeps {
    * plug-in's long job is busy in. Home only. Default: read live (homeGuards).
    */
   guards?: () => Promise<GuardContext>
+  /**
+   * The package cache (lib/updates/apt-cache.ts): asked just before apt runs on a guest, or on a node when the
+   * cluster's setting turns nodes on. Never fails a step. Without it, apt runs exactly as before.
+   */
+  aptCache?: AptCacheHook
 }
 
 type Outcome =
@@ -795,6 +801,7 @@ export class UpdatesRunner {
   private async guestPackages(guest: GuestListing, policy: Policy, pkgs: string[], log: LineSink, snapshot: string | null): Promise<Outcome> {
     if (!pkgs.length || pkgs.some(p => !PKG_NAME.test(p))) return { status: 'failed', reason: 'unreadable package list' }
     if (!guestPolicy(policy, guest.vmid).apt) return { status: 'failed', reason: `apt is off for ${guest.vmid} in the policy` }
+    await this.cacheForGuest(guest, log)
     const r = await this.exec.guestExec(guest, guestPackagesScript(pkgs), log, 60 * 60_000)
     if (r.code !== 0) return { status: 'failed', reason: /refusing: /.test(r.output) ? (/refusing: [^\n]*/.exec(r.output)![0]) : `apt failed${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
     const wantsReboot = /HP_REBOOT_REQUIRED/.test(r.output)
@@ -862,6 +869,7 @@ export class UpdatesRunner {
     catch (e: any) { return { status: 'failed', reason: `refusing to update packages on ${node}: ${e?.message ?? e}. Nothing was installed.` } }
     const pre = await this.combine([Promise.resolve(holdsPinGate(node, before, pol)), Promise.resolve(freeSpaceGate(node, before, policy))])
     if (!pre.ok) return { status: 'failed', reason: `stopped before installing: ${pre.reason}` }
+    await this.cacheForNode(node, log)
     // A remote has no Ceph phase: its Ceph client libraries move like any package only where Ceph does not run.
     const cephRuns = this.remote ? await this.ceph(jobId) : true
     const refuse = this.guardRefusal(policy, node, before, cephRuns)
@@ -907,7 +915,20 @@ export class UpdatesRunner {
     return { status: 'ok', output: tail(r.output) + `\nread-back: ${changes.length} package${changes.length === 1 ? '' : 's'} at the expected versions; holds and pin unchanged.` }
   }
 
+  /** The package cache, just before apt in a guest (lib/updates/apt-cache.ts). Never fails the step. */
+  private async cacheForGuest(guest: GuestListing, log: LineSink): Promise<void> {
+    await prepareAptCache(this.deps.aptCache, this.cluster.id, { key: `${guest.type}-${guest.vmid}`, kind: 'guest', name: guest.name || String(guest.vmid) },
+      script => this.exec.guestExec(guest, script, undefined, 60_000), log, () => this.exec.now())
+  }
+
+  /** The same on a node, only when the cluster's setting turns nodes on (or to take it out again). */
+  private async cacheForNode(node: string, log: LineSink): Promise<void> {
+    await prepareAptCache(this.deps.aptCache, this.cluster.id, { key: `node:${node}`, kind: 'node', name: node },
+      script => this.exec.nodeExec(node, script, undefined, 60_000), log, () => this.exec.now())
+  }
+
   private async guestApt(guest: GuestListing, policy: Policy, log: LineSink, snapshot: string | null): Promise<Outcome> {
+    await this.cacheForGuest(guest, log)
     const r = await this.exec.guestExec(guest, GUEST_UPGRADE_SCRIPT, log, 60 * 60_000)
     if (r.code !== 0) return { status: 'failed', reason: `apt failed${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
     if (this.remote) {
@@ -1167,6 +1188,7 @@ export class UpdatesRunner {
     catch (e: any) { return { status: 'failed', reason: `refusing to upgrade ${node}: ${e?.message ?? e}. Nothing was installed.` } }
     const pre = await this.combine([Promise.resolve(holdsPinGate(node, before, pol)), Promise.resolve(freeSpaceGate(node, before, policy))])
     if (!pre.ok) return { status: 'failed', reason: `stopped before installing: ${pre.reason}` }
+    await this.cacheForNode(node, log)
     const picked = effectiveUpgrade(policy, node, before)
     // A chosen node that keeps its kernel held or pinned gets apt-get upgrade, never dist-upgrade, whatever the policy.
     // A chosen node with any hold at all (a DKMS module, a driver, a kernel), or a pinned kernel, gets apt-get upgrade,
