@@ -516,7 +516,12 @@ async function runJob(
     if (recipe.setup === 'haproxy') {
       if (!await deps.vaultOpen()) throw new Error('HAProxy\'s Data Plane API gets a generated password, which is saved in the vault, and the vault is locked. Sign in to unlock it and try again.')
       haproxySecret = randomBytes(24).toString('base64url')
-      await deps.saveSecrets('apps', `${recipe.id}-${job.vmid}`, { dataplane_user: 'hyperprox', dataplane_password: haproxySecret })
+      // Whether the item already existed is recorded first, so a clean-up after a failure deletes only an item this job made.
+      const provider = `${recipe.id}-${job.vmid}`
+      const before = await deps.readSecrets('apps', provider).catch(() => null)
+      await deps.saveSecrets('apps', provider, { dataplane_user: 'hyperprox', dataplane_password: haproxySecret })
+      job.vaultItem = { category: 'apps', provider, createdByJob: before !== null && Object.keys(before).length === 0 }
+      await persistJob(job).catch(e => persistFailed(job, e))
       env.HPX_DP_PASSWORD = haproxySecret
       env.HPX_SCRAPERS = (deps.scrapers ?? ownScrapers)().join(',')
     }
@@ -655,10 +660,12 @@ async function runJob(
     // 5. Hand it to whatever was waiting for it. HAProxy: the Proxy page, its plug-in and Prometheus.
     if (recipe.setup === 'haproxy') {
       if (s4.status !== 'done' || !job.ip || !haproxySecret) throw new Error('HAProxy did not answer on port 80, so it was not added to the Proxy page or the plug-in. Its Data Plane password is in the vault under ' + `apps/${recipe.id}-${job.vmid}.`)
-      await runHaproxySetup({
+      const out = await runHaproxySetup({
         name: `HAProxy ${job.vmid}`, ip: job.ip.split('/')[0], node: job.node!, vmid: job.vmid!, secret: haproxySecret, owner: job.owner || 'hyperprox',
         vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}` },
       }, id => step(job, id), (deps.haproxySetup ?? realHaproxySetupDeps)())
+      // The Proxy page's instance holds the login now; the install's own copy is gone (or the step said why not).
+      if (out.vaultCopyRemoved) job.vaultItem = undefined
     } else {
       const s5 = step(job, 'wire')
       s5.detail = url ? await wireUp(recipe, url) : 'no address, so nothing was configured'

@@ -40,13 +40,18 @@ export interface HaproxySetupInput {
 
 type Step = { status: string; detail?: string }
 
-export async function runHaproxySetup(o: HaproxySetupInput, step: (id: string) => Step, d: HaproxySetupDeps): Promise<{ proxyInstanceId: string; pluginInstanceId: string }> {
+export async function runHaproxySetup(o: HaproxySetupInput, step: (id: string) => Step, d: HaproxySetupDeps): Promise<{ proxyInstanceId: string; pluginInstanceId: string; vaultCopyRemoved: boolean }> {
   // 1. The Proxy page.
   let s = step('haproxy-proxy'); s.status = 'running'
   const proxyInstanceId = await d.createProxyInstance(managedInstanceInput('haproxy', { name: o.name, ip: o.ip, node: o.node, vmid: o.vmid, secret: o.secret }), o.owner)
   // The Proxy page's instance holds the login now: the install's copy goes, so the vault keeps it once.
-  await d.deleteSecrets(o.vault.category, o.vault.provider).catch(() => undefined)
-  s.status = 'done'; s.detail = `"${o.name}" on the Proxy page, reached through its container (Data Plane API on its loopback)`
+  let vaultCopyRemoved = true
+  let left = ''
+  try { await d.deleteSecrets(o.vault.category, o.vault.provider) } catch (e: any) {
+    vaultCopyRemoved = false
+    left = `. The install's own copy of the Data Plane password (${o.vault.category}/${o.vault.provider}) could not be removed from the vault (${String(e?.message ?? e).slice(0, 160)}); the Proxy page has its own, so delete that item when you can`
+  }
+  s.status = 'done'; s.detail = `"${o.name}" on the Proxy page, reached through its container (Data Plane API on its loopback)${left}`
 
   // 2. The plug-in, linked to that instance.
   s = step('haproxy-plugin'); s.status = 'running'
@@ -65,5 +70,5 @@ export async function runHaproxySetup(o: HaproxySetupInput, step: (id: string) =
   s = step('haproxy-metrics'); s.status = 'running'
   await d.syncTargets()
   s.status = 'done'; s.detail = `${o.ip}:${METRICS_PORT}/metrics, readable by HyperProx only`
-  return { proxyInstanceId, pluginInstanceId }
+  return { proxyInstanceId, pluginInstanceId, vaultCopyRemoved }
 }

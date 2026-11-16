@@ -80,9 +80,11 @@ PIN
 apt-get update -qq
 apt-get install -y -qq "haproxy=__HAPROXY_DEB__"
 
-# The configuration: written once. A configuration someone (or the Data Plane API) has changed since is kept.
+# The configuration: written once. A configuration someone (or the Data Plane API) has changed since is kept: the
+# marker file says HyperProx wrote it (the Data Plane API rewrites the file's first lines), the comment is a second sign.
 CFG=/etc/haproxy/haproxy.cfg
-if ! grep -q '^# Managed with HyperProx' "$CFG" 2>/dev/null; then
+MARK=/etc/haproxy/.hyperprox-managed
+if [ ! -e "$MARK" ] && ! grep -q '^# Managed with HyperProx' "$CFG" 2>/dev/null; then
   [ -f "$CFG" ] && cp -p "$CFG" "/etc/haproxy/haproxy.cfg.debian-default"
   cat > "$CFG" <<'HAPROXY'
 # Managed with HyperProx. Changes made in HyperProx go through the Data Plane API and are checked with haproxy -c
@@ -152,6 +154,7 @@ frontend hpx_metrics
   no log
 HAPROXY
 fi
+: > "$MARK"
 # Who may read the metrics: rewritten on every run, so a new HyperProx address is picked up by installing again.
 : > /etc/haproxy/hyperprox-scrapers.lst
 for a in $(printf '%s' "$HPX_SCRAPERS" | tr ',' ' '); do
