@@ -855,7 +855,7 @@
   "customFormats": [
    {
     "id": 26,
-    "name": "Blocked: Foreign / Dual Language"
+    "name": "Unwanted Language"
    }
   ],
   "customFormatScore": -10000,
@@ -874,7 +874,7 @@
   "temporarilyRejected": false,
   "rejected": true,
   "rejections": [
-   "Custom Formats Blocked: Foreign / Dual Language have score -10000 below Movie's profile minimum 0",
+   "Custom Formats Unwanted Language have score -10000 below Movie's profile minimum 0",
    "DVD is not wanted in profile"
   ],
   "releaseWeight": 8,

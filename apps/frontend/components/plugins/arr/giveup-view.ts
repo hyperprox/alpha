@@ -34,7 +34,7 @@ export interface ReleaseAnswer {
   rows: Release[]; found: number; approved: number; hidden: { av1: number; threeD: number; hfr: number; zeroSeed: number }; top: string[]
   target: string; label: string; searchedAt: string; reused: boolean; nextSearchAt: string
 }
-export interface GrabAnswer { result: 'queued' | 'not-seen' | 'removed-executable'; summary: string; notes: string[] }
+export interface GrabAnswer { result: 'queued' | 'not-seen' | 'removed-executable'; filesChecked: boolean; summary: string; notes: string[] }
 
 /** The Missing panel's row ids ("tv-12", "film-3", "music-9") as the API's item keys. */
 export function missingTarget(id: string): string | null {

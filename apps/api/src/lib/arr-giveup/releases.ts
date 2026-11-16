@@ -80,10 +80,15 @@ export function profileInfo(p: any): ProfileInfo | null {
   return { name: String(p.name ?? 'your profile').slice(0, 60), allowed, minResolution: minRes, upgradeAllowed: p.upgradeAllowed !== false }
 }
 
-export const AV1 = /\bAV1\b/i
-export const THREE_D = /\b3D\b|\bH-?SBS\b|\bH-?OU\b|\bHalf-?(SBS|OU)\b|\bMVC\b/i
-export const HFR = /\b48 ?fps\b|\bHFR\b/i
-export const EXECUTABLE = /\.(exe|scr|bat|cmd|com|pif|msi|lnk|js|jse|vbs|vbe|wsf|ps1|jar|apk|dll|hta|cpl)(\b|$)/i
+// Tokens are matched between non-alphanumerics, not \b: in "Film_3D_1080p" the underscore is a word character, so
+// \b would miss it.
+const token = (body: string) => new RegExp(`(?<![A-Za-z0-9])(?:${body})(?![A-Za-z0-9])`, 'i')
+export const AV1 = token('AV1|AV01')
+export const THREE_D = token('3D|F?SBS|Full-?SBS|H-?SBS|Half-?SBS|TAB|H-?OU|Half-?OU|MVC')
+export const HFR = token('48[\\W_]?fps|HFR')
+/** A program file, by the final extension of a file's own name (not its folders). */
+export const EXECUTABLE = /\.(exe|scr|bat|cmd|com|msi|lnk|js|vbs|ps1|jar|apk)$/i
+export const isProgramFile = (name: string) => EXECUTABLE.test(String(name ?? '').split(/[\\/]/).pop()!.trim())
 
 /** Is this a hard-rule release (never offered)? */
 export function hardRule(title: string, formats: string[] = []): 'av1' | 'threeD' | 'hfr' | null {
@@ -170,7 +175,7 @@ export function releaseView(raw: any[], o: { app: 'sonarr' | 'radarr' | 'lidarr'
       indexer: String(r.indexer ?? '').replace(/\s*\(Prowlarr\)$/, '').slice(0, 60),
       languages: Array.isArray(r.languages) ? r.languages.map((l: any) => String(l?.name ?? '')).filter(Boolean).slice(0, 4) : [],
       approved: r.approved === true, topPick: false, reasons: r.approved ? [] : [...new Set<string>(reasons)],
-      executable: EXECUTABLE.test(title), belowProfile: below,
+      executable: isProgramFile(title), belowProfile: below,
       ...(below ? { belowNote: belowNote(String(q.name ?? 'this quality'), o.profile!, appWord) } : {}),
       weight: Number.isFinite(Number(r.releaseWeight)) ? Number(r.releaseWeight) : 1e9,
       qWeight: Number(r.qualityWeight) || 0,

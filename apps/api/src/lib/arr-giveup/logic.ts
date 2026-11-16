@@ -80,7 +80,8 @@ export interface MissingItem {
 export const itemKey = (app: App, id: number) => `${app}:${id}`
 export function parseKey(key: unknown): { app: App; arrId: number } | null {
   if (typeof key !== 'string' || key.length > 40) return null
-  const m = /^(sonarr|radarr|lidarr):(\d{1,10})$/.exec(key)
+  // No leading zeros: "radarr:07" and "radarr:7" must not be two keys for one film.
+  const m = /^(sonarr|radarr|lidarr):([1-9]\d{0,9})$/.exec(key)
   return m ? { app: m[1] as App, arrId: Number(m[2]) } : null
 }
 
@@ -241,7 +242,12 @@ export function observe(prev: Track[], items: MissingItem[], events: HistoryEven
     seen.add(i.key)
     const t = byKey.get(i.key)
     if (!t) { const n = newTrack(i, nowIso); byKey.set(i.key, n); newTries += n.tries; continue }
-    if (t.state === 'given-up') continue
+    if (t.state === 'given-up') {
+      // Someone searched for it again by hand (monitored it): it is ours to count again, from zero.
+      const { gaveUpAt: _g, action: _a, reason: _r, reasonCode: _c, restore: _x, ...rest } = t
+      byKey.set(i.key, { ...rest, title: i.title, detail: i.detail, releasedAt: i.releasedAt, state: 'tracking', tries: 0, grabs: 0, failures: 0, importFailures: 0, firstMissingAt: nowIso, lastSearchSeen: i.lastSearchTime })
+      continue
+    }
     t.title = i.title; t.detail = i.detail; t.releasedAt = i.releasedAt
     // A search that ran while it was already downloading is not a failed try.
     if (i.lastSearchTime && (!t.lastSearchSeen || i.lastSearchTime > t.lastSearchSeen)) {

@@ -31,7 +31,7 @@ import {
   parseKey, radarrItems, reasonCounts, rows, sameRule, sonarrItems, summarise, wholeSeasons,
   type App, type GiveUpSettings, type Restore, type Row, type Track,
 } from './logic'
-import { EXECUTABLE, profileInfo, releaseView, type ReleaseRow, type ReleaseView } from './releases'
+import { isProgramFile, profileInfo, releaseView, type ReleaseRow, type ReleaseView } from './releases'
 import type { GiveUpStore } from './store'
 
 export class GiveUpRefusal extends Error {
@@ -50,16 +50,20 @@ export interface GiveUpDeps {
   log?(m: string): void
   /** How long a grab waits for the queue to show it. */
   grabWaitMs?: number
+  /** Runs `fn` after `ms` (the later program-file checks). Default: an unref'd setTimeout. */
+  later?(fn: () => void, ms: number): void
 }
 
-interface AppState { historyId: number; observedAt?: string; lastActAt?: string; lastRun?: RunResult }
+interface AppState { historyId: number; observedAt?: string; lastActAt?: string; /** The calendar day (UTC) a run was claimed for. */ lastActDay?: string; lastRun?: RunResult }
 export interface RunResult { at: string; app: App; given: number; skipped: Array<{ title: string; why: string }>; failed: Array<{ title: string; why: string }>; error?: string }
 
 const API: Record<App, string> = { sonarr: '/api/v3', radarr: '/api/v3', lidarr: '/api/v1' }
 const ID_FIELD: Record<App, 'episodeId' | 'movieId' | 'albumId'> = { sonarr: 'episodeId', radarr: 'movieId', lidarr: 'albumId' }
 export const MAX_PER_RUN = 250
 const OBSERVE_EVERY_MS = 3 * 3600_000
-const ACT_EVERY_MS = 20 * 3600_000
+/** When a download's files are checked again for program files, after the first look. */
+export const RECHECK_MS = [60_000, 3 * 60_000, 10 * 60_000]
+const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 const PREVIEW_TTL_MS = 15 * 60_000
 /** One item is searched at most this often; in between, the last answer is shown. */
 export const SEARCH_COOLDOWN_MS = 10 * 60_000
@@ -77,6 +81,14 @@ export class GiveUpService {
   private previews = new Map<string, Preview>()
   private searches = new Map<string, Search>()
   private busy = false
+  private chain: Promise<unknown> = Promise.resolve()
+
+  /** One writer at a time: every read-change-write of the store runs inside this. */
+  private locked<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(fn, fn)
+    this.chain = run.catch(() => {})
+    return run
+  }
 
   constructor(private d: GiveUpDeps) {}
 
@@ -141,6 +153,9 @@ export class GiveUpService {
 
   /** One reading of one app folded into the counts. Read-only against the arr. */
   async observe(app: App): Promise<{ app: App; tracking: number; newTries: number; dropped: number } | null> {
+    return this.locked(() => this.observeNow(app))
+  }
+  private async observeNow(app: App): Promise<{ app: App; tracking: number; newTries: number; dropped: number } | null> {
     const c = await this.client(app, false)
     if (!c) return null
     const [items, q] = await Promise.all([this.missing(c, app), this.queue(c, app)])
@@ -255,7 +270,7 @@ export class GiveUpService {
       this.previews.delete(p.id)
     }
     await this.d.audit('arrstack.giveup.settings', { app, by, enabled: s.enabled, tries: s.tries, minAgeDays: s.minAgeDays, ageFrom: s.ageFrom, action: s.action })
-    await this.d.store.setSetting(`settings:${app}`, s, by)
+    await this.locked(() => this.d.store.setSetting(`settings:${app}`, s, by))
     return s
   }
 
@@ -274,7 +289,8 @@ export class GiveUpService {
         }
         const s = await this.settings(app)
         const st2 = await this.appState(app)
-        if (!s.enabled || (st2.lastActAt && this.d.now() - Date.parse(st2.lastActAt) < ACT_EVERY_MS)) continue
+        // Once per calendar day (UTC), whatever time the last one ran.
+        if (!s.enabled || st2.lastActDay === dayOf(this.d.now())) continue
         const r = await this.run(app, s, 'the daily run').catch(e => ({ at: this.iso(), app, given: 0, skipped: [], failed: [], error: msg(e) } as RunResult))
         out.push(r)
       }
@@ -284,8 +300,13 @@ export class GiveUpService {
 
   /** Give up on what the rule says, now. Every candidate is re-read live first. */
   async run(app: App, s: GiveUpSettings, by: string): Promise<RunResult> {
+    return this.locked(() => this.runNow(app, s, by))
+  }
+  private async runNow(app: App, s: GiveUpSettings, by: string): Promise<RunResult> {
     const c = (await this.client(app))!
     const res: RunResult = { at: this.iso(), app, given: 0, skipped: [], failed: [] }
+    // Claimed before anything changes: a run that fails part-way is not run again the same day.
+    await this.setAppState(app, { ...(await this.appState(app)), lastActAt: res.at, lastActDay: dayOf(this.d.now()) })
     const tracks = await this.d.store.tracks(app)
     const inQueue = this.queueIds(app, await this.queue(c, app))
     const list = candidates(tracks, s, this.d.now(), inQueue).slice(0, MAX_PER_RUN)
@@ -305,23 +326,28 @@ export class GiveUpService {
         try {
           await this.setMonitored(c, app, part.map(t => t.arrId), false)
           const back = await this.live(c, app, part.map(t => t.arrId))
+          const done: Track[] = []
           for (const t of part) {
-            if (back.get(t.arrId)?.monitored === false) given.push(this.markGiven(t, 'unmonitor'))
+            if (back.get(t.arrId)?.monitored === false) done.push(this.markGiven(t, 'unmonitor'))
             else res.failed.push({ title: label(t), why: `${APP_NAME[app]} still has it as searched for after the change.` })
           }
+          // Saved as soon as it is read back, so a later failure cannot lose what already changed.
+          await this.d.store.save(done)
+          given.push(...done)
         } catch (e) { for (const t of part) res.failed.push({ title: label(t), why: msg(e) }) }
       }
     } else if (ok.length) {
       for (const t of ok) {
-        try { given.push(await this.removeOne(c, app, t, live.get(t.arrId)!.raw)) }
+        try { const g = await this.removeOne(c, app, t, live.get(t.arrId)!.raw); await this.d.store.save([g]); given.push(g) }
         catch (e) { res.failed.push({ title: label(t), why: msg(e) }) }
       }
     }
-    await this.d.store.save(given)
     res.given = given.length
+    // The change is made and saved: an audit failure now is logged, never thrown (that would hide what was done).
     await this.d.audit('arrstack.giveup.run.done', { app, by, given: given.length, skipped: res.skipped.length, failed: res.failed.length, failures: res.failed.slice(0, 10) })
+      .catch(e => this.d.log?.(`[arr-giveup] ${app}: the after-run audit entry could not be written: ${msg(e)}`))
     const st = await this.appState(app)
-    await this.setAppState(app, { ...st, lastActAt: this.iso(), lastRun: { ...res, skipped: res.skipped.slice(0, 20), failed: res.failed.slice(0, 20) } })
+    await this.setAppState(app, { ...st, lastRun: { ...res, skipped: res.skipped.slice(0, 20), failed: res.failed.slice(0, 20) } })
     const m = giveUpMessage(given)
     if (m) {
       await this.d.publish({
@@ -381,6 +407,9 @@ export class GiveUpService {
   // ── try again ──────────────────────────────────────────────────────────────
 
   async tryAgain(keys: string[], by: string): Promise<{ summary: string; notes: string[] }> {
+    return this.locked(() => this.tryAgainNow(keys, by))
+  }
+  private async tryAgainNow(keys: string[], by: string): Promise<{ summary: string; notes: string[] }> {
     const parsed = keys.map(parseKey)
     if (!parsed.length || parsed.some(p => !p) || new Set(parsed.map(p => p!.app)).size !== 1) throw new GiveUpRefusal(400, 'bad_request', 'Name the items to try again.')
     const app = parsed[0]!.app
@@ -473,6 +502,7 @@ export class GiveUpService {
   async releases(target: string, by: string, opts: { showZeroSeed?: boolean } = {}): Promise<ReleaseView & { target: string; label: string; searchedAt: string; reused: boolean; nextSearchAt: string }> {
     const t = parseTarget(target)
     if (!t) throw new GiveUpRefusal(400, 'bad_request', 'Name one item.')
+    target = t.target
     const now = this.d.now()
     let s = this.searches.get(target)
     let reused = true
@@ -481,7 +511,7 @@ export class GiveUpService {
       const c = (await this.client(t.app))!
       const track = t.key ? (await this.d.store.tracks(t.app)).find(x => x.key === t.key) : undefined
       if (track?.action === 'remove') throw new GiveUpRefusal(409, 'removed', `It is no longer in ${APP_NAME[t.app]}. Use "Try again" to add it back first.`)
-      const info = await this.describe(c, t)
+      const info = await this.describe(c, t, track)
       await this.d.audit('arrstack.giveup.releases', { app: t.app, by, item: info.label })
       const q = t.season !== undefined ? `seriesId=${t.seriesId}&seasonNumber=${t.season}` : `${ID_FIELD[t.app]}=${t.arrId}`
       const raw = await c.get(`${API[t.app]}/release?${q}`, 180_000)
@@ -493,10 +523,11 @@ export class GiveUpService {
       for (const [k, v] of this.searches) if (now - v.at > GRAB_WINDOW_MS) this.searches.delete(k)
       // What it found becomes part of the item's reason.
       const view = releaseView(s.raw, { app: t.app, profile: s.profile, showZeroSeed: true })
-      const keys = t.key ? [t.key] : (await this.d.store.tracks('sonarr')).filter(x => x.seriesId === t.seriesId && x.season === t.season).map(x => x.key)
-      const tracks = (await this.d.store.tracks(t.app)).filter(x => keys.includes(x.key))
-      for (const x of tracks) x.check = { at: new Date(now).toISOString(), found: view.found, approved: view.approved, top: view.top }
-      await this.d.store.save(tracks)
+      await this.locked(async () => {
+        const tracks = (await this.d.store.tracks(t.app)).filter(x => (t.key ? x.key === t.key : x.seriesId === t.seriesId && x.season === t.season))
+        for (const x of tracks) x.check = { at: new Date(now).toISOString(), found: view.found, approved: view.approved, top: view.top }
+        await this.d.store.save(tracks)
+      })
     }
     const v = releaseView(s.raw, { app: s.app, profile: s.profile, showZeroSeed: !!opts.showZeroSeed })
     return {
@@ -506,7 +537,12 @@ export class GiveUpService {
   }
 
   /** The item's name, the ids it covers and its quality profile. */
-  private async describe(c: CoreEndpointClient, t: Target): Promise<{ label: string; ids: number[]; profile: ReturnType<typeof profileInfo> }> {
+  /**
+   * Only something still missing may be searched for: an item with no file that is tracked, given up, or monitored
+   * (what the Missing panel lists). A season counts only its episodes with no file, and needs at least one.
+   */
+  private async describe(c: CoreEndpointClient, t: Target, track?: Track): Promise<{ label: string; ids: number[]; profile: ReturnType<typeof profileInfo> }> {
+    const notMissing = () => new GiveUpRefusal(409, 'not_missing', 'Only something still missing can be searched for here: it is not monitored, and HyperProx is not tracking it.')
     const prof = async (id: unknown) => {
       const n = Number(id)
       return Number.isInteger(n) && n > 0 ? profileInfo(await c.get(`${API[t.app]}/qualityprofile/${n}`, READ_MS).catch(() => null)) : null
@@ -515,22 +551,28 @@ export class GiveUpService {
       if (t.season !== undefined) {
         const series = await c.get(`/api/v3/series/${t.seriesId}`, READ_MS)
         const eps = await c.get(`/api/v3/episode?seriesId=${t.seriesId}&seasonNumber=${t.season}`, READ_MS).catch(() => [])
-        const ids = (Array.isArray(eps) ? eps : []).filter((e: any) => Number(e?.seasonNumber) === t.season && Number(e?.seriesId) === t.seriesId).map((e: any) => Number(e.id))
+        const season = (Array.isArray(eps) ? eps : []).filter((e: any) => Number(e?.seasonNumber) === t.season && Number(e?.seriesId) === t.seriesId)
+        const tracked = new Set((await this.d.store.tracks('sonarr')).filter(x => x.seriesId === t.seriesId && x.season === t.season).map(x => x.arrId))
+        const ids = season.filter((e: any) => !(e.hasFile === true || Number(e.episodeFileId) > 0) && (e.monitored === true || tracked.has(Number(e.id)))).map((e: any) => Number(e.id))
+        if (!ids.length) throw new GiveUpRefusal(409, 'has_file', 'Every episode of that season has a file, or is not being looked for.')
         return { label: `${String(series?.title ?? 'A show')} Season ${t.season}`, ids, profile: await prof(series?.qualityProfileId) }
       }
       const e = await c.get(`/api/v3/episode/${t.arrId}`, READ_MS)
       const series = await c.get(`/api/v3/series/${e?.seriesId}`, READ_MS)
-      if (e?.hasFile) throw new GiveUpRefusal(409, 'has_file', 'It has a file now.')
+      if (e?.hasFile || Number(e?.episodeFileId) > 0) throw new GiveUpRefusal(409, 'has_file', 'It has a file now.')
+      if (!track && e?.monitored !== true) throw notMissing()
       const code = `S${String(e?.seasonNumber ?? 0).padStart(2, '0')}E${String(e?.episodeNumber ?? 0).padStart(2, '0')}`
       return { label: `${String(series?.title ?? 'A show')} ${code}`, ids: [t.arrId!], profile: await prof(series?.qualityProfileId) }
     }
     if (t.app === 'radarr') {
       const m = await c.get(`/api/v3/movie/${t.arrId}`, READ_MS)
-      if (m?.hasFile) throw new GiveUpRefusal(409, 'has_file', 'It has a file now.')
+      if (m?.hasFile || Number(m?.movieFileId) > 0) throw new GiveUpRefusal(409, 'has_file', 'It has a file now.')
+      if (!track && m?.monitored !== true) throw notMissing()
       return { label: `${String(m?.title ?? 'A film')}${Number(m?.year) > 0 ? ` (${m.year})` : ''}`, ids: [t.arrId!], profile: await prof(m?.qualityProfileId) }
     }
     const a = await c.get(`/api/v1/album/${t.arrId}`, READ_MS)
     if (Number(a?.statistics?.trackFileCount) > 0) throw new GiveUpRefusal(409, 'has_file', 'It has files now.')
+    if (!track && a?.monitored !== true) throw notMissing()
     const artist = a?.artist ?? await c.get(`/api/v1/artist/${a?.artistId}`, READ_MS).catch(() => null)
     return { label: `${String(artist?.artistName ?? 'An artist')}: ${String(a?.title ?? 'an album')}`, ids: [t.arrId!], profile: await prof(artist?.qualityProfileId) }
   }
@@ -540,71 +582,135 @@ export class GiveUpService {
    * hidden one (AV1, 3D, 48 fps) or one with a program file in its name. The quality profile is not changed. A given-up
    * item is searched for again (so a better copy can replace a poor one), and is counted again from zero.
    */
-  async grab(target: string, releaseId: string, by: string): Promise<{ result: 'queued' | 'not-seen' | 'removed-executable'; summary: string; notes: string[] }> {
-    const s = this.searches.get(target)
+  async grab(target: string, releaseId: string, by: string): Promise<GrabResult> {
+    const t = parseTarget(target)
+    if (!t) throw new GiveUpRefusal(400, 'bad_request', 'Name one item.')
+    const s = this.searches.get(t.target)
     if (!s || this.d.now() - s.at > GRAB_WINDOW_MS) throw new GiveUpRefusal(409, 'search_expired', 'That search is too old to download from. Look at what is available again.')
     if (s.used) throw new GiveUpRefusal(409, 'search_used', 'Something was already downloaded from this search. Look again once the next search is allowed.')
     const all = releaseView(s.raw, { app: s.app, profile: s.profile, showZeroSeed: true }).all
     const row = all.find(r => r.id === releaseId)
     if (!row) throw new GiveUpRefusal(404, 'no_release', 'That release is not one HyperProx can offer.')
     if (row.executable) throw new GiveUpRefusal(409, 'executable', 'That release has a program file in it, so HyperProx will not download it.')
-    const c = (await this.client(s.app))!
-    if (!c.post) throw new GiveUpRefusal(409, 'cannot_grab', 'Downloads cannot be started from here.')
-    await this.d.audit('arrstack.giveup.grab', { app: s.app, by, item: s.label, release: row.title, quality: row.quality, approved: row.approved, belowProfile: row.belowProfile, indexer: row.indexer })
-    const before = new Set((await this.queue(c, s.app)).map(r => Number(r?.id)))
-    await c.post(`${API[s.app]}/release`, { guid: row.guid, indexerId: row.indexerId }, 60_000)
-    const notes: string[] = []
-    // A given-up item comes back: searched for again, counted from zero.
-    if (s.givenUpKeys.length) {
-      const tracks = (await this.d.store.tracks(s.app)).filter(t => s.givenUpKeys.includes(t.key) && t.state === 'given-up' && t.action !== 'remove')
-      if (tracks.length) {
-        await this.setMonitored(c, s.app, tracks.map(t => t.arrId), true).catch(e => notes.push(`It could not be set to searched-for again: ${msg(e)}`))
-        await this.d.store.save(tracks.map(t => this.retracked(t)))
-        notes.push(`${tracks.length === 1 ? 'It is' : `${tracks.length} items are`} off the given-up list and searched for again.`)
-      }
-    }
-    // Used once: the ten-minute limit on searching this item still runs from when it searched.
+    // Taken at once, so two clicks cannot both grab; given back only if the arr refuses the download.
     s.used = true
-    const out = await this.verifyGrab(c, s, row, before, notes)
-    await this.d.audit('arrstack.giveup.grab.done', { app: s.app, by, item: s.label, result: out.result })
-    return out
+    try {
+      const c = (await this.client(s.app))!
+      if (!c.post) throw new GiveUpRefusal(409, 'cannot_grab', 'Downloads cannot be started from here.')
+      await this.d.audit('arrstack.giveup.grab', { app: s.app, by, item: s.label, release: row.title, quality: row.quality, approved: row.approved, belowProfile: row.belowProfile, indexer: row.indexer })
+      const before = new Set((await this.queue(c, s.app)).map(r => Number(r?.id)))
+      await c.post(`${API[s.app]}/release`, { guid: row.guid, indexerId: row.indexerId }, 60_000)
+      return await this.afterGrab(c, s, row, before, by)
+    } catch (e) {
+      if (!(e as any)?.grabbed) s.used = false
+      throw e
+    }
   }
 
-  /** Read the queue for about 20 s; when it shows up, check its files in qBittorrent for program files. */
-  private async verifyGrab(c: CoreEndpointClient, s: Search, row: ReleaseRow & { guid: string }, before: Set<number>, notes: string[]) {
+  private async afterGrab(c: CoreEndpointClient, s: Search, row: ReleaseRow & { guid: string }, before: Set<number>, by: string): Promise<GrabResult> {
+    try {
+      const notes: string[] = []
+      // A given-up item comes back: searched for again, counted from zero.
+      if (s.givenUpKeys.length) {
+        await this.locked(async () => {
+          const tracks = (await this.d.store.tracks(s.app)).filter(t => s.givenUpKeys.includes(t.key) && t.state === 'given-up' && t.action !== 'remove')
+          if (!tracks.length) return
+          await this.setMonitored(c, s.app, tracks.map(t => t.arrId), true).catch(e => notes.push(`It could not be set to searched-for again: ${msg(e)}`))
+          await this.d.store.save(tracks.map(t => this.retracked(t)))
+          notes.push(`${tracks.length === 1 ? 'It is' : `${tracks.length} items are`} off the given-up list and searched for again.`)
+        })
+      }
+      const out = await this.verifyGrab(c, s, row, before, notes, by)
+      await this.d.audit('arrstack.giveup.grab.done', { app: s.app, by, item: s.label, result: out.result, filesChecked: out.filesChecked })
+        .catch(e => this.d.log?.(`[arr-giveup] the after-grab audit entry could not be written: ${msg(e)}`))
+      return out
+    } catch (e) {
+      // The arr took the download: the search stays used whatever failed after.
+      throw Object.assign(e instanceof Error ? e : new Error(String(e)), { grabbed: true })
+    }
+  }
+
+  /**
+   * Read the queue for about 20 s. When it shows up, check its files in qBittorrent for program files; a torrent often
+   * has no file list yet, so it is looked at again 1, 3 and 10 minutes later and removed then if one turns up.
+   */
+  private async verifyGrab(c: CoreEndpointClient, s: Search, row: ReleaseRow & { guid: string }, before: Set<number>, notes: string[], by: string): Promise<GrabResult> {
     const wait = this.d.grabWaitMs ?? 20_000
     const step = Math.max(1, Math.min(5000, Math.floor(wait / 4)))
     let hit: any = null
     for (let waited = 0; waited <= wait && !hit; waited += step) {
       await this.sleep(step)
       const recs = await this.queue(c, s.app).catch(() => [])
-      // Filtered here, never by the query: Sonarr's /queue ignores seriesId and answers with everything.
-      hit = recs.find(r => !before.has(Number(r?.id)) && (s.wanted.has(Number(r?.[ID_FIELD[s.app]])) || (s.seriesId && Number(r?.seriesId) === s.seriesId && Number(r?.seasonNumber) === s.season)))
-        ?? recs.find(r => !before.has(Number(r?.id)) && String(r?.title ?? '') === row.title)
+      hit = this.findGrab(recs, s, row, before)
     }
-    if (!hit) return { result: 'not-seen' as const, summary: `${APP_NAME[s.app]} took the request, but the download is not in the queue yet. Check the Queue tab in a minute.`, notes }
-    const qb = row.protocol === 'torrent' ? await this.d.qbit().catch(() => null) : null
+    const unchecked = (why: string) => `Its files were not checked for program files: ${why}.`
+    if (!hit) {
+      notes.push(unchecked('it is not in the queue yet'))
+      return { result: 'not-seen', filesChecked: false, summary: `${APP_NAME[s.app]} took the request, but the download is not in the queue yet. Check the Queue tab in a minute.`, notes }
+    }
+    const queued = { result: 'queued' as const, summary: `Downloading: ${row.title} is in the queue.` }
+    if (row.protocol !== 'torrent') return { ...queued, filesChecked: false, notes: [...notes, unchecked('it is a usenet download, and its files are only known once it has downloaded')] }
+    const qb = await this.d.qbit().catch(() => null)
+    if (!qb) return { ...queued, filesChecked: false, notes: [...notes, unchecked('HyperProx has no qBittorrent connection in the Arr Stack settings')] }
     const hash = typeof hit.downloadId === 'string' ? hit.downloadId.toLowerCase() : ''
-    if (qb && /^[0-9a-f]{40}$/.test(hash)) {
-      const files = await qb.get(`/api/v2/torrents/files?hash=${hash}`, 15_000).catch(() => null)
-      const bad = (Array.isArray(files) ? files : []).map((f: any) => String(f?.name ?? '')).filter(n => EXECUTABLE.test(n))
-      if (bad.length) {
-        await c.delete(`${API[s.app]}/queue/${Number(hit.id)}?removeFromClient=true&blocklist=true`, 30_000)
-        return { result: 'removed-executable' as const, summary: `It contained a program file (${bad[0].split('/').pop()}), so HyperProx removed it and blocklisted it.`, notes }
-      }
-      if (!Array.isArray(files) || !files.length) notes.push('qBittorrent has not got its file list yet, so its files could not be checked for program files.')
-      else notes.push(`Its ${files.length} file${files.length === 1 ? '' : 's'} were checked: no program files.`)
-    }
-    return { result: 'queued' as const, summary: `Downloading: ${row.title} is in the queue.`, notes }
+    if (!/^[0-9a-f]{40}$/.test(hash)) return { ...queued, filesChecked: false, notes: [...notes, unchecked('the queue did not say which torrent it is')] }
+    const first = await this.checkFiles(c, qb, s.app, hash, row.title, by)
+    if (first === 'removed') return { result: 'removed-executable', filesChecked: true, summary: 'It contained a program file, so HyperProx removed it and blocklisted it.', notes }
+    if (first === 'clean') return { ...queued, filesChecked: true, notes: [...notes, 'Its files were checked: no program files.'] }
+    this.scheduleRechecks(c, qb, s.app, hash, row.title, by)
+    return { ...queued, filesChecked: false, notes: [...notes, 'Files not checked yet: qBittorrent does not have its file list. HyperProx looks again after 1, 3 and 10 minutes and removes it if a program file shows up.'] }
+  }
+
+  /** The new queue row for a grab, matched here: Sonarr's /queue ignores seriesId and answers with everything. */
+  private findGrab(recs: any[], s: Search, row: { title: string }, before: Set<number>): any {
+    return recs.find(r => !before.has(Number(r?.id)) && (s.wanted.has(Number(r?.[ID_FIELD[s.app]])) || (!!s.seriesId && Number(r?.seriesId) === s.seriesId && Number(r?.seasonNumber) === s.season)))
+      ?? recs.find(r => !before.has(Number(r?.id)) && String(r?.title ?? '') === row.title)
+  }
+
+  /** One look at a torrent's files: 'removed' (a program file: removed and blocklisted), 'clean', or 'unknown' (no list yet). */
+  private async checkFiles(c: CoreEndpointClient, qb: CoreEndpointClient, app: App, hash: string, title: string, by: string): Promise<'removed' | 'clean' | 'unknown'> {
+    const files = await qb.get(`/api/v2/torrents/files?hash=${hash}`, 15_000).catch(() => null)
+    if (!Array.isArray(files) || !files.length) return 'unknown'
+    const bad = files.map((f: any) => String(f?.name ?? '')).filter(isProgramFile)
+    if (!bad.length) return 'clean'
+    // The queue is read fresh and matched here by the torrent's hash.
+    const recs = await this.queue(c, app).catch(() => [])
+    const q = recs.find(r => String(r?.downloadId ?? '').toLowerCase() === hash)
+    if (q) await c.delete(`${API[app]}/queue/${Number(q.id)}?removeFromClient=true&blocklist=true`, 30_000)
+    await this.d.audit('arrstack.giveup.grab.program-file', { app, by, release: title, file: bad[0].split('/').pop(), removed: !!q })
+      .catch(e => this.d.log?.(`[arr-giveup] audit failed: ${msg(e)}`))
+    if (!q) this.d.log?.(`[arr-giveup] ${title} holds a program file but is no longer in the queue`)
+    return 'removed'
+  }
+
+  private scheduleRechecks(c: CoreEndpointClient, qb: CoreEndpointClient, app: App, hash: string, title: string, by: string) {
+    const later = this.d.later ?? ((fn: () => void, ms: number) => { const t = setTimeout(fn, ms); t.unref?.() })
+    let settled = false
+    RECHECK_MS.forEach((ms, i) => later(() => {
+      if (settled) return
+      void this.checkFiles(c, qb, app, hash, title, by).then(r => {
+        if (r !== 'unknown') { settled = true; return }
+        if (i === RECHECK_MS.length - 1) {
+          settled = true
+          void this.d.audit('arrstack.giveup.grab.files-unchecked', { app, by, release: title }).catch(() => {})
+          this.d.log?.(`[arr-giveup] ${title}: files not checked (qBittorrent never had its file list)`)
+        }
+      }, e => this.d.log?.(`[arr-giveup] file check failed: ${msg(e)}`))
+    }, ms))
   }
 }
 
-interface Target { app: App; key?: string; arrId?: number; seriesId?: number; season?: number }
+export interface GrabResult { result: 'queued' | 'not-seen' | 'removed-executable'; filesChecked: boolean; summary: string; notes: string[] }
+
+interface Target { app: App; target: string; key?: string; arrId?: number; seriesId?: number; season?: number }
+/** A target, and its one spelling (built from the numbers, so "radarr:7" can only be written one way). */
 export function parseTarget(v: unknown): Target | null {
   const k = parseKey(v)
-  if (k) return { app: k.app, key: v as string, arrId: k.arrId }
-  const m = typeof v === 'string' ? /^sonarr-season:(\d{1,10}):(\d{1,4})$/.exec(v) : null
-  return m ? { app: 'sonarr', seriesId: Number(m[1]), season: Number(m[2]) } : null
+  if (k) { const key = `${k.app}:${k.arrId}`; return { app: k.app, target: key, key, arrId: k.arrId } }
+  const m = typeof v === 'string' ? /^sonarr-season:([1-9]\d{0,9}):(0|[1-9]\d{0,3})$/.exec(v) : null
+  if (!m) return null
+  const seriesId = Number(m[1]), season = Number(m[2])
+  return { app: 'sonarr', target: `sonarr-season:${seriesId}:${season}`, seriesId, season }
 }
 
 const label = (t: Track) => `${t.title}${t.detail ? ` ${t.detail}` : ''}`

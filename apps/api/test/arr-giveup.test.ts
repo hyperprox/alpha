@@ -14,11 +14,11 @@ import { requiredRole, needsReconfirm } from '../src/lib/roles'
 import { buildArrGiveUpRoutes } from '../src/routes/arr-giveup'
 import { readUpcoming } from '../src/routes/arr-upcoming'
 import {
-  DEFAULT_SETTINGS, candidates, classify, historyEvents, lidarrItems, observe, parseSettings, radarrItems, rows, sonarrItems, summarise, wholeSeasons,
+  DEFAULT_SETTINGS, candidates, parseKey, classify, historyEvents, lidarrItems, observe, parseSettings, radarrItems, rows, sonarrItems, summarise, wholeSeasons,
   giveUpMessage, type GiveUpSettings, type Track,
 } from '../src/lib/arr-giveup/logic'
-import { hardRule, plainRejection, profileInfo, releaseView } from '../src/lib/arr-giveup/releases'
-import { GiveUpRefusal, GiveUpService, SEARCH_COOLDOWN_MS, type GiveUpDeps } from '../src/lib/arr-giveup/service'
+import { hardRule, isProgramFile, plainRejection, profileInfo, releaseView } from '../src/lib/arr-giveup/releases'
+import { GiveUpRefusal, GiveUpService, MAX_PER_RUN, RECHECK_MS, SEARCH_COOLDOWN_MS, parseTarget, type GiveUpDeps } from '../src/lib/arr-giveup/service'
 import { MemoryGiveUpStore } from '../src/lib/arr-giveup/store'
 import { familyOf } from '../src/lib/notify/types'
 import type { CoreEndpointClient } from '../src/lib/plugin-host'
@@ -337,7 +337,7 @@ test("see what's available: one search per item per ten minutes; a grab sends gu
   let searches = 0
   let queue: any[] = [{ id: 1, movieId: 500, title: 'Some.Other.Film' }]
   const fa = fakeArr((m, p, b) => {
-    if (m === 'GET' && p === '/api/v3/movie/7') return { id: 7, title: 'Harbour Lights', year: 1996, qualityProfileId: 7, hasFile: false }
+    if (m === 'GET' && p === '/api/v3/movie/7') return { id: 7, title: 'Harbour Lights', year: 1996, qualityProfileId: 7, hasFile: false, monitored: true }
     if (m === 'GET' && p === '/api/v3/qualityprofile/7') return fx('radarr-profile.json')
     if (m === 'GET' && p === '/api/v3/release?movieId=7') { searches++; return releases }
     if (m === 'GET' && p.startsWith('/api/v3/queue')) return page(queue)
@@ -360,6 +360,8 @@ test("see what's available: one search per item per ten minutes; a grab sends gu
   const dvd = a.rows.find(r => r.quality === 'DVD')!
   const g = await svc.grab('radarr:7', dvd.id, 'admin@example.com')
   assert.equal(g.result, 'queued', g.summary)
+  assert.equal(g.filesChecked, false)
+  assert.ok(g.notes.some(n => /not checked for program files: HyperProx has no qBittorrent connection/.test(n)), g.notes.join(' | '))
   const post = fa.calls.find(c => c.method === 'POST')!
   assert.deepEqual(Object.keys(post.body).sort(), ['guid', 'indexerId'], 'the exact release, nothing about the profile')
   assert.ok(!fa.calls.some(c => /qualityprofile/.test(c.path) && c.method !== 'GET'))
@@ -374,7 +376,7 @@ test('a grab whose torrent turns out to hold a program file is removed and block
   const releases = fx('radarr-release.json')
   let queue: any[] = []
   const fa = fakeArr((m, p) => {
-    if (m === 'GET' && p === '/api/v3/movie/7') return { id: 7, title: 'Harbour Lights', year: 1996, qualityProfileId: 7, hasFile: false }
+    if (m === 'GET' && p === '/api/v3/movie/7') return { id: 7, title: 'Harbour Lights', year: 1996, qualityProfileId: 7, hasFile: false, monitored: true }
     if (m === 'GET' && p === '/api/v3/qualityprofile/7') return fx('radarr-profile.json')
     if (m === 'GET' && p === '/api/v3/release?movieId=7') return releases
     if (m === 'GET' && p.startsWith('/api/v3/queue')) return page(queue)
@@ -391,7 +393,7 @@ test('a grab whose torrent turns out to hold a program file is removed and block
 
   // The queue never shows it (and an unrelated row from another film is not mistaken for it).
   const fb = fakeArr((m, p) => {
-    if (m === 'GET' && p === '/api/v3/movie/7') return { id: 7, title: 'Harbour Lights', year: 1996, qualityProfileId: 7, hasFile: false }
+    if (m === 'GET' && p === '/api/v3/movie/7') return { id: 7, title: 'Harbour Lights', year: 1996, qualityProfileId: 7, hasFile: false, monitored: true }
     if (m === 'GET' && p === '/api/v3/qualityprofile/7') return fx('radarr-profile.json')
     if (m === 'GET' && p === '/api/v3/release?movieId=7') return releases
     if (m === 'GET' && p.startsWith('/api/v3/queue')) return page([{ id: 50, movieId: 99, title: 'Another.Film' }])
@@ -471,4 +473,206 @@ test('routes: viewer reads, cannot act; a token is refused; grab and try again n
     assert.equal(on.statusCode, 409); assert.equal(JSON.parse(on.body).code, 'preview_required')
     assert.ok(fa.calls.every(c => c.method === 'GET'), 'nothing changed in the arr')
   } finally { await a.close() }
+})
+
+
+// ── review follow-ups ────────────────────────────────────────────────────────
+
+test('hard rules match tokens between dots, spaces, dashes and underscores, not inside words', () => {
+  for (const t of ['Film_2012_3D_1080p', 'Film.2012.FSBS.1080p', 'Film.2012.Full-SBS', 'Film 2012 H-OU', 'Film.2012.TAB.1080p', 'Film.2012.Half-SBS'])
+    assert.equal(hardRule(t), 'threeD', t)
+  for (const t of ['Film_2012_HFR_1080p', 'Film.2012.48fps', 'Film.2012.48.fps', 'Film_2012_48_fps']) assert.equal(hardRule(t), 'hfr', t)
+  for (const t of ['Film_2012_AV1_1080p', 'Film.2012.AV01.1080p', 'Film.2012.1080p.WEB.AV1']) assert.equal(hardRule(t), 'av1', t)
+  for (const t of ['Film.2012.1080p.x264-3DFX', 'Tabletop.Tales.2012.1080p', 'Film.2012.1080p.SAV1OR', 'Film.2012.480p.x264']) assert.equal(hardRule(t), null, t)
+})
+
+test('a program file is judged by the final extension of the file name only', () => {
+  assert.equal(isProgramFile('Film (2012)/setup.exe'), true)
+  assert.equal(isProgramFile('Film (2012)\\Codec.MSI'), true)
+  assert.equal(isProgramFile('Film.exe.mkv'), false)
+  assert.equal(isProgramFile('installer.exe/Film.mkv'), false)
+  assert.equal(isProgramFile('Film (2012)/notes.txt'), false)
+})
+
+test('item keys and targets have one spelling: no leading zeros', () => {
+  assert.equal(parseKey('radarr:07'), null); assert.equal(parseKey('radarr:0'), null); assert.deepEqual(parseKey('radarr:7'), { app: 'radarr', arrId: 7 })
+  assert.equal(parseTarget('sonarr-season:011:2'), null); assert.equal(parseTarget('sonarr-season:11:02'), null)
+  assert.equal(parseTarget('sonarr-season:11:0')?.target, 'sonarr-season:11:0')
+})
+
+test('a given-up item that is monitored and missing again (someone searched by hand) is counted again from zero', () => {
+  const items = sonarrItems(fx('sonarr-missing.json').records)
+  const given = tracked({ key: 'sonarr:101', arrId: 101, app: 'sonarr', state: 'given-up', action: 'unmonitor', gaveUpAt: NOW_ISO, reason: 'x', tries: 30 })
+  const r = observe([given], items, [], 0, NOW_ISO)
+  const t = r.tracks.find(x => x.key === 'sonarr:101')!
+  assert.equal(t.state, 'tracking'); assert.equal(t.tries, 0); assert.equal(t.gaveUpAt, undefined); assert.equal(t.reason, undefined)
+})
+
+/** A Sonarr that unmonitors in chunks; `failChunk` makes that chunk's change fail. */
+function chunkySonarr(ids: number[], o: { failChunk?: number } = {}) {
+  const mon = new Map(ids.map(i => [i, true]))
+  let puts = 0
+  const fa = fakeArr((m, p, b) => {
+    if (m === 'GET' && p.startsWith('/api/v3/queue')) return page([])
+    if (m === 'GET' && p.startsWith('/api/v3/wanted/missing')) return page([])
+    if (m === 'GET' && p.startsWith('/api/v3/history')) return page([])
+    if (m === 'GET' && p === '/api/v3/series') return []
+    if (m === 'GET' && p.startsWith('/api/v3/episode?')) return [...p.matchAll(/episodeIds=(\d+)/g)].map(x => ({ id: Number(x[1]), monitored: mon.get(Number(x[1])), hasFile: false }))
+    if (m === 'PUT' && p === '/api/v3/episode/monitor') {
+      puts += 1
+      if (puts === o.failChunk) return new Error('Sonarr answered 500')
+      for (const id of b.episodeIds) mon.set(id, b.monitored)
+      return []
+    }
+    return new Error(`unexpected ${m} ${p}`)
+  })
+  return { fa, mon, puts: () => puts }
+}
+const many = (n: number, from = 1000) => Array.from({ length: n }, (_, i) => tracked({ key: `sonarr:${from + i}`, arrId: from + i, app: 'sonarr', title: 'Quiet Harbour', detail: `S01E${i + 1}` }))
+
+test('a run that fails part-way keeps what it already did, is claimed for the day, and logs (not throws) a failed after-audit', async () => {
+  const sa = chunkySonarr(many(150).map(t => t.arrId), { failChunk: 2 })
+  const logs: string[] = []
+  const { svc, store } = rig({ sonarr: sa.fa.client }, {
+    audit: async (action) => { if (action === 'arrstack.giveup.run.done') throw new Error('audit store down') },
+    log: m => logs.push(m),
+  })
+  await store.save(many(150))
+  await store.setSetting('settings:sonarr', { ...DEFAULT_SETTINGS, enabled: true }, 'test')
+  const r = await svc.run('sonarr', { ...DEFAULT_SETTINGS, enabled: true }, 'test')
+  assert.equal(r.given, 100); assert.equal(r.failed.length, 50)
+  assert.equal((await store.tracks('sonarr')).filter(t => t.state === 'given-up').length, 100, 'the first chunk is saved')
+  assert.ok(logs.some(l => /after-run audit entry could not be written/.test(l)))
+  const state: any = await store.getSetting('state:sonarr')
+  assert.equal(state.lastActDay, '2026-11-16')
+  // The same calendar day: the tick does not run it again.
+  const puts = sa.puts()
+  await svc.tick()
+  assert.equal(sa.puts(), puts)
+})
+
+test('the daily tick: nothing while locked; off by default only reads; once per calendar day; at most 250 a run', async () => {
+  const locked = fakeArr(() => new Error('must not be called'))
+  const l = rig({ sonarr: locked.client }, { unlocked: () => false })
+  assert.deepEqual(await l.svc.tick(), []); assert.equal(locked.calls.length, 0)
+
+  const sa = chunkySonarr(many(260).map(t => t.arrId))
+  const r = rig({ sonarr: sa.fa.client })
+  await r.store.save(many(260))
+  await r.svc.tick()
+  assert.equal(sa.puts(), 0, 'off by default: read, never changed')
+  assert.ok(sa.fa.calls.every(c => c.method === 'GET'))
+  // The test arr lists nothing missing, so the read dropped the tracks: put them back and turn the rule on.
+  await r.store.save(many(260))
+  await r.store.setSetting('settings:sonarr', { ...DEFAULT_SETTINGS, enabled: true }, 'test')
+  await r.store.setSetting('state:sonarr', { historyId: 0, observedAt: NOW_ISO }, 'test')
+  const out = await r.svc.tick()
+  assert.equal(out[0].given, MAX_PER_RUN)
+  await r.svc.tick()
+  assert.equal((await r.store.tracks('sonarr')).filter(t => t.state === 'given-up').length, 250, 'not again the same day')
+  r.setNow(Date.parse('2026-11-17T00:05:00Z'))
+  await r.store.setSetting('state:sonarr', { ...(await r.store.getSetting<any>('state:sonarr')), observedAt: new Date(Date.parse('2026-11-17T00:05:00Z')).toISOString() }, 'test')
+  const next = await r.svc.tick()
+  assert.equal(next[0].given, 10, 'the next calendar day takes the rest')
+})
+
+test('remove (albums): deleteFiles=false with a list exclusion, never with tracks on disk; try again adds it back under its artist', async () => {
+  const artist = { id: 4, artistName: 'The Paper Boats', foreignArtistId: 'aaaa-1111', qualityProfileId: 1, metadataProfileId: 1, rootFolderPath: '/media/Music', path: '/media/Music/The Paper Boats', monitored: true }
+  const albums: Record<number, any> = {
+    31: { id: 31, title: 'Low Songs', artistId: 4, artist, foreignAlbumId: 'bbbb-2222', monitored: true, statistics: { trackFileCount: 0, sizeOnDisk: 0 } },
+    32: { id: 32, title: 'Half There', artistId: 4, artist, foreignAlbumId: 'cccc-3333', monitored: true, statistics: { trackFileCount: 2, sizeOnDisk: 9 } },
+  }
+  let excl = [{ id: 1, foreignId: 'zzzz' }]
+  const fa = fakeArr((m, p, b) => {
+    if (m === 'GET' && p.startsWith('/api/v1/queue')) return page([])
+    if (m === 'GET' && p.startsWith('/api/v1/album?')) return [...p.matchAll(/albumIds=(\d+)/g)].map(x => albums[Number(x[1])]).filter(Boolean)
+    let g = /^\/api\/v1\/album\/(\d+)$/.exec(p)
+    if (m === 'GET' && g) return albums[Number(g[1])] ?? new Error('404 Not Found')
+    g = /^\/api\/v1\/album\/(\d+)\?/.exec(p)
+    if (m === 'DELETE' && g) { excl.push({ id: 2, foreignId: albums[Number(g[1])].foreignAlbumId }); delete albums[Number(g[1])]; return null }
+    if (m === 'GET' && p === '/api/v1/importlistexclusion') return excl
+    if (m === 'DELETE' && p.startsWith('/api/v1/importlistexclusion/')) { excl = excl.filter(e => e.id !== Number(p.split('/').pop())); return null }
+    if (m === 'POST' && p === '/api/v1/album') { albums[90] = { ...b, id: 90 }; return albums[90] }
+    return new Error(`unexpected ${m} ${p}`)
+  })
+  const { svc, store } = rig({ lidarr: fa.client })
+  await store.save([tracked({ key: 'lidarr:31', arrId: 31, app: 'lidarr', title: 'The Paper Boats', detail: 'Low Songs' }), tracked({ key: 'lidarr:32', arrId: 32, app: 'lidarr', title: 'The Paper Boats', detail: 'Half There' })])
+  const r = await svc.run('lidarr', { ...DEFAULT_SETTINGS, enabled: true, action: 'remove' }, 'test')
+  assert.equal(r.given, 0 + 1)
+  assert.deepEqual(fa.calls.filter(c => c.method === 'DELETE').map(c => c.path), ['/api/v1/album/31?deleteFiles=false&addImportListExclusion=true'])
+  assert.deepEqual(r.skipped.map(x => x.why), ['It has a file now.'], 'the album with tracks on disk is left alone')
+  const out = await svc.tryAgain(['lidarr:31'], 'admin@example.com')
+  assert.match(out.summary, /Trying again: 1 album/)
+  const add = fa.calls.find(c => c.method === 'POST')!
+  assert.equal(add.body.foreignAlbumId, 'bbbb-2222'); assert.equal(add.body.artist.foreignArtistId, 'aaaa-1111'); assert.equal(add.body.addOptions.searchForNewAlbum, true)
+  assert.ok(!excl.some(e => e.foreignId === 'bbbb-2222'), 'its exclusion was lifted first')
+})
+
+test('downloads: a forged release id is refused; usenet says its files were not checked; a torrent with no file list yet is looked at again and removed if a program file turns up', async () => {
+  const releases = fx('radarr-release.json')
+  let queue: any[] = []
+  const fa = fakeArr((m, p) => {
+    if (m === 'GET' && p === '/api/v3/movie/7') return { id: 7, title: 'Harbour Lights', year: 1996, qualityProfileId: 7, hasFile: false, monitored: true }
+    if (m === 'GET' && p === '/api/v3/qualityprofile/7') return fx('radarr-profile.json')
+    if (m === 'GET' && p === '/api/v3/release?movieId=7') return releases.map((r: any, i: number) => (i === 1 ? { ...r, protocol: 'usenet', seeders: undefined, grabs: 12 } : r))
+    if (m === 'GET' && p.startsWith('/api/v3/queue')) return page(queue)
+    if (m === 'POST' && p === '/api/v3/release') { queue = [{ id: 4, movieId: 7, title: 'x', downloadId: 'c'.repeat(40) }]; return {} }
+    if (m === 'DELETE' && p.startsWith('/api/v3/queue/4')) return null
+    return new Error(`unexpected ${m} ${p}`)
+  })
+  let files: any[] = []
+  const qb = fakeArr(() => files)
+  const pending: Array<{ fn: () => void; ms: number }> = []
+  const { svc, setNow, audits } = rig({ radarr: fa.client }, { qbit: async () => qb.client, later: (fn, ms) => { pending.push({ fn, ms }) } })
+  const a = await svc.releases('radarr:7', 'admin@example.com')
+  await assert.rejects(svc.grab('radarr:7', 'f'.repeat(24), 'admin@example.com'), (e: any) => e.status === 404 && e.code === 'no_release')
+  await assert.rejects(svc.grab('radarr:07', a.rows[0].id, 'admin@example.com'), (e: any) => e.code === 'bad_request')
+
+  const usenet = a.rows.find(r => r.protocol === 'usenet')!
+  const u = await svc.grab('radarr:7', usenet.id, 'admin@example.com')
+  assert.equal(u.filesChecked, false); assert.ok(u.notes.some(n => /usenet download/.test(n)))
+
+  setNow(NOW + SEARCH_COOLDOWN_MS + 1)
+  queue = []
+  const b = await svc.releases('radarr:7', 'admin@example.com')
+  const t = await svc.grab('radarr:7', b.rows.find(r => r.protocol === 'torrent')!.id, 'admin@example.com')
+  assert.equal(t.result, 'queued'); assert.equal(t.filesChecked, false)
+  assert.ok(t.notes.some(n => /Files not checked yet/.test(n)))
+  assert.deepEqual(pending.map(p => p.ms), RECHECK_MS)
+  pending[0].fn(); await new Promise(r => setImmediate(r))
+  assert.equal(fa.calls.filter(c => c.method === 'DELETE').length, 0, 'still no list: nothing removed')
+  files = [{ name: 'Harbour Lights/Harbour.Lights.mkv' }, { name: 'Harbour Lights/Setup.exe' }]
+  pending[1].fn(); await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r))
+  assert.deepEqual(fa.calls.filter(c => c.method === 'DELETE').map(c => c.path), ['/api/v3/queue/4?removeFromClient=true&blocklist=true'])
+  assert.ok(audits.some(x => x.action === 'arrstack.giveup.grab.program-file'))
+  pending[2].fn(); await new Promise(r => setImmediate(r))
+  assert.equal(fa.calls.filter(c => c.method === 'DELETE').length, 1, 'settled: not checked again')
+})
+
+test('downloads: a failed POST gives the search back; something not missing cannot be searched; a season with every file cannot either', async () => {
+  let fail = true
+  const fa = fakeArr((m, p) => {
+    if (m === 'GET' && p === '/api/v3/movie/7') return { id: 7, title: 'Harbour Lights', year: 1996, qualityProfileId: 7, hasFile: false, monitored: true }
+    if (m === 'GET' && p === '/api/v3/movie/8') return { id: 8, title: 'The Lantern Keeper', year: 2006, qualityProfileId: 7, hasFile: false, monitored: false }
+    if (m === 'GET' && p === '/api/v3/qualityprofile/7') return fx('radarr-profile.json')
+    if (m === 'GET' && p === '/api/v3/release?movieId=7') return fx('radarr-release.json')
+    if (m === 'GET' && p.startsWith('/api/v3/queue')) return page([])
+    if (m === 'POST' && p === '/api/v3/release') return fail ? new Error('Radarr answered 404: release not in cache') : {}
+    return new Error(`unexpected ${m} ${p}`)
+  })
+  const { svc } = rig({ radarr: fa.client })
+  const a = await svc.releases('radarr:7', 'admin@example.com')
+  await assert.rejects(svc.grab('radarr:7', a.rows[0].id, 'admin@example.com'), /not in cache/)
+  fail = false
+  const ok = await svc.grab('radarr:7', a.rows[0].id, 'admin@example.com')
+  assert.equal(ok.result, 'not-seen', 'the search was given back after the failed POST, so this one went through')
+  await assert.rejects(svc.releases('radarr:8', 'admin@example.com'), (e: any) => e.code === 'not_missing')
+
+  const fs2 = fakeArr((m, p) => {
+    if (p === '/api/v3/series/11') return { id: 11, title: 'Quiet Harbour', qualityProfileId: 8 }
+    if (p.startsWith('/api/v3/episode?seriesId=11')) return [{ id: 1, seriesId: 11, seasonNumber: 1, hasFile: true, monitored: true }, { id: 2, seriesId: 11, seasonNumber: 1, episodeFileId: 9, monitored: true }]
+    return new Error(`unexpected ${m} ${p}`)
+  })
+  const s2 = rig({ sonarr: fs2.client })
+  await assert.rejects(s2.svc.releases('sonarr-season:11:1', 'admin@example.com'), (e: any) => e.code === 'has_file')
 })
