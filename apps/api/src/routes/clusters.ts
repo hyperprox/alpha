@@ -27,6 +27,7 @@ import { pveFromEnv, homePve, forgetRemoteClient, CertificateNotConfirmedError }
 import { commandCenter } from '../lib/clusters/overview'
 import { scanCluster } from '../lib/clusters/scan'
 import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, destroy, GuestActionRefusal, type PowerAction } from '../lib/clusters/guest-actions'
+import { forgetAfterDelete } from '../lib/removed-guests/after-delete'
 import { probeHostKey, execOnNode, nodeCredential } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal, forgetPin, pinnedKey, pinSource, isConfirmedSource, PinVerifyRefusal } from '../lib/hostkey-pins'
 import { verifyNodes, productionVerifyDeps, VerifyRefusal, saveAnchors, ANCHOR_COMMAND, TAILSCALE_DEV } from '../lib/hostkey-verify'
@@ -631,7 +632,9 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<G & { Body: { action?: PowerAction } }>('/:id/guests/:node/:type/:vmid/power', guestRoute((g, b) => power({ pve: pveFromEnv() }, g, b.action), 'power'))
   fastify.post<G & { Body: { name?: string; description?: string } }>('/:id/guests/:node/:type/:vmid/snapshot', guestRoute((g, b) => snapshot({ pve: pveFromEnv() }, g, String(b.name ?? ''), String(b.description ?? '')), 'snapshot'))
   fastify.post<G & { Body: { storage?: string } }>('/:id/guests/:node/:type/:vmid/backup', guestRoute((g, b) => backupNow({ pve: pveFromEnv() }, g, String(b.storage ?? '')), 'backup'))
-  fastify.post<G & { Body: { confirmName?: string } }>('/:id/guests/:node/:type/:vmid/delete', guestRoute((g, b) => destroy({ pve: pveFromEnv(), afterDestroy: pbsMountCleanup }, g, String(b.confirmName ?? '')), 'delete'))
+  // After the delete, what HyperProx held for the guest is cleaned up too (home cluster only); what its install published
+  // (proxy host, DNS name) only when the person ticked removePublished.
+  fastify.post<G & { Body: { confirmName?: string; removePublished?: boolean } }>('/:id/guests/:node/:type/:vmid/delete', guestRoute((g, b) => destroy({ pve: pveFromEnv(), afterDestroy: pbsMountCleanup, forget: forgetAfterDelete({ published: b.removePublished === true }) }, g, String(b.confirmName ?? '')), 'delete'))
 
   fastify.get<{ Params: { id: string; node: string } }>('/:id/nodes/:node/backup-storages', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
