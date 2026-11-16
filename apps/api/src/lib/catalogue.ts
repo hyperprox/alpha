@@ -24,6 +24,7 @@ import { TRANSCODE_RECIPES } from './transcode/recipes'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
+import { THREEPROXY_RECIPE } from './fwdproxy/recipes'
 import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
 
 /** What a person does the first time they open the service. */
@@ -41,7 +42,7 @@ export type FirstRun =
       secrets?: Array<{ env: string; vaultKey: string }>
     }
 
-export type RecipeCategory = 'proxy' | 'ai' | 'media' | 'monitoring' | 'apps' | 'web'
+export type RecipeCategory = 'proxy' | 'forward-proxy' | 'ai' | 'media' | 'monitoring' | 'apps' | 'web'
 
 /**
  * A setting the person fills in before the install. Its key is also the environment variable the
@@ -132,9 +133,10 @@ export interface CatalogueRecipe {
   /**
    * A recipe with its own guided setup after the install, in place of the generic health check and wiring
    * (lib/pbs/catalogue.ts for Proxmox Backup Server: datastore location, tokens, plug-in, optional storage). Ghost's
-   * (lib/ghost/setup.ts: the owner, the title, an Admin API key and mail) runs before the generic check and publish.
+   * (lib/ghost/setup.ts: the owner, the title, an Admin API key and mail) runs before the generic check and publish. A
+   * forward proxy's (lib/fwdproxy/setup.ts) replaces the generic check with a self-check of its safety rules.
    */
-  setup?:      'pbs' | 'ghost'
+  setup?:      'pbs' | 'ghost' | 'fwdproxy'
   /** Checks across the recipe's options, after each one passed its own kind. */
   checkOptions?: (values: Record<string, string>) => string[]
 }
@@ -825,6 +827,10 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   // Unmanic and Tdarr, each with an extra worker/node entry for another cluster node (lib/transcode).
   ...TRANSCODE_RECIPES,
 
+  // ── Forward proxy ───────────────────────────────────────────────────────
+  // 3proxy (HTTP and SOCKS5): locked down by default, with its own plug-in (lib/fwdproxy).
+  THREEPROXY_RECIPE,
+
   // ── Web hosting ─────────────────────────────────────────────────────────
   {
     id: 'static-site',
@@ -947,7 +953,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
 
 /** The category names the pages show. */
 export const CATEGORY_LABELS: Record<RecipeCategory, string> = {
-  proxy: 'Reverse proxy', ai: 'AI', media: 'Media', monitoring: 'Monitoring', apps: 'Apps', web: 'Web hosting',
+  proxy: 'Reverse proxy', 'forward-proxy': 'Forward proxy', ai: 'AI', media: 'Media', monitoring: 'Monitoring', apps: 'Apps', web: 'Web hosting',
 }
 
 const URL_RE   = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::\d{1,5})?(?:\/[A-Za-z0-9._~%+\/-]*)?$/

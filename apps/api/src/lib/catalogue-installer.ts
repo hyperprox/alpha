@@ -46,6 +46,8 @@ import {
   GHOST_SETUP_STEPS, ghostOverShell, runGhostSetup, ghostPreview, ghostInstallEnv, dropPendingSmtp, type GhostHttp, type Shell,
 } from './ghost/setup'
 import { mailWanted } from './ghost/recipe'
+import { FWDPROXY_SETUP_STEPS, runFwdProxySetup } from './fwdproxy/setup'
+import { isPrivateV4 } from './fwdproxy/net'
 import {
   planPublish, runPublish, cleanupPublish, recordSite, realPublishDeps, PUBLISH_STEPS,
   type PublishDeps, type PublishPlan, type PublishLedger, type PublishInput,
@@ -155,6 +157,8 @@ export interface InstallDeps {
   pbsSetup?:   () => PbsSetupDeps
   /** Ghost's setup requests, given the site's address and the container's shell (default: curl over pct exec). */
   ghostHttp?:  (url: string, sh: Shell) => GhostHttp
+  /** The 3proxy plug-in connects the new container (auto-connect, at once); true when it did. */
+  fwdConnect?: (vmid: number) => Promise<boolean>
 }
 
 const realDeps = (): InstallDeps => ({
@@ -173,6 +177,11 @@ const realDeps = (): InstallDeps => ({
   nodeRun:     pbsSetupNodeRunner,
   pbsSetup:    () => pbsSetupDeps(pve()),
   publish: realPublishDeps(),
+  fwdConnect:  async vmid => {
+    // Late-bound: auto-connect reads the plug-ins, which read this module.
+    await (await import('./auto-connect')).autoConnect().runFresh('catalogue-install')
+    return (await (await import('./fwdproxy')).fwdProxyService().instances()).some(i => i.vmid === vmid)
+  },
 })
 
 /** How long after an install the generated admin login is still served to the page. */
@@ -375,7 +384,8 @@ const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan): I
   { id: 'container', label: first, status: 'pending' },
   { id: 'network',   label: 'Wait for an address',   status: 'pending' },
   { id: 'install',   label: `Install ${recipe.name}`, status: 'pending' },
-  ...(recipe.setup === 'pbs' ? PBS_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase })) : [
+  ...(recipe.setup === 'pbs' ? PBS_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase }))
+    : recipe.setup === 'fwdproxy' ? FWDPROXY_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase })) : [
     ...(recipe.setup === 'ghost' ? GHOST_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase })) : []),
     { id: 'verify',    label: 'Check it answers',       status: 'pending' as Phase },
     { id: 'wire',      label: 'Configure the integration', status: 'pending' as Phase },
@@ -537,6 +547,23 @@ async function runJob(
         datastore: options.PBS_DATASTORE, rootPassword: admin.password, installLog: job.log, addStorage: options.PBS_ADD_STORAGE === '1',
         vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}` },
       }, id => step(job, id), deps.pbsSetup())
+      job.url = out.url
+      job.adminCredential = { user: admin.user, vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}`, key: 'admin_password' }, issuedAt: Date.now() }
+      job.status = 'completed'
+      return
+    }
+
+    // 3proxy: its self-check of the safety rules in place of the web check, then its plug-in connects it.
+    if (recipe.setup === 'fwdproxy') {
+      if (!job.ip) throw new Error(`${recipe.name} has no address, so its safety check cannot run.`)
+      if (!admin) throw new Error(`${recipe.name} needs its generated first user to be checked.`)
+      const out = await runFwdProxySetup(
+        { vmid: job.vmid!, ip: job.ip.split('/')[0], user: admin.user, password: admin.password },
+        id => step(job, id),
+        {
+          sh: (script, timeoutMs) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} }),
+          connect: deps.fwdConnect ?? (async () => false),
+        })
       job.url = out.url
       job.adminCredential = { user: admin.user, vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}`, key: 'admin_password' }, issuedAt: Date.now() }
       job.status = 'completed'
@@ -1310,6 +1337,11 @@ export async function previewInstall(
   }
   const { view, live, pinged, naming } = await freshRead(input, deps)
   const r = checkPlan(input, recipe, view, live, pinged, naming)
+  // A forward proxy only ever listens on a private address: on a public one it would be an open proxy (its script
+  // refuses that too, and a DHCP address is checked there).
+  if (recipe.setup === 'fwdproxy' && input.ip && input.ip !== 'dhcp' && !isPrivateV4(String(input.ip).split('/')[0])) {
+    r.errors.push(`${recipe.name} is installed only on a private address (10.x, 172.16–31.x or 192.168.x), so it can never be an open proxy on the internet. ${String(input.ip).split('/')[0]} is not one.`)
+  }
   // The Arr Stack: its apps, its library (looked at from the node), its VPN login (to the vault) and public names.
   const arr = recipe.stack === 'arr' && !r.errors.length ? await arrPreview({
     node: input.node, vmid: input.vmid, owner, storage: input.storage, diskGb: input.diskGb, values: checkOptions(recipe, input.options).values,
