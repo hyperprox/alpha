@@ -9,7 +9,7 @@ import { CATALOGUE, CATEGORY_LABELS, checkOptions, findRecipe, healthProblem, wi
 import { installScript, manualCommands } from '../src/lib/install-script'
 import {
   ADGUARD_DETECT, ADGUARD_RECIPE, ADGUARD_RECIPE_ID, ADGUARD_SCRIPT, ADGUARD_SHA256_AMD64, ADGUARD_VERSION, DNS_BLOCKER_RECIPES, PIHOLE_DETECT, PIHOLE_IMAGE,
-  PIHOLE_RECIPE, PIHOLE_RECIPE_ID, PIHOLE_SCRIPT, PIHOLE_VERSION, checkDnsOptions, piholeCompose,
+  PIHOLE_RECIPE, PIHOLE_RECIPE_ID, PIHOLE_SCRIPT, PIHOLE_VERSION, checkDnsOptions, piholeCompose, validUpstream,
 } from '../src/lib/dns-blocker/recipes'
 import { PROBES } from '@hyperprox/hardware/service-probes'
 import fs from 'node:fs'
@@ -177,4 +177,20 @@ test('the service scan finds both, by their own answers, on their web port', () 
       assert.equal(m, false, `${(p as any).key} must not claim a blocker's answer`)
     }
   }
+})
+
+test('upstreams: real IPv4 or IPv6 addresses with an optional valid port, nothing else', () => {
+  for (const ok of ['1.1.1.1', '9.9.9.9#5353', '2606:4700:4700::1111', '2001:db8::1#53', '255.255.255.255']) assert.ok(validUpstream(ok), ok)
+  for (const bad of ['999.1.1.1', '1.1.1', '1.1.1.1#0', '1.1.1.1#70000', '1.1.1.1#', ':::', '1.1.1.1#53#1', 'abcd', '1.1.1.1:53']) assert.ok(!validUpstream(bad), bad)
+  assert.ok(checkDnsOptions({ DNS_UPSTREAMS: '999.1.1.1' }).length > 0)
+})
+
+test('AdGuard Home gets ports as host:port and IPv6 with a port in brackets', () => {
+  const line = ADGUARD_SCRIPT.split('\n').find(l => l.startsWith('UPJSON='))!
+  const run = spawnSync('bash', ['-c', `UP='1.1.1.1,9.9.9.9#5353,2001:db8::1,2001:db8::2#5353'\n${line}\nprintf '%s' "$UPJSON"`], { encoding: 'utf8' })
+  assert.equal(run.stdout, '"1.1.1.1","9.9.9.9:5353","2001:db8::1","[2001:db8::2]:5353"')
+})
+
+test('AdGuard Home leaves no first-run log behind', () => {
+  assert.match(ADGUARD_SCRIPT, /rm -f \/tmp\/adguard-first-run\.log/)
 })

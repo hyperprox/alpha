@@ -10,8 +10,9 @@
 //              gate), on POST .../actions.
 //    secure    restart the service, allow a domain, switch the upstream DNS servers, and "use for HyperProx-installed
 //              guests": on POST .../secure-actions only. Admin, a person (never an API token), the master password
-//              re-entered (the gate), and for the two that matter most a confirm phrase typed here. Rate-limited.
-//  Every attempt, refused or not, gets an audit row (who, which blocker, what, the result; never an address or a login).
+//              re-entered (the gate). Allowing a domain also needs the phrase "Allow <domain>" typed (checked here). Rate-limited.
+//  Every attempt gets audit rows (who, which blocker, what; never an address or a login): a "started" row written BEFORE
+//  anything is done (if it cannot be written, nothing is done: fail closed), then the outcome, best effort.
 //  Each action reads the blocker again afterwards: "done" means the blocker now says so, not that it accepted the call.
 //
 //  Nothing here deletes data. Nothing here changes another machine's DNS: "use for guests" changes only the DNS list
@@ -28,6 +29,7 @@ import { AdguardClient, DirectHttp, DnsLoginError, DnsUnreachableError, PiholeCl
 import { cleanGuest, cleanName, cleanPassword, cleanUrl, cleanUser, type DnsInstanceStore, type Login } from './instances'
 import { bare, judgeUpstreams, parseAdguard, parsePihole, problemsOf, type Probe } from './parse'
 import { checkBlockerAddresses, dnsAddressOf, type TargetResolver } from './target'
+import { isPrivateLanIp } from '../qnap/target'
 import { DnsRefusal, KIND_NAME, type Actor, type ActionName, type DnsKind, type DnsMeta, type DnsReading, type GuestRef } from './types'
 import net from 'node:net'
 
@@ -61,6 +63,8 @@ export interface ServiceDeps {
   /** The generated admin login a Catalogue install saved in the vault (null when there is none). */
   catalogueLogin?: (vmid: number) => Promise<{ username: string | null; password: string } | null>
   naming?: NamingPort
+  /** The tied guest's own IPv4 address (its configuration), preferred over what the blocker's web address resolves to. */
+  guestAddress?: (g: GuestRef) => Promise<string | null>
   dismissed?: (key: string, label: string, by: string) => Promise<void>
   now?: () => number
   limits?: Partial<Limits>
@@ -281,9 +285,8 @@ export class DnsBlockerService {
     const guest = cleanGuest(body.guest)
     const login: Login = { url, username, password, insecureTLS: body.insecureTLS === true }
     await this.verify(login)
-    const meta = await this.d.store.create({ name, guest, url, username, password, insecureTLS: login.insecureTLS })
-    await this.d.audit(`${this.d.kind}.instance.create`, `${this.d.kind}:${meta.id}`, { ...auditBy({ email: actor.email, token: actor.token }), name })
-    return meta
+    await this.d.audit(`${this.d.kind}.instance.create`, `${this.d.kind}:new`, { ...auditBy({ email: actor.email, token: actor.token }), name, result: 'started' })
+    return this.d.store.create({ name, guest, url, username, password, insecureTLS: login.insecureTLS })
   }
 
   /** Signs in once and reads the statistics, so a wrong address or password is refused before it is saved. */
@@ -304,9 +307,11 @@ export class DnsBlockerService {
     const res = `${this.d.kind}:${meta.id}`
     const by = auditBy({ email: actor.email, token: actor.token })
     const tried = `${this.d.kind}.action`
+    // Fail closed: no row, no action.
+    await this.d.audit(tried, res, { ...by, action, name: meta.name, ...details, result: 'started' })
     try {
       const out = await fn()
-      await this.d.audit(tried, res, { ...by, action, name: meta.name, ...details, result: 'ok' })
+      await this.d.audit(tried, res, { ...by, action, name: meta.name, ...details, result: 'ok' }).catch(() => {})
       return out
     } catch (e: any) {
       await this.d.audit(tried, res, { ...by, action, name: meta.name, ...details, result: `refused:${String(e?.code ?? e?.name ?? 'failed').slice(0, 40)}` }).catch(() => {})
@@ -317,7 +322,7 @@ export class DnsBlockerService {
   /** The audit row for an attempt the service refuses before it runs (role, token, phrase). */
   async auditRefusal(id: string, actor: Pick<Actor, 'email' | 'token'>, body: Record<string, unknown>, why: string): Promise<void> {
     const a = typeof body.action === 'string' ? body.action.replace(/[^a-z_]/g, '').slice(0, 30) : 'unknown'
-    await this.d.audit(`${this.d.kind}.action`, `${this.d.kind}:${String(id).replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, { ...auditBy({ email: actor.email, token: actor.token }), action: a, result: `refused:${why}` })
+    await this.d.audit(`${this.d.kind}.action`, `${this.d.kind}:${String(id).replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, { ...auditBy({ email: actor.email, token: actor.token }), action: a, result: `refused:${why}` }).catch(() => {})
   }
 
   async act(id: string, body: ActionRequest, actor: Actor, secure: boolean): Promise<{ message: string }> {
@@ -483,8 +488,10 @@ export class DnsBlockerService {
     throw last
   }
 
-  /** The blocker's own IPv4 address, for the guest DNS list. */
-  private async ownAddress(login: Login): Promise<string | null> {
+  /** The blocker's own IPv4 address for the guest DNS list: the tied guest's own address first, else what its web address gives. */
+  private async ownAddress(meta: DnsMeta, login: Login): Promise<string | null> {
+    const fromGuest = meta.guest && this.d.guestAddress ? await this.d.guestAddress(meta.guest).catch(() => null) : null
+    if (fromGuest && net.isIPv4(fromGuest)) return fromGuest
     const ip = await dnsAddressOf(login.url, this.d.resolve)
     return ip && net.isIPv4(ip) ? ip : null
   }
@@ -493,8 +500,12 @@ export class DnsBlockerService {
     return this.audited(actor, meta, 'use_for_guests', {}, async () => {
       if (!this.d.naming) throw new DnsRefusal('no_naming', 'Guest DNS is not available here.', 409)
       const { login } = await this.ready(meta)
-      const ip = await this.ownAddress(login)
+      const ip = await this.ownAddress(meta, login)
       if (!ip) throw new DnsRefusal('no_address', `${this.name} is not on an IPv4 address HyperProx can give to guests.`, 409)
+      if (!isPrivateLanIp(ip)) throw new DnsRefusal('not_private', `${ip} is not a private network address, and guests are only pointed at a blocker on your own network.`, 409)
+      // Saved only once it answers a DNS lookup at that very address: guests must not lose DNS because of this.
+      const test = await this.d.probe(ip, 53)
+      if (!test.ok) throw new DnsRefusal('not_answering', `${this.name} did not answer a test lookup at ${ip}, so guests were not pointed at it.`, 409)
       const settings = await this.d.naming.read()
       if (!settings) throw new DnsRefusal('no_naming', 'HyperProx has no naming settings yet (Settings, Naming). That is where the DNS servers it gives new guests live; save them there first.', 409)
       const previous = settings.dns.slice(0, 3)
@@ -505,6 +516,20 @@ export class DnsBlockerService {
       await this.d.store.setGuestDns(meta.id, { address: ip, previous })
       return { message: `Guests HyperProx installs from now on will use ${meta.name} first${previous.length ? `, then ${previous.join(', ')}` : ''}. Guests that already exist are not changed.` }
     })
+  }
+
+  /**
+   * Called before a blocker is removed: if guests were pointed at it, the DNS list goes back first. A list a person has
+   * changed since is left alone. When it cannot be put back, the removal is refused (409) unless `force` is given.
+   */
+  async releaseGuestDns(id: string, actor: Actor, force = false): Promise<void> {
+    const meta = await this.d.store.get(id)
+    if (!meta?.guestDns) return
+    try { await this.stopUsingForGuests(meta, actor) }
+    catch (e: any) {
+      if (force) return
+      throw new DnsRefusal('guest_dns', `Guests HyperProx installs are still pointed at this blocker and the DNS list could not be put back (${e?.message ?? 'unknown'}). Remove it anyway only if you will fix Settings, Naming yourself.`, 409)
+    }
   }
 
   private async stopUsingForGuests(meta: DnsMeta, actor: Actor) {

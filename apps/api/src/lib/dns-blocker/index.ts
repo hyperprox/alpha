@@ -114,6 +114,14 @@ export function productionDnsBlocker(kind: DnsKind): DnsBlockerService {
       return { username: (await getCredential('apps', provider, 'admin_user').catch(() => null)) ?? null, password }
     },
     naming: namingPort,
+    guestAddress: async g => {
+      if (g.kind !== 'lxc') return null
+      const row = (await guestRows()).find(r => r.kind === g.kind && r.vmid === g.vmid)
+      if (!row) return null
+      const cfg = await homePve().fetchStrict<Record<string, unknown>>(`/nodes/${encodeURIComponent(row.node)}/lxc/${g.vmid}/config`)
+      const m = /(?:^|,)ip=(\d{1,3}(?:\.\d{1,3}){3})\//.exec(String(cfg?.net0 ?? ''))
+      return m ? m[1] : null
+    },
     dismissed: async (key, label, by) => {
       if (!dismissedPort) throw new Error('Auto-connect is not running, so the removal could not be remembered.')
       await dismissedPort(kind, key, label, by)

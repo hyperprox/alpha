@@ -205,8 +205,8 @@ for (const kind of ['pihole', 'adguard'] as const) {
     await r.svc.act(r.id, { action: 'resume' }, viewer, false).catch(() => {})
     await r.svc.act(r.id, { action: 'allow_domain', domain: 'a.example.net', confirm: 'wrong' }, admin, true).catch(() => {})
     await r.svc.act(r.id, { action: 'restart_service' }, { ...admin, token: 't' }, true).catch(() => {})
-    const rows = r.audits.filter(a => a.action === `${kind}.action`).map(a => `${a.details.action}:${a.details.result}`)
-    assert.deepEqual(rows, ['pause:ok', 'resume:refused:role', 'allow_domain:refused:confirm', 'restart_service:refused:token'])
+    const all0 = r.audits.filter(a => a.action === `${kind}.action`).map(a => `${a.details.action}:${a.details.result}`)
+    assert.deepEqual(all0, ['pause:started', 'pause:ok', 'resume:refused:role', 'allow_domain:refused:confirm', 'restart_service:refused:token'], 'started before the action, then its outcome')
     const all = JSON.stringify(r.audits)
     for (const secret of [PIHOLE_PASSWORD, ADGUARD_PASSWORD, 'sid-1', 'Basic ']) assert.ok(!all.includes(secret), `no ${secret} in the audit`)
     assert.ok(r.audits.every(a => a.details.by), 'every row says who')
@@ -253,6 +253,15 @@ for (const kind of ['pihole', 'adguard'] as const) {
     assert.equal((await r.svc.instances.login(r.id))?.url, 'http://192.0.2.77')
   })
 }
+
+test('audit fails closed: when the started row cannot be written, nothing is done', async () => {
+  let n = 0
+  const r = await rig('pihole', { audit: async () => { if (++n > 1) throw new Error('audit store down') } })
+  const before = (r.fake as FakePihole).log.requests.length
+  await assert.rejects(r.svc.act(r.id, { action: 'pause', minutes: 5 }, operator, false), /audit store down/)
+  assert.equal((r.fake as FakePihole).log.requests.length, before, 'the blocker was not touched')
+  assert.equal((r.fake as FakePihole).blocking, 'enabled')
+})
 
 test('restart: runs the fixed script in the guest through the guard, then waits until the blocker answers', async () => {
   const ran: string[] = []
@@ -306,6 +315,13 @@ test('domains: one name only', () => {
 
 // ── guest DNS (the Catalogue's naming settings) ─────────────────────────────
 
+/** A rig whose blocker is tied to a guest on a private address (the documentation ranges are not private to the address rules). */
+async function guestRig(kind: DnsKind, naming: NamingPort, over: Partial<ServiceDeps> = {}, o: { probe?: (s: string, p: number) => boolean } = {}) {
+  const r = await rig(kind, { naming, guestAddress: async () => '10.0.0.53', ...over }, o)
+  await r.svc.instances.update(r.id, { guest: { kind: 'lxc', vmid: 411 } })
+  return r
+}
+
 function namingRig(dns: string[] | null) {
   const saved: Array<Record<string, unknown>> = []
   let cur: ({ dns: string[] } & Record<string, unknown>) | null = dns ? { subnet: '192.0.2.0/24', dns } : null
@@ -318,29 +334,59 @@ function namingRig(dns: string[] | null) {
 
 test('use for guests: puts the blocker first in the DNS list new guests get, keeps the old ones after it, and can be undone', async () => {
   const n = namingRig(['1.1.1.1', '9.9.9.9'])
-  const r = await rig('pihole', { naming: n.naming })
+  const r = await guestRig('pihole', n.naming)
   const out = await r.svc.act(r.id, { action: 'use_for_guests' }, admin, true)
   assert.match(out.message, /from now on/); assert.match(out.message, /not changed/)
-  assert.deepEqual(n.get()!.dns, ['192.0.2.10', '1.1.1.1', '9.9.9.9'])
-  assert.deepEqual((await r.svc.instances.get(r.id))!.guestDns, { address: '192.0.2.10', previous: ['1.1.1.1', '9.9.9.9'] })
+  assert.deepEqual(n.get()!.dns, ['10.0.0.53', '1.1.1.1', '9.9.9.9'])
+  assert.deepEqual((await r.svc.instances.get(r.id))!.guestDns, { address: '10.0.0.53', previous: ['1.1.1.1', '9.9.9.9'] })
   await assert.rejects(r.svc.act(r.id, { action: 'use_for_guests' }, admin, true), (e: any) => e.code === 'nothing_to_do')
   await r.svc.act(r.id, { action: 'stop_using_for_guests' }, admin, true)
   assert.deepEqual(n.get()!.dns, ['1.1.1.1', '9.9.9.9'])
   assert.equal((await r.svc.instances.get(r.id))!.guestDns, undefined)
 })
 
+test('use for guests: the tied guest\'s own address is preferred, must be private, and must answer a DNS test first', async () => {
+  const n = namingRig(['1.1.1.1'])
+  const r = await guestRig('pihole', n.naming, { guestAddress: async () => '10.0.0.77' })
+  await r.svc.act(r.id, { action: 'use_for_guests' }, admin, true)
+  assert.deepEqual(n.get()!.dns, ['10.0.0.77', '1.1.1.1'])
+  assert.deepEqual(r.probes.at(-1), ['10.0.0.77', 53])
+  const pub = namingRig(['1.1.1.1'])
+  const p = await guestRig('pihole', pub.naming, { guestAddress: async () => '8.8.8.8' })
+  await assert.rejects(p.svc.act(p.id, { action: 'use_for_guests' }, admin, true), (e: any) => e.code === 'not_private')
+  const dead = namingRig(['1.1.1.1'])
+  const d = await guestRig('pihole', dead.naming, {}, { probe: () => false })
+  await assert.rejects(d.svc.act(d.id, { action: 'use_for_guests' }, admin, true), (e: any) => e.code === 'not_answering')
+  assert.deepEqual(dead.get()!.dns, ['1.1.1.1'], 'nothing saved')
+  assert.equal(pub.saved.length + dead.saved.length, 0)
+})
+
+test('releasing guest DNS before a removal: put back, or refused unless forced', async () => {
+  const n = namingRig(['1.1.1.1'])
+  const r = await guestRig('pihole', n.naming)
+  await r.svc.act(r.id, { action: 'use_for_guests' }, admin, true)
+  await r.svc.releaseGuestDns(r.id, admin)
+  assert.deepEqual(n.get()!.dns, ['1.1.1.1'])
+  assert.equal((await r.svc.instances.get(r.id))!.guestDns, undefined)
+  await r.svc.act(r.id, { action: 'use_for_guests' }, admin, true)
+  const broken = { ...n.naming, save: async () => ({ errors: ['not now'] }) } as NamingPort
+  ;(r.svc as any).d.naming = broken
+  await assert.rejects(r.svc.releaseGuestDns(r.id, admin), (e: any) => e.code === 'guest_dns')
+  await r.svc.releaseGuestDns(r.id, admin, true)
+})
+
 test('use for guests: at most three servers, and a person who changed the list since is not overwritten on undo', async () => {
   const n = namingRig(['1.1.1.1', '9.9.9.9', '8.8.8.8'])
-  const r = await rig('adguard', { naming: n.naming })
+  const r = await guestRig('adguard', n.naming)
   await r.svc.act(r.id, { action: 'use_for_guests' }, admin, true)
-  assert.deepEqual(n.get()!.dns, ['192.0.2.10', '1.1.1.1', '9.9.9.9'])
-  n.get()!.dns = ['10.0.0.53']
+  assert.deepEqual(n.get()!.dns, ['10.0.0.53', '1.1.1.1', '9.9.9.9'])
+  n.get()!.dns = ['10.0.0.99']
   await r.svc.act(r.id, { action: 'stop_using_for_guests' }, admin, true)
-  assert.deepEqual(n.get()!.dns, ['10.0.0.53'], 'their own change stays')
+  assert.deepEqual(n.get()!.dns, ['10.0.0.99'], 'their own change stays')
 })
 
 test('use for guests: no naming settings saved is explained, not invented; and it is admin and person only', async () => {
-  const r = await rig('pihole', { naming: namingRig(null).naming })
+  const r = await guestRig('pihole', namingRig(null).naming)
   await assert.rejects(r.svc.act(r.id, { action: 'use_for_guests' }, admin, true), (e: any) => e.code === 'no_naming' && /Settings, Naming/.test(e.message))
   await assert.rejects(r.svc.act(r.id, { action: 'use_for_guests' }, operator, true), (e: any) => e.code === 'forbidden')
   await assert.rejects(r.svc.act(r.id, { action: 'use_for_guests' }, { ...admin, token: 't' }, true), (e: any) => e.code === 'person_only')

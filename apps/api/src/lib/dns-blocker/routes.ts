@@ -12,7 +12,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
-import { auditCredentialUse } from '../audit'
+import { auditOrThrow } from '../audit'
 import { plainReason, sendRefusal } from '../failure'
 import { hasRole } from '../roles'
 import { actorOf, auditBy } from '../http/request-actor'
@@ -79,23 +79,29 @@ export function dnsBlockerRoutes(kind: DnsKind): FastifyPluginAsync {
     fastify.put<P & { Body: Record<string, unknown> }>('/instances/:iid', async (req, reply) => {
       try {
         const b = (req.body ?? {}) as Record<string, unknown>
-        const { meta, loginChanged } = await svc().instances.update(req.params.iid, b)
-        if (loginChanged) svc().forget(meta.id); else svc().forget(meta.id)
-        await auditCredentialUse(`${kind}.instance.update`, `${kind}:${meta.id}`, {
-          ...auditBy(actorOf(req)), name: meta.name, changed: Object.keys(b).filter(k => b[k] !== undefined && !(k === 'password' && b[k] === '')).map(k => k === 'password' ? 'credential' : k),
+        const before = await svc().instances.get(req.params.iid)
+        if (!before) throw new DnsRefusal('no_instance', 'No such blocker.', 404)
+        // Fail closed: the row is written before the store is.
+        await auditOrThrow(`${kind}.instance.update`, `${kind}:${before.id}`, {
+          ...auditBy(actorOf(req)), name: before.name, result: 'started', changed: Object.keys(b).filter(k => b[k] !== undefined && !(k === 'password' && b[k] === '')).map(k => k === 'password' ? 'credential' : k),
         })
+        const { meta } = await svc().instances.update(req.params.iid, b)
+        svc().forget(meta.id)
         return { success: true, data: view(await svc().instances.view(meta), req) }
       } catch (e) { return fail(reply, e) }
     })
 
-    fastify.delete<P>('/instances/:iid', async (req, reply) => {
+    fastify.delete<P & { Querystring: { force?: string } }>('/instances/:iid', async (req, reply) => {
       try {
         const m: DnsMeta | null = await svc().instances.get(req.params.iid)
-        await svc().instances.remove(req.params.iid)
-        svc().forget(req.params.iid)
+        if (!m) throw new DnsRefusal('no_instance', 'No such blocker.', 404)
+        await auditOrThrow(`${kind}.instance.remove`, `${kind}:${m.id}`, { ...auditBy(actorOf(req)), name: m.name, result: 'started' })
+        // Guests pointed at it get their DNS list back first (or the removal says why not).
+        await svc().releaseGuestDns(m.id, actorOf(req), req.query.force === '1')
+        await svc().instances.remove(m.id)
+        svc().forget(m.id)
         // One auto-connect found: remembered, so it is not added back by itself (until "connect again").
-        if (m?.autoConnected && m.guest) await svc().dismiss(machineId({ type: m.guest.kind, vmid: m.guest.vmid }), `${KIND_NAME[kind]}: ${m.name}`, actorOf(req).email).catch(() => {})
-        await auditCredentialUse(`${kind}.instance.remove`, `${kind}:${req.params.iid}`, { ...auditBy(actorOf(req)) })
+        if (m.autoConnected && m.guest) await svc().dismiss(machineId({ type: m.guest.kind, vmid: m.guest.vmid }), `${KIND_NAME[kind]}: ${m.name}`, actorOf(req).email).catch(() => {})
         return { success: true }
       } catch (e) { return fail(reply, e) }
     })

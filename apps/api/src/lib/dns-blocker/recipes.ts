@@ -17,6 +17,7 @@
 //  container was given (the ones the cluster already uses), and 1.1.1.1 only when it was given none.
 // =============================================================================
 
+import { isIPv4, isIPv6 } from 'node:net'
 import type { CatalogueRecipe, RecipeOption } from '../catalogue'
 import type { Fingerprint } from '../catalogue-detect'
 
@@ -38,7 +39,12 @@ export const ADGUARD_DIR = '/opt/AdGuardHome'
 
 // ── options ─────────────────────────────────────────────────────────────────
 
-const UPSTREAM_ONE = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f:]{2,39})(?:#\d{1,5})?$/
+/** One upstream: a valid IPv4 or IPv6 address, then optionally #port (1 to 65535). */
+export function validUpstream(u: string): boolean {
+  const m = /^([^#]+)(?:#(\d{1,5}))?$/.exec(u)
+  if (!m || !(isIPv4(m[1]) || isIPv6(m[1]))) return false
+  return m[2] === undefined || (Number(m[2]) >= 1 && Number(m[2]) <= 65535)
+}
 
 export const DNS_OPTIONS: RecipeOption[] = [
   { key: 'DNS_UPSTREAMS', label: 'Upstream DNS servers (optional)', kind: 'text', maxLength: 200, placeholder: '1.1.1.1, 9.9.9.9',
@@ -50,7 +56,7 @@ export function checkDnsOptions(v: Record<string, string>): string[] {
   const out: string[] = []
   const list = (v.DNS_UPSTREAMS ?? '').split(',').map(x => x.trim()).filter(Boolean)
   if (list.length > 4) out.push('Upstream DNS servers: at most four.')
-  for (const u of list) if (!UPSTREAM_ONE.test(u)) out.push(`Upstream DNS servers: "${u}" is not an IP address (add #port for a port other than 53).`)
+  for (const u of list) if (!validUpstream(u)) out.push(`Upstream DNS servers: "${u}" is not an IP address (add #port for a port other than 53).`)
   return out
 }
 
@@ -192,7 +198,7 @@ for i in $(seq 1 30); do
   [ "$C" = 200 ] && break
   sleep 2
 done
-[ "$C" = 200 ] || { echo "AdGuard Home's setup did not start." >&2; tail -20 /tmp/adguard-first-run.log >&2; kill $FIRST 2>/dev/null || true; exit 1; }
+[ "$C" = 200 ] || { echo "AdGuard Home's setup did not start." >&2; tail -20 /tmp/adguard-first-run.log >&2; kill $FIRST 2>/dev/null || true; rm -f /tmp/adguard-first-run.log; exit 1; }
 printf '{"web":{"ip":"%s","port":80},"dns":{"ip":"%s","port":53},"username":"admin","password":"%s"}' "$LAN_IP" "$LAN_IP" "$PW" \
   | curl -fsS --max-time 60 -X POST -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:3000/control/install/configure >/dev/null
 
@@ -206,7 +212,8 @@ done
 
 # The upstreams: written to a file only root can read, and sent with the login given to curl on standard input, so
 # neither the password nor the body is ever on a command line.
-UPJSON=$(printf '%s' "$UP" | awk -F, '{ for (i = 1; i <= NF; i++) { u = $i; sub(/#/, ":", u); printf "%s\"%s\"", (i > 1 ? "," : ""), u } }')
+# AdGuard writes a port as host:port, and an IPv6 address with a port in brackets: [2001:db8::1]:5353.
+UPJSON=$(printf '%s' "$UP" | awk -F, '{ for (i = 1; i <= NF; i++) { n = split($i, a, "#"); u = a[1]; if (n > 1) u = (index(u, ":") ? "[" u "]" : u) ":" a[2]; printf "%s\"%s\"", (i > 1 ? "," : ""), u } }')
 ( umask 077; printf '{"upstream_dns":[%s]}' "$UPJSON" > /tmp/adguard-upstreams.json )
 curl -fsS --max-time 30 -K - <<CURLCFG >/dev/null
 url = "http://$LAN_IP/control/dns_config"
@@ -219,6 +226,7 @@ unset PW
 
 # Hand over to systemd, which keeps it running and starts it at boot, reading the settings just written.
 kill $FIRST; wait $FIRST 2>/dev/null || true
+rm -f /tmp/adguard-first-run.log
 ./AdGuardHome -s install >/dev/null
 systemctl enable AdGuardHome >/dev/null 2>&1 || true
 systemctl restart AdGuardHome

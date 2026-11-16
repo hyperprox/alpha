@@ -122,7 +122,7 @@ test('changing one: the privacy switch, a new address needing the password again
   assert.equal(moved.statusCode, 400); assert.match(moved.json().error, /password again/)
   assert.ok(!hide.body.includes(PIHOLE_PASSWORD) && !moved.body.includes(PIHOLE_PASSWORD))
   assert.equal((await svc.instances.login(id))?.url, 'http://192.0.2.10')
-  assert.ok(audits.some(a => a.action === 'pihole.instance.update'), 'an audit row for the change')
+  assert.ok(audits.some(a => a.action === 'pihole.instance.update' && a.details.result === 'started'), 'a row written before the change')
 })
 
 test('removing an auto-connected one is remembered so it is not added back; a hand-made one is not', async () => {

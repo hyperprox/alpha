@@ -283,6 +283,15 @@ function InstanceForm({ kind, inst, onSaved, onCancel }: { kind: DnsKind; inst: 
     if (!inst || !window.confirm(`Remove ${inst.name} from HyperProx? Its saved login is deleted from the vault. ${name} itself is not touched.`)) return
     const r = await apiJson(`${API}/instances/${inst.id}`, 'DELETE')
     if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
+    if (r.code === 'guest_dns') {
+      if (window.confirm(`${r.error ?? ''}\n\nRemove it anyway?`)) {
+        const f = await apiJson(`${API}/instances/${inst.id}?force=1`, 'DELETE')
+        if (f.status === 403 && f.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
+        if (!f.ok) { setErr(f.error ?? 'Could not remove it.'); return }
+        onSaved()
+      }
+      return
+    }
     if (!r.ok) { setErr(r.error ?? 'Could not remove it.'); return }
     onSaved()
   }
