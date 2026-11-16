@@ -2073,8 +2073,8 @@ dashboard, the Plug-ins page and the page of each plug-in that was connected to 
 removed, and what HyperProx still keeps for it. A guest counts as removed only when every node is online and
 none lists it on three reads over at least ten minutes, Proxmox answers that its config does not exist, and
 never while it is being migrated or restored, so a slow or failed read never starts a clean-up. If several
-guests vanish at once, HyperProx treats none of them as removed and sends one alert asking you to check its
-Proxmox token's permissions. **Clean up** (admins, master password) reads the cluster again first and stops if
+guests vanish at once, HyperProx asks Proxmox about each: those it says are gone are counted as usual, and
+any it will not answer for are named in one alert asking you to check its Proxmox token's permissions. **Clean up** (admins, master password) reads the cluster again first and stops if
 it cannot confirm the guest is gone; if another guest has taken its ID, only the old guest's own records go.
 It then removes, in one go:
 
