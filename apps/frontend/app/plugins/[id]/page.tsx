@@ -22,6 +22,7 @@ import { HomepagePage } from '@/components/plugins/homepage/HomepagePage'
 import { HaproxyPage } from '@/components/plugins/haproxy/HaproxyPage'
 import { WebProxyPage } from '@/components/plugins/webproxy/WebProxyPage'
 import { ThreeProxyPage } from '@/components/plugins/fwdproxy/ThreeProxyPage'
+import { AptCachePage } from '@/components/plugins/aptcache/AptCachePage'
 import { HudHeader, styles as vs, type StatChip } from '@/components/visual/kit'
 import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
@@ -536,5 +537,6 @@ export default function PluginPage(props: { params: Promise<{ id: string }> }) {
   if (params.id === 'haproxy') return <HaproxyPage />
   if (params.id === 'nginx' || params.id === 'caddy' || params.id === 'envoy') return <WebProxyPage kind={params.id} />
   if (params.id === '3proxy') return <ThreeProxyPage />
+  if (params.id === 'apt-cacher-ng') return <AptCachePage />
   return params.id === 'home-assistant' ? <HomeAssistantPage /> : <PluginDetailPage params={params} />
 }
