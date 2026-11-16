@@ -21,6 +21,7 @@
 import { DETECT, type Fingerprint } from './catalogue-detect'
 import { ARR_RECIPE } from './arr/recipe'
 import { TRANSCODE_RECIPES } from './transcode/recipes'
+import { WEB_PROXY_RECIPES } from './webproxy/recipes'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 import type { ManagedKind } from './proxy/managed-recipes'
@@ -547,6 +548,7 @@ export const CATALOGUE: CatalogueRecipe[] = [
       - ./data:/data
       - ./letsencrypt:/etc/letsencrypt` },
   },
+  ...WEB_PROXY_RECIPES,
 
   // ── Local AI ────────────────────────────────────────────────────────────
   {
