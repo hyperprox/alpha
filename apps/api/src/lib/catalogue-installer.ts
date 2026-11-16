@@ -1334,7 +1334,7 @@ export async function previewInstall(
   }
   let publish: PublishPlan | undefined
   if (input.publish) {
-    if (recipe.category !== 'web') r.errors.push(`${recipe.name} is not published by the wizard; only websites are.`)
+    if (recipe.category !== 'web' && recipe.category !== 'network') r.errors.push(`${recipe.name} is not published by the wizard; only websites are.`)
     else {
       const pp = await planPublish(input.publish, deps.publish)
       r.errors.push(...pp.errors); r.warnings.push(...pp.warnings); r.checks.push(...pp.checks)

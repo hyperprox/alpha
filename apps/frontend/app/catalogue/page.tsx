@@ -20,6 +20,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Page, HudHeader, Panel, Pill, Tiles, styles } from '@/components/visual/kit'
 import { RunSteps, HORIZONTAL_MAX } from '@/components/visual/RunSteps'
 import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
+import { pointNetworkSteps } from '@/components/plugins/dns-blocker/logic'
 
 const ACCENT = 'var(--accent)'
 const BORDER = 'var(--border)'
@@ -298,6 +299,19 @@ export default function CataloguePage() {
               </div>
             </div>
           )}
+          {job.status === 'completed' && job.ip && recipes.find(r => r.id === job.recipeId)?.pointNetwork && (() => {
+            const r = recipes.find(x => x.id === job.recipeId)!
+            const plugin = r.id === 'pihole' ? 'pihole' : 'adguard'
+            return (
+              <div className={styles.callout} style={{ marginBottom: 12 }}>
+                <div style={{ marginBottom: 8, color: 'var(--text-bright)', fontWeight: 600 }}>Point your network at it</div>
+                <ol style={{ margin: 0, paddingLeft: '1.2rem', display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--text)', fontSize: 13 }}>
+                  {pointNetworkSteps(job.ip.replace(/\/\d+$/, ''), r.name).map((s, i) => <li key={i}>{s}</li>)}
+                </ol>
+                <small style={{ display: 'block', marginTop: 8, color: 'var(--text-dim)' }}>HyperProx connects the {r.name} plug-in by itself, with the password from the vault: <a href={`/plugins/${plugin}`}>open it</a>.</small>
+              </div>
+            )
+          })()}
           {(job.status === 'failed' || job.status === 'interrupted') && job.created && !job.removed && (
             <div className={styles.row} style={{ gap: 12, marginBottom: 12 }}>
               <button onClick={() => void cleanup(job)} disabled={cleaning} className={`${styles.btn} ${styles.btnDanger}`}>

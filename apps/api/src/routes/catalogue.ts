@@ -141,6 +141,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       options: r.options ?? [],
       stack: r.stack ?? null,
       sizes: r.sizes ?? null,
+      pointNetwork: Boolean(r.pointNetwork),
       // A recipe whose integration already has an address is not offered as a
       // fix for a problem the user does not have.
       installedAt,

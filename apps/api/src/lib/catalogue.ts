@@ -24,6 +24,7 @@ import { TRANSCODE_RECIPES } from './transcode/recipes'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
+import { DNS_BLOCKER_RECIPES } from './dns-blocker/recipes'
 import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
 
 /** What a person does the first time they open the service. */
@@ -41,7 +42,7 @@ export type FirstRun =
       secrets?: Array<{ env: string; vaultKey: string }>
     }
 
-export type RecipeCategory = 'proxy' | 'ai' | 'media' | 'monitoring' | 'apps' | 'web'
+export type RecipeCategory = 'proxy' | 'ai' | 'media' | 'monitoring' | 'apps' | 'web' | 'network'
 
 /**
  * A setting the person fills in before the install. Its key is also the environment variable the
@@ -137,6 +138,11 @@ export interface CatalogueRecipe {
   setup?:      'pbs' | 'ghost'
   /** Checks across the recipe's options, after each one passed its own kind. */
   checkOptions?: (values: Record<string, string>) => string[]
+  /**
+   * A DNS blocker: nothing else on the network is changed by the install, so the result page shows a box that says how
+   * to point the network at it (the router's DHCP DNS setting), with the container's address filled in.
+   */
+  pointNetwork?: boolean
 }
 
 // ── Web hosting scripts ─────────────────────────────────────────────────────
@@ -825,6 +831,9 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   // Unmanic and Tdarr, each with an extra worker/node entry for another cluster node (lib/transcode).
   ...TRANSCODE_RECIPES,
 
+  // Pi-hole and AdGuard Home: network-wide DNS ad and tracker blockers (lib/dns-blocker).
+  ...DNS_BLOCKER_RECIPES,
+
   // ── Web hosting ─────────────────────────────────────────────────────────
   {
     id: 'static-site',
@@ -947,7 +956,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
 
 /** The category names the pages show. */
 export const CATEGORY_LABELS: Record<RecipeCategory, string> = {
-  proxy: 'Reverse proxy', ai: 'AI', media: 'Media', monitoring: 'Monitoring', apps: 'Apps', web: 'Web hosting',
+  proxy: 'Reverse proxy', ai: 'AI', media: 'Media', monitoring: 'Monitoring', apps: 'Apps', web: 'Web hosting', network: 'DNS and network',
 }
 
 const URL_RE   = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::\d{1,5})?(?:\/[A-Za-z0-9._~%+\/-]*)?$/
