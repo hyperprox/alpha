@@ -21,6 +21,25 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — Removed guests are cleaned up, and plug-ins can be disconnected
+
+### New
+- **HyperProx notices when a container or VM is removed from Proxmox, and offers one Clean up.** Before, a plug-in stayed connected to a guest that no longer existed (a Homepage panel waiting to be filled, for example), and nothing said why. Now the dashboard, the Plug-ins page and the affected plug-in's page say which guest went, when, and exactly what HyperProx still keeps for it.
+  - Technical: `lib/removed-guests` (detector, holdings, service, production), started from `lib/services/bootstrap.ts`. One `/cluster/resources` read every five minutes while unlocked; the task log is read only when a watched guest is missing. Routes: `GET /api/removed-guests`, `POST /api/removed-guests/look`, `POST /api/removed-guests/:vmid/clean-up` (admin; clean-up re-confirmed, never an API token).
+- **A guest only counts as removed when it is really gone.** A failed read of the cluster, a node that is down, a guest being migrated or restored, or a short absence never counts: it must be missing from every node on three good reads over at least ten minutes.
+  - Technical: `lib/removed-guests/detector.ts`. A read counts only when every node is online; migrations, relocations, clones and restores running or ended in the last 15 minutes reset the count, and an unreadable task log holds every count.
+- **Clean up removes what HyperProx kept for the guest:** a connected Homepage or Nextcloud, its Catalogue install record and the login it made, its Sites entry, saved addresses and keys pointing at it, its pinned SSH key, its VPN entries, a scheduled balancing move, and auto-connect's memory of it. Its vault items go with them.
+  - Technical: `lib/removed-guests/holdings.ts`. Addresses are matched only when the guest itself was seen at them and no guest that exists now is; records made after the removal, and anything keyed by the ID once another guest has it, are left alone. New: `HomepageService.forgetRemoved`, `NextcloudService.forgetRemoved`, `Reconciler.forget`, `forgetInstallRecord`, `WireguardService.forgetMachine`, `ServiceScanCache.peek`.
+- **A backup job that still names a removed guest is fixed by taking out only that ID.** Proxmox reports the whole job as failed on every node when one listed guest is gone; Clean up shows each job's guest list before and after, and changes nothing else. A job that would back up nothing is only deleted if you tick it.
+  - Technical: written with `PUT /cluster/backup/{id}` (new `vmid` list, read back); HA resources still naming the guest are removed with `purge=1`.
+- **A new alert: "A backup job names a guest that no longer exists",** sent once to your notification channels for any guest, including ones HyperProx never knew about, and cleared when the job no longer lists it. Its link opens the dashboard's Clean up.
+  - Technical: event `backup.job.dead_guest`, fingerprint per ID, resolved after the clean-up.
+- **The proxy host and DNS name an install made are listed separately, unticked.** Leave them to keep the name for a new install, or tick to remove them. HyperProx only offers names its own install recorded making, never ones it guessed from an address.
+- **Deleting a guest in HyperProx now cleans up after it too,** with the same choice for its proxy host and DNS name.
+  - Technical: `forget` hook on `destroy()` in `lib/clusters/guest-actions.ts`, wired for the cluster page, the assistant and a website's container (home cluster only; a website's own record and names stay with the site delete).
+- **Every plug-in set up in its settings now has Disconnect.** It forgets the settings and keys, the plug-in shows as not set up and leaves the dashboard, and auto-connect does not add it straight back. Plug-ins with their own list of devices point to their page, where each one has Remove.
+  - Technical: `DELETE /api/plugins/:id/settings` (admin, re-confirmed, never an API token), `lib/plugin-disconnect.ts`. Auto-connect dismissals are recorded before the vault item is deleted. A plug-in that is not set up is no longer listed in the metrics scrape (it used to report as down).
+
 ## 2026-11-16 — Internal tidy-up
 
 ### Improved
