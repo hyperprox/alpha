@@ -29,7 +29,7 @@ import { summary, detail, isRange } from '../lib/site-metrics/view'
 import { containerView, type ContainerView } from '../lib/site-metrics/container'
 import { defaultState, isAdopted, realCollectorDeps, refreshWordPress, type CollectorDeps } from '../lib/site-metrics/collector'
 import { inspectScript, parseInspect, planLogFormat, planId, applyScript, parseApply, type LogFormatPlan } from '../lib/site-metrics/log-format'
-import { isSharedServerLog, SHARED_LOG_NOTE, safeLogPath, safeNginxLogPath, safeWordPressPath, safePhpBin, shq, LOG_RULE, DEFAULT_ACCESS_LOG, DEFAULT_WP_PATH } from '../lib/site-metrics/paths'
+import { isSharedServerLog, SHARED_LOG_NOTE, safeLogPath, safeNginxLogPath, safeWordPressPath, safePhpBin, LOG_RULE, DEFAULT_ACCESS_LOG, DEFAULT_WP_PATH } from '../lib/site-metrics/paths'
 import { parseLogLine, isPrivateAddress } from '../lib/site-metrics/log-parser'
 import { discover, mapLimit, CandidateCache, LITESPEED_PROXY_NOTE, type DiscoveryDeps, type GuestInfo } from '../lib/site-metrics/discovery'
 import { addressesInConfig } from '../lib/guest-names'
@@ -39,6 +39,7 @@ import { proxyService } from '../lib/proxy'
 import { ownHeaders } from '../lib/own-user-agent'
 import { sendFailure } from '../lib/failure'
 import { machineId } from '../lib/guest-id'
+import { shq } from '../lib/shell'
 
 export interface SiteMetricsRouteDeps {
   store: MetricsStore

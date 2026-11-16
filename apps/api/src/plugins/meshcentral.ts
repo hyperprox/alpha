@@ -34,7 +34,8 @@ import {
   type NpmInstall, describeNpmInstall, detectNpmInstalls, installKey, npmApply, npmFactsScript, npmRelease, npmUpdateBlocker,
   parseNpmFacts, waitForSteadyService,
 } from '../lib/app-updates/npm-app'
-import { compareVersions, isSafeAbsPath, isUnitName, isUserName, isVersion, shq } from '../lib/app-updates/versions'
+import { compareVersions, isSafeAbsPath, isUnitName, isUserName, isVersion } from '../lib/app-updates/versions'
+import { shq } from '../lib/shell'
 
 const PKG = 'meshcentral'
 const GITHUB = 'Ylianst/MeshCentral'

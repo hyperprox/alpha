@@ -78,11 +78,6 @@ export function safeNginxConfPath(p: unknown): string | null {
   return s && s.startsWith('/etc/nginx/') ? s : null
 }
 
-/** Single-quote a value for bash. Only ever given a value one of the checks above returned. */
-export function shq(v: string): string {
-  return `'${v.replace(/'/g, `'\\''`)}'`
-}
-
 export const DEFAULT_ACCESS_LOG = '/var/log/nginx/access.log'
 export const DEFAULT_ERROR_LOG = '/var/log/nginx/error.log'
 export const DEFAULT_WP_PATH = '/var/www/wordpress'

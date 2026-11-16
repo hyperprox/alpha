@@ -18,7 +18,8 @@
 // =============================================================================
 
 import { createHash } from 'node:crypto'
-import { safeNginxLogPath, safeNginxConfPath, shq } from './paths'
+import { safeNginxLogPath, safeNginxConfPath } from './paths'
+import { shq } from '../shell'
 
 export const FORMAT_NAME = 'hyperprox_metrics'
 export const INCLUDE_FILE = '/etc/nginx/hyperprox-metrics-log.conf'

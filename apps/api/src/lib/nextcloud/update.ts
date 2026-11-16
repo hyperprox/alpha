@@ -44,20 +44,23 @@
 import { compareVersions, majorOf } from './parse'
 import type { Deployment } from './detect'
 import type { JobStep } from './types'
+import { shqStrict, shqWord } from '../shell'
 
-const PATH_RE = /^\/(?:[A-Za-z0-9._@+-]+\/?)*$/
-const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
-const IMAGE_RE = /^[a-z0-9][a-z0-9._/:@-]{0,254}$/
-const IMAGE_ID_RE = /^sha256:[0-9a-f]{64}$/
+export const PATH_RE = /^\/(?:[A-Za-z0-9._@+-]+\/?)*$/
+export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
+export const IMAGE_RE = /^[a-z0-9][a-z0-9._/:@-]{0,254}$/
+export const IMAGE_ID_RE = /^sha256:[0-9a-f]{64}$/
 const DB_IDENT_RE = /^[A-Za-z0-9_-]{1,63}$/
 
 export class UpdateRefusal extends Error {
   constructor(message: string) { super(message); this.name = 'UpdateRefusal' }
 }
 
+/** A value of a known shape, quoted. The patterns allow no quote, so the quoting leaves them as they are. */
 function sq(v: string | null | undefined, re: RegExp, what: string): string {
-  if (typeof v !== 'string' || !re.test(v) || v.split('/').includes('..')) throw new UpdateRefusal(`HyperProx will not use that ${what}.`)
-  return `'${v}'`
+  const bad = () => new UpdateRefusal(`HyperProx will not use that ${what}.`)
+  if (typeof v === 'string' && v.split('/').includes('..')) throw bad()
+  return shqStrict(v, re, bad)
 }
 
 /** `docker compose` for exactly this project, its directory and its file. */
@@ -176,17 +179,18 @@ export function targetProblem(from: string, next: string | null): string | null 
 export function rollbackWords(p: UpdatePlan, dump: string | null): string {
   const repo = imageRepo(p.app.image)
   const tag = repo ? `${repo}:hyperprox-pre-${safeTag(p.from)}` : null
-  const compose = `cd ${p.app.workdir} && docker compose -p ${p.app.project}`
-  const occ = `docker exec -u www-data ${p.app.container} php occ`
+  const w = shqWord
+  const compose = `cd ${w(p.app.workdir)} && docker compose -p ${w(p.app.project)}`
+  const occ = `docker exec -u www-data ${w(p.app.container)} php occ`
   return [
     `To go back to Nextcloud ${p.from}:`,
-    tag ? `1. Point the image back: docker tag ${tag} ${p.app.image}` : `1. Re-create the old image (it was referenced by digest, so HyperProx could not tag it).`,
-    `2. Stop the app: ${compose} stop ${p.app.service}`,
+    tag ? `1. Point the image back: docker tag ${w(tag)} ${w(p.app.image)}` : `1. Re-create the old image (it was referenced by digest, so HyperProx could not tag it).`,
+    `2. Stop the app: ${compose} stop ${w(p.app.service)}`,
     p.db.engine === 'postgres'
-      ? `3. Restore the database: docker exec -i ${p.db.container} pg_restore --clean --if-exists -U ${p.db.user} -d ${p.db.name} < ${dump ?? `${p.backupDir}/nextcloud-db-${p.stamp}.dump`}`
-      : `3. Restore the database: gunzip -c ${dump ?? `${p.backupDir}/nextcloud-db-${p.stamp}.sql.gz`} | docker exec -i ${p.db.container} sh -c 'MYSQL_PWD="\${MYSQL_PASSWORD:-\$MARIADB_PASSWORD}" exec mysql -u"\${MYSQL_USER:-\$MARIADB_USER}" "\${MYSQL_DATABASE:-\$MARIADB_DATABASE}"'`,
-    `4. Put the old config back (it was copied before maintenance mode was turned on): docker cp ${p.backupDir}/config-${p.stamp}.php ${p.app.container}:/var/www/html/config/config.php, then docker exec ${p.app.container} chown www-data:www-data /var/www/html/config/config.php`,
-    `5. Start it: ${compose} up -d --no-deps ${p.app.service}`,
+      ? `3. Restore the database: docker exec -i ${w(p.db.container)} pg_restore --clean --if-exists -U ${w(String(p.db.user))} -d ${w(String(p.db.name))} < ${w(dump ?? `${p.backupDir}/nextcloud-db-${p.stamp}.dump`)}`
+      : `3. Restore the database: gunzip -c ${w(dump ?? `${p.backupDir}/nextcloud-db-${p.stamp}.sql.gz`)} | docker exec -i ${w(p.db.container)} sh -c 'MYSQL_PWD="\${MYSQL_PASSWORD:-\$MARIADB_PASSWORD}" exec mysql -u"\${MYSQL_USER:-\$MARIADB_USER}" "\${MYSQL_DATABASE:-\$MARIADB_DATABASE}"'`,
+    `4. Put the old config back (it was copied before maintenance mode was turned on): docker cp ${w(`${p.backupDir}/config-${p.stamp}.php`)} ${w(`${p.app.container}:/var/www/html/config/config.php`)}, then docker exec ${w(p.app.container)} chown www-data:www-data /var/www/html/config/config.php`,
+    `5. Start it: ${compose} up -d --no-deps ${w(p.app.service)}`,
     `6. Turn maintenance mode off: ${occ} maintenance:mode --off`,
     'Files in the data directory are not touched by an upgrade, so they need no restore.',
   ].join('\n')

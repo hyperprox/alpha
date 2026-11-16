@@ -28,8 +28,9 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import type { AppContext, AppRelease, AppReleaseNote, AppStepResult } from '../plugin-host'
 import {
-  compareVersions, inRange, isNpmName, isSafeAbsPath, isStableVersion, isUnitName, isUserName, isVersion, shq,
+  compareVersions, inRange, isNpmName, isSafeAbsPath, isStableVersion, isUnitName, isUserName, isVersion,
 } from './versions'
+import { shq } from '../shell'
 
 export interface NpmInstall {
   /** The directory holding package.json and node_modules/<pkg>. */

@@ -7,6 +7,7 @@
 // =============================================================================
 
 import type { UpdatesPkgChange } from './types'
+import { shq } from '../shell'
 
 // NEEDRESTART_SUSPEND: needrestart must not restart services (every ceph-osd at once, on a node set to
 // restart automatically) after a library upgrade.
@@ -89,8 +90,6 @@ export const GUEST_UPGRADE_SCRIPT = [
   'apt-get -y -q autoremove',
   '[ -f /var/run/reboot-required ] && echo HP_REBOOT_REQUIRED || true',
 ].join('\n')
-
-function shq(s: string): string { return `'${s.replace(/'/g, `'\\''`)}'` }
 
 /**
  * Pull and restart a compose project, then require every container running and

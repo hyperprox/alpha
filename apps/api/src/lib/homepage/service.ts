@@ -37,7 +37,7 @@ import {
 } from './generate'
 import { inventoryFingerprint } from './inventory'
 import {
-  KEY_FILE, backupsScript, composeUpScript, locateScript, sq, parseLocate, parseRead, parseVerify, parseWrite, purgeBackupsScript, readScript,
+  KEY_FILE, backupsScript, composeUpScript, locateScript, parseLocate, parseRead, parseVerify, parseWrite, purgeBackupsScript, readScript,
   safeContainer, safePath, stampOf, verifyScript, writeScript, type Located, type ReadFile, type VerifyResult,
 } from './remote'
 import { IGNORE_TAG, exclusionReason, guestExcluded } from '../guest-guard'
@@ -49,6 +49,7 @@ import {
   type MergeNotes,
 } from './types'
 import { changedMessage } from '../log-once'
+import { shq } from '../shell'
 
 // ── records ──────────────────────────────────────────────────────────────────
 
@@ -979,7 +980,7 @@ export class HomepageService {
       }
       if (f === 'start') {
         const c = safeContainer(i.container)
-        const out = await this.run(m, `set -u\nif docker restart ${sq(c)} >/dev/null 2>&1; then echo HPX_OK; else echo HPX_FAIL; fi\n`, 120_000)
+        const out = await this.run(m, `set -u\nif docker restart ${shq(c)} >/dev/null 2>&1; then echo HPX_OK; else echo HPX_FAIL; fi\n`, 120_000)
         if (!/^HPX_OK$/m.test(out)) throw new HomepageRefusal('start_failed', `Docker could not start ${c}.`, 502)
         return { message: `${c} is starting.` }
       }

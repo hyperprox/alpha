@@ -14,6 +14,7 @@
 import { Client, type ConnectConfig, type SFTPWrapper } from 'ssh2'
 import { createHash } from 'node:crypto'
 import { posix as path } from 'node:path'
+import { shq } from '../shell'
 
 export interface FileTransport {
   /** The file's text, or null when it does not exist. */
@@ -179,7 +180,6 @@ export type GuestExec = (script: string) => Promise<{ code: number; output: stri
 const BEGIN = '---HYPERPROX-FILE-BEGIN---'
 const END = '---HYPERPROX-FILE-END---'
 
-function shq(s: string): string { return `'${s.replace(/'/g, `'\\''`)}'` }
 
 export class GuestFileTransport implements FileTransport {
   constructor(private exec: GuestExec, private label: string) {}

@@ -1,3 +1,4 @@
+import { shqStrict } from '../shell'
 // =============================================================================
 //  HyperProx — Nextcloud: the occ commands HyperProx may run, and nothing else
 //
@@ -29,7 +30,7 @@ export class OccRefusal extends Error {
 }
 
 /** Every token that reaches the script: letters, digits and . _ : = / @ + - , only. Never a quote, a space or a $. */
-const TOKEN_RE = /^[A-Za-z0-9._:=/@+,-]{1,200}$/
+export const TOKEN_RE = /^[A-Za-z0-9._:=/@+,-]{1,200}$/
 export const CONTAINER_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
 export const UNIX_USER_RE = /^[a-z_][a-z0-9_-]{0,31}$/
 export const OCC_PATH_RE = /^\/(?:[A-Za-z0-9._-]+\/)*occ$/
@@ -39,8 +40,9 @@ export const NC_GROUP_RE = /^[A-Za-z0-9_.@ -]{1,64}$/
 export const REGION_RE = /^[A-Z]{2}$/
 
 const q = (t: string) => {
-  if (!TOKEN_RE.test(t) || t.includes('..')) throw new OccRefusal(`"${t.slice(0, 40)}" is not a value HyperProx passes to occ.`)
-  return `'${t}'`
+  const bad = () => new OccRefusal(`"${t.slice(0, 40)}" is not a value HyperProx passes to occ.`)
+  if (t.includes('..')) throw bad()
+  return shqStrict(t, TOKEN_RE, bad)
 }
 
 export function checkTarget(t: OccTarget): OccTarget {

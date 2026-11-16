@@ -20,7 +20,8 @@
 //    - same inode but shorter than the offset (copytruncate): from 0.
 // =============================================================================
 
-import { LOG_RULE, safeLogPath, shq } from './paths'
+import { LOG_RULE, safeLogPath } from './paths'
+import { shq } from '../shell'
 
 /** Bytes read per section per run; more waits for the next run (or the next round of the same tick). */
 export const READ_CHUNK = 4 * 1024 * 1024

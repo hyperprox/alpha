@@ -12,6 +12,7 @@
 import { X509Certificate } from 'node:crypto'
 import type { NPMCertificate } from '../npm-client'
 import type { CertsHousekeepingItem } from './types'
+import { shq } from '../shell'
 
 export interface HousekeepingDeps {
   npmCertificates(): Promise<NPMCertificate[]>
@@ -40,11 +41,6 @@ const FILES_PREFIX   = 'npm-files:'
 const LE_MOUNT       = '/etc/letsencrypt'
 const DATA_MOUNT     = '/data'
 export const ARCHIVE_DIR = 'hyperprox-archived'
-
-/** POSIX single-quoting: the only safe way to put a path from another machine into a script. */
-export function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`
-}
 
 const FIND_MOUNT = `
 set -u

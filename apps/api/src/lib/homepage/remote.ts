@@ -14,6 +14,7 @@
 // =============================================================================
 
 import { createHash } from 'node:crypto'
+import { shq } from '../shell'
 
 /** A path on the guest we will name in a script: absolute, plain characters, no `..`. */
 export const SAFE_PATH = /^\/(?:[A-Za-z0-9._@+-]+\/)*[A-Za-z0-9._@+-]+\/?$/
@@ -38,7 +39,6 @@ export function safeContainer(c: string): string {
   return c
 }
 /** Single-quoted for bash; only ever applied to a value that already passed safePath or safeContainer. */
-export const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64')
 export const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
 
@@ -112,9 +112,9 @@ export function readScript(dir: string, files: readonly string[]): string {
   for (const f of files) if (!/^[A-Za-z0-9._-]{1,64}$/.test(f)) throw new UnsafeValueError('a file name')
   return `set -u
 export LC_ALL=C
-d=${sq(d)}
+d=${shq(d)}
 if [ ! -d "$d" ]; then echo 'HPX_NODIR'; echo HPX_DONE; exit 0; fi
-for f in ${files.map(sq).join(' ')}; do
+for f in ${files.map(shq).join(' ')}; do
   p="$d/$f"
   if [ -f "$p" ] && [ ! -L "$p" ]; then echo "HPX_FILE $f $(stat -c '%u:%g' "$p") $(stat -c '%a' "$p") $(base64 -w0 < "$p")"; else echo "HPX_MISSING $f"; fi
 done
@@ -172,10 +172,10 @@ export function writeScript(r: WriteRequest): string {
   return `set -u
 export LC_ALL=C
 umask ${secret ? '077' : '022'}
-d=${sq(d)}
-f=${sq(r.file)}
+d=${shq(d)}
+f=${shq(r.file)}
 p="$d/$f"
-expect=${sq(r.expectSha ?? 'none')}
+expect=${shq(r.expectSha ?? 'none')}
 [ -d "$d" ] || { echo 'HPX_ERR no_dir'; exit 0; }
 [ -L "$d" ] && { echo 'HPX_ERR is_link'; exit 0; }
 [ -L "$p" ] && { echo 'HPX_ERR is_link'; exit 0; }
@@ -187,13 +187,13 @@ base64 -d > "$tmp" <<'HPX_CONTENT_END' || { rm -f -- "$tmp"; echo 'HPX_ERR decod
 ${b64(r.content).replace(/(.{76})/g, '$1\n')}
 HPX_CONTENT_END
 got=$(sha256sum < "$tmp" | cut -d' ' -f1)
-[ "$got" = ${sq(want)} ] || { rm -f -- "$tmp"; echo 'HPX_ERR corrupt'; exit 0; }
+[ "$got" = ${shq(want)} ] || { rm -f -- "$tmp"; echo 'HPX_ERR corrupt'; exit 0; }
 if [ -f "$p" ]; then
-  bak="$p.bak-hyperprox-"${sq(r.stamp)}
+  bak="$p.bak-hyperprox-"${shq(r.stamp)}
   n=1
   while [ -e "$bak" ] || [ -L "$bak" ]; do
     [ "$n" -gt 9 ] && { rm -f -- "$tmp"; echo 'HPX_ERR backup'; exit 0; }
-    bak="$p.bak-hyperprox-"${sq(r.stamp)}"-$n"; n=$((n+1))
+    bak="$p.bak-hyperprox-"${shq(r.stamp)}"-$n"; n=$((n+1))
   done
   cp -P -p -n -- "$p" "$bak" || { rm -f -- "$tmp"; echo 'HPX_ERR backup'; exit 0; }
   if [ -L "$bak" ] || [ ! -f "$bak" ] || [ "$(sha256sum < "$bak" | cut -d' ' -f1)" != "$now" ]; then rm -f -- "$tmp"; echo 'HPX_ERR backup'; exit 0; fi
@@ -215,9 +215,9 @@ export function backupsScript(dir: string, file: string): string {
   if (!WRITABLE.has(file)) throw new UnsafeValueError('that file')
   return `set -u
 export LC_ALL=C
-d=${sq(d)}
+d=${shq(d)}
 n=0
-for b in "$d"/${sq(file)}.bak-hyperprox-*; do [ -e "$b" ] || [ -L "$b" ] || continue; n=$((n+1)); done
+for b in "$d"/${shq(file)}.bak-hyperprox-*; do [ -e "$b" ] || [ -L "$b" ] || continue; n=$((n+1)); done
 echo "HPX_BACKUPS $n"
 `
 }
@@ -228,9 +228,9 @@ export function purgeBackupsScript(dir: string, file: string): string {
   if (!WRITABLE.has(file)) throw new UnsafeValueError('that file')
   return `set -u
 export LC_ALL=C
-d=${sq(d)}
+d=${shq(d)}
 n=0
-for b in "$d"/${sq(file)}.bak-hyperprox-*; do [ -e "$b" ] || [ -L "$b" ] || continue; rm -f -- "$b" && n=$((n+1)); done
+for b in "$d"/${shq(file)}.bak-hyperprox-*; do [ -e "$b" ] || [ -L "$b" ] || continue; rm -f -- "$b" && n=$((n+1)); done
 echo "HPX_PURGED $n"
 `
 }
@@ -268,7 +268,7 @@ export function verifyScript(container: string, port: number | null): string {
   const p = port && Number.isInteger(port) && port > 0 && port < 65536 ? port : 3000
   return `set -u
 export LC_ALL=C
-c=${sq(c)}
+c=${shq(c)}
 out=$(docker exec "$c" wget -qO- -T 10 http://127.0.0.1:3000/api/services 2>/dev/null) || out=''
 if [ -z "$out" ] && command -v curl >/dev/null 2>&1; then out=$(curl -fsS -m 10 http://127.0.0.1:${p}/api/services 2>/dev/null) || out=''; fi
 if [ -z "$out" ]; then echo 'HPX_VERIFY none'; else echo "HPX_VERIFY $(printf '%s' "$out" | base64 -w0)"; fi
@@ -306,12 +306,12 @@ export function composeUpScript(composeDir: string, composeFiles: string[], serv
   const files = composeFiles.map(safePath)
   if (!SAFE_SERVICE.test(service)) throw new UnsafeValueError('the compose service name')
   // Every file the project was started with, in the same order, or compose would see a different project.
-  const f = files.map(x => `-f ${sq(x)} `).join('')
+  const f = files.map(x => `-f ${shq(x)} `).join('')
   return `set -u
 export LC_ALL=C
-cd ${sq(d)} || { echo 'HPX_ERR no_dir'; exit 0; }
+cd ${shq(d)} || { echo 'HPX_ERR no_dir'; exit 0; }
 log=$(mktemp) || { echo 'HPX_UP failed'; exit 0; }
-if docker compose ${f}up -d ${sq(service)} >"$log" 2>&1; then echo 'HPX_UP ok'; else echo 'HPX_UP failed'; tail -n 5 "$log" | sed 's/^/HPX_LOG /'; fi
+if docker compose ${f}up -d ${shq(service)} >"$log" 2>&1; then echo 'HPX_UP ok'; else echo 'HPX_UP failed'; tail -n 5 "$log" | sed 's/^/HPX_LOG /'; fi
 rm -f -- "$log"
 `
 }

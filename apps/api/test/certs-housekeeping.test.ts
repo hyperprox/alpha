@@ -7,8 +7,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { listHousekeeping, applyHousekeeping, shq, ARCHIVE_DIR, type HousekeepingDeps } from '../src/lib/certs/housekeeping'
+import { listHousekeeping, applyHousekeeping, ARCHIVE_DIR, type HousekeepingDeps } from '../src/lib/certs/housekeeping'
 import type { NPMCertificate } from '../src/lib/npm-client'
+import { shq } from '../src/lib/shell'
 
 const NOW = new Date('2026-10-26T06:15:00Z')
 const cert = (id: number, expires: string, names = [`h${id}.example.com`]): NPMCertificate =>

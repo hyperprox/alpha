@@ -16,6 +16,7 @@
 
 import type { UpdatesExecutor, GuestRef } from './executor'
 import { GUEST_UPGRADE_SCRIPT } from './commands'
+import { shq } from '../shell'
 
 export const HANDOFF_DIR = '/var/lib/hyperprox-updates'
 
@@ -23,8 +24,6 @@ export interface HandoffResult { ok: boolean; message: string; finishedAt?: stri
 
 const unit = (jobId: string, stepId: string) => `hyperprox-handoff-${jobId}-${stepId}`.replace(/[^A-Za-z0-9_-]/g, '')
 const resultFile = (jobId: string, stepId: string) => `${HANDOFF_DIR}/${unit(jobId, stepId)}.json`
-
-function shq(s: string): string { return `'${s.replace(/'/g, `'\\''`)}'` }
 
 const writeResult = (file: string) => `
 result() {  # ok message

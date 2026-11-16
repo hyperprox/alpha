@@ -1,3 +1,4 @@
+import { shq } from '../shell'
 // =============================================================================
 //  HyperProx — App updates: versions and names
 //
@@ -77,11 +78,6 @@ export function inRange(version: string, range: string): boolean | null {
     if (all) any = true
   }
   return any
-}
-
-/** POSIX single-quote a string for a shell. */
-export function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
 /**

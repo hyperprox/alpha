@@ -13,7 +13,8 @@
 //  given, and "PHP" reports that build's version.
 // =============================================================================
 
-import { safeWordPressPath, safeLogPath, safePhpBin, shq, LOG_RULE, DEFAULT_WP_PATH, DEFAULT_ERROR_LOG } from './paths'
+import { safeWordPressPath, safeLogPath, safePhpBin, LOG_RULE, DEFAULT_WP_PATH, DEFAULT_ERROR_LOG } from './paths'
+import { shq } from '../shell'
 
 export const WP_CACHE_MS = 60 * 60_000
 export const WP_ERRORS = 10
