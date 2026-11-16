@@ -24,6 +24,7 @@ import { buildInventory, type InventorySources, type RawPlugin } from './invento
 import { HomepageService, type HomepageDeps, type HomepageInstance, type RecordStore } from './service'
 import type { Inventory } from './types'
 import { appLog } from '../log-once'
+import { listGuests } from '../pve/guests'
 
 export { HomepageService, HomepageRefusal } from './service'
 export type { HomepageInstance, Actor, Plan, Problem } from './service'
@@ -77,7 +78,7 @@ export function liveSources(): InventorySources {
   const pve = () => homePve()
   const enc = encodeURIComponent
   return {
-    guests: async () => ((await pve().getClusterResources('vm')) ?? []) as any[],
+    guests: async () => (await listGuests(pve(), { strict: false })).map(g => g.raw),
     addresses: async g => {
       // A config that cannot be read throws: the inventory then counts the guest list as failed (it could hide a
       // guest on an excluded subnet).
@@ -133,21 +134,20 @@ async function inventory(refresh: boolean): Promise<Inventory> {
 /** Where Homepage was seen: Catalogue installs, the shared scan, the install marker, a proxy host's fingerprint. */
 async function sightings(): Promise<Array<{ vmid: number; url: string | null; via: 'catalogue' | 'scan' | 'marker' | 'proxy' }>> {
   const out: Array<{ vmid: number; url: string | null; via: 'catalogue' | 'scan' | 'marker' | 'proxy' }> = []
-  const all = ((await homePve().getClusterResources('vm').catch(() => [])) ?? []) as any[]
+  const all = await listGuests(homePve(), { strict: false }).catch(() => [])
   const jobs = (await wizardStore().list('job').catch(() => [])).map(r => r.data).filter((j: any) => j?.recipeId === 'homepage' && j.status === 'completed' && j.vmid)
   // A VMID reused by another guest since the install is not this Homepage any more.
-  for (const j of jobs) if (installStillOwns(j, all.find(g => Number(g.vmid) === Number(j.vmid)))) out.push({ vmid: Number(j.vmid), url: j.url ?? null, via: 'catalogue' })
+  for (const j of jobs) if (installStillOwns(j, all.find(g => g.vmid === Number(j.vmid))?.raw)) out.push({ vmid: Number(j.vmid), url: j.url ?? null, via: 'catalogue' })
   for (const f of (await sharedServiceScan().result(false).catch(() => ({ findings: [] as any[] }))).findings) {
     if (f.key === 'homepage' && f.guest) out.push({ vmid: Number(f.guest.vmid), url: f.address, via: 'scan' })
   }
   const det = await lazy.detected(false).catch(() => null)
   for (const r of det?.apps?.homepage ?? []) if (r.guest) out.push({ vmid: Number(r.guest.vmid), url: r.publicUrl ?? r.url ?? null, via: r.publicUrl ? 'proxy' : 'scan' })
   // A container the Catalogue made says so in its notes, even after its install record has been pruned.
-  const guests = ((await homePve().getClusterResources('vm').catch(() => [])) ?? []) as any[]
-  await Promise.all(guests.filter(g => g.type === 'lxc' && g.status === 'running' && g.template !== 1).map(async g => {
-    const cfg = await homePve().getVMConfig(g.node, Number(g.vmid), 'lxc').catch(() => null)
+  await Promise.all(all.filter(g => g.type === 'lxc' && g.running && !g.template).map(async g => {
+    const cfg = await homePve().getVMConfig(g.node, g.vmid, 'lxc').catch(() => null)
     const desc = decodeURIComponent(String(cfg?.description ?? ''))
-    if (/^Homepage, installed by HyperProx/m.test(desc) && /hyperprox-install:/.test(desc)) out.push({ vmid: Number(g.vmid), url: null, via: 'marker' })
+    if (/^Homepage, installed by HyperProx/m.test(desc) && /hyperprox-install:/.test(desc)) out.push({ vmid: g.vmid, url: null, via: 'marker' })
   }))
   return out
 }

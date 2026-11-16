@@ -24,6 +24,7 @@ import { verifyForPane, trustVerdict, hostKeyCheckDeps, HostKeyCheckRefusal } fr
 import { auditOrThrow } from '../lib/audit'
 import { isTokenContext } from '../lib/auth'
 import { sendFailure } from '../lib/failure'
+import { machineId } from '../lib/guest-id'
 
 
 export interface TerminalHost {
@@ -72,7 +73,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       // LXC addresses come straight from net0. VM addresses need the guest agent,
       // which is slow and often absent — those are left null and typed in once.
       const hosts = await Promise.all(guests.map(async (g): Promise<TerminalHost> => {
-        const id = `${g.type}-${g.vmid}`
+        const id = machineId(g)
         let ip: string | null = null
 
         if (g.type === 'lxc' && g.status === 'running') {

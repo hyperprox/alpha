@@ -13,6 +13,7 @@
 
 import { livePve } from './pve-env'
 import { listHostAddresses } from './terminal-hosts'
+import { machineId } from './guest-id'
 
 export interface GuestRef { vmid: number; name: string; type: 'lxc' | 'qemu'; config: Record<string, unknown> | null }
 
@@ -37,7 +38,7 @@ export function guestNamesFrom(guests: GuestRef[], remembered: Record<string, st
     for (const ip of addressesInConfig(g.config)) if (!out.has(ip)) out.set(ip, g.name)
   }
   for (const g of guests) {
-    const ip = remembered[`${g.type}-${g.vmid}`]
+    const ip = remembered[machineId(g)]
     if (ip && /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && !out.has(ip)) out.set(ip, g.name)
   }
   return out

@@ -21,7 +21,7 @@ import { actorOf } from '../lib/http/request-actor'
 import { publish } from '../lib/notify'
 import { VaultLockedError } from '../lib/credentials'
 import { currentRemote } from '../lib/clusters/context'
-import { sidOf } from '../lib/ha/parse'
+import { isSid, parseGuestPath, sidOf } from '../lib/guest-id'
 import { nodeAddress } from '../lib/ha'
 import { redactText } from '../lib/ha/redact'
 import { livePve } from '../lib/pve-env'
@@ -51,12 +51,12 @@ async function wrap(reply: FastifyReply, fn: () => Promise<unknown>) {
   }
 }
 
-const TYPES = new Set(['lxc', 'qemu'])
 const NODE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/
 
 function guestSid(p: { type: string; vmid: string }): string {
-  if (!TYPES.has(p.type) || !/^\d{1,9}$/.test(p.vmid)) throw new PlacementRefusal('Not a guest: use /lxc/<id> or /qemu/<id>.', 400, 'bad-guest')
-  return sidOf(p.type as 'lxc' | 'qemu', Number(p.vmid))
+  const g = parseGuestPath(p.type, p.vmid)
+  if (!g) throw new PlacementRefusal('Not a guest: use /lxc/<id> or /qemu/<id>.', 400, 'bad-guest')
+  return sidOf(g.type, g.vmid)
 }
 
 let production: PlacementService | null = null
@@ -141,7 +141,7 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
     fastify.post<{ Body: any }>('/plans', async (q, r) => wrap(r, async () => {
       const b: any = q.body ?? {}
       const expect = Array.isArray(b.expect) ? b.expect.slice(0, 20).map((x: any) => ({ sid: String(x?.sid ?? ''), to: String(x?.to ?? '') })) : null
-      if (!expect || !expect.length || expect.some((x: { sid: string; to: string }) => !/^(ct|vm):\d{1,9}$/.test(x.sid) || !NODE.test(x.to))) {
+      if (!expect || !expect.length || expect.some((x: { sid: string; to: string }) => !isSid(x.sid) || !NODE.test(x.to))) {
         throw new PlacementRefusal('Send the moves you approved (expect: [{ sid, to }]), so the server runs exactly those.', 400, 'bad-plan')
       }
       if (b.when !== undefined && b.when !== 'now' && b.when !== 'next-quiet') throw new PlacementRefusal('when must be now or next-quiet.', 400, 'bad-when')
@@ -154,7 +154,7 @@ export function buildPlacementRoutes(deps: { service?: () => PlacementService; s
     fastify.post('/auto/stop', async (q, r) => wrap(r, () => svc().autoStop(actor(q))))
 
     fastify.get<{ Querystring: { sid?: string } }>('/moves', async (q, r) => wrap(r, () => {
-      const sid = q.query?.sid && /^(ct|vm):\d{1,9}$/.test(q.query.sid) ? q.query.sid : undefined
+      const sid = q.query?.sid && isSid(q.query.sid) ? q.query.sid : undefined
       return svc().history(sid)
     }))
     fastify.get<{ Params: { id: string } }>('/moves/:id', async (q, r) => wrap(r, async () => {

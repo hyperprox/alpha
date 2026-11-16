@@ -26,6 +26,7 @@ import { knownApp, appFromName } from './catalog'
 import { hostPort } from './generate'
 import type { GuestRef, InvGuest, InvService, Inventory, InvProxyHost, InvSite, InventorySourceId } from './types'
 import { parseTags } from '../guest-guard'
+import { machineId } from '../guest-id'
 
 export interface RawGuest { vmid: number; name?: string; node: string; type: string; status: string; tags?: string; template?: number }
 export interface RawFinding { key: string; address: string; guest: GuestRef | null }
@@ -81,7 +82,7 @@ export async function buildInventory(src: InventorySources): Promise<Inventory> 
     .map(async g => {
       const ref: GuestRef = { vmid: Number(g.vmid), name: String(g.name ?? g.vmid), node: String(g.node), type: g.type as 'lxc' | 'qemu' }
       const addresses = g.status === 'running' ? await src.addresses(ref).catch(() => { addressFailures++; return [] as string[] }) : []
-      return { ...ref, status: g.status, tags: parseTags(g.tags), addresses, machineId: `${ref.type}-${ref.vmid}` }
+      return { ...ref, status: g.status, tags: parseTags(g.tags), addresses, machineId: machineId(ref) }
     }))
   if (addressFailures) { f.failed.add('guests'); errors.push(`Guest addresses: ${addressFailures} running guest${addressFailures === 1 ? '' : 's'} could not be read`) }
   const byVmid = new Map(guests.map(g => [g.vmid, g]))

@@ -38,6 +38,7 @@ import { liveAddresses } from '../lib/wizard-placement'
 import { proxyService } from '../lib/proxy'
 import { ownHeaders } from '../lib/own-user-agent'
 import { sendFailure } from '../lib/failure'
+import { machineId } from '../lib/guest-id'
 
 export interface SiteMetricsRouteDeps {
   store: MetricsStore
@@ -68,7 +69,7 @@ async function clusterGuests(): Promise<GuestInfo[]> {
     const type = r.type as 'lxc' | 'qemu', vmid = Number(r.vmid)
     const config = await pve.getVMConfig(String(r.node), vmid, type).catch(() => null) as Record<string, unknown> | null
     const addresses = addressesInConfig(config)
-    const rem = remembered[`${type}-${vmid}`]
+    const rem = remembered[machineId({ type, vmid })]
     if (rem && /^\d{1,3}(\.\d{1,3}){3}$/.test(rem) && !addresses.includes(rem)) addresses.push(rem)
     out.push({ vmid, name: String(r.name ?? vmid), node: String(r.node), type, status: String(r.status), addresses,
       agent: type === 'qemu' && /^(1|enabled=1)/.test(String(config?.agent ?? '')) })

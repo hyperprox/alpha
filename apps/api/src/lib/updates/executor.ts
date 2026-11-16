@@ -18,6 +18,7 @@ import { runPluginMetrics } from '../plugin-host'
 import { plexPlugin } from '../../plugins/plex'
 import { parsePveAptList } from './commands'
 import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, guestLeftAloneReason, parseTags } from '../guest-guard'
+import { taskRunning, taskVmid } from '../pve/tasks'
 
 export type { ExecResult }
 
@@ -263,9 +264,7 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
         for (const t of Array.isArray(rows) ? rows : []) {
           const at = Number(t.starttime) * 1000
           if (!Number.isFinite(at)) continue
-          const running = t.status === undefined || t.status === null || t.status === '' || t.status === 'running'
-          const vmid = /^\d{1,9}$/.test(String(t.id ?? '')) ? Number(t.id) : null
-          out.push({ node: n.name, at, ok: running ? null : t.status === 'OK', vmid })
+          out.push({ node: n.name, at, ok: taskRunning(t) ? null : t.status === 'OK', vmid: taskVmid(t.id) })
         }
       }
       return out.sort((a, b) => b.at - a.at)

@@ -10,6 +10,7 @@
 import type { GuestKey, VpnGuestRef, VpnGuestStatus, VpnStatusSource } from '../guest-config/vpn'
 import type { RemoteAccessService, RemoteCell, RemoteMachineRow } from './service'
 import { PROVIDER_IDS, PROVIDER_LABEL, type ProviderId } from './types'
+import { machineId } from '../guest-id'
 
 const LOCKED = 'HyperProx is locked — sign in to see VPN status.'
 
@@ -61,7 +62,7 @@ export function remoteVpnSource(service: Pick<RemoteAccessService, 'overview'>, 
         return out
       }
       for (const g of guests) {
-        const row = rows.find(r => r.id === `${g.type}-${g.vmid}`)
+        const row = rows.find(r => r.id === machineId(g))
         out.set(key(g), row ? guestStatus(row) : { state: 'none' })
       }
       return out

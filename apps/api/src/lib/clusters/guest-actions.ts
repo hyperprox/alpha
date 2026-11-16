@@ -16,6 +16,7 @@ export class GuestActionRefusal extends Error {
 }
 
 import { NODE_RE } from '../route-params'
+import { sidOf } from '../guest-id'
 export function checkGuest(node: string, type: string, vmid: string | number): { node: string; type: GuestType; vmid: number } {
   const id = Number(vmid)
   if (!NODE_RE.test(node)) throw new GuestActionRefusal('That is not a node name.', 'not-found')
@@ -152,13 +153,12 @@ export async function destroy(d: ActionDeps, g: { node: string; type: GuestType;
 
 // ── For a guest HyperProx made and is now removing whole (a website's container) ──────────────────────────
 
-const sidOf = (g: { type: GuestType; vmid: number }) => `${g.type === 'qemu' ? 'vm' : 'ct'}:${g.vmid}`
 
 /** Is the guest an HA resource? Fails closed: a list that cannot be read throws. */
 export async function inHa(pve: Pick<ProxmoxClient, 'fetchStrict'>, g: { type: GuestType; vmid: number }): Promise<boolean> {
   const ha = await pve.fetchStrict<any[]>('/cluster/ha/resources')
   if (!Array.isArray(ha)) throw new GuestActionRefusal('Proxmox did not return the HA list.', 'state')
-  return ha.some(r => r?.sid === sidOf(g))
+  return ha.some(r => r?.sid === sidOf(g.type, g.vmid))
 }
 
 /**
@@ -166,10 +166,10 @@ export async function inHa(pve: Pick<ProxmoxClient, 'fetchStrict'>, g: { type: G
  * HA simply stops managing it. purge=1 also drops it from HA rules.
  */
 export async function removeFromHa(d: ActionDeps, g: { node: string; type: GuestType; vmid: number }): Promise<{ ok: boolean; words: string }> {
-  if (!(await inHa(d.pve, g))) return { ok: true, words: `${sidOf(g)} was not under HA.` }
-  await d.pve.fetchStrict(`/cluster/ha/resources/${encodeURIComponent(sidOf(g))}?purge=1`, 'DELETE')
+  if (!(await inHa(d.pve, g))) return { ok: true, words: `${sidOf(g.type, g.vmid)} was not under HA.` }
+  await d.pve.fetchStrict(`/cluster/ha/resources/${encodeURIComponent(sidOf(g.type, g.vmid))}?purge=1`, 'DELETE')
   const still = await inHa(d.pve, g)
-  return { ok: !still, words: still ? `${sidOf(g)} is still listed under HA after the removal.` : `${sidOf(g)} was taken out of HA (read back).` }
+  return { ok: !still, words: still ? `${sidOf(g.type, g.vmid)} is still listed under HA after the removal.` : `${sidOf(g.type, g.vmid)} was taken out of HA (read back).` }
 }
 
 export interface BackupJobUse { id: string; vmids: number[]; only: boolean }

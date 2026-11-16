@@ -26,6 +26,7 @@ import { loadCredential, type TerminalCredential } from '../ssh-broker'
 import { listManualHosts, listHostAddresses } from '../terminal-hosts'
 import type { Machine } from './types'
 import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, liveGuestTags, parseTags } from '../guest-guard'
+import { machineId } from '../guest-id'
 
 export type { ExecResult }
 
@@ -156,7 +157,7 @@ export function productionRemoteExecutor(
       }))
       for (const g of (resources ?? []).filter((r: any) => (r.type === 'lxc' || r.type === 'qemu') && r.template !== 1)) {
         out.push({
-          id: `${g.type}-${g.vmid}`, kind: g.type, name: String(g.name ?? g.vmid), node: String(g.node), vmid: Number(g.vmid),
+          id: machineId(g), kind: g.type, name: String(g.name ?? g.vmid), node: String(g.node), vmid: Number(g.vmid),
           running: g.status === 'running', ostype: undefined,
           tags: parseTags(g.tags),
         })

@@ -20,6 +20,7 @@
 import type { PluginManifest } from '../plugin-host'
 import { exclusionOf, type AdapterContext, type AutoConnectAdapter, type Outcome } from './core'
 import { matchVault, pickVault, type CredentialKind, type VaultChoice } from './vault-match'
+import { machineId } from '../guest-id'
 
 export interface SettingSpec {
   pluginId: string
@@ -72,7 +73,7 @@ async function endpointOf(address: string, resolve?: (h: string) => Promise<stri
   return `${host}:${port}`
 }
 
-const machineOf = (g: ScanSighting['guest']) => (g ? `${g.type}-${g.vmid}` : null)
+const machineOf = (g: ScanSighting['guest']) => (g ? machineId(g) : null)
 const originOf = (v: string) => { try { const u = new URL(v); return `${u.protocol}//${u.host}`.toLowerCase() } catch { return String(v).trim().toLowerCase() } }
 const outKey = (setting: string, address: string) => `${setting}@${originOf(address)}`
 

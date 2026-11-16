@@ -16,6 +16,7 @@
 // =============================================================================
 
 import { inCidrs } from './net/ip'
+import { machineId } from './guest-id'
 
 /** The Proxmox tag that keeps HyperProx out of a guest. */
 export const IGNORE_TAG = 'hyperprox-ignore'
@@ -53,7 +54,7 @@ export type ExclusionReason = 'tag' | 'list' | 'subnet'
 /** Why a guest must be left alone, as a code, or null. */
 export function exclusionReason(g: GuardedGuest, ctx: ExclusionContext = {}): ExclusionReason | null {
   if (hasIgnoreTag(g.tags)) return 'tag'
-  const id = g.id ?? (g.kind && g.vmid !== undefined && g.vmid !== null ? `${g.kind}-${g.vmid}` : null)
+  const id = g.id ?? (g.kind && g.vmid !== undefined && g.vmid !== null ? machineId({ type: g.kind, vmid: g.vmid }) : null)
   const list = ctx.excludedMachines
   if (id && list && (list instanceof Set ? list.has(id) : (list as readonly string[]).includes(id))) return 'list'
   if (ctx.excludedSubnets?.length && (g.addresses ?? []).some(a => a && inCidrs(a, ctx.excludedSubnets!))) return 'subnet'

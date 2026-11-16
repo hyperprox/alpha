@@ -20,6 +20,8 @@ import { observedDurations, type BackupJob } from './windows'
 import type { GuestSeries, NetworkCost, NodeSeries, Sample } from './types'
 import type { EngineInput } from './engine'
 import type { GuestLocations } from './balance'
+import { listGuests } from '../pve/guests'
+import { backupRowsOf, taskRunning } from '../pve/tasks'
 
 const enc = encodeURIComponent
 
@@ -33,14 +35,13 @@ export interface ClusterRead {
   tasks:   any[]
 }
 
-/** True for a task that has not finished (Proxmox leaves endtime and status off until it does). */
-export const taskRunning = (t: any) => !t?.endtime && (!t?.status || t.status === 'running')
+export { taskRunning }
 
 export async function readCluster(pve: HaPve, opts: { suggestedBwlimit?: number; now?: number } = {}): Promise<ClusterRead> {
   const unread: string[] = []
   let tasksRead = true, jobsRead = true
-  const vms = await pve.fetchStrict<any[]>('/cluster/resources?type=vm')
-  const sids = (vms ?? []).filter(v => v.type === 'lxc' || v.type === 'qemu').map(v => sidOf(v.type, v.vmid))
+  const vms = await listGuests(pve)
+  const sids = vms.map(v => sidOf(v.type, v.vmid))
   const [raw, tasks, corosyncNodes, backups] = await Promise.all([
     readRaw(pve, { configs: 'ha', extra: sids }),
     pve.fetchStrict<any[]>('/cluster/tasks').catch(() => { unread.push('the cluster task log'); tasksRead = false; return [] as any[] }),
@@ -79,15 +80,14 @@ export async function readCluster(pve: HaPve, opts: { suggestedBwlimit?: number;
   }
 
   const usage: EngineInput['usage'] = {}
-  for (const v of vms ?? []) {
-    if (v.type !== 'lxc' && v.type !== 'qemu') continue
-    usage[sidOf(v.type, v.vmid)] = { cores: (Number(v.cpu) || 0) * (Number(v.maxcpu) || 0), mem: Number(v.mem) || 0 }
+  for (const v of vms) {
+    usage[sidOf(v.type, v.vmid)] = { cores: (Number(v.raw.cpu) || 0) * (Number(v.raw.maxcpu) || 0), mem: Number(v.raw.mem) || 0 }
   }
 
   const running = (tasks ?? []).filter(taskRunning)
-  const backupsRunning = running.filter(t => t.type === 'vzdump').map(t => ({ node: String(t.node), ...(/^\d+$/.test(String(t.id ?? '')) ? { vmid: Number(t.id) } : {}) }))
+  const backupsRunning = backupRowsOf(running).map(b => ({ node: b.node, ...(b.vmid !== null ? { vmid: b.vmid } : {}) }))
   const migrating = running.filter(t => /^(qmigrate|vzmigrate|hamigrate)$/.test(String(t.type))).map(t => {
-    const vm = (vms ?? []).find(v => String(v.vmid) === String(t.id))
+    const vm = vms.find(v => String(v.vmid) === String(t.id))
     return vm ? sidOf(vm.type, vm.vmid) : null
   }).filter((x): x is string => !!x)
 

@@ -26,6 +26,7 @@ import type { ClientStatus } from '../remote/scripts'
 import type { WgServer } from './wireguard/store'
 import { isWgKey } from './wireguard/keys'
 import { validCidr } from './wireguard/config'
+import { machineId } from '../guest-id'
 
 export interface WgEntry {
   kind: 'wireguard'; ctid: number; machineId: string; iface: string; address: string; listenPort: number; endpoint: string; publicKey: string
@@ -76,12 +77,12 @@ export function parseMarker(text: string): { entries: InstallVpnEntry[]; rejecte
   for (const e of j.entries.slice(0, 10)) {
     const ctid = Number(e?.ctid)
     const base = { ...(typeof e?.lastError === 'string' ? { lastError: e.lastError.slice(0, 500) } : {}), ...(Number.isInteger(e?.attempts) ? { attempts: e.attempts } : {}) }
-    if (e?.kind === 'wireguard' && Number.isInteger(ctid) && e.machineId === `lxc-${ctid}` && MACHINE.test(e.machineId) && IFACE.test(e.iface)
+    if (e?.kind === 'wireguard' && Number.isInteger(ctid) && e.machineId === machineId({ type: 'lxc', vmid: ctid }) && MACHINE.test(e.machineId) && IFACE.test(e.iface)
         && typeof e.address === 'string' && validCidr(e.address) && isIP(e.address.split('/')[0]) === 4
         && Number.isInteger(e.listenPort) && e.listenPort > 0 && e.listenPort < 65536
         && typeof e.endpoint === 'string' && ENDPOINT.test(e.endpoint) && typeof e.publicKey === 'string' && isWgKey(e.publicKey)) {
       entries.push({ kind: 'wireguard', ctid, machineId: e.machineId, iface: e.iface, address: e.address, listenPort: e.listenPort, endpoint: e.endpoint, publicKey: e.publicKey, ...base })
-    } else if (e?.kind === 'tailscale' && Number.isInteger(ctid) && e.machineId === `lxc-${ctid}` && MACHINE.test(e.machineId)
+    } else if (e?.kind === 'tailscale' && Number.isInteger(ctid) && e.machineId === machineId({ type: 'lxc', vmid: ctid }) && MACHINE.test(e.machineId)
         && typeof e.hostname === 'string' && HOST.test(e.hostname) && typeof e.ip === 'string' && isIP(e.ip) === 4
         && typeof e.dnsName === 'string' && (e.dnsName === '' || HOST.test(e.dnsName))) {
       entries.push({ kind: 'tailscale', ctid, machineId: e.machineId, hostname: e.hostname, ip: e.ip, dnsName: e.dnsName, ...base })

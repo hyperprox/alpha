@@ -44,6 +44,7 @@ import { inCidrs, parseIPv4 } from '../net/ip'
 import { EXCLUSION_WORDS, IGNORE_TAG } from '../guest-guard'
 import { matchVault, pickVault, type VaultChoice } from '../auto-connect/vault-match'
 import { NcRefusal, type Actor, type BusyHoursLike, type CheckView, type GuestRef, type Job, type JobStep, type NcMeta, type Reading } from './types'
+import { machineId } from '../guest-id'
 
 export interface GuestRow {
   kind: 'lxc' | 'qemu'; vmid: number; name: string; node: string; running: boolean
@@ -93,7 +94,7 @@ const WEB_LOGIN_RETRY_MS = 6 * 60 * 60_000
 const WEB_LOGIN_MAX_MS = 24 * 60 * 60_000
 
 /** The auto-connect key of a guest (Remote access's machine id). */
-export const machineKey = (g: GuestRef) => `${g.kind}-${g.vmid}`
+export const machineKey = (g: GuestRef) => machineId({ type: g.kind, vmid: g.vmid })
 
 const CACHE_MS = 30_000
 const FRESH_MS = 10_000
@@ -223,7 +224,7 @@ export class NextcloudService {
     const pasted: string | null = body.appPassword ? cleanAppPassword(body.appPassword) : null
     if (create && pasted) throw new NcRefusal('bad_input', 'Paste an app password or let HyperProx make one, not both.')
     if (create && !user) throw new NcRefusal('bad_input', 'Name the admin user HyperProx should make its app password for.')
-    return this.locked(`guest:${guest.kind}-${guest.vmid}`, async () => {
+    return this.locked(`guest:${machineKey(guest)}`, async () => {
       const dep = await this.detect(guest, actor)
       if ((await this.d.store.list()).some(m => m.guest.kind === guest.kind && m.guest.vmid === guest.vmid)) throw new NcRefusal('duplicate', 'That guest is already added.', 409)
       if (create && !url) {
@@ -240,7 +241,7 @@ export class NextcloudService {
       const revoke = async (why: string) => {
         if (!made) return
         if (made.id) {
-          await this.d.audit('nextcloud.app_password.revoke', `guest:${guest.kind}-${guest.vmid}`, { by: actor.email, user: made.uid, token: made.id, why }).catch(() => {})
+          await this.d.audit('nextcloud.app_password.revoke', `guest:${machineKey(guest)}`, { by: actor.email, user: made.uid, token: made.id, why }).catch(() => {})
           await this.run(guest, occScript(dep.occ, 'delete-app-password', { uid: made.uid, id: made.id }), 60_000).catch(() => {})
         }
       }
@@ -249,7 +250,7 @@ export class NextcloudService {
           const b = batch(dep.occ, [{ key: 't', id: 'auth-tokens', params: { uid: user } }])
           const t0 = b.parse((await this.run(guest, b.script)).output).t
           const known = t0 ? parseAuthTokens(t0.output).map(k => k.id) : []
-          await this.d.audit('nextcloud.app_password.create', `guest:${guest.kind}-${guest.vmid}`, { by: actor.email, user })
+          await this.d.audit('nextcloud.app_password.create', `guest:${machineKey(guest)}`, { by: actor.email, user })
           const r = await this.run(guest, occScript(dep.occ, 'add-app-password', { uid: user }), 60_000)
           appPassword = APP_PASSWORD_OUT.exec(r.output)?.[1] ?? null
           if (r.code !== 0 || !appPassword) throw new NcRefusal('app_password_failed', 'Nextcloud did not make the app password (is that user an admin?).', 502)
@@ -265,7 +266,7 @@ export class NextcloudService {
           await this.testLogin(url, user, appPassword)
           if (!create) tokenId = await this.tokenIdFor(guest, dep.occ, user, since).catch(() => null)
         }
-        await this.d.audit('nextcloud.instance.create', `guest:${guest.kind}-${guest.vmid}`, { by: actor.email, name, guest: `${guest.kind}-${guest.vmid}`, deployment: dep.kind, ocs: !!appPassword })
+        await this.d.audit('nextcloud.instance.create', `guest:${machineKey(guest)}`, { by: actor.email, name, guest: machineKey(guest), deployment: dep.kind, ocs: !!appPassword })
         return await this.d.store.create({ name, guest, deployment: dep, url, user, appPassword, tokenId, made: create })
       } catch (e: any) {
         await revoke(String(e?.message ?? 'the add failed').slice(0, 200))

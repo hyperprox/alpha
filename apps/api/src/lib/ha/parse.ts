@@ -8,11 +8,12 @@
 import type {
   DeviceKind, GuestHardware, GuestType, HaGuest, HaResource, HaRule, HaServiceStatus, HaSnapshot, NodeHealth, NodePriority, Sid,
 } from './types'
+import { sidOf } from '../guest-id'
 
 const num = (v: unknown, d = 0) => { const n = Number(v); return Number.isFinite(n) ? n : d }
 const bool = (v: unknown, d = false) => v === undefined || v === null || v === '' ? d : (v === true || v === 1 || v === '1' || v === 'true')
 
-export function sidOf(type: GuestType, vmid: number | string): Sid { return `${type === 'lxc' ? 'ct' : 'vm'}:${vmid}` }
+export { sidOf }
 export function parseSid(sid: string): { type: GuestType; vmid: number } | null {
   const m = /^(ct|vm):(\d+)$/.exec(String(sid).trim())
   return m ? { type: m[1] === 'ct' ? 'lxc' : 'qemu', vmid: Number(m[2]) } : null

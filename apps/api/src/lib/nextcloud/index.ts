@@ -30,27 +30,28 @@ import { installStillOwns } from '../auto-connect/core'
 import { publish } from '../notify'
 import type { GuestRef, NcMeta } from './types'
 import { registerComposeOwner } from '../compose-owners'
+import { machineId } from '../guest-id'
+import { listGuests } from '../pve/guests'
+import { runningBackups } from '../pve/tasks'
 
 /**
  * The guests, each marked `ignored` when HyperProx must leave it alone. `excluded`: Remote access's list, or null when
  * it could not be read (then only the tag marks a row; nothing is entered anyway, see exec below).
  */
 async function guestRows(excluded?: string[] | null): Promise<GuestRow[]> {
-  const rows = await livePve().fetchStrict<any[]>('/cluster/resources?type=vm')
+  const rows = await listGuests(livePve())
   const ids = excluded === undefined ? await excludedMachineIds().catch(() => null) : excluded
-  return (rows ?? []).filter(r => (r.type === 'lxc' || r.type === 'qemu') && r.template !== 1).map(r => {
-    const why = guestExcluded({ kind: r.type, vmid: Number(r.vmid), tags: r.tags }, { excludedMachines: ids ?? [] })
-    return { kind: r.type, vmid: Number(r.vmid), name: String(r.name ?? r.vmid), node: String(r.node), running: r.status === 'running', ignored: !!why, excludedBy: why }
+  return rows.filter(r => !r.template).map(r => {
+    const why = guestExcluded({ kind: r.type, vmid: r.vmid, tags: r.tags }, { excludedMachines: ids ?? [] })
+    return { kind: r.type, vmid: r.vmid, name: r.name, node: r.node, running: r.running, ignored: !!why, excludedBy: why }
   })
 }
 
 /** A running vzdump of this guest (or a node-wide one that has not named its guest yet). Null when unreadable. */
 export async function backupRunning(g: GuestRef): Promise<boolean | null> {
-  try {
-    const tasks = await livePve().fetchStrict<any[]>('/cluster/tasks')
-    return (tasks ?? []).some(t => t?.type === 'vzdump' && !t.endtime && (t.status === undefined || t.status === null || t.status === '' || t.status === 'running')
-      && (String(t.id ?? '') === String(g.vmid) || !t.id))
-  } catch { return null }
+  const { read, rows } = await runningBackups(livePve())
+  if (!read) return null
+  return rows.some(b => b.id === String(g.vmid) || !b.id)
 }
 
 /** A container with a bind mount cannot be snapshotted; the update's dump is then the only rollback. */
@@ -100,7 +101,7 @@ export function nextcloudExec(d: {
     if (!row) throw new Error(`${g.kind === 'lxc' ? 'Container' : 'VM'} ${g.vmid} was not found.`)
     if (row.ignored) throw new GuestExcludedRefusal(row.name, row.excludedBy ?? `the ${IGNORE_TAG} tag`)
     if (!row.running) throw new Error(`${row.name} is not running.`)
-    const m: Machine = { id: `${g.kind}-${g.vmid}`, kind: g.kind, name: row.name, node: row.node, vmid: g.vmid, running: true }
+    const m: Machine = { id: machineId({ type: g.kind, vmid: g.vmid }), kind: g.kind, name: row.name, node: row.node, vmid: g.vmid, running: true }
     return d.executor.run(m, script, { timeoutMs: o.timeoutMs, onData: o.onData, maxOutputBytes: 8_000_000 })
   }
 }
