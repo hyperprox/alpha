@@ -20,6 +20,7 @@ import {
 } from './commands'
 import { type AppEnv, readGuestApps } from './apps'
 import { IGNORE_TAG, hasIgnoreTag } from '../guest-guard'
+import { lookInsideList, lookInsideReason } from './look-inside'
 
 export interface InventoryOptions {
   /** Nodes whose reboot an earlier run deferred. */
@@ -218,7 +219,7 @@ function composeWanted(policy: Policy, vmid: number, mode: InventoryOptions['dis
 }
 
 async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing, haSids: Set<string>, apps?: AppEnv,
-                         discover?: InventoryOptions['discoverCompose']): Promise<UpdatesGuest> {
+                         discover?: InventoryOptions['discoverCompose'], lookInside?: string[] | null): Promise<UpdatesGuest> {
   const pol = guestPolicy(policy, g.vmid)
   const out: UpdatesGuest = {
     vmid: g.vmid, type: g.type, name: g.name, node: g.node, running: g.running,
@@ -228,6 +229,9 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
   }
   if (pol.excluded) { out.unmanagedReason = 'excluded'; return out }
   if (hasIgnoreTag(g.tags)) { out.unmanagedReason = 'ignored'; return out }
+  // Remote access's "never look inside" list (home), read once per inventory; unreadable: no guest is looked inside.
+  const off = lookInsideReason(lookInside, g)
+  if (off) { out.unmanagedReason = off; return out }
   if (!g.running)   { out.unmanagedReason = 'not-running'; return out }
 
   let config: Record<string, any> = {}
@@ -331,14 +335,15 @@ export async function readInventory(exec: UpdatesExecutor, policy: Policy, opts:
   if (status.standalone) for (const r of nodeRows) r.node.standalone = true
   if (opts.gap && guests.length) await opts.gap()
   const onlineNodes = new Set(status.nodes.filter(n => n.online).map(n => n.name))
+  const lookInside = guests.length ? await lookInsideList(exec) : undefined
   const guestRows = await inBatches(guests.sort((a, b) => a.vmid - b.vmid), opts.guestBatch ?? 6, async g => {
     const why = await stop()
     if (why) return unansweredGuest(policy, g, haSet, `not checked: ${why}`)
     if (!onlineNodes.has(g.node)) {
-      const row = await readGuest(exec, policy, { ...g, running: false }, haSet, opts.apps, opts.discoverCompose)
+      const row = await readGuest(exec, policy, { ...g, running: false }, haSet, opts.apps, opts.discoverCompose, lookInside)
       return { ...row, error: 'its node is offline' }
     }
-    return withDeadline(readGuest(exec, policy, g, haSet, opts.apps, opts.discoverCompose), limit, () => unansweredGuest(policy, g, haSet, lateNote))
+    return withDeadline(readGuest(exec, policy, g, haSet, opts.apps, opts.discoverCompose, lookInside), limit, () => unansweredGuest(policy, g, haSet, lateNote))
   }, opts.gap)
 
   if (opts.noSnapshotAck) {

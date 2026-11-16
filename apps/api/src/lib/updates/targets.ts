@@ -22,6 +22,7 @@
 //    - excluded guests, and guests tagged hyperprox-ignore, are never touched.
 // =============================================================================
 
+import { EXCLUSIONS_UNKNOWN_WORDS, REMOTE_EXCLUDED_WORDS } from './look-inside'
 import type { UpdatesGuest, UpdatesInventory, UpdatesNode, UpdatesPlan, UpdatesPlanItem, UpdatesTarget, UpdatesTargetKind } from './types'
 import { type Policy, guestPolicy, nodePolicy } from './policy'
 import { isCephPackage, isGuardedKernelPackage, isComposeDir, composeKey, COMPOSE_NAME, PKG_NAME } from './commands'
@@ -118,6 +119,8 @@ export function nodePackageRefusal(policy: Policy, n: UpdatesNode, pkg: string, 
 const GUEST_REASON: Record<string, string> = {
   'excluded':    'excluded in the Updates policy',
   'ignored':     'tagged hyperprox-ignore: HyperProx never looks inside it',
+  'remote-excluded':    REMOTE_EXCLUDED_WORDS,
+  'exclusions-unknown': EXCLUSIONS_UNKNOWN_WORDS,
   'not-running': 'stopped, so it cannot be read or updated',
   'no-apt':      'no apt in this guest',
   'no-agent':    'no guest agent, so HyperProx cannot reach inside it',

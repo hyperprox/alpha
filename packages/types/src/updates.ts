@@ -61,7 +61,8 @@ export type UpdatesNode = {
 }
 
 /** `ignored`: tagged hyperprox-ignore in Proxmox, so HyperProx never looks inside it. */
-export type UpdatesUnmanagedReason = 'excluded' | 'ignored' | 'not-running' | 'no-apt' | 'no-agent' | 'windows'
+/** `remote-excluded`: on Remote access's "never look inside" list. `exclusions-unknown`: that list could not be read. */
+export type UpdatesUnmanagedReason = 'excluded' | 'ignored' | 'remote-excluded' | 'exclusions-unknown' | 'not-running' | 'no-apt' | 'no-agent' | 'windows'
 
 /** A compose project in a guest: from the policy's compose_dirs, or found running there (`docker compose ls`). */
 export type UpdatesComposeProject = {

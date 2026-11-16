@@ -18,6 +18,8 @@
 //  list is not sent again, except as a reminder at most every `check.reminder_days` (default 7) while it stays.
 // =============================================================================
 
+import { lookInsideList, lookInsideReason } from './look-inside'
+import { hasIgnoreTag } from '../guest-guard'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -125,10 +127,12 @@ export { stripAddresses, shortReason }
 /** Guests worth refreshing lists in: running, not excluded, apt on, and (VMs) Linux with the agent. */
 async function refreshGuests(exec: UpdatesExecutor, policy: Policy, gap: () => Promise<void>, stop: () => Promise<string | null>): Promise<void> {
   const guests = (await exec.listGuests()).filter(g => g.running && !g.template).sort((a, b) => a.vmid - b.vmid)
+  // Remote access's "never look inside" list (home): a guest on it, or every guest when it cannot be read, is skipped.
+  const lookInside = guests.length ? await lookInsideList(exec) : undefined
   for (const g of guests) {
     if (await stop()) return
     const pol = guestPolicy(policy, g.vmid)
-    if (pol.excluded || !pol.apt) continue
+    if (pol.excluded || !pol.apt || hasIgnoreTag(g.tags) || lookInsideReason(lookInside, g)) continue
     if (g.type === 'qemu') {
       const cfg = await exec.guestConfig(g).catch(() => null)
       if (!cfg || /^(win|w2k|wxp|wvista)/.test(String(cfg.ostype ?? '')) || !/^(1|enabled=1)/.test(String(cfg.agent ?? ''))) continue

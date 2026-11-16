@@ -129,6 +129,8 @@ export const REASONS: Record<string, string> = {
   'not-running': 'stopped, so it cannot be read or upgraded; start it, then Check again to include it',
   'no-apt':      'no apt (not a Debian-family guest)',
   'ignored':     'tagged hyperprox-ignore: never looked inside',
+  'remote-excluded':    "excluded in Remote access: HyperProx doesn't look inside this guest",
+  'exclusions-unknown': "Remote access's exclusion list could not be read, so no guest is looked inside until it can",
   'no-agent':    'no guest agent',
   'windows':     'Windows guest',
 }

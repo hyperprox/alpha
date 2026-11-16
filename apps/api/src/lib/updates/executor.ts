@@ -17,7 +17,7 @@ import { remoteNodeAddress } from '../clusters/nodes'
 import { runPluginMetrics } from '../plugin-host'
 import { plexPlugin } from '../../plugins/plex'
 import { parsePveAptList } from './commands'
-import { parseTags } from '../guest-guard'
+import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, parseTags } from '../guest-guard'
 
 export type { ExecResult }
 
@@ -81,6 +81,11 @@ export interface UpdatesExecutor {
   nodeAptRefresh(node: string): Promise<void>
   nodeExec(node: string, command: string, onLine?: LineSink, timeoutMs?: number): Promise<ExecResult>
   guestExec(guest: GuestRef, script: string, onLine?: LineSink, timeoutMs?: number): Promise<ExecResult>
+  /**
+   * Remote access's "never look inside" list (machine ids, lxc-101), home only; throws when it cannot be read. Absent:
+   * no such list applies (a remote cluster). guestExec refuses a guest on it by itself as well.
+   */
+  lookInsideExclusions?(): Promise<string[]>
   snapshot(guest: GuestRef, name: string): Promise<void>
   listSnapshots(guest: GuestRef): Promise<{ name: string; snaptime?: number }[]>
   deleteSnapshot(guest: GuestRef, name: string): Promise<void>
@@ -140,6 +145,8 @@ export interface ExecutorOptions {
    * (node-exec does that for any remote context). No Plex wait: the home Plex says nothing about a remote.
    */
   remote?: boolean
+  /** Home: Remote access's "never look inside" list. Default lib/guest-guard.ts excludedMachineIds (fails closed). */
+  exclusions?: () => Promise<string[]>
 }
 
 /**
@@ -287,6 +294,12 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
     },
 
     async guestExec(g, script, onLine, timeoutMs) {
+      // Home: a guest on Remote access's "never look inside" list is never entered (the list unreadable: none is).
+      if (!remote) {
+        const ids = await (opts.exclusions ?? excludedMachineIds)().catch(() => { throw new ExclusionsUnknownRefusal() })
+        const why = guestExcluded({ kind: g.type, vmid: g.vmid }, { excludedMachines: ids })
+        if (why) throw new GuestExcludedRefusal(g.name || String(g.vmid), why)
+      }
       const host = await hostFor(g.node)
       const cred = await credFor(g.node)
       if (g.type === 'lxc') {
@@ -339,13 +352,14 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
     now: () => Date.now(),
     sleep,
   }
+  if (!remote) exec.lookInsideExclusions = () => (opts.exclusions ?? excludedMachineIds)()
   return exec
 }
 
 const EXECUTOR_METHODS: (keyof UpdatesExecutor)[] = [
   'clusterStatus', 'haStatus', 'haResources', 'cephPresent', 'cephHealth', 'listGuests', 'guestConfig', 'nodeAptPending',
   'plexStreams', 'backupTasks', 'nodeAptRefresh', 'nodeExec', 'guestExec', 'snapshot', 'listSnapshots', 'deleteSnapshot',
-  'rollbackSnapshot', 'now', 'sleep',
+  'rollbackSnapshot', 'now', 'sleep', 'lookInsideExclusions',
 ]
 
 /**

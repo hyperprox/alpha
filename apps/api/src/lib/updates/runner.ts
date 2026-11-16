@@ -43,6 +43,7 @@ import {
 } from './commands'
 import { hasIgnoreTag } from '../guest-guard'
 import { homeGuards } from './guards'
+import { LOOK_INSIDE_WORDS, lookInsideList, lookInsideReason } from './look-inside'
 import {
   buildSelectedPlan, parseTargetId, packagesOf, composeKeyOf, DEPENDS_ON, MAX_SELECTION, nodeGuarded, type GuardContext,
 } from './targets'
@@ -548,6 +549,9 @@ export class UpdatesRunner {
         // Checked again now, whatever the plan said: a guest excluded or tagged hyperprox-ignore since is not touched.
         const off = guest && (hasIgnoreTag(guest.tags) ? 'tagged hyperprox-ignore' : guestPolicy(policy, guest.vmid).excluded ? 'excluded in the Updates policy' : null)
         if (off) { for (const s of mine) await this.setStep(s, { status: 'skipped', reason: `not run: ${t} is ${off}` }); return }
+        // Remote access's "never look inside" list, read now (home); unreadable: no guest is touched.
+        const notInside = guest ? lookInsideReason(await lookInsideList(this.exec), guest) : null
+        if (notInside) { for (const s of mine) await this.setStep(s, { status: 'skipped', reason: `not run: ${t}: ${LOOK_INSIDE_WORDS[notInside]}` }); return }
         // A plug-in's long job in this guest (a Nextcloud update, a database repair): left alone, and Resume tries again.
         const busyWhy = guest ? (await this.guardContext()).guestBusy?.(guest.vmid) : null
         if (busyWhy) { for (const s of mine) await this.setStep(s, { status: 'skipped', reason: `not run: ${busyWhy}` }); return }
