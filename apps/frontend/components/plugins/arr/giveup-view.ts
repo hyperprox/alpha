@@ -10,14 +10,16 @@ export const APPS: App[] = ['sonarr', 'radarr', 'lidarr']
 export const APP_LABEL: Record<App, string> = { sonarr: 'TV', radarr: 'Films', lidarr: 'Music' }
 export const APP_NAME: Record<App, string> = { sonarr: 'Sonarr', radarr: 'Radarr', lidarr: 'Lidarr' }
 
-export interface Settings { enabled: boolean; tries: number; minAgeDays: number; ageFrom: 'released' | 'first-missing'; action: 'unmonitor' | 'remove' }
+export interface WeeklySearch { enabled: boolean; day: number; hour: number }
+export interface Settings { enabled: boolean; weeks: number; action: 'unmonitor' | 'remove'; search: WeeklySearch }
+export interface SearchRun { at: string; app: App; count: number; commandId: number | null; status: string; error?: string }
 export interface Reason { code: string; text: string }
 export interface Row {
   key: string; app: App; keys: string[]; title: string; detail: string; tries: number; since: string; reason: Reason
   gaveUpAt?: string; action?: 'unmonitor' | 'remove'; season?: { number: number; episodes: number }
 }
 export interface RunResult { at: string; app: App; given: number; skipped: Array<{ title: string; why: string }>; failed: Array<{ title: string; why: string }>; error?: string }
-export interface AppStatus { app: App; configured: boolean; settings: Settings; tracking: number; givenUp: number; soon: number; observedAt: string | null; lastRun: RunResult | null }
+export interface AppStatus { app: App; configured: boolean; settings: Settings; tracking: number; givenUp: number; soon: number; observedAt: string | null; lastRun: RunResult | null; lastSearch: SearchRun | null; nextSearch: string | null }
 export interface Status { apps: AppStatus[]; givenUp: Row[] }
 export interface Preview {
   previewId: string; app: App; summary: string; count: number; series?: number; rows: Row[]
@@ -90,5 +92,22 @@ export const ACTION_WORD: Record<'unmonitor' | 'remove', string> = { unmonitor: 
 /** The rule in one line. */
 export function ruleWord(s: Settings, app: App): string {
   const what = s.action === 'remove' ? 'remove it from the library (no files are deleted)' : 'stop searching (everything is kept)'
-  return `After ${s.tries} tries and at least ${s.minAgeDays} days since it ${s.ageFrom === 'released' ? (app === 'sonarr' ? 'aired' : 'was released') : 'was first seen missing'}, ${what}.`
+  const n = s.weeks === 1 ? '1 week' : `${s.weeks} weeks`
+  return `Give up after ${n} of weekly searches with nothing found, then ${what}. ${app === 'sonarr' ? 'An episode' : app === 'radarr' ? 'A film' : 'An album'} must be missing at least ${n} and searched at least ${s.weeks} ${s.weeks === 1 ? 'time' : 'times'}.`
+}
+
+export const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+export const hourWord = (h: number) => `${String(h).padStart(2, '0')}:00`
+
+/** "Every Monday at 08:00". */
+export const searchWhen = (w: WeeklySearch) => `every ${DAYS[w.day] ?? '?'} at ${hourWord(w.hour)}`
+
+/** "Last weekly search: Sunday 08:00 — 68 films searched (completed)." */
+export function lastSearchWord(r: SearchRun | null, app: App): string | null {
+  if (!r) return null
+  const d = new Date(r.at)
+  const when = `${DAYS[d.getDay()]} ${hourWord(d.getHours()).slice(0, 2)}:${String(d.getMinutes()).padStart(2, '0')}`
+  if (r.error) return `Last weekly search: ${when} — it did not run: ${r.error}`
+  const what = APP_LABEL[app] === 'TV' ? (r.count === 1 ? 'episode' : 'episodes') : APP_LABEL[app] === 'Films' ? (r.count === 1 ? 'film' : 'films') : (r.count === 1 ? 'album' : 'albums')
+  return `Last weekly search: ${when} — ${r.count} ${what} searched (${r.status}).`
 }

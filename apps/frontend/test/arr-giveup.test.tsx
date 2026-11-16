@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { ItemCard, PreviewView, ReleaseCard, ReleaseList, RuleCard } from '../components/plugins/arr/GiveUp'
-import { grabConfirm, hiddenWord, missingTarget, rowTarget, ruleWord, sizeWord, swarm, type AppStatus, type Release, type ReleaseAnswer, type Row } from '../components/plugins/arr/giveup-view'
+import { grabConfirm, hiddenWord, lastSearchWord, missingTarget, rowTarget, ruleWord, searchWhen, sizeWord, swarm, type AppStatus, type Release, type ReleaseAnswer, type Row } from '../components/plugins/arr/giveup-view'
 
 const noop = () => {}
 const NOW = Date.parse('2026-11-16T12:00:00Z')
@@ -67,16 +67,24 @@ test('the confirm says when a release is below the profile, and that the profile
   assert.match(grabConfirm(rel({ approved: false, reasons: ['Too few seeders (1; your indexer setting needs 5)'] }), 'X', 'radarr'), /rejected it \(Too few seeders.*nothing about your quality profile changes/)
 })
 
-test('the rule card: counts, the rule in words, the form only for an admin; TV cannot be removed', () => {
-  const st: AppStatus = { app: 'sonarr', configured: true, settings: { enabled: false, tries: 14, minAgeDays: 30, ageFrom: 'released', action: 'unmonitor' }, tracking: 1129, givenUp: 0, soon: 0, observedAt: null, lastRun: null }
-  const html = renderToStaticMarkup(<RuleCard st={st} canAct onPreview={noop} onOff={noop} />)
-  assert.match(html, /<b>1129<\/b> counted/); assert.match(html, /After 14 tries and at least 30 days since it aired, stop searching/)
-  assert.match(html, /Preview, then turn on/); assert.ok(!/remove from library/.test(html))
-  const films = renderToStaticMarkup(<RuleCard st={{ ...st, app: 'radarr' }} canAct onPreview={noop} onOff={noop} />)
-  assert.match(films, /remove from library/)
-  const viewer = renderToStaticMarkup(<RuleCard st={st} canAct={false} onPreview={noop} onOff={noop} />)
+test('the rule card: counts, the weekly search and the weeks rule in words; the form only for an admin; TV cannot be removed', () => {
+  const st: AppStatus = { app: 'sonarr', configured: true, settings: { enabled: false, weeks: 8, action: 'unmonitor', search: { enabled: true, day: 1, hour: 8 } },
+    tracking: 1129, givenUp: 0, soon: 0, observedAt: null, lastRun: null, nextSearch: null,
+    lastSearch: { at: new Date(2026, 10, 15, 8, 0).toISOString(), app: 'sonarr', count: 1129, commandId: 9, status: 'completed' } }
+  const html = renderToStaticMarkup(<RuleCard st={st} canAct onPreview={noop} onSave={noop} onOff={noop} />)
+  assert.match(html, /<b>1129<\/b> counted/)
+  assert.match(html, /Searches for everything missing every Monday at 08:00/)
+  assert.match(html, /Last weekly search: Sunday 08:00 — 1129 episodes searched \(completed\)\./)
+  assert.match(html, /Give up after 8 weeks of weekly searches with nothing found, then stop searching/)
+  assert.match(html, /Give up after \(weeks\)/); assert.ok(!/Tries|Days old/.test(html), 'one weeks field, no tries or days inputs')
+  assert.match(html, /Preview, then turn on/); assert.match(html, /Save weekly search/); assert.ok(!/remove from library/.test(html))
+  const films = renderToStaticMarkup(<RuleCard st={{ ...st, app: 'radarr', lastSearch: { ...st.lastSearch!, app: 'radarr', count: 68 } }} canAct onPreview={noop} onSave={noop} onOff={noop} />)
+  assert.match(films, /remove from library/); assert.match(films, /68 films searched/)
+  const viewer = renderToStaticMarkup(<RuleCard st={st} canAct={false} onPreview={noop} onSave={noop} onOff={noop} />)
   assert.ok(!/<input|<button/.test(viewer))
-  assert.equal(ruleWord({ ...st.settings, action: 'remove' }, 'radarr'), 'After 14 tries and at least 30 days since it was released, remove it from the library (no files are deleted).')
+  assert.equal(ruleWord({ ...st.settings, weeks: 3, action: 'remove' }, 'radarr'), 'Give up after 3 weeks of weekly searches with nothing found, then remove it from the library (no files are deleted). A film must be missing at least 3 weeks and searched at least 3 times.')
+  assert.equal(searchWhen({ enabled: true, day: 0, hour: 6 }), 'every Sunday at 06:00')
+  assert.match(String(lastSearchWord({ at: new Date(2026, 10, 15, 8, 0).toISOString(), app: 'radarr', count: 0, commandId: null, status: 'failed', error: 'Radarr answered 500' }, 'radarr')), /did not run: Radarr answered 500/)
 })
 
 test('the preview: the sentence, the reasons and the items', () => {

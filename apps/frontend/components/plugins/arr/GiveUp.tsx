@@ -18,7 +18,7 @@ import { ModalFrame } from '@/components/layout/ModalFrame'
 import { Panel, Pill, styles as s } from '@/components/visual/kit'
 import c from './giveup.module.css'
 import {
-  ACTION_WORD, APPS, APP_LABEL, APP_NAME, grabConfirm, hiddenWord, ruleWord, rowTarget, sinceWord, sizeWord, swarm,
+  ACTION_WORD, APPS, APP_LABEL, APP_NAME, DAYS, grabConfirm, hiddenWord, hourWord, lastSearchWord, ruleWord, searchWhen, rowTarget, sinceWord, sizeWord, swarm,
   type App, type AppStatus, type GrabAnswer, type Preview, type Release, type ReleaseAnswer, type Row, type Settings, type Status,
 } from './giveup-view'
 
@@ -110,35 +110,53 @@ export function ReleaseList({ a, app, canGrab, showZero, onToggleZero, onGrab }:
   )
 }
 
-export function RuleCard({ st, canAct, onPreview, onOff }: { st: AppStatus; canAct: boolean; onPreview: (app: App, s: Settings) => void; onOff: (app: App) => void }) {
+export function RuleCard({ st, canAct, onPreview, onSave, onOff }: {
+  st: AppStatus; canAct: boolean; onPreview: (app: App, s: Settings) => void; onSave: (app: App, s: Settings) => void; onOff: (app: App) => void
+}) {
   const [draft, setDraft] = useState<Settings>(st.settings)
   useEffect(() => setDraft(st.settings), [st.settings])
   const set = (p: Partial<Settings>) => setDraft(d => ({ ...d, ...p }))
+  const setSearch = (p: Partial<Settings['search']>) => setDraft(d => ({ ...d, search: { ...d.search, ...p } }))
   const app = st.app
+  const last = lastSearchWord(st.lastSearch, app)
+  const searchChanged = JSON.stringify(draft.search) !== JSON.stringify(st.settings.search)
   return (
     <div className={c.rule} data-on={st.settings.enabled}>
       <div className={c.itemHead}>
         <h3 className={c.ruleHead}>{APP_LABEL[app]}</h3>
-        <Pill tone={st.settings.enabled ? 'good' : undefined}>{st.settings.enabled ? 'On' : 'Off'}</Pill>
+        <Pill tone={st.settings.search.enabled ? 'accent' : undefined}>{st.settings.search.enabled ? 'Weekly search on' : 'Weekly search off'}</Pill>
+        <Pill tone={st.settings.enabled ? 'good' : undefined}>{st.settings.enabled ? 'Give up on' : 'Give up off'}</Pill>
       </div>
       {!st.configured ? <p className={s.empty}>{APP_NAME[app]} is not set up.</p> : (
         <>
           <div className={c.counts}>
             <span><b>{st.tracking}</b> counted</span>
             <span><b>{st.givenUp}</b> given up</span>
-            {st.settings.enabled && <span><b>{st.soon}</b> close</span>}
+            {st.settings.enabled && <span><b>{st.soon}</b> next week</span>}
           </div>
+          <p className={c.note}>
+            {st.settings.search.enabled ? `Searches for everything missing ${searchWhen(st.settings.search)}.` : 'No weekly search from HyperProx.'}
+            {st.nextSearch ? ` Next: ${new Date(st.nextSearch).toLocaleString([], { weekday: 'long', hour: '2-digit', minute: '2-digit' })}.` : ''}
+          </p>
+          {last && <p className={c.meta}>{last}</p>}
           <p className={c.note}>{ruleWord(st.settings.enabled ? st.settings : draft, app)}</p>
           {canAct && (
             <div className={c.form}>
-              <label>Tries <input type="number" min={1} max={200} value={draft.tries} onChange={e => set({ tries: Number(e.target.value) })} /></label>
-              <label>Days old <input type="number" min={0} max={3650} value={draft.minAgeDays} onChange={e => set({ minAgeDays: Number(e.target.value) })} /></label>
-              <label>Counting from
-                <select value={draft.ageFrom} onChange={e => set({ ageFrom: e.target.value as Settings['ageFrom'] })}>
-                  <option value="released">{app === 'sonarr' ? 'when it aired' : 'its release'}</option>
-                  <option value="first-missing">when first seen missing</option>
+              <label className={c.inline}><input type="checkbox" checked={draft.search.enabled} onChange={e => setSearch({ enabled: e.target.checked })} /> Weekly search</label>
+              <label>Day
+                <select value={draft.search.day} onChange={e => setSearch({ day: Number(e.target.value) })}>
+                  {DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
                 </select>
               </label>
+              <label>Hour
+                <select value={draft.search.hour} onChange={e => setSearch({ hour: Number(e.target.value) })}>
+                  {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{hourWord(h)}</option>)}
+                </select>
+              </label>
+              <div className={c.btns}>
+                <button type="button" className={c.ghost} disabled={!searchChanged} onClick={() => onSave(app, { ...st.settings, search: draft.search })}>Save weekly search</button>
+              </div>
+              <label>Give up after (weeks) <input type="number" min={1} max={104} value={draft.weeks} onChange={e => set({ weeks: Number(e.target.value) })} /></label>
               <label>Then
                 <select value={draft.action} onChange={e => set({ action: e.target.value as Settings['action'] })}>
                   <option value="unmonitor">stop searching</option>
@@ -146,13 +164,13 @@ export function RuleCard({ st, canAct, onPreview, onOff }: { st: AppStatus; canA
                 </select>
               </label>
               <div className={c.btns}>
-                <button type="button" className={c.primary} onClick={() => onPreview(app, { ...draft, enabled: true })}>{st.settings.enabled ? 'Preview changes' : 'Preview, then turn on'}</button>
-                {st.settings.enabled && <button type="button" className={c.ghost} onClick={() => onOff(app)}>Turn off</button>}
+                <button type="button" className={c.primary} onClick={() => onPreview(app, { ...draft, search: st.settings.search, enabled: true })}>{st.settings.enabled ? 'Preview changes' : 'Preview, then turn on'}</button>
+                {st.settings.enabled && <button type="button" className={c.ghost} onClick={() => onOff(app)}>Turn off giving up</button>}
               </div>
             </div>
           )}
           {st.lastRun && (
-            <p className={c.meta}>Last run {sinceWord(st.lastRun.at)}: {st.lastRun.error ? `failed (${st.lastRun.error})` : `gave up on ${st.lastRun.given}${st.lastRun.skipped.length ? `, skipped ${st.lastRun.skipped.length}` : ''}${st.lastRun.failed.length ? `, ${st.lastRun.failed.length} not changed` : ''}`}.</p>
+            <p className={c.meta}>Last give-up run {sinceWord(st.lastRun.at)}: {st.lastRun.error ? `failed (${st.lastRun.error})` : `gave up on ${st.lastRun.given}${st.lastRun.skipped.length ? `, skipped ${st.lastRun.skipped.length}` : ''}${st.lastRun.failed.length ? `, ${st.lastRun.failed.length} not changed` : ''}`}.</p>
           )}
         </>
       )}
@@ -250,7 +268,8 @@ export function ArrGiveUp({ onChanged }: { onChanged?: () => void }) {
     const r = await apiJson('/api/plugins/arrstack/give-up/settings', 'POST', { app, settings, previewId })
     setBusy(false)
     if (!r.ok) { setNote(r.error ?? 'It was not saved.'); return }
-    setPreview(null); setNote(settings.enabled ? `${APP_LABEL[app]}: on. It runs once a day; each run is in the audit log.` : `${APP_LABEL[app]}: off.`)
+    setPreview(null)
+    setNote(`${APP_LABEL[app]}: giving up is ${settings.enabled ? 'on (checked once a day)' : 'off'}; the weekly search is ${settings.search.enabled ? `on, ${searchWhen(settings.search)}` : 'off'}. Each run is in the audit log.`)
     void load(); onChanged?.()
   }
   const tryAgain = async () => {
@@ -265,19 +284,19 @@ export function ArrGiveUp({ onChanged }: { onChanged?: () => void }) {
   const list = (st?.givenUp ?? []).filter(r => filter === 'all' || r.app === filter)
   return (
     <>
-      <Panel title="Give up after X tries" sub="STOP CHASING WHAT NEVER ARRIVES">
+      <Panel title="Weekly search and give up" sub="STOP CHASING WHAT NEVER ARRIVES">
         {err && <p className={c.bad} role="alert">{err}</p>}
         {!st && !err && <p className={s.empty}>Reading…</p>}
         {note && <p className={c.note} role="status">{note}</p>}
         {st && (
           <div className={c.rules}>
             {st.apps.filter(x => x.app !== 'lidarr' || x.configured).map(x => (
-              <RuleCard key={x.app} st={x} canAct={canAct} onPreview={(a, s2) => void doPreview(a, s2)} onOff={a => void save(a, { ...x.settings, enabled: false })} />
+              <RuleCard key={x.app} st={x} canAct={canAct} onPreview={(a, s2) => void doPreview(a, s2)} onSave={(a, s2) => void save(a, s2)} onOff={a => void save(a, { ...x.settings, enabled: false })} />
             ))}
           </div>
         )}
         {previewing && <p className={s.empty}>Counting what {APP_LABEL[previewing]} would give up on…</p>}
-        {st && <p className={c.note}>Sonarr, Radarr and Lidarr do not count their searches, so HyperProx does: each time one searches again for something still missing is one try. Files are never deleted and quality profiles are never changed.</p>}
+        {st && <p className={c.note}>The weekly search asks each app to look for everything missing once a week. Sonarr, Radarr and Lidarr do not count their searches, so HyperProx does: each search for something still missing is one, whoever ran it (another backfill job counts too). Files are never deleted and quality profiles are never changed.</p>}
       </Panel>
 
       {st && st.givenUp.length > 0 && (
