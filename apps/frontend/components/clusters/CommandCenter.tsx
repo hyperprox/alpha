@@ -92,7 +92,7 @@ function Card({ value, label }: { value: string; label: string }) {
   )
 }
 
-const openHref = (p: { id: string; kind: string }) => (p.kind === 'home' ? '/dashboard' : `/clusters/${p.id}`)
+const openHref = (p: { id: string }) => `/clusters/${p.id}`
 
 export function PanelView({ p, houses = [] }: { p: ClusterPanel; houses?: Instance[] }) {
   const k = p.kind

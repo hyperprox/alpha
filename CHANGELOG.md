@@ -21,6 +21,12 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — Opening the home cluster
+
+### Fixed
+- **Open on your home cluster now opens its page.** On the dashboard and the Command center, Open on the home cluster went back to the dashboard, so it seemed to do nothing. It now opens the cluster page, with an Overview tab beside Hardware, Files and Settings.
+  - Technical: `openHref` in `components/clusters/CommandCenter.tsx` always links `/clusters/<id>`; the home cluster keeps the `overview` tab in `app/clusters/[id]/page.tsx`.
+
 ## 2026-11-16 — K3s (Kubernetes) in the Catalogue, with its own plug-in
 
 ### New
