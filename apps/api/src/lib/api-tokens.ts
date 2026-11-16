@@ -152,6 +152,10 @@ export function tokenForbidden(method: string, path: string): boolean {
   if (/^\/api\/plugins\/arrstack\/queue\/actions$/.test(p)) return true
   // Nextcloud actions (fixes, updates, mail, 2FA): a signed-in admin's act, never a token's.
   if (/^\/api\/plugins\/nextcloud\/instances\/[^/]+\/((actions|secure-actions)\/[^/]+|jobs\/[^/]+\/stop-watching)$/.test(p)) return true
+  // HAProxy actions (drain, weights, servers, the balance algorithm, load-balancing an app) and disconnecting one change
+  // live traffic: a signed-in admin's act, never a token's.
+  if (/^\/api\/plugins\/haproxy\/instances\/[^/]+\/(actions\/[^/]+|load-balance)$/.test(p)) return true
+  if (m === 'DELETE' && /^\/api\/plugins\/haproxy\/instances\/[^/]+$/.test(p)) return true
   // Installing a new HyperProx, or changing how it updates itself, is a person's act (routes/self-update.ts).
   if (p === '/api/self-update/install' || p === '/api/self-update/settings') return true
   return false
