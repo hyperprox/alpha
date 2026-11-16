@@ -1736,9 +1736,12 @@ async function removePublished(job: InstallJob, deps: WizardDeps): Promise<strin
   // A transcoder's NAS mount goes the same way (above); the one link it added to a main Unmanic goes here.
   if (job.tcLink) arr.push(...await tcCleanup(job, deps).catch((e: any) => [`The Unmanic link clean-up failed: ${e.message}`]))
   // A public name still being made by HAProxy's optional step: what it has made so far is read now.
+  // Read through the same deps the step used, merged once and then forgotten, so a retried clean-up does not
+  // see removed items again. A failed publish removed its own.
   if (job.balancePublishJob) {
-    const live = (await import('./haproxy')).PUBLISH_JOBS.get(job.balancePublishJob)
-    if (live) job.ledger = { ...(job.ledger ?? {}), ...structuredClone(live.ledger) }
+    const live = (await (deps.haproxyBalance ?? realBalanceDeps)().catch(() => null))?.publishJob(job.balancePublishJob)
+    if (live && live.status !== 'failed') job.ledger = { ...(job.ledger ?? {}), ...structuredClone(live.ledger) }
+    job.balancePublishJob = undefined
   }
   if (!job.ledger) return arr.length ? ' ' + arr.join(' ') : ''
   const lines = await cleanupPublish(job.ledger, job.owner, deps.publish).catch((e: any) => [`Publishing clean-up failed: ${e.message}`])

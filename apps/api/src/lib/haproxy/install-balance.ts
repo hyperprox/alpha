@@ -130,15 +130,17 @@ export async function runInstallBalance(
   // The publish is on the install job from here on, whatever happens next.
   if (saved.publishJob) await record({ publishJob: saved.publishJob })
 
-  const rows = await d.guests()
+  let rows: GuestRow[] = [], unread = ''
+  try { rows = await d.guests() } catch (e) { unread = `The cluster's guests could not be read: ${String((e as any)?.message ?? e).slice(0, 200)}` }
   const gone: string[] = [], expected: string[] = []
-  for (const g of o.balance.guests) {
+  for (const g of unread ? [] : o.balance.guests) {
     const r = rows.find(x => x.kind === g.kind && x.vmid === g.vmid)
     if (r) expected.push(serverNameFor(r.name, r.vmid)); else gone.push(`${g.kind === 'qemu' ? 'VM' : 'CT'} ${g.vmid}`)
   }
   let last = `${saved.backend} was not read back.`, found = { healthy: 0, present: 0 }, ok = false
   if (gone.length) last = `${gone.join(', ')} is no longer on the cluster`
-  for (let i = 0; i < READBACK_TRIES && !ok && !gone.length; i++) {
+  if (unread) last = unread
+  for (let i = 0; i < READBACK_TRIES && !ok && !gone.length && !unread; i++) {
     if (i) await d.wait(READBACK_MS)
     try {
       const r = backendProblem(await d.reading(o.pluginInstanceId), saved.backend, expected)

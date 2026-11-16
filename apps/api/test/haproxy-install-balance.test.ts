@@ -268,12 +268,33 @@ test('a publish still running when the step gives up: its job id is on the insta
   assert.match(job.error!, /did not finish in time/)
   assert.equal(job.balancePublishJob, 'j4')
   assert.deepEqual(job.ledger, { proxyHost: MADE.proxyHost })
+  // By clean-up time the publish has gone on and made the rest: clean-up reads it through the same deps, once.
+  ;(running as any).ledger = MADE
+  const sp = spyPublish()
+  const msg = await removeFailedInstall(job.jobId, OWNER, { ...d, publish: sp.p } as any)
+  assert.deepEqual(sp.gone.sort(), ['dns', 'host'], msg)
+  assert.equal(job.balancePublishJob, undefined, 'merged once and forgotten')
+  const again = await removeFailedInstall(job.jobId, OWNER, { ...d, publish: sp.p } as any).catch((e: any) => e.message)
+  assert.match(String(again), /already removed/)
+})
+
+test('the cluster\'s guests cannot be read at read-back: a plain failure, after the publish is recorded', async () => {
+  const f = new FakePve(), r = rig()
+  const running = { id: 'j5', status: 'running', steps: [], domain: 'shop.example.com', owner: OWNER, startedAt: 0, ledger: { proxyHost: MADE.proxyHost } }
+  const bal: BalanceDeps = { ...r.balance, publishJob: () => running as any, guests: async () => { throw new Error('cluster unreachable') },
+    loadBalance: (id, body, actor, publish) => r.balance.loadBalance(id, body, actor, async ip => { await publish!(ip); return { jobId: 'j5' } }) }
+  const { d } = installDeps(f, r, { haproxyBalance: async () => bal })
+  const p = await previewInstall(HAPROXY_INPUT({ balance: NAMED }), OWNER, d)
+  const job = await settled((await applyPreview(p.preview!.id, OWNER, d)).jobId)
+  assert.equal(job.status, 'failed')
+  assert.match(job.error!, /not done: The cluster's guests could not be read: cluster unreachable/)
+  assert.equal(job.balancePublishJob, 'j5')
+  assert.deepEqual(job.ledger, { proxyHost: MADE.proxyHost })
 })
 
 test('a picked guest that vanished before the read-back is a plain failure, not a TypeError', async () => {
   const f = new FakePve(), r = rig()
-  let calls = 0
-  const bal: BalanceDeps = { ...r.balance, guests: async () => (++calls > 0 ? ROWS.filter(x => x.vmid !== 152) : ROWS) }
+  const bal: BalanceDeps = { ...r.balance, guests: async () => ROWS.filter(x => x.vmid !== 152) }
   const { d } = installDeps(f, r, { haproxyBalance: async () => bal })
   const p = await previewInstall(HAPROXY_INPUT({ balance: GOOD }), OWNER, d)
   const job = await settled((await applyPreview(p.preview!.id, OWNER, d)).jobId)
