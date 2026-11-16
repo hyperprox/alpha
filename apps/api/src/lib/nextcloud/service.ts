@@ -651,6 +651,12 @@ export class NextcloudService {
     return out
   }
 
+  /** The last reading taken of this Nextcloud, however old, without asking it (null when there is none). */
+  peek(id: string): { at: number; reading: Reading; stale: boolean } | null {
+    const hit = this.cache.get(id)
+    return hit ? { at: hit.at, reading: hit.r, stale: this.now() - hit.at >= CACHE_MS } : null
+  }
+
   async reading(id: string, o: { fresh?: boolean } = {}): Promise<Reading> {
     const hit = this.cache.get(id)
     // A fresh read is honoured at most every FRESH_MS: a page (or a person) asking again and again cannot keep the guest busy.

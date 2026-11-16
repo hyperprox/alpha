@@ -131,6 +131,19 @@ async function inventory(refresh: boolean): Promise<Inventory> {
   return building
 }
 
+/**
+ * The inventory as last built, however old, without building one (null before the first build). The assistant's
+ * "what's on my cluster" answers from it at once and calls homeInventory() in the background when it is stale.
+ */
+export function peekInventory(): { inv: Inventory; at: number } | null {
+  return cached ? { inv: cached.inv, at: cached.at } : null
+}
+
+/** The inventory, from the cache while it is fresh; one build at a time however many ask. */
+export function homeInventory(): Promise<Inventory> { return inventory(false) }
+
+export const INVENTORY_FRESH_MS = INVENTORY_TTL_MS
+
 /** Where Homepage was seen: Catalogue installs, the shared scan, the install marker, a proxy host's fingerprint. */
 async function sightings(): Promise<Array<{ vmid: number; url: string | null; via: 'catalogue' | 'scan' | 'marker' | 'proxy' }>> {
   const out: Array<{ vmid: number; url: string | null; via: 'catalogue' | 'scan' | 'marker' | 'proxy' }> = []

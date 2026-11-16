@@ -17,9 +17,16 @@
 import { PluginNotConfigured } from '../lib/plugin-host'
 import type { Plugin, PluginContext, PluginDetail, PluginTileData } from '../lib/plugin-host'
 import type { TileRow } from '../lib/nextcloud'
+import { stripAddresses } from '../lib/redact-addresses'
 import '../lib/nextcloud'
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+/** " (as of 14:05)" for a reading over five minutes old. */
+export const asOf = (at: number | undefined, now = Date.now()) => {
+  if (at === undefined || now - at < 5 * 60_000) return ''
+  const d = new Date(at)
+  return ` (as of ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')})`
+}
 
 export function tileOf(rows: TileRow[]): PluginTileData {
   if (!rows.length) throw new PluginNotConfigured('Not configured yet: HyperProx connects a Nextcloud it finds by itself; none found so far.')
@@ -71,13 +78,15 @@ export const nextcloudPlugin: Plugin = {
     return detailOf(rows)
   },
 
+  // For the assistant: the reading HyperProx already holds (refreshed in the background), so a question never waits
+  // on occ in the guest; a reading older than a few minutes says when it was taken.
   async summary(ctx: PluginContext) {
-    const rows: TileRow[] = await ctx.get('/readings')
+    const rows: TileRow[] = await ctx.get('/readings/cached')
     return {
       title: 'Nextcloud',
       lines: (Array.isArray(rows) ? rows : []).map(r => r.counts
-        ? `${r.name}: Nextcloud ${r.version ?? 'unknown'}${r.update ? `, ${r.update} available` : ''}; ${r.counts.error} errors, ${r.counts.warning} warnings, ${r.counts.info} notes`
-        : `${r.name}: could not be read`),
+        ? `${r.name}: Nextcloud ${r.version ?? 'unknown'}${r.update ? `, ${r.update} available` : ''}; ${r.counts.error} errors, ${r.counts.warning} warnings, ${r.counts.info} notes${asOf(r.at)}`
+        : `${r.name}: could not be read (${stripAddresses(String(r.error ?? 'no answer')).replace(/[.\s]+$/, '')})`),
     }
   },
 }

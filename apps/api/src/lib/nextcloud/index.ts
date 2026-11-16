@@ -161,15 +161,27 @@ export function nextcloudService(prisma?: unknown): NextcloudService {
 /** For tests. */
 export function setNextcloudService(s: NextcloudService | null): void { service = s }
 
-export interface TileRow { id: string; name: string; version: string | null; update: string | null; counts: { error: number; warning: number; info: number } | null; error: string | null }
+/** `at`: when the reading was taken (unix ms); set on the cached rows only. */
+export interface TileRow { id: string; name: string; version: string | null; update: string | null; counts: { error: number; warning: number; info: number } | null; error: string | null; at?: number }
 
-export async function allTiles(): Promise<TileRow[]> {
+/**
+ * Every instance's tile. `cachedFirst` (the assistant): the reading HyperProx already holds, however old, with its
+ * time, and a new reading taken in the background when it is stale; only an instance never read is waited for. A
+ * Nextcloud takes seconds to read (occ in its guest), and a question should not wait on that.
+ */
+export async function allTiles(o: { cachedFirst?: boolean } = {}): Promise<TileRow[]> {
   const svc = nextcloudService()
   const list = await svc.instances.list()
+  const row = (m: { id: string; name: string }, r: Awaited<ReturnType<NextcloudService['reading']>>, at?: number): TileRow =>
+    ({ id: m.id, name: m.name, version: r.status?.versionString ?? null, update: r.update.core, counts: r.counts, error: null, ...(at !== undefined ? { at } : {}) })
   return Promise.all(list.map(async m => {
+    const hit = o.cachedFirst ? svc.peek(m.id) : null
+    if (hit) {
+      if (hit.stale) void svc.reading(m.id).catch(() => {})
+      return row(m, hit.reading, hit.at)
+    }
     try {
-      const r = await svc.reading(m.id)
-      return { id: m.id, name: m.name, version: r.status?.versionString ?? null, update: r.update.core, counts: r.counts, error: null }
+      return row(m, await svc.reading(m.id))
     } catch (e: any) { return { id: m.id, name: m.name, version: null, update: null, counts: null, error: String(e?.message ?? 'Could not be read.').slice(0, 300) } }
   }))
 }
@@ -178,6 +190,7 @@ export function installNextcloudPluginTransport(): void {
   setPluginTransport('nextcloud', async (method, path) => {
     if (method !== 'GET') throw new Error('The Nextcloud plug-in only reads.')
     if (path === '/readings') return allTiles()
+    if (path === '/readings/cached') return allTiles({ cachedFirst: true })
     throw new Error('That is not something the Nextcloud plug-in may read.')
   })
 }

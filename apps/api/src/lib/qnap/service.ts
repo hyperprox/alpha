@@ -77,6 +77,21 @@ export class QnapService {
   /** Forget a NAS's refused login and its cached reading: called when its login is saved again. */
   forget(id: string): void { this.blocked.delete(id); this.cache.delete(id) }
 
+  /**
+   * The last reading HyperProx took of this NAS, however old, without asking it (null when there is none). The
+   * assistant answers from it at once, saying when it was taken, rather than waiting on a slow NAS.
+   */
+  peek(id: string): { at: number; reading: QnapReading } | null {
+    const hit = this.cache.get(id)
+    return hit ? { at: hit.at, reading: hit.reading } : null
+  }
+
+  /** True when the reading kept for this NAS is older than the page's own cache, so a new one is worth taking. */
+  stale(id: string): boolean {
+    const hit = this.cache.get(id)
+    return !hit || this.d.now() - hit.at >= CACHE_MS
+  }
+
   /** Why HyperProx is not asking this NAS, when it is holding back after a refused login. */
   blockedReason(id: string): string | null { return this.blocked.get(id)?.message ?? null }
 
