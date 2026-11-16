@@ -46,7 +46,11 @@ export interface UpcomingItem {
 export interface UpcomingGroup { key: GroupKey; label: string; items: UpcomingItem[] }
 
 export interface MissingRow { id: string; title: string; detail: string; date: string | null }
-export interface MissingStrip { total: number; items: MissingRow[]; approximate?: boolean }
+export interface MissingStrip {
+  total: number; items: MissingRow[]; approximate?: boolean
+  /** How many the "give up after X tries" rule has stopped searching for (lib/arr-giveup); absent when unknown. */
+  givenUp?: number
+}
 
 const KIND_ORDER: Record<UpcomingItem['kind'], number> = { tv: 0, film: 1, music: 2 }
 const GROUP_LABEL: Record<GroupKey, string> = { today: 'Today', tomorrow: 'Tomorrow', week: 'This week', later: 'Later' }
