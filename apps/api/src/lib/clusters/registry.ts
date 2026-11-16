@@ -16,6 +16,7 @@ import { randomBytes } from 'node:crypto'
 import { itemName, setCredentials, deleteProviderCredentials, getCredential, setCredential, deleteCredential, listCredentialKeys, VaultLockedError } from '../credentials'
 import { cachedSecret, isUnlocked } from '../vault/state'
 import { MemoryClusterStore, type ClusterRow, type ClusterStore } from './store'
+import { forgetReadings } from '../ai/reading-cache'
 import { normaliseFingerprint, isServerAddress, allowedApiPort } from './tls-pin'
 
 export const HOME_ID = 'home'
@@ -367,6 +368,8 @@ export async function removeCluster(id: string): Promise<void> {
   await deleteProviderCredentials('cluster-plex', id).catch(() => undefined)
   await store.remove(id)
   rows.delete(id)
+  // Nothing the assistant read from it is served again.
+  forgetReadings({ scope: id })
 }
 
 // ---------------------------------------------------------------------------

@@ -57,11 +57,15 @@ export interface ServiceDeps {
 export interface Limits { readsPerMinute: number; normalPerMinute: number; securityPerMinute: number; attemptsPerMinute: number; probesPerMinute: number }
 
 const CACHE_MS = 20_000
+/** How long a kept reading may still be shown by peek (the assistant's own limit, lib/ai/when.ts). */
+const KEPT_MAX_AGE_MS = 6 * 3600_000
 
 export class QnapService {
   private cache = new Map<string, { at: number; reading: QnapReading }>()
   private inflight = new Map<string, Promise<QnapReading>>()
   private blocked = new Map<string, { at: number; message: string }>()
+  /** The newest read that failed, when it is newer than the kept reading. */
+  private failed = new Map<string, { at: number; error: unknown }>()
   private hits = new Map<string, number[]>()
   private d: ServiceDeps & { now: () => number; limits: Limits }
 
@@ -75,7 +79,7 @@ export class QnapService {
   get instances(): QnapInstanceStore { return this.d.store }
 
   /** Forget a NAS's refused login and its cached reading: called when its login is saved again. */
-  forget(id: string): void { this.blocked.delete(id); this.cache.delete(id) }
+  forget(id: string): void { this.blocked.delete(id); this.cache.delete(id); this.failed.delete(id) }
 
   /**
    * The last reading HyperProx took of this NAS, however old, without asking it (null when there is none). The
@@ -83,7 +87,13 @@ export class QnapService {
    */
   peek(id: string): { at: number; reading: QnapReading } | null {
     const hit = this.cache.get(id)
-    return hit ? { at: hit.at, reading: hit.reading } : null
+    // Too old to be worth showing: the NAS is read again instead.
+    return hit && this.d.now() - hit.at < KEPT_MAX_AGE_MS ? { at: hit.at, reading: hit.reading } : null
+  }
+
+  /** The newest read of this NAS that failed, and when; null when the newest read worked. */
+  lastFailure(id: string): { at: number; error: unknown } | null {
+    return this.failed.get(id) ?? null
   }
 
   /** True when the reading kept for this NAS is older than the page's own cache, so a new one is worth taking. */
@@ -155,12 +165,15 @@ export class QnapService {
     const running = this.inflight.get(id)
     if (running) return running
     const p = (async () => {
-      const { client } = await this.client(id, 'read')
       try {
-        const reading = await client.read(new Date(this.d.now()))
-        this.cache.set(id, { at: this.d.now(), reading })
-        return reading
-      } catch (e) { return this.hold(id, e) }
+        const { client } = await this.client(id, 'read')
+        try {
+          const reading = await client.read(new Date(this.d.now()))
+          this.cache.set(id, { at: this.d.now(), reading })
+          this.failed.delete(id)
+          return reading
+        } catch (e) { return this.hold(id, e) }
+      } catch (e) { this.failed.set(id, { at: this.d.now(), error: e }); throw e }
     })()
     this.inflight.set(id, p)
     try { return await p } finally { this.inflight.delete(id) }

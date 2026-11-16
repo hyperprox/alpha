@@ -23,6 +23,7 @@
 //  this file must not import (auto-connect's dismissal record).
 // =============================================================================
 
+import { plainReason } from '../failure'
 import { setPluginTransport } from '../plugin-host'
 import { getCredential, setCredential, deleteProviderCredentials } from '../credentials'
 import { auditOrThrow } from '../audit'
@@ -162,7 +163,11 @@ export function nextcloudService(prisma?: unknown): NextcloudService {
 export function setNextcloudService(s: NextcloudService | null): void { service = s }
 
 /** `at`: when the reading was taken (unix ms); set on the cached rows only. */
-export interface TileRow { id: string; name: string; version: string | null; update: string | null; counts: { error: number; warning: number; info: number } | null; error: string | null; at?: number }
+export interface TileRow {
+  id: string; name: string; version: string | null; update: string | null; counts: { error: number; warning: number; info: number } | null; error: string | null; at?: number
+  /** Cached rows: the newest read failed at this time (unix ms), and `error` says why; the counts are the reading before it. */
+  failedSince?: number
+}
 
 /**
  * Every instance's tile. `cachedFirst` (the assistant): the reading HyperProx already holds, however old, with its
@@ -177,7 +182,10 @@ export async function allTiles(o: { cachedFirst?: boolean } = {}): Promise<TileR
   return Promise.all(list.map(async m => {
     const hit = o.cachedFirst ? svc.peek(m.id) : null
     if (hit) {
+      const failed = svc.lastFailure(m.id)
       if (hit.stale) void svc.reading(m.id).catch(() => {})
+      // The newest read failed: the reading before it, with when and why the newest one did not work.
+      if (failed && failed.at > hit.at) return { ...row(m, hit.reading, hit.at), failedSince: failed.at, error: plainReason(failed.error, m.name) }
       return row(m, hit.reading, hit.at)
     }
     try {

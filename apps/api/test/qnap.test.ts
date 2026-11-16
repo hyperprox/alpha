@@ -481,3 +481,21 @@ test('service: a LAN address beside a remote cluster is read through that cluste
   await assert.rejects(svc.reading(m.id), (e: any) => e.code === 'bad_target')
   assert.equal(scripts.length, 1)
 })
+
+test('kept reading for the assistant: shown however old up to 6 hours, with the newest failed read and when', async () => {
+  const { svc, m, nas, tick } = await rig()
+  assert.equal(svc.peek(m.id), null)                     // never read
+  await svc.reading(m.id)
+  const first = svc.peek(m.id)!
+  assert.ok(first.reading.model); assert.equal(svc.lastFailure(m.id), null)
+  tick(60_000); nas.up = false
+  await assert.rejects(svc.reading(m.id))
+  const failed = svc.lastFailure(m.id)!
+  assert.ok(failed.at > first.at)                        // the newest attempt failed, after the kept reading
+  assert.equal(svc.peek(m.id)!.at, first.at)             // the kept reading is still there
+  nas.up = true; tick(30_000); await svc.reading(m.id)
+  assert.equal(svc.lastFailure(m.id), null)              // a good read clears it
+  tick(6 * 3600_000 + 1)
+  assert.equal(svc.peek(m.id), null)                     // too old to show
+  svc.forget(m.id); assert.equal(svc.lastFailure(m.id), null)
+})

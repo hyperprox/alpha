@@ -18,16 +18,10 @@ import { PluginNotConfigured } from '../lib/plugin-host'
 import type { Plugin, PluginContext, PluginDetail, PluginTileData } from '../lib/plugin-host'
 import type { TileRow } from '../lib/nextcloud'
 import { stripAddresses } from '../lib/redact-addresses'
+import { asOfText, clockAt } from '../lib/ai/when'
 import '../lib/nextcloud'
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-/** " (as of 14:05)" for a reading over five minutes old. */
-export const asOf = (at: number | undefined, now = Date.now()) => {
-  if (at === undefined || now - at < 5 * 60_000) return ''
-  const d = new Date(at)
-  return ` (as of ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')})`
-}
-
 export function tileOf(rows: TileRow[]): PluginTileData {
   if (!rows.length) throw new PluginNotConfigured('Not configured yet: HyperProx connects a Nextcloud it finds by itself; none found so far.')
   const lines = rows.map(x => {
@@ -84,9 +78,14 @@ export const nextcloudPlugin: Plugin = {
     const rows: TileRow[] = await ctx.get('/readings/cached')
     return {
       title: 'Nextcloud',
-      lines: (Array.isArray(rows) ? rows : []).map(r => r.counts
-        ? `${r.name}: Nextcloud ${r.version ?? 'unknown'}${r.update ? `, ${r.update} available` : ''}; ${r.counts.error} errors, ${r.counts.warning} warnings, ${r.counts.info} notes${asOf(r.at)}`
-        : `${r.name}: could not be read (${stripAddresses(String(r.error ?? 'no answer')).replace(/[.\s]+$/, '')})`),
+      lines: (Array.isArray(rows) ? rows : []).map(r => {
+        const why = stripAddresses(String(r.error ?? 'no answer')).replace(/[.\s]+$/, '')
+        if (!r.counts) return `${r.name}: could not be read (${why})`
+        const last = `Nextcloud ${r.version ?? 'unknown'}${r.update ? `, ${r.update} available` : ''}; ${r.counts.error} errors, ${r.counts.warning} warnings, ${r.counts.info} notes`
+        // The newest read failed: said first, with the last good reading after it.
+        if (r.failedSince) return `${r.name}: could not be read since ${clockAt(r.failedSince)} (${why}); last reading${asOfText(r.at, Date.now(), 0)}: ${last}`
+        return `${r.name}: ${last}${asOfText(r.at, Date.now(), 5 * 60_000)}`
+      }),
     }
   },
 }
