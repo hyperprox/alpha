@@ -61,6 +61,8 @@ export function mapLines(map: PlacementMap): string[] {
 export function placementSource(d: PlacementSourceDeps): AskSource {
   return {
     id: 'placement', title: 'Load balancing: guests', blurb: 'which node each guest is on, why, and where it could move',
+    // The roll-call has the balance (below); this is the same engine's per-guest view.
+    overview: false,
     aliases: /\b(where should|where (does|do|is|can) .{1,40} (run|live|go)|why is .{1,40} on|placement|load balancing|which node|run (it )?on|move (it|.{1,40}) to|can .{1,40} move|could .{1,40} (move|run))\b/i,
     load: async (): Promise<SourceSummary> => {
       if (!d.unlocked()) return { headline: 'Load balancing: locked.', lines: [], locked: true }

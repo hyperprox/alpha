@@ -1,0 +1,23 @@
+id: deploy-ask-041-whats-on-my-cluster
+prompt: "What's on my cluster?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster-jobs.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 0
+  # Totals first, then each node's running guests with what they are, then stopped guests and templates grouped.
+  answer_includes:
+    - "On your cluster: 4 guests, 3 running and 1 stopped (3 containers, 1 VM), plus 1 template across 2 nodes."
+    - "alpha (2 running):"
+    - "- plex (container 101): Plex, HA"
+    - "- db (container 102)"
+    - "beta (1 running):"
+    - "- win (VM 201)"
+    - "Stopped (1): old (container 103, beta)."
+    - "Templates (1): debian-tpl (alpha)."
+  answer_once: ["plex", "Stopped ("]
+  answer_excludes: ["Attached:", "Certificates", "Home Assistant", "Backups"]
+found_by: "live bug 2026-11-16: \"what's on my cluster\" answered with one status line per attached area, no guests"

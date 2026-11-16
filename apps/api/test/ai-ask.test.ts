@@ -42,7 +42,7 @@ test("cluster: an unread resource list is said, not counted", () => {
 
 test("cluster summary: headline, HA, version, no names beyond stopped guests", () => {
   const sum = clusterSummary(cluster())
-  assert.match(sum.headline, /1\/2 nodes online, 2\/3 guests running, Ceph HEALTH_OK/)
+  assert.match(sum.headline, /1\/2 nodes online, 2\/3 guests running, Ceph healthy/)
   const text = sum.lines.join("\n")
   assert.match(text, /HyperProx 9\.9\.9/); assert.match(text, /in trouble: ct:9/); assert.match(text, /Stopped: db \(2\)/)
 })
@@ -113,7 +113,7 @@ test("backups: a failed guest is named, and a running or unreadable node is said
 test("backups: none in three days", async () => {
   const { fetchStrict } = backupFetch()
   const sum = backupSummary(await gatherBackups(fetchStrict, Date.UTC(2027, 0, 1)), Date.UTC(2027, 0, 1))
-  assert.match(sum.lines[0], /No backup job finished/)
+  assert.match(sum.lines[0], /No backup job ran in the last 8 days/)
 })
 
 test("shorten never cuts mid-word", () => {
@@ -125,14 +125,16 @@ test("shorten never cuts mid-word", () => {
   assert.equal(shorten("short", 60), "short")
 })
 
-test("overview: names, then one short headline per source, never a catalogue description", async () => {
+test("roll-call: one short headline per source, never a catalogue description, no internal index line", async () => {
   const long = { manifest: { id: "arrstack", name: "Arr Stack", description: "The whole pipeline - Sonarr, Radarr, Prowlarr and qBittorrent - as one view, with search across every indexer." } } as unknown as Plugin
   const src = [...ha(), ...pluginSources({ plugins: [long], unlocked: () => true, run: async () => ({ title: "", lines: [] }) })]
   const out = (await answerQuestion("What's on my network?", { sources: src, call: never, fallback: "x" }))!
-  const lines = out.split("\n")
-  assert.equal(lines[0], "Attached: Home Assistant, Bare Thing, Arr Stack.")
-  assert.equal(lines[1], "Home Assistant: 4 entities, 0 unavailable, 1 lights on")
-  assert.equal(lines.length, 4); assert.doesNotMatch(out, /Sonarr|Prowlarr|could not read/i)
+  const lines = out.split("\n").filter(Boolean)
+  assert.equal(lines[0], "Nothing needs attention.")
+  assert.equal(lines[1], "Home Assistant: 4 entities, 0 unavailable, 1 lights on.")
+  // Plug-ins with nothing to summarise share one line instead of one each.
+  assert.equal(lines[2], "Connected, with nothing to report: Bare Thing, Arr Stack.")
+  assert.equal(lines.length, 3); assert.doesNotMatch(out, /Sonarr|Prowlarr|could not read|Attached:/i)
   assert.ok(lines.every(l => l.length <= 80))
   for (const x of src) assert.ok(x.blurb.length <= 60)
 })
@@ -199,7 +201,7 @@ test("plug-in source: locked while the vault is locked; one without a hook says 
 
 test("a plug-in that throws is unread, and the question is not answered from nothing", async () => {
   const a = await answerQuestion("is the outside light on?", { sources: ha(true, async () => { throw new Error("connect refused") }), call: never, fallback: "x" })
-  assert.match(a!, /could not read Home Assistant \(Error\)/)
+  assert.match(a!, /could not read Home Assistant \(it gave an error; the details are in HyperProx's log\)/)
 })
 
 // ---- selection and the prompt ---------------------------------------------
@@ -250,15 +252,16 @@ test("question-shaped deploy requests are not ours, even when a source matches",
 test("an unread source is named with the error kind, never the raw message", async () => {
   const bad: AskSource = { ...fake("bad", /bad/, []), load: async () => { throw new TypeError("connect ECONNREFUSED 10.1.2.3:8006 secret=abc") } }
   const out = await answerQuestion("bad?", { sources: [bad], call: never, fallback: "x" })
-  assert.match(out!, /could not read bad \(TypeError\)/); assert.doesNotMatch(out!, /ECONNREFUSED|10\.1|secret/)
+  assert.match(out!, /could not read bad \(it did not answer\)/); assert.doesNotMatch(out!, /ECONNREFUSED|10\.1|secret/)
 })
 
-test("an overview lists the index and each source's headline, with locked and unread said", async () => {
+test("the roll-call: each source's headline, with locked and unread said, and no internal index line", async () => {
   const bad: AskSource = { ...fake("bad", /bad/, []), load: async () => { throw new Error("down") } }
   const locked: AskSource = { ...fake("vault", /vault/, []), load: async () => ({ headline: "x", lines: [], locked: true }) }
   const out = await answerQuestion("What can you see?", { sources: [fake("alpha", /alpha/, []), bad, locked], call: never, fallback: "x" })
-  assert.match(out!, /^Attached: alpha, bad, vault\./); assert.match(out!, /alpha: fine\./)
-  assert.match(out!, /vault: locked\./); assert.match(out!, /could not read bad/)
+  assert.match(out!, /^Nothing needs attention in what I could read\./); assert.match(out!, /alpha: fine\./)
+  assert.match(out!, /Locked \(unlock HyperProx to read\): vault\./); assert.match(out!, /Could not read: bad \(it gave an error/)
+  assert.doesNotMatch(out!, /Attached:/)
 })
 
 test("no provider: the typed reason, then the canned text; a refusal is shown as is", async () => {

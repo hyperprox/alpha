@@ -1,0 +1,19 @@
+id: deploy-ask-043-how-is-everything
+prompt: "How is everything?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster-jobs.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 0
+  # What needs attention leads; the cluster is said once, and its accepted Ceph warning is a known warning, not
+  # "HEALTH_WARN" in one line and "nothing needs attention" in another.
+  answer_includes:
+    - "Needs attention:\n- Certificates: 2, 1 expiring within 30 days: app.example.com in 9 days."
+    - "Cluster: 2/2 nodes online, 3/4 guests running, Ceph has a known warning; nothing needs attention (known warning: 1 pool(s) have no replicas configured)."
+    - "Backups: 3 of 3 guests backed up last night; weekly job OK (2 of 2 on Sunday 2025-12-28)."
+  answer_once: ["Cluster:", "Backups:", "Ceph"]
+  answer_excludes: ["Attached:", "HEALTH_WARN", "guest 102"]
+found_by: "live bug 2026-11-16: duplicated lines, Ceph HEALTH_WARN beside \"nothing needs attention\", backups from one job only"

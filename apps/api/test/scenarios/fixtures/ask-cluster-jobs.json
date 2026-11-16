@@ -1,0 +1,260 @@
+{
+  "unlocked": true,
+  "resources": [
+    {
+      "type": "node",
+      "node": "alpha",
+      "status": "online",
+      "maxcpu": 8,
+      "mem": 4294967296,
+      "maxmem": 17179869184
+    },
+    {
+      "type": "node",
+      "node": "beta",
+      "status": "online",
+      "maxcpu": 4,
+      "mem": 8589934592,
+      "maxmem": 17179869184
+    },
+    {
+      "type": "lxc",
+      "vmid": 101,
+      "node": "alpha",
+      "name": "plex",
+      "status": "running",
+      "tags": "media"
+    },
+    {
+      "type": "lxc",
+      "vmid": 102,
+      "node": "alpha",
+      "name": "db",
+      "status": "running"
+    },
+    {
+      "type": "lxc",
+      "vmid": 103,
+      "node": "beta",
+      "name": "old",
+      "status": "stopped"
+    },
+    {
+      "type": "qemu",
+      "vmid": 201,
+      "node": "beta",
+      "name": "win",
+      "status": "running"
+    },
+    {
+      "type": "lxc",
+      "vmid": 9000,
+      "node": "alpha",
+      "name": "debian-tpl",
+      "status": "stopped",
+      "template": 1
+    },
+    {
+      "type": "storage",
+      "storage": "local",
+      "node": "alpha",
+      "disk": 10737418240,
+      "maxdisk": 21474836480
+    },
+    {
+      "type": "storage",
+      "storage": "ceph",
+      "node": "alpha",
+      "shared": 1,
+      "disk": 5368709120,
+      "maxdisk": 107374182400
+    },
+    {
+      "type": "storage",
+      "storage": "ceph",
+      "node": "beta",
+      "shared": 1,
+      "disk": 5368709120,
+      "maxdisk": 107374182400
+    }
+  ],
+  "ceph": {
+    "health": {
+      "status": "HEALTH_WARN",
+      "checks": {
+        "POOL_NO_REDUNDANCY": {
+          "severity": "HEALTH_WARN",
+          "summary": {
+            "message": "1 pool(s) have no replicas configured",
+            "count": 1
+          }
+        }
+      }
+    }
+  },
+  "ha": [
+    {
+      "type": "service",
+      "sid": "ct:101",
+      "state": "started"
+    }
+  ],
+  "nodes": [
+    {
+      "node": "alpha"
+    },
+    {
+      "node": "beta"
+    }
+  ],
+  "backupTasks": {
+    "alpha": [
+      {
+        "type": "vzdump",
+        "upid": "UPID:alpha:1:1:1:vzdump::root@pam:",
+        "starttime": 1767218400,
+        "endtime": 1767219000,
+        "status": "OK"
+      },
+      {
+        "type": "vzdump",
+        "upid": "UPID:alpha:m:1:1:vzdump:102:root@pam:",
+        "starttime": 1767150000,
+        "endtime": 1767150300,
+        "status": "OK"
+      },
+      {
+        "type": "vzdump",
+        "upid": "UPID:alpha:w:1:1:vzdump:101:root@pam:",
+        "starttime": 1766955600,
+        "endtime": 1766955900,
+        "status": "OK"
+      }
+    ],
+    "beta": [
+      {
+        "type": "vzdump",
+        "upid": "UPID:beta:1:1:1:vzdump:201:root@pam:",
+        "starttime": 1767218401,
+        "endtime": 1767219300,
+        "status": "OK"
+      },
+      {
+        "type": "vzdump",
+        "upid": "UPID:beta:w:1:1:vzdump:201:root@pam:",
+        "starttime": 1766955601,
+        "endtime": 1766956000,
+        "status": "OK"
+      }
+    ]
+  },
+  "backupLogs": {
+    "UPID:alpha:1:1:1:vzdump::root@pam:": [
+      "INFO: starting new backup job: vzdump 101 102 201 --storage backups --mode snapshot",
+      "INFO: skip external VMs: 201",
+      "INFO: Starting Backup of VM 101 (lxc)",
+      "INFO: Finished Backup of VM 101 (00:01:00)",
+      "INFO: Starting Backup of VM 102 (lxc)",
+      "INFO: Finished Backup of VM 102 (00:01:00)",
+      "INFO: Backup finished at 2025-12-31 22:10:00",
+      "INFO: Backup job finished successfully"
+    ],
+    "UPID:beta:1:1:1:vzdump:201:root@pam:": [
+      "INFO: starting new backup job: vzdump 101 102 201 --storage backups --mode snapshot",
+      "INFO: skip external VMs: 101, 102",
+      "INFO: Starting Backup of VM 201 (qemu)",
+      "INFO: Finished Backup of VM 201 (00:10:00)",
+      "INFO: Backup finished at 2025-12-31 22:15:00"
+    ],
+    "UPID:alpha:m:1:1:vzdump:102:root@pam:": [
+      "INFO: starting new backup job: vzdump 102 --storage local --mode snapshot --remove 0",
+      "INFO: Starting Backup of VM 102 (lxc)",
+      "ERROR: Backup of VM 102 failed - manual test",
+      "INFO: Backup finished at 2025-12-31 03:05:00"
+    ],
+    "UPID:alpha:w:1:1:vzdump:101:root@pam:": [
+      "INFO: starting new backup job: vzdump 101 201 --storage backups --mode snapshot",
+      "INFO: skip external VMs: 201",
+      "INFO: Starting Backup of VM 101 (lxc)",
+      "INFO: Finished Backup of VM 101 (00:01:00)",
+      "INFO: Backup finished at 2025-12-28 21:05:00"
+    ],
+    "UPID:beta:w:1:1:vzdump:201:root@pam:": [
+      "INFO: starting new backup job: vzdump 101 201 --storage backups --mode snapshot",
+      "INFO: skip external VMs: 101",
+      "INFO: Starting Backup of VM 201 (qemu)",
+      "INFO: Finished Backup of VM 201 (00:06:00)",
+      "INFO: Backup finished at 2025-12-28 21:06:40"
+    ]
+  },
+  "certs": [
+    {
+      "names": [
+        "app.example.com"
+      ],
+      "daysLeft": 9,
+      "notAfter": "2026-01-10T00:00:00Z",
+      "verdict": "warn",
+      "source": "npm"
+    },
+    {
+      "names": [
+        "pve.example.com"
+      ],
+      "daysLeft": 80,
+      "notAfter": "2026-03-22T00:00:00Z",
+      "verdict": "ok",
+      "source": "pve"
+    }
+  ],
+  "haStates": [
+    {
+      "entity_id": "light.outside",
+      "state": "on",
+      "attributes": {
+        "friendly_name": "Outside light"
+      },
+      "last_changed": "",
+      "last_updated": ""
+    },
+    {
+      "entity_id": "light.hall",
+      "state": "off",
+      "attributes": {
+        "friendly_name": "Hall light"
+      },
+      "last_changed": "",
+      "last_updated": ""
+    },
+    {
+      "entity_id": "lock.front",
+      "state": "locked",
+      "attributes": {
+        "friendly_name": "Front door lock"
+      },
+      "last_changed": "",
+      "last_updated": ""
+    }
+  ],
+  "accepted": [
+    "POOL_NO_REDUNDANCY"
+  ],
+  "backupJobs": [
+    {
+      "id": "backup-nightly",
+      "type": "vzdump",
+      "enabled": 1,
+      "schedule": "22:00",
+      "vmid": "101,102,201",
+      "storage": "backups"
+    },
+    {
+      "id": "backup-weekly",
+      "type": "vzdump",
+      "enabled": 1,
+      "schedule": "sun 21:00",
+      "vmid": "101,201",
+      "storage": "backups"
+    }
+  ]
+}

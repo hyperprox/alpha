@@ -1,0 +1,14 @@
+id: deploy-ask-042-list-my-vms
+prompt: "list my VMs"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster-jobs.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  # Not worded as a question, and still answered from the cluster: no intent call, no model.
+  intent_calls: 0
+  model_calls: 0
+  answer_includes: ["On your cluster: 1 VM, 1 running and 0 stopped across 2 nodes.", "- win (VM 201)"]
+  answer_excludes: ["plex", "container"]
+found_by: "live bug 2026-11-16: inventory questions (list my guests/apps/containers/VMs)"

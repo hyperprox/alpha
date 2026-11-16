@@ -1,0 +1,9 @@
+id: multi-015-how-is-everything-on-the-remote
+prompt: "How is everything on the remote?"
+open: home
+expect:
+  kind: answer
+  # One cluster line: the status panel and the guest list are not said twice.
+  includes: ["Answering about Remote server (remote).", "Cluster: 1/1 nodes online, 1/2 guests running; nothing needs attention."]
+  excludes: ["Remote server: 1/1 nodes online", "Attached:", "Hardware scan", "DNS, proxy"]
+found_by: "live bug 2026-11-16: the status roll-call said the cluster twice"

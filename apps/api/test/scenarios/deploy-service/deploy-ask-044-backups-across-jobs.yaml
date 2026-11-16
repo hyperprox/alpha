@@ -1,0 +1,14 @@
+id: deploy-ask-044-backups-across-jobs
+prompt: "Did last night's backup work?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster-jobs.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 0
+  # Every job's latest run, not only the newest run; a manual backup in between is not a job.
+  answer_includes: ["The 22:00 job, latest run last night (22:00): 3 guests backed up, 0 failed", "The weekly job (sun 21:00), latest run on Sunday 2025-12-28: 2 guests backed up, 0 failed"]
+  answer_excludes: ["guest 102 (manual test)"]
+found_by: "live bug 2026-11-16: the backups line read only the most recent job (a weekly 1-guest run)"

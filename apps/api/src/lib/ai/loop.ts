@@ -8,6 +8,7 @@
 // =============================================================================
 
 import { isQuestionPrompt } from './intent'
+import { isInventoryQuestion } from './inventory'
 import { coerce } from './templates/fields'
 import { getTemplate } from './templates'
 import type { FieldIssue, Fields, StepSpec, TaskTemplate, TemplateFacts, TemplateSettings } from './templates/types'
@@ -136,7 +137,8 @@ export function settle(s: LoopState, deps: LoopDeps): LoopState {
 }
 
 export async function startLoop(prompt: string, deps: LoopDeps): Promise<LoopState> {
-  if (deps.ask && isQuestionPrompt(prompt)) {
+  // "List my guests" is not worded as a question, and is still one to answer from the cluster, not a task.
+  if (deps.ask && (isQuestionPrompt(prompt) || isInventoryQuestion(prompt))) {
     const a = await deps.ask(prompt)
     if (a) return answerOnly(prompt, a, deps)
   }

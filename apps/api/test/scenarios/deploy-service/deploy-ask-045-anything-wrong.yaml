@@ -1,0 +1,14 @@
+id: deploy-ask-045-anything-wrong
+prompt: "Is anything wrong?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster-jobs.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 0
+  answer_includes: ["Needs attention:", "app.example.com in 9 days", "Everything else:"]
+  answer_once: ["Cluster:"]
+  answer_excludes: ["Attached:"]
+found_by: "live bug 2026-11-16: the status roll-call"

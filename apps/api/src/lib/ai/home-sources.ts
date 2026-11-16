@@ -50,6 +50,8 @@ export interface NasEntry {
   reading: QnapReading | null
   /** Why it could not be read, in words. */
   error: string | null
+  /** When `reading` was taken (unix ms), when it is a kept one rather than read just now. */
+  at?: number
 }
 
 export interface QnapSourceDeps {
@@ -111,7 +113,10 @@ export function qnapSummary(list: NasEntry[], role: Role | undefined): SourceSum
   const read = facts.filter(f => f.reading)
   const problems = read.filter(f => f.conditions.length)
   const headline = `QNAP: ${plural(list.length, 'NAS', 'NAS')}, ${problems.length ? `${problems.length} need${problems.length === 1 ? 's' : ''} attention` : read.length ? 'all healthy' : 'none could be read'}.`
-  return { headline, lines, unread: unread.length ? unread : undefined, data: { nas: facts } }
+  // A kept reading: the oldest one's time, so the answer can say "as of".
+  const kept = list.filter(n => n.reading && n.at !== undefined).map(n => n.at!)
+  return { headline, lines, unread: unread.length ? unread : undefined, data: { nas: facts }, ...(kept.length ? { asOf: Math.min(...kept) } : {}),
+    attention: problems.map(f => `${f.label}: ${f.conditions.map(c => c.title.replace(` on ${f.label}`, '')).join('; ')}`) }
 }
 
 export function qnapAnswer(prompt: string, s: SourceSummary): string | null {
@@ -511,6 +516,7 @@ export function metricsSentence(name: string, m: SiteMetrics): string {
 export function siteMetricsSource(d: SiteMetricsDeps): AskSource {
   return {
     id: 'site-metrics', title: 'Site metrics', blurb: 'visitors, page views, error rate, p95, top pages and referrers, uptime per website',
+    overview: false,
     aliases: /\b(visitors?|visits?|page ?views?|traffic|hits|referr\w*|top pages?|popular|p95|latency|response times?|error rate|uptime)\b/,
     load: async () => {
       if (!isAdmin(d.role)) return { headline: 'Site metrics: admins only.', lines: [ADMIN_ONLY_SITES], data: { rows: [], available: true } }

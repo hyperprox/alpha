@@ -47,6 +47,8 @@ export function clearoutSource(d: ClearoutSourceDeps): AskSource {
     id: 'plex-clearout', title: 'Plex clear-out', blurb: 'what nobody watches in Plex, and how much space it takes',
     aliases: /\b(library|biggest (shows?|films?|movies?)|seasons?|episodes? (size|space)|unwatched|never watched|not watched|nobody watch\w*|idle|clear.?out|free (up )?space|space hogs?|delete what|largest (films?|movies?|shows?))\b/i,
     matchLines: true,
+    // A list of what nobody watches, not health: not in the "how is everything" roll-call.
+    overview: false,
     load: async (): Promise<SourceSummary> => {
       if (!d.unlocked()) return { headline: 'Plex clear-out: locked.', lines: [], locked: true }
       const { report: r, library } = await d.report()
