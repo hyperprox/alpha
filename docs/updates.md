@@ -397,6 +397,30 @@ load is reported on the page and treated like no policy at all.
 Not managed, and listed so their absence is visible: excluded guests, stopped guests,
 Windows VMs, VMs without the QEMU guest agent, and guests without `apt`.
 
+## The package cache
+
+With the package cache (apt-cacher-ng) from the Catalogue, each package is downloaded from the internet once for
+all your guests. Its plug-in page holds **Use the package cache**, one setting per cluster:
+
+- **Automatic** (the default on the home cluster): on while a cache is connected and answering.
+- **On**: always, while a cache is connected; each guest still falls back to going direct by itself.
+- **Off** (the default on a remote cluster): HyperProx's setting is taken out of each guest the next time Updates runs there.
+
+Just before apt runs in a guest, Updates writes `/etc/apt/apt.conf.d/01hyperprox-cache`, which names
+`/usr/local/lib/hyperprox/apt-cache-detect` as apt's `Acquire::http::Proxy-Auto-Detect`. For the Debian and Ubuntu
+archives only, the script asks the cache for its own page with a three-second limit and prints its address only when
+the cache answers as itself (status 200, 401 or 406); otherwise it prints `DIRECT` and apt fetches straight from the
+internet. HTTPS and other sources are always direct. A guest with its own apt proxy (in any apt config file, in either
+form, or `http_proxy` in `/etc/environment`) is left alone, and HyperProx's own setting is taken out of it. A dead
+cache never stops an update; a sick one (disk 97% full, a failed self-check, or not on the address HyperProx recorded)
+is skipped in automatic mode once HyperProx notices, and its setting is taken out until it is healthy again. Whatever goes wrong with this step is one line in the step's log, and apt runs as it would have.
+
+Proxmox nodes are not touched unless **Proxmox nodes too** is on. Then the same two files are written on a node
+before its upgrade, and taken out again when it is turned off. Nothing else changes: no repository file, no hold.
+
+**Repair guests' setting** writes it again on every guest Updates looks after and checks each can reach the cache;
+**Remove from all guests** takes it out of all of them at once. Both are refused while an Updates job runs.
+
 ## Apps installed outside apt and docker
 
 apt and docker only see what they installed. An app installed with `npm install` into a

@@ -45,6 +45,7 @@ const lazy = {
   dns: async (kind: 'pihole' | 'adguard') => (await import('../dns-blocker')).dnsBlockerService(kind),
   fwdproxy: async () => (await import('../fwdproxy')).fwdProxyService(),
   k3s: async () => (await import('../k3s')).k3sService(),
+  aptcache: async () => (await import('../aptcache')).aptCacheService(),
   plugins: async () => (await import('../../plugins')).PLUGINS,
 }
 
@@ -83,6 +84,8 @@ function adapters(): AutoConnectAdapter[] {
     // 3proxy: a finished Catalogue install, its helper confirmed read-only, connected (lib/fwdproxy).
     { plugin: '3proxy', reconcile: async ctx => (await lazy.fwdproxy()).autoConnect(ctx) },
     { plugin: 'k3s', reconcile: async ctx => (await lazy.k3s()).autoConnect(ctx) },
+    // The package cache: a finished Catalogue install, its helper confirmed read-only, connected (lib/aptcache).
+    { plugin: 'apt-cacher-ng', reconcile: async ctx => (await lazy.aptcache()).autoConnect(ctx) },
     settingsAdapter('unmanic', settingsDeps),
     settingsAdapter('arrstack', settingsDeps),
     settingsAdapter('plex', settingsDeps),

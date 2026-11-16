@@ -1,0 +1,79 @@
+/* =============================================================================
+   HyperProx — the package cache page (apt-cacher-ng)
+
+   Theme tokens only (light and dark come from globals.css); --hx-accent is the
+   teal, --hx-violet what came from the internet. Health is --good / --warn /
+   --crit and is never colour alone: every state is also said in words. Motion
+   stops under prefers-reduced-motion.
+   ============================================================================= */
+
+.band { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; border-radius: 10px; padding: 8px 12px; font-weight: 600;
+  background: var(--hx-accent); color: var(--accent-ink); }
+.band small { font-weight: 500; opacity: .85; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.toolbar small { color: var(--text-muted); font: 500 .72rem var(--font-mono); letter-spacing: .06em; }
+.quiet { margin: 8px 0 0; color: var(--text-muted); font-size: .85rem; }
+.twoCol { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 16px; }
+.rows { display: flex; flex-direction: column; gap: 10px; }
+
+/* ── the flow: internet → cache → guests ── */
+.flow { margin: 0 0 14px; display: flex; flex-direction: column; gap: 6px; }
+.flow svg { width: 100%; height: auto; max-height: 170px; border-radius: 12px; border: 1px solid var(--border);
+  background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--hx-accent) 10%, transparent), transparent 60%), linear-gradient(180deg, var(--hx-panel), var(--hx-deep)); }
+.node { fill: var(--hx-deep); stroke: var(--hx-line); stroke-width: 2; }
+.core { fill: color-mix(in srgb, var(--hx-accent) 10%, var(--hx-deep)); stroke: color-mix(in srgb, var(--hx-accent) 50%, var(--border)); stroke-width: 1.5;
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--hx-accent) var(--glow), transparent)); }
+.coreRing { fill: none; stroke: var(--hx-accent); stroke-width: 5; stroke-linecap: round; }
+.coreText { font: 600 22px var(--font-display, 'Barlow Condensed', sans-serif); fill: var(--text-bright); text-anchor: middle; }
+.coreSub, .flowLabel { font: 600 9px var(--font-mono); letter-spacing: .16em; fill: var(--text-muted); text-anchor: middle; }
+.flowValue { font: 600 12px var(--font-mono); fill: var(--text-bright); text-anchor: middle; }
+.dash { fill: none; stroke: var(--text-bright); stroke-opacity: .55; stroke-width: 1.5; stroke-dasharray: 2 12; animation: flow 1.6s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -28; } }
+.flow figcaption, .trace figcaption { display: flex; flex-wrap: wrap; gap: 4px 16px; font: 500 .72rem var(--font-mono); color: var(--text-muted); letter-spacing: .04em; }
+.flow figcaption b { color: var(--text-bright); }
+.keyIn, .keyOut { display: inline-block; width: 14px; height: 3px; margin-right: 6px; vertical-align: middle; border-radius: 2px; background: var(--hx-violet); }
+.keyOut { background: var(--hx-accent); }
+
+/* ── the hour-by-hour trace ── */
+.trace { margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; }
+.trace svg { width: 100%; height: 120px; border-radius: 10px; border: 1px solid var(--border); background: linear-gradient(180deg, var(--hx-panel), var(--hx-deep)); }
+.grid { stroke: var(--hx-line); stroke-width: 1; stroke-dasharray: 3 6; vector-effect: non-scaling-stroke; }
+.gotLine { fill: none; stroke: var(--hx-accent); stroke-width: 2; vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--hx-accent) var(--glow), transparent)); }
+.fetchLine { fill: none; stroke: var(--hx-violet); stroke-width: 1.5; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+
+.gauges { display: flex; flex-wrap: wrap; gap: 14px; justify-content: space-around; align-items: center; }
+
+/* ── Updates' setting: a three-way switch ── */
+.modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 4px; border-radius: 12px; border: 1px solid var(--border); background: var(--ground-inset); }
+.mode { min-height: 44px; border: 0; border-radius: 9px; background: transparent; color: var(--text-soft); font: 600 .95rem var(--font-display, 'Barlow Condensed', sans-serif);
+  letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+.mode[aria-pressed="true"] { background: var(--hx-accent); color: var(--accent-ink); box-shadow: 0 0 14px color-mix(in srgb, var(--hx-accent) var(--glow), transparent); }
+.mode:disabled { opacity: .55; cursor: default; }
+.state { display: flex; gap: 10px; align-items: flex-start; font-size: .9rem; color: var(--text-soft); }
+.state::before { content: ''; flex: none; width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: var(--good);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--good) var(--glow), transparent); }
+.state[data-on="false"]::before { background: var(--text-dimmer); box-shadow: none; }
+
+/* ── self-check, problems ── */
+.rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rules li { display: flex; gap: 8px; align-items: baseline; font-size: .9rem; color: var(--text-soft); }
+.rules li::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--good); transform: translateY(-1px); }
+.rules li[data-state="fail"]::before { background: var(--crit); }
+.rules li[data-state="info"]::before { background: var(--text-dimmer); }
+.rules small { display: block; color: var(--text-muted); font-size: .78rem; }
+.problems { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.problem { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: start; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--crit) 45%, var(--border)); background: color-mix(in srgb, var(--crit) 6%, var(--surface)); }
+.problem[data-sev="warn"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); }
+.problem b { color: var(--text-bright); }
+.problem p { margin: 0; color: var(--text-soft); font-size: .85rem; }
+.problem .fixRow { grid-column: 2; }
+.results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--text-soft); }
+.results b { color: var(--text-bright); font-family: var(--font-mono); font-weight: 600; }
+
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: .9rem; color: var(--text-soft); min-height: 40px; }
+.check input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--hx-accent); flex: none; }
+.check b { color: var(--text-bright); font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) { .dash { animation: none; } }

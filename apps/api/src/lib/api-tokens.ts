@@ -153,6 +153,8 @@ export function tokenForbidden(method: string, path: string): boolean {
   if (/^\/api\/plugins\/arrstack\/queue\/actions$/.test(p)) return true
   // Arr Stack give-up: rules, try again, release searches and downloads are a signed-in admin's act, never a token's.
   if (m !== 'GET' && /^\/api\/plugins\/arrstack\/give-up\//.test(p)) return true
+  // Package cache changes (fixes, settings, Updates' setting, the setting on every guest): a signed-in admin's act.
+  if (m !== 'GET' && m !== 'HEAD' && /^\/api\/plugins\/apt-cacher-ng\//.test(p)) return true
   // Nextcloud actions (fixes, updates, mail, 2FA): a signed-in admin's act, never a token's.
   if (/^\/api\/plugins\/nextcloud\/instances\/[^/]+\/((actions|secure-actions)\/[^/]+|jobs\/[^/]+\/stop-watching)$/.test(p)) return true
   // HAProxy actions (drain, weights, servers, the balance algorithm, load-balancing an app) and disconnecting one change

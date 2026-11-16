@@ -58,6 +58,9 @@ import { BALANCE_STEP, balancePreview, runInstallBalance, realBalanceDeps, realB
 import { isK3s, k3sPrepare, k3sPreview, k3sInstallEnv, k3sRunSetup, k3sSteps } from './k3s/catalogue'
 import type { K3sService } from './k3s/service'
 import { k3sService } from './k3s'
+import { APTCACHE_SETUP_STEPS, runAptCacheSetup } from './aptcache/setup'
+import { isPrivateV4 as aptCachePrivate } from './aptcache/net'
+import { DEFAULT_CACHE_GB } from './aptcache/recipe'
 import {
   planPublish, runPublish, cleanupPublish, recordSite, realPublishDeps, PUBLISH_STEPS,
   type PublishDeps, type PublishPlan, type PublishLedger, type PublishInput,
@@ -188,6 +191,8 @@ export interface InstallDeps {
   haproxyBalanceCheck?: () => Promise<BalanceCheckDeps>
   /** The K3s page's service: an agent's server and join token, and connecting a new server (lib/k3s). */
   k3s?:        () => K3sService
+  /** The package cache's plug-in connects the new container (auto-connect, at once); true when it did. */
+  aptCacheConnect?: (vmid: number) => Promise<boolean>
 }
 
 /** HAProxy's setup as it runs for real: the Proxy service, the plug-in's store, the audit log and Prometheus. */
@@ -228,6 +233,11 @@ const realDeps = (): InstallDeps => ({
     return (await (await import('./fwdproxy')).fwdProxyService().instances()).some(i => i.vmid === vmid)
   },
   k3s:         () => k3sService(),
+  aptCacheConnect: async vmid => {
+    // Late-bound: auto-connect reads the plug-ins, which read this module.
+    await (await import('./auto-connect')).autoConnect().runFresh('catalogue-install')
+    return (await (await import('./aptcache')).aptCacheService().instances()).some(i => i.vmid === vmid)
+  },
 })
 
 /** How long after an install the generated admin login is still served to the page. */
@@ -350,6 +360,8 @@ export async function createFromPlan(
   // backups), or a NAS export the node mounts, given to the container after the create, before its first start.
   const pbs = recipe.setup === 'pbs' ? plan.options ?? {} : null
   if (pbs?.PBS_LOCATION === 'disk') set('mp0', `${plan.storage}:${Number(pbs.PBS_SIZE_GB)},mp=${DATASTORE_BASE}/${pbs.PBS_DATASTORE},backup=0`)
+  // The package cache: its cache on a disk of its own, left out of backups (everything on it can be fetched again).
+  if (recipe.setup === 'aptcache') set('mp0', `${plan.storage}:${Number(plan.options?.ACNG_CACHE_GB || DEFAULT_CACHE_GB)},mp=/var/cache/apt-cacher-ng,backup=0`)
   set('unprivileged', 1); if (recipe.id !== 'plex') set('features', 'nesting=1'); set('onboot', 1); set('start', pbs?.PBS_LOCATION === 'nas' ? 0 : 1)
   set('password', randomBytes(18).toString('base64url') + 'Aa1')
   set('description', `${recipe.name}, installed by HyperProx on ${new Date().toISOString().slice(0, 10)}.\n${installMark(jobId)}`)
@@ -432,7 +444,8 @@ const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan, ba
   { id: 'install',   label: `Install ${recipe.name}`, status: 'pending' },
   ...(recipe.setup === 'pbs' ? PBS_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase }))
     : recipe.setup === 'fwdproxy' ? FWDPROXY_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase }))
-    : isK3s(recipe) ? k3sSteps(recipe.id).map(x => ({ ...x, status: 'pending' as Phase })) : [
+    : isK3s(recipe) ? k3sSteps(recipe.id).map(x => ({ ...x, status: 'pending' as Phase }))
+    : recipe.setup === 'aptcache' ? APTCACHE_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase })) : [
     ...(recipe.setup === 'ghost' ? GHOST_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase })) : []),
     { id: 'verify',    label: 'Check it answers',       status: 'pending' as Phase },
     // HAProxy's own setup takes the place of the generic wiring.
@@ -657,6 +670,22 @@ async function runJob(
         id => step(job, id), { service: deps.k3s, sh: (script, timeoutMs) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} }) })
       job.url = out.url
       if (out.followUp) job.tcFollowUp = out.followUp
+      job.status = 'completed'
+      return
+    }
+
+    // The package cache: its self-check in place of the web check, then its plug-in (and Updates) connect it.
+    if (recipe.setup === 'aptcache') {
+      if (!job.ip) throw new Error(`${recipe.name} has no address, so its check cannot run.`)
+      const out = await runAptCacheSetup(
+        { vmid: job.vmid!, ip: job.ip.split('/')[0] },
+        id => step(job, id),
+        {
+          sh: (script, timeoutMs) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} }),
+          connect: deps.aptCacheConnect ?? (async () => false),
+        })
+      job.url = out.url
+      if (admin) job.adminCredential = { user: admin.user, vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}`, key: 'admin_password' }, issuedAt: Date.now() }
       job.status = 'completed'
       return
     }
@@ -1490,6 +1519,12 @@ export async function previewInstall(
   }
   const { view, live, pinged, naming } = await freshRead(input, deps)
   const r = checkPlan(input, recipe, view, live, pinged, naming)
+  // The package cache needs a fixed, private address: guests are pointed at it by address, and HyperProx checks that
+  // address against the container's Proxmox config before using it (its script refuses a public one too).
+  if (recipe.setup === 'aptcache') {
+    if (!input.ip || input.ip === 'dhcp') r.errors.push('The package cache needs a fixed address, not DHCP: your guests are pointed at it by its address.')
+    else if (!aptCachePrivate(String(input.ip).split('/')[0])) r.errors.push(`The package cache is installed only on a private address (in 10/8, 172.16/12 or 192.168/16). ${String(input.ip).split('/')[0]} is not one.`)
+  }
   // A forward proxy only ever listens on a private address: on a public one it would be an open proxy (its script
   // refuses that too, and a DHCP address is checked there).
   if (recipe.setup === 'fwdproxy' && input.ip && input.ip !== 'dhcp' && !isPrivateV4(String(input.ip).split('/')[0])) {

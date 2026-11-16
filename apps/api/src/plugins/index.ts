@@ -25,6 +25,7 @@ import { nginxPlugin, caddyPlugin, envoyPlugin } from './web-proxies'
 import { piholePlugin, adguardPlugin } from './dns-blocker'
 import { threeProxyPlugin } from './threeproxy'
 import { k3sPlugin }      from './k3s'
+import { aptCachePlugin } from './apt-cache'
 
 export const PLUGINS: Plugin[] = [
   arrstackPlugin,
@@ -46,6 +47,7 @@ export const PLUGINS: Plugin[] = [
   adguardPlugin,
   threeProxyPlugin,
   k3sPlugin,
+  aptCachePlugin,
 ]
 
 export function findPlugin(id: string): Plugin | undefined {

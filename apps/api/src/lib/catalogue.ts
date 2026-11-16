@@ -29,6 +29,7 @@ import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS
 import { DNS_BLOCKER_RECIPES } from './dns-blocker/recipes'
 import { THREEPROXY_RECIPE } from './fwdproxy/recipes'
 import { K3S_RECIPES } from './k3s/recipe'
+import { APTCACHE_RECIPE } from './aptcache/recipe'
 import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
 import { HAPROXY_SCRIPT, HAPROXY_RECIPE_ID, HAPROXY_VERSION, HAPROXY_LINE, DATAPLANE_VERSION, METRICS_PORT } from './haproxy/recipe'
 
@@ -142,9 +143,10 @@ export interface CatalogueRecipe {
    * HAProxy's (lib/haproxy/setup.ts: the Proxy page, its plug-in and Prometheus) runs after the check, in place of the wiring.
    * A forward proxy's (lib/fwdproxy/setup.ts) replaces the generic check with a self-check of its safety rules.
    * K3s's (lib/k3s/catalogue.ts: keyctl from the node first; then the admin login into the vault, HyperProx's own accounts,
-   * the K3s page connected) replaces the check and the wiring.
+   * the K3s page connected) replaces the check and the wiring. The package cache's (lib/aptcache/setup.ts) replaces the
+   * generic check with its own self-check, on a cache disk of its own.
    */
-  setup?:      'pbs' | 'ghost' | 'haproxy' | 'fwdproxy' | 'k3s'
+  setup?:      'pbs' | 'ghost' | 'haproxy' | 'fwdproxy' | 'k3s' | 'aptcache'
   /**
    * A reverse proxy HyperProx can drive: once it answers, the install adds it to the Proxy page as a Managed instance
    * of this kind (lib/proxy/managed-recipes.ts managedInstanceInput), so apps can be published through it from
@@ -886,6 +888,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   // ── Forward proxy ───────────────────────────────────────────────────────
   // 3proxy (HTTP and SOCKS5): locked down by default, with its own plug-in (lib/fwdproxy).
   THREEPROXY_RECIPE,
+  // The package cache for Updates (apt-cacher-ng), with its own plug-in (lib/aptcache).
+  APTCACHE_RECIPE,
   // ── Containers ──────────────────────────────────────────────────────────
   // K3s (lightweight Kubernetes): a server, and agents for it on other nodes (lib/k3s).
   ...K3S_RECIPES,
