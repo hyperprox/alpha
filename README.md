@@ -1903,13 +1903,16 @@ Lidarr address in the plug-in's settings, which says to leave it blank if you do
 
 **Weekly search and give up.** Under **Missing, searching** on the Upcoming tab, for TV, films and music separately.
 
-- **Weekly search.** On the day and hour you pick (Monday at 08:00 unless you change it, in the server's time zone),
+- **Weekly search.** On the day and hour you pick (Monday at 08:00 unless you change it; every time on the panel is the
+  server's, and says so),
   HyperProx asks Sonarr, Radarr or Lidarr to search for everything that is still missing, with the app's own "search
   all missing" command. It is off until you turn it on, never runs while HyperProx is locked, runs at most once a
   week (if HyperProx was down at the time, it runs once when it is back that week), is written to the audit log, and
   the panel shows the last one: "Last weekly search: Sunday 08:00 — 68 films searched (completed)". If you already run
   another backfill job, that is fine: every search counts, whoever started it. Searching for everything at once sends
-  many requests to your indexers, so pick a quiet hour.
+  many requests to your indexers, so switching it on asks you to confirm, saying how many items it will ask for at once
+  and whether the first search runs now (this week's time has passed) or when it next runs. Only monitored items are
+  searched. With more than one HyperProx process, the week is claimed in the database, so only one search runs.
 
 Sonarr, Radarr and Lidarr keep no
 count of how often they have looked for something, so HyperProx counts for them: every few hours it reads each
@@ -1920,8 +1923,12 @@ imported, or nothing usable found.
 
 - **The rule**, for TV, films and music separately: "give up after N weeks of weekly searches with nothing found",
   with N anything from 1 to 104 (8 unless you change it). Something is given up only when it has been missing at least
-  N weeks (since it aired or was released) **and** has been searched at least N times, so nothing new is dropped early.
-  The try count stays visible on every item. Then either **stop searching** (the item is unmonitored and everything is kept) or, for films and
+  N weeks **and** was searched in at least N different weeks, so nothing new is dropped early. Missing is counted from
+  the later of when it aired or was released and when HyperProx first saw it missing, so an old film added last week has
+  been missing one week. A film counts as released by its own minimum availability in Radarr (digital release first,
+  then physical, then cinema; the cinema date for "in cinemas" and "announced"). Several searches in one week count as
+  one, and a search from before HyperProx was watching (such as the one made when it was added) does not count. The try
+  count stays visible on every item. Then either **stop searching** (the item is unmonitored and everything is kept) or, for films and
   albums only, **remove from library**: the film or album leaves Radarr or Lidarr with no file deleted (there are none,
   and HyperProx checks again first), and an import-list exclusion stops your lists adding it back. It is off until you
   turn it on.
