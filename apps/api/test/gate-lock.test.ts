@@ -16,7 +16,10 @@ test('locked: data route answers 423 { ok:false, locked:true }', async () => {
   const app = await appP
   const res = await app.inject({ method: 'GET', url: '/api/proxmox/resources' })
   assert.equal(res.statusCode, 423)
-  assert.deepEqual(res.json(), { ok: false, locked: true })
+  // The one failure envelope (lib/failure.ts failureEnvelope): ok/success false, code 'locked', the reference.
+  const { requestId, ...rest } = res.json()
+  assert.deepEqual(rest, { ok: false, success: false, code: 'locked', locked: true })
+  assert.equal(requestId, res.headers['x-request-id'])
 })
 
 test('locked: 423 even with a token, and for websockets and secrets', async () => {

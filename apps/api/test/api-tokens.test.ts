@@ -114,7 +114,9 @@ test('locked: a valid token gets 423, like everything else, and never unlocks', 
   for (const url of ['/api/proxmox/resources', '/api/dns/domains/example.com/records']) {
     const res = await app.inject({ method: url.includes('dns') ? 'POST' : 'GET', url, headers: bearer(t), payload: url.includes('dns') ? {} : undefined })
     assert.equal(res.statusCode, 423, url)
-    assert.deepEqual(res.json(), { ok: false, locked: true })
+    const { requestId, ...rest } = res.json()
+    assert.deepEqual(rest, { ok: false, success: false, code: 'locked', locked: true }, url)
+    assert.equal(requestId, res.headers['x-request-id'])
   }
   // Token routes are not part of the lock bypass either.
   assert.equal((await app.inject({ method: 'GET', url: '/api/auth/tokens' })).statusCode, 423)

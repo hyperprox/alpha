@@ -706,12 +706,12 @@ test('an admin action taken with an API token audits the token by name; a person
   assert.equal(r.statusCode, 200, r.body)
   const row = audits.find(a => a.action === 'placement.auto.stop')!
   assert.ok(row, 'audited')
-  assert.equal(row.details!.token, 'nightly-stop')
+  assert.equal(row.details!.tokenName, 'nightly-stop')
   assert.equal(typeof row.details!.by, 'string')
   audits.length = 0
   const cookie = await admin()
   assert.equal((await app.inject({ method: 'POST', url: `${B}/auto/stop`, headers: { cookie } })).statusCode, 200)
   const own = audits.find(a => a.action === 'placement.auto.stop')!
   assert.equal(own.details!.by, 'admin@example.com')
-  assert.equal('token' in own.details!, false)
+  assert.equal('tokenName' in own.details!, false)
 })

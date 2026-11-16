@@ -106,3 +106,32 @@ test('plug-in not set up: by the API code first, the text as a fallback', () => 
   assert.equal(pluginKind({ error: 'Not configured yet: add a router on the ASUS page.' }), 'not-set-up')
   assert.equal(pluginKind({ error: 'Sonarr did not answer.' }), 'unreachable')
 })
+
+test('apiJson: a failure in the one envelope reads exactly as the older bodies did (same sentence, same fields)', async () => {
+  const { apiJson } = await import('../lib/api')
+  const real = globalThis.fetch
+  const answer = (status: number, body: unknown) => async () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'x-request-id': 'req-0000-1111' } })
+  try {
+    // Updates before (`{ error, runningJobId }`) and after (the envelope around the same fields).
+    const cases: Array<[number, Record<string, unknown>, Record<string, unknown>]> = [
+      [409, { error: 'A job is already active.', runningJobId: 'job-1' },
+        { ok: false, success: false, code: 'job_active', error: 'A job is already active.', runningJobId: 'job-1', requestId: 'req-2222-3333' }],
+      [404, { ok: false, error: 'No such channel.' },
+        { ok: false, success: false, code: 'not_found', error: 'No such channel.', requestId: 'req-2222-3333' }],
+      [503, { success: false, error: 'No Ceph here.', cephAvailable: false },
+        { ok: false, success: false, code: 'ceph_unavailable', error: 'No Ceph here.', cephAvailable: false, requestId: 'req-2222-3333' }],
+    ]
+    for (const [status, before, after] of cases) {
+      globalThis.fetch = answer(status, before) as any
+      const a = await apiJson('/api/x')
+      globalThis.fetch = answer(status, after) as any
+      const b = await apiJson('/api/x')
+      assert.equal(a.ok, false); assert.equal(b.ok, false)
+      assert.equal(b.status, a.status)
+      assert.equal(b.error, a.error, 'the same sentence is shown')
+      for (const k of Object.keys(before)) assert.deepEqual((b.body as any)[k] ?? undefined, k === 'ok' || k === 'success' ? false : (before as any)[k], k)
+      assert.equal(b.requestId, 'req-2222-3333', 'the reference from the body, where before it came from the header')
+      assert.equal(a.requestId, 'req-0000-1111')
+    }
+  } finally { globalThis.fetch = real }
+})

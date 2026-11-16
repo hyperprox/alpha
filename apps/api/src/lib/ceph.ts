@@ -16,6 +16,7 @@
 
 import { ProxmoxClient, CephMon } from './proxmox-client'
 import { currentClusterId, isRemoteContext } from './clusters/context'
+import type { RefusalAnswer } from './http/answer'
 
 /** A refused API token or a certificate that is not the pinned one: Proxmox's access is the problem, not CEPH. */
 export function isProxmoxAccessProblem(e: unknown): boolean {
@@ -28,6 +29,14 @@ export class CephUnavailableError extends Error {
     super(message)
     this.name = 'CephUnavailableError'
   }
+}
+
+/**
+ * How a route answers a cluster without Ceph: a configuration, not a fault. 503 with the reason, and
+ * `cephAvailable: false` so the page hides the panel instead of showing an error.
+ */
+export function cephRefusal(e: unknown): RefusalAnswer | null {
+  return e instanceof CephUnavailableError ? { status: 503, code: 'ceph_unavailable', error: e.message, extra: { cephAvailable: false } } : null
 }
 
 // A monitor that answers stays put for days, so the positive cache is generous.

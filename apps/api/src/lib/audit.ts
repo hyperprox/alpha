@@ -23,12 +23,14 @@ export function prismaAuditSink(db: PrismaClient): AuditSink {
 }
 
 const SECRET_KEY = /pass(word|phrase)?|secret|token|private.?key|api.?key|^key$/i
+/** Named like a secret but never one: the API token's name that auditBy (lib/http/request-actor.ts) records. */
+const NOT_SECRET = new Set(['tokenName'])
 
 /** Drop anything that could be a secret value: only names, ids, counts and outcomes are kept. */
 export function scrubDetails(details: Record<string, unknown> = {}): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(details)) {
-    if (SECRET_KEY.test(k)) continue
+    if (SECRET_KEY.test(k) && !NOT_SECRET.has(k)) continue
     if (v === null || ['number', 'boolean'].includes(typeof v)) out[k] = v
     else if (typeof v === 'string') out[k] = v.slice(0, 200)
     else if (Array.isArray(v)) out[k] = v.filter(x => typeof x === 'string' || typeof x === 'number').slice(0, 50)

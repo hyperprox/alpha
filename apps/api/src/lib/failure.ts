@@ -215,6 +215,65 @@ export function sendFailure(req: FastifyRequest, reply: FastifyReply, err: unkno
   return reply.status(status).send(body)
 }
 
+/** The code a failure gets when the route that answered it gave none: by its status. */
+export function codeForStatus(status: number): string {
+  switch (status) {
+    case 400: return 'invalid_request'
+    case 401: return 'unauthenticated'
+    case 403: return 'forbidden'
+    case 404: return 'not_found'
+    case 405: return 'method_not_allowed'
+    case 409: return 'conflict'
+    case 410: return 'gone'
+    case 412: return 'precondition_failed'
+    case 413: return 'too_large'
+    case 415: return 'unsupported_media_type'
+    case 422: return 'unprocessable'
+    case 423: return 'locked'
+    case 428: return 'precondition_required'
+    case 429: return 'too_many_requests'
+    case 500: return 'internal'
+    case 501: return 'not_implemented'
+    case 502: return 'bad_gateway'
+    case 503: return 'unavailable'
+    case 504: return 'gateway_timeout'
+    default:  return status >= 500 ? 'internal' : 'refused'
+  }
+}
+
+/**
+ * Any failure body (a 4xx or 5xx JSON object) in the one envelope sendFailure answers with: `ok: false`,
+ * `success: false`, `error`, `code` and `requestId`. Only fills what is missing, so a route's own words, its code and
+ * every other field a page reads stay exactly as they were; `error` is filled only from the body's own `message`.
+ * Null for anything that is not a failure body (not a plain object, or one saying it succeeded).
+ */
+export function failureEnvelope(body: unknown, status: number, requestId: string): Record<string, unknown> | null {
+  if (status < 400 || !body || typeof body !== 'object' || Array.isArray(body)) return null
+  const b = body as Record<string, unknown>
+  if (b.ok === true || b.success === true) return null
+  const out: Record<string, unknown> = { ok: false, success: false, ...b }
+  out.ok = false
+  out.success = false
+  if (out.error === undefined && typeof b.message === 'string') out.error = b.message
+  if (out.code === undefined) out.code = codeForStatus(status)
+  if (out.requestId === undefined) out.requestId = requestId
+  return out
+}
+
+/**
+ * Answer with one of HyperProx's own refusals: a sentence written for people, the status and code the route has
+ * always used for it, and any fields a page reads beside them (problems, a running job's id). The same envelope as
+ * sendFailure; the one place a route turns a refusal into a reply.
+ */
+export function sendRefusal(reply: FastifyReply, status: number, code: string, error: string, extra: Record<string, unknown> = {}) {
+  const req = reply.request
+  const body = { ok: false as const, success: false as const, code, error, ...extra, requestId: String(req.id) }
+  const ctx = { route: routeOf(req), user: who(req), code: body.code, status }
+  if (status >= 500) req.log.warn(ctx, `request refused: ${body.code}`)
+  else req.log.info(ctx, `request refused: ${body.code}`)
+  return reply.status(status).send(body)
+}
+
 // Logged once per subject while the same problem repeats (plug-in panels are read every few seconds).
 const reasonLog = createLogOnce(appLog)
 

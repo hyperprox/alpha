@@ -10,6 +10,7 @@
 import { randomUUID } from 'crypto'
 import type { FastifyInstance } from 'fastify'
 import type { IncomingMessage } from 'http'
+import { failureEnvelope } from './failure'
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 const NGINX_ID = /^[a-f0-9]{32}$/
@@ -23,24 +24,21 @@ export function genReqId(req: IncomingMessage): string {
 let installed = new WeakSet<FastifyInstance>()
 
 /**
- * X-Request-Id on every reply, and `requestId` in every JSON 5xx failure body a route built itself without one
- * (sendFailure and the error handler put it in every failure they answer, 4xx included; the gate's own short
- * refusals, locked or signed out, carry it in the header). Idempotent per server.
+ * X-Request-Id on every reply, and every JSON failure body (4xx or 5xx) in the one failure envelope
+ * (lib/failure.ts failureEnvelope): a route that built its own answer gets `ok`, `success`, a `code` and the
+ * `requestId` added, never its words or other fields changed. Idempotent per server.
  */
 export function installRequestIds(server: FastifyInstance): void {
   if (installed.has(server)) return
   installed.add(server)
   server.addHook('onSend', async (req, reply, payload) => {
     reply.header('X-Request-Id', String(req.id))
-    if (reply.statusCode < 500 || typeof payload !== 'string' || payload.length > 65_536 || payload[0] !== '{') return payload
+    if (reply.statusCode < 400 || typeof payload !== 'string' || payload.length > 65_536 || payload[0] !== '{') return payload
     const type = String(reply.getHeader('content-type') ?? '')
     if (!type.includes('json')) return payload
     try {
-      const body = JSON.parse(payload)
-      if (body && typeof body === 'object' && !Array.isArray(body) && body.requestId === undefined && (body.ok === false || body.success === false || typeof body.error === 'string')) {
-        body.requestId = String(req.id)
-        return JSON.stringify(body)
-      }
+      const body = failureEnvelope(JSON.parse(payload), reply.statusCode, String(req.id))
+      if (body) return JSON.stringify(body)
     } catch { /* not JSON after all: leave it */ }
     return payload
   })

@@ -110,7 +110,8 @@ describe('vault gate end to end (real Vaultwarden over TLS)', { timeout: 900_000
   it('locked: data route 423, status answers (not bootstrapped)', async () => {
     const d = await app.inject({ method: 'GET', url: '/api/proxmox/resources' })
     assert.equal(d.statusCode, 423)
-    assert.deepEqual(d.json(), { ok: false, locked: true })
+    const { requestId: _ref, ...rest } = d.json()
+    assert.deepEqual(rest, { ok: false, success: false, code: 'locked', locked: true })
     const s = await app.inject({ method: 'GET', url: '/api/auth/status' })
     assert.equal(s.statusCode, 200)
     assert.equal(s.json().locked, true)
