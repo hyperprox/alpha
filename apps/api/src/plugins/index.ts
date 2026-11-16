@@ -21,6 +21,7 @@ import { pbsPlugin }      from './pbs'
 import { unmanicPlugin }  from './unmanic'
 import { homepagePlugin } from './homepage'
 import { haproxyPlugin }  from './haproxy'
+import { nginxPlugin, caddyPlugin, envoyPlugin } from './web-proxies'
 
 export const PLUGINS: Plugin[] = [
   arrstackPlugin,
@@ -35,6 +36,9 @@ export const PLUGINS: Plugin[] = [
   nextcloudPlugin,
   homepagePlugin,
   haproxyPlugin,
+  nginxPlugin,
+  caddyPlugin,
+  envoyPlugin,
 ]
 
 export function findPlugin(id: string): Plugin | undefined {

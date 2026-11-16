@@ -43,7 +43,7 @@ export interface ProxmoxVM {
 // --- Proxy -------------------------------------------------------------------
 
 // Every kind is implemented (apps/api/src/lib/proxy/providers); the API's own types are in lib/proxy/types.ts.
-export type ProxyProvider  = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin'
+export type ProxyProvider  = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin' | 'nginx'
 export type SSLStatus      = 'valid' | 'expiring' | 'expired' | 'none' | 'pending'
 
 export interface ProxyHost {

@@ -5,7 +5,7 @@
 import { alpha } from '@/lib/theme'
 import { Pill, type PillTone } from '@/components/visual/kit'
 
-export type Kind = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin'
+export type Kind = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin' | 'nginx'
 
 export interface HostView {
   id: string; instanceId: string; instanceName: string; kind: Kind
@@ -17,8 +17,8 @@ export interface HostView {
 
 export type HostAction = 'enable' | 'disable' | 'delete'
 
-export const KIND_SHORT: Record<Kind, string> = { npm: 'NPM', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin' }
-export const KIND_COLOR: Record<Kind, string> = { npm: 'var(--accent)', traefik: 'var(--accent-2)', caddy: 'var(--good)', haproxy: 'var(--violet-2)', pangolin: 'var(--warn-2)' }
+export const KIND_SHORT: Record<Kind, string> = { npm: 'NPM', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin', nginx: 'NGINX' }
+export const KIND_COLOR: Record<Kind, string> = { npm: 'var(--accent)', traefik: 'var(--accent-2)', caddy: 'var(--good)', haproxy: 'var(--violet-2)', pangolin: 'var(--warn-2)', nginx: 'var(--good-2, var(--good))' }
 
 export function daysLeft(iso?: string | null): number | null {
   if (!iso) return null

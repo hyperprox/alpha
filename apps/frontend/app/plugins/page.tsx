@@ -443,7 +443,7 @@ export default function PluginsPage() {
       )}
 
         <RemovedGuestsNotice/>
-        <div id="auto-connect"><AutoConnectPanel plugins={['unmanic', 'arrstack', 'plex', 'homepage', 'nextcloud']} onChanged={() => { void load(); void loadAuto() }} /></div>
+        <div id="auto-connect"><AutoConnectPanel plugins={['unmanic', 'arrstack', 'plex', 'homepage', 'nextcloud', 'nginx', 'caddy', 'envoy']} onChanged={() => { void load(); void loadAuto() }} /></div>
 
         {findings && findings.length > 0 && (
           <Panel title="Found on your cluster" sub={`${findings.length}`}

@@ -28,6 +28,7 @@ import {
 import { isTranscode, kindOf, nodeHardwareFacts, tcPreview, tcPrepare, tcInstallEnv, tcJobSteps, tcRunSetup, tcCleanup } from './transcode/catalogue'
 import type { LinkRecord } from './transcode/setup'
 import { sharedPlexSignin } from './plex-signin-shared'
+import { managedSecret, type ManagedProxyRegistration } from './proxy/managed-recipes'
 import { execOnNode } from './node-exec'
 import type { CreatePVE } from './wizard-executor'
 import type { ExecResult } from './node-exec'
@@ -163,6 +164,11 @@ export interface InstallDeps {
   haproxySetup?: () => HaproxySetupDeps
   /** HyperProx's own addresses, which may read HAProxy's /metrics. */
   scrapers?:   () => string[]
+  /**
+   * A recipe with registersProxy: add the finished install to the Proxy page as a Managed instance. Returns what it did,
+   * in words. Default: lib/proxy registerManagedProxy (the proxy service, as the person who started the install).
+   */
+  registerProxy?: (o: ManagedProxyRegistration) => Promise<string>
 }
 
 /** HAProxy's setup as it runs for real: the Proxy service, the plug-in's store, the audit log and Prometheus. */
@@ -195,6 +201,8 @@ const realDeps = (): InstallDeps => ({
   nodeRun:     pbsSetupNodeRunner,
   pbsSetup:    () => pbsSetupDeps(pve()),
   publish: realPublishDeps(),
+  // Loaded when used: the proxy service is set up at start-up, after this module.
+  registerProxy: async o => (await import('./proxy')).registerManagedProxy(o),
 })
 
 /** How long after an install the generated admin login is still served to the page. */
@@ -403,6 +411,7 @@ const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan): I
     // HAProxy's own setup takes the place of the generic wiring.
     ...(recipe.setup === 'haproxy' ? HAPROXY_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase }))
       : [{ id: 'wire',      label: 'Configure the integration', status: 'pending' as Phase }]),
+    ...(recipe.registersProxy ? [{ id: 'proxy', label: 'Add it to the Proxy page', status: 'pending' as Phase }] : []),
   ]),
   ...(publish ? PUBLISH_STEPS.map(s => ({ id: s.id, label: s.label, status: 'pending' as Phase })) : []),
 ]
@@ -548,6 +557,10 @@ async function runJob(
     // The Arr Stack's compose file, folders and VPN login (moved from the preview's vault item to the stack's own).
     if (recipe.stack === 'arr') Object.assign(env, await arrInstallEnv({ owner: job.owner, options, vault: job.vaultItem }, deps))
     // Unmanic and Tdarr: the compose file, the folders and (NVIDIA) the libraries. No secret is made.
+    // A proxy HyperProx will drive: a fresh secret for the API login the script sets up (unused by a kind with none).
+    // It reaches the vault with the Proxy instance, after the install answers.
+    const proxySecret = recipe.registersProxy ? managedSecret() : ''
+    if (proxySecret) env.HPX_PROXY_SECRET = proxySecret
     if (tc) Object.assign(env, tcInstallEnv(tc, { options, groups: job.tcGroups ?? [], ip: job.ip ?? '', hostname: job.hostname ?? recipe.id }))
     // The Arr Stack's shell in its container, and the stop that every failure after `docker compose up` runs first:
     // an app Compose already started may have no sign-in yet.
@@ -671,6 +684,26 @@ async function runJob(
       const s5 = step(job, 'wire')
       s5.detail = url ? await wireUp(recipe, url) : 'no address, so nothing was configured'
       s5.status = url ? 'done' : 'skipped'
+    }
+
+    // 5b. A proxy goes on the Proxy page, so apps can be published through it. Only one that answers; a failure here
+    // leaves the install standing and says what to do, like a check that did not pass.
+    if (recipe.registersProxy) {
+      const sp = step(job, 'proxy')
+      if (s4.status !== 'done' || !job.ip) { sp.status = 'skipped'; sp.detail = `${recipe.name} did not answer, so it was not added to the Proxy page.` }
+      else {
+        try {
+          if (!deps.registerProxy) throw new Error('the Proxy page is not available here')
+          sp.detail = await deps.registerProxy({
+            kind: recipe.registersProxy, recipeId: recipe.id, name: `${recipe.name} on CT ${job.vmid}`,
+            ip: job.ip.split('/')[0], node: job.node!, vmid: job.vmid!, secret: proxySecret, owner: job.owner,
+          })
+          sp.status = 'done'
+        } catch (e: any) {
+          sp.status = 'failed'
+          sp.detail = `It is installed and answering, but could not be added to the Proxy page: ${e?.message ?? e}. Add it there as a Managed instance.`
+        }
+      }
     }
 
     // 6. Publishing: only a service that answers on its own address gets a public name.

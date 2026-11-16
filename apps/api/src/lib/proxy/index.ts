@@ -4,8 +4,11 @@
 
 import type { PrismaClient } from '@prisma/client'
 import { getProviderCredentials } from '../credentials'
-import { execInGuest, nodeCredential } from '../node-exec'
+import { nodeCredential } from '../node-exec'
 import { livePve } from '../pve-env'
+import { productionRemoteExecutor } from '../remote/executor'
+import { machineId } from '../guest-id'
+import { managedInstanceInput, type ManagedProxyRegistration } from './managed-recipes'
 import { ProxyService, LEGACY_NPM_ID } from './service'
 import { ProxyPlanner } from './plans'
 import { PrismaProxyStore, vaultInstanceSecrets, type ProxyStore } from './store'
@@ -16,19 +19,14 @@ export * from './types'
 export { ProxyService, LEGACY_NPM_ID } from './service'
 export { ProxyPlanner } from './plans'
 
-async function nodeAddress(node: string): Promise<string> {
-  const status = await livePve().fetchNode<any[]>('/cluster/status').catch(() => [])
-  const row = (status ?? []).find((r: any) => r.type === 'node' && r.name === node)
-  if (!row?.ip) throw new Error(`Could not find an address for node ${node}.`)
-  return row.ip
-}
-
-/** The Managed transport: a script in the instance's container, through its node's vault-held login. */
+/**
+ * The Managed transport: a script in the instance's container, through its node's vault-held login. It goes through
+ * the remote executor, which refuses a guest HyperProx must leave alone (lib/guest-guard.ts) before any login is used.
+ */
 export function productionGuestExec(node: string, vmid: number): GuestExec {
   return async script => {
-    const cred = await nodeCredential(node)
-    if (!cred) throw new Error(`HyperProx has no login for node ${node}; add one in Terminal → hosts.`)
-    const r = await execInGuest({ host: await nodeAddress(node), cred, vmid, script, timeoutMs: 60_000 })
+    const m = { id: machineId({ type: 'lxc', vmid }), kind: 'lxc' as const, name: `CT ${vmid}`, node, vmid, running: true }
+    const r = await productionRemoteExecutor().run(m, script, { timeoutMs: 60_000 })
     return { code: r.code, output: r.output }
   }
 }
@@ -122,4 +120,20 @@ export async function wizardUpdateHost(hostId: string, patch: HostPatch, actor: 
 export async function wizardRequestCertificate(domains: string[], email: string, actor: { email: string }, instanceId = LEGACY_NPM_ID): Promise<{ id: string }> {
   const c = await proxyService().requestCertificate(instanceId, domains, email, actor)
   return { id: c.id }
+}
+
+/**
+ * The Catalogue's hook (catalogue-installer runJob): a proxy it installed goes on the Proxy page as a Managed instance,
+ * as the person who started the install, with its login (if it has one) in the vault. Answers in words.
+ */
+export async function registerManagedProxy(o: ManagedProxyRegistration): Promise<string> {
+  const svc = proxyService()
+  const existing = (await svc.listInstances()).find(i => i.mode === 'managed' && i.managed?.vmid === o.vmid && i.managed?.node === o.node)
+  if (existing) return `Already on the Proxy page as "${existing.name}".`
+  const input = managedInstanceInput(o.kind, { name: o.name, ip: o.ip, node: o.node, vmid: o.vmid, secret: o.secret })
+  input.managed = { node: o.node, vmid: o.vmid, recipe: o.recipeId }
+  const { instance, health } = await svc.createInstance(input, { email: o.owner || 'catalogue' })
+  return health.ok
+    ? `Added to the Proxy page as "${instance.name}"; apps can be published through it from there.`
+    : `Added to the Proxy page as "${instance.name}", but its first health check did not pass: ${health.checks.filter(c => !c.ok).map(c => c.detail).join('; ')}.`
 }

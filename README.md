@@ -69,7 +69,7 @@ To run it locally, see [docs/demo.md](docs/demo.md).
 | Dashboard | A glance: one cluster verdict, storage and what is happening now, a chip for each plug-in (Active, Needs attention or Off) and a Websites row with people today, bots kept apart, and certificate and alert pills; dials, GPU, network, Ceph and HA are folded away under **More detail** |
 | Monitoring | Bundled Prometheus and Grafana with HyperProx dashboards and alert rules |
 | Storage | Every storage on every node, Ceph health, OSDs and pools, and per-guest disks |
-| Reverse proxy | Nginx Proxy Manager, Traefik, Caddy, HAProxy and Pangolin, several at once in one table; every change previewed, then read back |
+| Reverse proxy | Nginx Proxy Manager, Traefik, Caddy, HAProxy, Pangolin and NGINX, several at once in one table; every change previewed, then read back. NGINX and Caddy installed from the Catalogue join the table by themselves |
 | DNS | GoDaddy and Cloudflare records side by side, each domain at the provider that holds it, with guided creation, Cloudflare's proxy (orange cloud) per record, domain expiry, WAN IP mismatch flags and DDNS |
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
@@ -77,7 +77,7 @@ To run it locally, see [docs/demo.md](docs/demo.md).
 | Catalogue | Guided installs of NPM, HAProxy, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes; **Plex Media Server** installs from Plex's own repository, is claimed to your Plex account in the flow, and the Plex plug-in connects to it by itself |
 | Websites | Its own section: a New website wizard (static site, WordPress or Ghost) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link or open Ghost's admin, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
-| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud, HAProxy and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
+| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud, HAProxy, MeshCentral, NGINX, Caddy and Envoy, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and the master password; a message when something new is added |
 | Nextcloud | Version and update, every setup warning from the admin page grouped by severity with a one-click fix, a guided step or an honest "optional" for each, Talk's signalling server and Client Push, PHP, database, background jobs and the log; updates a Docker Compose install (database dump first, master password) |
 | Load balancing | The HAProxy plug-in draws each load balancer as frontends, backends and servers with their live state, weights, sessions, request rates, errors, health checks and response times; drain, maintenance, weights, health checks, adding and removing servers and the balance algorithm are a click each (runtime only, or saved after `haproxy -c`); **Load-balance this app** puts two or more guests behind one name |
@@ -920,7 +920,8 @@ in the audit log with what HyperProx found, and API tokens cannot check or trust
 
 **Proxy** shows the hosts of every proxy you connect, in one table, each marked with the proxy that
 serves it: Nginx Proxy Manager, Traefik (its dynamic file over SFTP, host key pinned), Caddy (admin
-API), HAProxy (Data Plane API, config checked before every reload) and Pangolin (its API). Several at
+API), HAProxy (Data Plane API, config checked before every reload), Pangolin (its API) and NGINX (a file of
+HyperProx's own in the container, checked with `nginx -t` before every reload; managed only). Several at
 once are fine, two of the same kind included. The first Nginx Proxy Manager login lives under
 **Settings → Proxy**; add the others with **Add proxy** on the Proxy page. Each proxy is either one you
 already run (bring your own) or one HyperProx installed (managed).
@@ -928,7 +929,8 @@ already run (bring your own) or one HyperProx installed (managed).
 Every change is a preview first: it lists each setting that would change, in words, and warns when a
 certificate, force-HTTPS, HSTS or HTTP/2 is being taken off. Applying it changes only what you edited,
 refuses if the host changed since the preview, and reads the proxy back to confirm. Hosts that another
-tool made on Traefik, Caddy, HAProxy or Pangolin are shown read-only. Scripts use the same preview and
+tool made on Traefik, Caddy, HAProxy, Pangolin or NGINX are shown read-only. An NGINX or Caddy installed from
+the Catalogue is added here by itself, as a managed proxy, once it answers. Scripts use the same preview and
 apply calls (see [docs/proxy.md](docs/proxy.md)).
 
 **DNS** lists the domains of every DNS provider you connect, GoDaddy and Cloudflare, each with a badge
@@ -1172,7 +1174,8 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, HAProxy, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr and Plex (below). Websites are not listed here: they have their own section,
+Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr and Plex (below), and
+three proxies: NGINX, Caddy and Envoy (see [NGINX, Caddy and Envoy](#nginx-caddy-and-envoy)). Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
@@ -1181,7 +1184,8 @@ running containers listening on port 80 or 443, the same list as [Add an existin
 one read-only question per app: Nextcloud's `/status.php`, Jellyfin's `/System/Info/Public`, Gitea's
 `/api/v1/version`, Vaultwarden's `/api/config` (or `/alive`), Grafana's `/api/health`, Uptime Kuma's
 `/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Tautulli's sign-in page, Nginx Proxy
-Manager's `/api/`, HAProxy's own "no server is available" page, Proxmox Backup Server's web page, Unmanic's worker list and Tdarr's start page. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
+Manager's `/api/`, HAProxy's own "no server is available" page, Proxmox Backup Server's web page, Unmanic's worker list and Tdarr's start page, Caddy's and
+Envoy's `Server` header, and the health answer only the Catalogue's NGINX gives. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
 timeout and at most 64 KiB read; a proxy target is asked with the public name as its Host header, as the
 proxy would, and an internal certificate is not checked. A recipe found this way says **Running on** the
 guest and its public name (with the version when the app shows one) and offers **Open**; **Install another…**
@@ -2807,6 +2811,50 @@ disconnecting asks again and names what is left there.
 - **Notifications**: channels for lock alerts, update runs, updates waiting to be applied, certificate changes, Prometheus alerts and Home Assistant security actions, with severity
   filters, quiet hours and a test button. See [docs/notifications.md](docs/notifications.md).
 - **Naming & addresses**: see below.
+
+#### NGINX, Caddy and Envoy
+
+Three proxies in the Catalogue (Reverse proxy), each with its own plug-in page.
+
+| | Installs | Its admin or status interface | On the Proxy page |
+|---|---|---|---|
+| NGINX | 1.31.8 mainline from nginx.org's Debian repository | status page on the container's own 127.0.0.1:8081 | yes, as a managed NGINX |
+| Caddy | 2.11.7 from Caddy's Debian repository, run with `--resume` | admin API on the container's own 127.0.0.1:2019 | yes, as a managed Caddy |
+| Envoy | 1.40.2, the release binary checked against the checksum Envoy publishes | admin on the container's own 127.0.0.1:9901 | no: its routes stay in its own files |
+
+Each goes into a new Debian 13 container, without Docker. A repository key is trusted only when its
+fingerprint is the one HyperProx expects, and a download only when its checksum matches. None of the admin
+interfaces can be reached from your network: HyperProx reaches them through the container, the same way it
+runs every command in a guest, so a guest tagged `hyperprox-ignore` or on Remote access's "never look inside"
+list is left alone. When the install answers, an NGINX or Caddy is added to the Proxy page by itself, so you
+can publish apps through it straight away. HyperProx's hosts on NGINX live in
+`/etc/nginx/conf.d/hyperprox-hosts.conf`; every change is checked with `nginx -t` first, and a change NGINX
+refuses is put back as it was.
+
+**The plug-ins connect by themselves.** A proxy the Catalogue installed (or one the Catalogue sees running, or a
+container whose notes say the Catalogue made it) is connected after one read-only look inside. **Stop watching**
+is remembered. Nothing is typed in: there is no address or login to give.
+
+What each page shows, drawn as a route map (the names on the left, a wire through the proxy, every target with
+a dot that says whether the container can reach it), gauges and bars:
+
+- **NGINX**: connections and requests from its status page, every site and upstream, the `nginx -t` result,
+  every certificate the configuration names with its remaining life, and the requests of the last five minutes
+  by status (the error rate is the 5xx share).
+- **Caddy**: its routes and where they forward, each upstream's requests and failures, every certificate it
+  holds, and the names still waiting for one.
+- **Envoy**: its clusters with every host's health, its listeners, and its requests and 5xx since it started.
+
+Every problem shown has its fix when one exists: **Start** a stopped proxy, **Turn on the status page**,
+**Test the configuration**, **Renew certificates** (NGINX with certbot), **Retry certificates** (Caddy),
+**Undrain** a drained Envoy. Other actions sit beside them: **Reload** (NGINX checks its configuration first;
+Caddy reloads through its API; Envoy picks its listener and cluster files up again, and says so when it
+refuses one), **Drain** an Envoy (its health check answers failed, so a load balancer in front stops sending
+it traffic) and, for an Envoy whose configuration is all in its startup file, **Restart** after a check.
+Actions are for admins signed in to HyperProx (never an API token); each shows what it does and asks first, runs
+only if a reading taken at that moment still offers it, and is recorded in the audit log. Anyone signed in can read
+the pages; reading a proxy again on demand, and the list of proxies found but not connected, are for admins.
+Envoy runs as its own user with only the right to bind its ports, and a read-only view of the system.
 
 #### Naming & addresses
 

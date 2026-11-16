@@ -148,6 +148,16 @@ export const DETECT: Record<string, Fingerprint[]> = {
       },
     },
   ],
+  // The proxy itself, answering on its own address: the Server header it sends on every answer (an app behind it
+  // sends its own). Caddy's is "Caddy"; Envoy's is "envoy" unless its server_name was changed. Too many apps answer
+  // as nginx (the web recipes among them) for that header alone to say "a proxy", so NGINX is found by the health
+  // answer only the Catalogue's NGINX gives, with its version from the header.
+  nginx: [{
+    path: '/hpx-healthz',
+    match: a => { const m = /^nginx(?:\/(\d+\.\d+\.\d+))?$/i.exec(String(a.headers.server ?? '').trim()); return m && a.status === 200 && a.body.trim() === 'ok' ? { version: m[1] ?? null } : null },
+  }],
+  caddy: [{ path: '/', match: a => (/^caddy$/i.test(String(a.headers.server ?? '').trim()) ? { version: null } : null) }],
+  envoy: [{ path: '/', match: a => (/^envoy$/i.test(String(a.headers.server ?? '').trim()) ? { version: null } : null) }],
 }
 
 /** Recipes that are found by what site discovery saw inside the container rather than by a probe. */

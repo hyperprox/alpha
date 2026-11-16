@@ -21,8 +21,10 @@
 import { DETECT, type Fingerprint } from './catalogue-detect'
 import { ARR_RECIPE } from './arr/recipe'
 import { TRANSCODE_RECIPES } from './transcode/recipes'
+import { WEB_PROXY_RECIPES } from './webproxy/recipes'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
+import type { ManagedKind } from './proxy/managed-recipes'
 import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
 import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
 import { HAPROXY_SCRIPT, HAPROXY_RECIPE_ID, HAPROXY_VERSION, HAPROXY_LINE, DATAPLANE_VERSION, METRICS_PORT } from './haproxy/recipe'
@@ -137,6 +139,13 @@ export interface CatalogueRecipe {
    * HAProxy's (lib/haproxy/setup.ts: the Proxy page, its plug-in and Prometheus) runs after the check, in place of the wiring.
    */
   setup?:      'pbs' | 'ghost' | 'haproxy'
+  /**
+   * A reverse proxy HyperProx can drive: once it answers, the install adds it to the Proxy page as a Managed instance
+   * of this kind (lib/proxy/managed-recipes.ts managedInstanceInput), so apps can be published through it from
+   * HyperProx. The script gets a fresh secret in HPX_PROXY_SECRET for an API login it sets up (the instance keeps it
+   * in the vault); a kind with no login ignores it.
+   */
+  registersProxy?: ManagedKind
   /** Checks across the recipe's options, after each one passed its own kind. */
   checkOptions?: (values: Record<string, string>) => string[]
 }
@@ -541,6 +550,7 @@ export const CATALOGUE: CatalogueRecipe[] = [
       - ./data:/data
       - ./letsencrypt:/etc/letsencrypt` },
   },
+  ...WEB_PROXY_RECIPES,
 
   {
     id: HAPROXY_RECIPE_ID,

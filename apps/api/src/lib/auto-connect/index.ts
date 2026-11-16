@@ -14,7 +14,7 @@ import { isUnlocked, cachedSecrets, onUnlock } from '../vault/state'
 import { getSettings, saveSettings } from '../plugin-host'
 import { sharedServiceScan } from '../service-scan'
 import { homePve } from '../pve-env'
-import { EMPTY, Reconciler, envExcludedSubnets, type AutoConnectAdapter, type AutoConnectState, type StateStore } from './core'
+import { EMPTY, Reconciler, envExcludedSubnets, type AdapterContext, type AutoConnectAdapter, type AutoConnectState, type StateStore } from './core'
 import { settingsAdapter } from './settings-adapter'
 import { appLog } from '../log-once'
 import { machineId } from '../guest-id'
@@ -41,6 +41,7 @@ const lazy = {
   homepage: async () => (await import('../homepage')).homepageService(),
   nextcloud: async () => (await import('../nextcloud')).nextcloudService(),
   haproxy: async () => (await import('../haproxy')).haproxyService(),
+  webproxy: async () => (await import('../webproxy')).webProxyService(),
   plugins: async () => (await import('../../plugins')).PLUGINS,
 }
 
@@ -72,6 +73,8 @@ function adapters(): AutoConnectAdapter[] {
         else await (await import('../haproxy')).keepScrapersCurrent(svc, { log: m => appLog.warn(m) }).catch(() => ({}))
         return out
       }, pick: async (key, choice, ctx) => (await lazy.haproxy()).autoPick(key, choice, ctx) },
+    // NGINX, Caddy and Envoy: one service, an adapter per plug-in. Each guest is found once, so there is no choice to pick.
+    ...(['nginx', 'caddy', 'envoy'] as const).map(kind => ({ plugin: kind, reconcile: async (ctx: AdapterContext) => (await lazy.webproxy()).autoConnect(kind, ctx) })),
     settingsAdapter('unmanic', settingsDeps),
     settingsAdapter('arrstack', settingsDeps),
     settingsAdapter('plex', settingsDeps),
