@@ -27,7 +27,7 @@ import crypto from 'node:crypto'
 import type { CoreEndpointClient } from '../plugin-host'
 import type { NotifyEventInput } from '../notify/types'
 import {
-  APPS, APP_NAME, APP_WHAT, DEFAULT_SETTINGS, candidates, classify, giveUpMessage, historyEvents, isApp, lidarrItems, observe as fold,
+  APPS, APP_NAME, APP_WHAT, candidates, nextSearchAt, searchDue, storedSettings, weekKey, classify, giveUpMessage, historyEvents, isApp, lidarrItems, observe as fold,
   parseKey, radarrItems, reasonCounts, rows, sameRule, sonarrItems, summarise, wholeSeasons,
   type App, type GiveUpSettings, type Restore, type Row, type Track,
 } from './logic'
@@ -54,7 +54,15 @@ export interface GiveUpDeps {
   later?(fn: () => void, ms: number): void
 }
 
-interface AppState { historyId: number; observedAt?: string; lastActAt?: string; /** The calendar day (UTC) a run was claimed for. */ lastActDay?: string; lastRun?: RunResult }
+interface AppState {
+  historyId: number; observedAt?: string; lastActAt?: string; /** The calendar day (UTC) a run was claimed for. */ lastActDay?: string; lastRun?: RunResult
+  /** The week (its Monday, local) the weekly search was claimed for, and how the last one went. */
+  searchWeek?: string; lastSearch?: SearchRun
+}
+export interface SearchRun { at: string; app: App; count: number; commandId: number | null; status: string; error?: string }
+const MISSING_COMMAND: Record<App, Record<string, unknown>> = {
+  sonarr: { name: 'MissingEpisodeSearch', monitored: true }, radarr: { name: 'MissingMoviesSearch' }, lidarr: { name: 'MissingAlbumSearch' },
+}
 export interface RunResult { at: string; app: App; given: number; skipped: Array<{ title: string; why: string }>; failed: Array<{ title: string; why: string }>; error?: string }
 
 const API: Record<App, string> = { sonarr: '/api/v3', radarr: '/api/v3', lidarr: '/api/v1' }
@@ -101,7 +109,7 @@ export class GiveUpService {
   }
 
   async settings(app: App): Promise<GiveUpSettings> {
-    return { ...DEFAULT_SETTINGS, ...(await this.d.store.getSetting<GiveUpSettings>(`settings:${app}`) ?? {}) }
+    return storedSettings(await this.d.store.getSetting<unknown>(`settings:${app}`))
   }
   private async appState(app: App): Promise<AppState> { return (await this.d.store.getSetting<AppState>(`state:${app}`)) ?? { historyId: 0 } }
   private async setAppState(app: App, s: AppState) { await this.d.store.setSetting(`state:${app}`, s, 'hyperprox') }
@@ -217,7 +225,7 @@ export class GiveUpService {
 
   // ── status and preview ─────────────────────────────────────────────────────
 
-  async status(): Promise<{ apps: Array<{ app: App; configured: boolean; settings: GiveUpSettings; tracking: number; givenUp: number; soon: number; observedAt: string | null; lastRun: RunResult | null }>; givenUp: Row[] }> {
+  async status(): Promise<{ apps: Array<{ app: App; configured: boolean; settings: GiveUpSettings; tracking: number; givenUp: number; soon: number; observedAt: string | null; lastRun: RunResult | null; lastSearch: SearchRun | null; nextSearch: string | null }>; givenUp: Row[] }> {
     const apps = []
     const given: Track[] = []
     for (const app of APPS) {
@@ -227,8 +235,13 @@ export class GiveUpService {
       const st = await this.appState(app)
       const tracking = all.filter(t => t.state === 'tracking')
       given.push(...all.filter(t => t.state === 'given-up'))
-      const soon = candidates(tracking, { ...s, tries: Math.max(1, s.tries - 3) }, this.d.now()).length
-      apps.push({ app, configured, settings: s, tracking: tracking.length, givenUp: all.length - tracking.length, soon, observedAt: st.observedAt ?? null, lastRun: st.lastRun ?? null })
+      // Close: one more week (and one more weekly search) would do it.
+      const soon = s.weeks > 1 ? candidates(tracking, { weeks: s.weeks - 1 }, this.d.now()).length - candidates(tracking, s, this.d.now()).length : 0
+      apps.push({
+        app, configured, settings: s, tracking: tracking.length, givenUp: all.length - tracking.length, soon, observedAt: st.observedAt ?? null,
+        lastRun: st.lastRun ?? null, lastSearch: st.lastSearch ?? null,
+        nextSearch: s.search.enabled ? new Date(nextSearchAt(this.d.now(), s.search, st.searchWeek)).toISOString() : null,
+      })
     }
     return { apps, givenUp: rows(given).sort((a, b) => String(b.gaveUpAt).localeCompare(String(a.gaveUpAt))).slice(0, 500) }
   }
@@ -269,7 +282,7 @@ export class GiveUpService {
       }
       this.previews.delete(p.id)
     }
-    await this.d.audit('arrstack.giveup.settings', { app, by, enabled: s.enabled, tries: s.tries, minAgeDays: s.minAgeDays, ageFrom: s.ageFrom, action: s.action })
+    await this.d.audit('arrstack.giveup.settings', { app, by, enabled: s.enabled, weeks: s.weeks, action: s.action, weeklySearch: s.search })
     await this.locked(() => this.d.store.setSetting(`settings:${app}`, s, by))
     return s
   }
@@ -288,6 +301,9 @@ export class GiveUpService {
           await this.observe(app).catch(e => this.d.log?.(`[arr-giveup] ${app}: reading failed: ${msg(e)}`))
         }
         const s = await this.settings(app)
+        if (searchDue(this.d.now(), s.search, (await this.appState(app)).searchWeek)) {
+          await this.weeklySearch(app, 'the weekly search').catch(e => this.d.log?.(`[arr-giveup] ${app}: weekly search failed: ${msg(e)}`))
+        }
         const st2 = await this.appState(app)
         // Once per calendar day (UTC), whatever time the last one ran.
         if (!s.enabled || st2.lastActDay === dayOf(this.d.now())) continue
@@ -296,6 +312,35 @@ export class GiveUpService {
       }
     } finally { this.busy = false }
     return out
+  }
+
+  /**
+   * The weekly search: the arr's own "search for everything missing" command, once a week. Claimed for the week before
+   * it starts (a failure is not retried that week), audited, and the command read back: "queued" is not "done".
+   */
+  async weeklySearch(app: App, by: string): Promise<SearchRun> {
+    return this.locked(async () => {
+      const at = this.iso()
+      await this.setAppState(app, { ...(await this.appState(app)), searchWeek: weekKey(this.d.now()) })
+      const run: SearchRun = { at, app, count: 0, commandId: null, status: 'not started' }
+      try {
+        const c = (await this.client(app))!
+        if (!c.post) throw new Error('Searches cannot be started from here.')
+        run.count = (await this.missing(c, app)).length
+        await this.d.audit('arrstack.giveup.weekly-search', { app, by, command: MISSING_COMMAND[app].name, missing: run.count })
+        const cmd = await c.post(`${API[app]}/command`, MISSING_COMMAND[app], READ_MS)
+        run.commandId = Number.isInteger(Number(cmd?.id)) ? Number(cmd.id) : null
+        run.status = String(cmd?.status ?? 'unknown')
+        if (run.commandId !== null) {
+          await this.sleep(5000)
+          const back = await c.get(`${API[app]}/command/${run.commandId}`, 15_000).catch(() => null)
+          if (back?.status) run.status = String(back.status)
+          if (back?.status === 'failed' && back?.message) run.error = String(back.message).slice(0, 160)
+        }
+      } catch (e) { run.error = msg(e); run.status = 'failed' }
+      await this.setAppState(app, { ...(await this.appState(app)), lastSearch: run })
+      return run
+    })
   }
 
   /** Give up on what the rule says, now. Every candidate is re-read live first. */
@@ -319,7 +364,7 @@ export class GiveUpService {
       if (!l.monitored) { res.skipped.push({ title: label(t), why: 'It is already not being searched for.' }); continue }
       ok.push(t)
     }
-    await this.d.audit('arrstack.giveup.run', { app, by, action: s.action, tries: s.tries, minAgeDays: s.minAgeDays, count: ok.length, items: ok.slice(0, 50).map(label) })
+    await this.d.audit('arrstack.giveup.run', { app, by, action: s.action, weeks: s.weeks, count: ok.length, items: ok.slice(0, 50).map(label) })
     const given: Track[] = []
     if (ok.length && (s.action === 'unmonitor' || app === 'sonarr')) {
       for (const part of chunk(ok, 100)) {

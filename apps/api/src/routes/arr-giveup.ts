@@ -2,12 +2,14 @@
 //  HyperProx — Arr Stack "Give up after X tries" routes (/api/plugins/arrstack/give-up)
 //
 //  Roles (lib/roles.ts):
-//    GET  /give-up              viewer, like the Arr Stack page: each app's rule, its counts, the last daily run, and
+//    GET  /give-up              viewer, like the Arr Stack page: each app's rule, its counts, the last daily run, the
+//                               last and next weekly search, and
 //                               the given-up list (item, tries, since, reason, what was done).
 //    POST /give-up/preview      admin: exactly what a rule would give up on today, from fresh counts. Changes
 //                               nothing in Sonarr, Radarr or Lidarr. Its id is what turning the rule on confirms.
-//    POST /give-up/settings     admin: save one app's rule. Turning it on needs the id of a preview of that same
-//                               rule from the last 15 minutes. Audited.
+//    POST /give-up/settings     admin: save one app's rule and its weekly search (day and hour). Turning the give-up
+//                               rule on, or changing it while on, needs the id of a preview of that same rule from the
+//                               last 15 minutes; the weekly search alone does not. Audited.
 //    POST /give-up/try-again    admin, confirmed: monitor again and search, or add a removed film or album back.
 //    POST /give-up/releases     admin: "See what's available", ONE interactive search for one item or one season,
 //                               at most once per item every ten minutes (the last answer in between); and at most

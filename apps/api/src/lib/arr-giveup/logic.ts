@@ -27,39 +27,106 @@ const DAY_MS = 86_400_000
 // ── settings ─────────────────────────────────────────────────────────────────
 
 export type GiveUpAction = 'unmonitor' | 'remove'
-export type AgeFrom = 'released' | 'first-missing'
-export interface GiveUpSettings {
+
+/** The weekly missing-search (the arr's own MissingEpisodeSearch / MissingMoviesSearch / MissingAlbumSearch). */
+export interface WeeklySearch {
   enabled: boolean
-  /** Give up after this many tries. */
-  tries: number
-  /** ...and only when it is at least this old. */
-  minAgeDays: number
-  /** Old since it aired or was released, or since HyperProx first saw it missing. */
-  ageFrom: AgeFrom
-  /** 'unmonitor' keeps everything; 'remove' (films and albums only) takes it out of the library, files untouched (there are none). */
-  action: GiveUpAction
+  /** 0 = Sunday … 6 = Saturday, in the server's time zone. */
+  day: number
+  /** 0–23, in the server's time zone. */
+  hour: number
 }
 
-export const DEFAULT_SETTINGS: GiveUpSettings = { enabled: false, tries: 14, minAgeDays: 30, ageFrom: 'released', action: 'unmonitor' }
-export const TRIES_RANGE = [1, 200] as const
-export const AGE_RANGE = [0, 3650] as const
+export interface GiveUpSettings {
+  enabled: boolean
+  /**
+   * Give up after this many weeks of weekly searches with nothing found: missing for at least this many weeks AND
+   * searched at least this many times, so something new is never dropped early.
+   */
+  weeks: number
+  /** 'unmonitor' keeps everything; 'remove' (films and albums only) takes it out of the library, files untouched (there are none). */
+  action: GiveUpAction
+  search: WeeklySearch
+}
 
-/** A settings body checked field by field. A string is why it was refused. */
+export const DEFAULT_SEARCH: WeeklySearch = { enabled: false, day: 1, hour: 8 }
+export const DEFAULT_SETTINGS: GiveUpSettings = { enabled: false, weeks: 8, action: 'unmonitor', search: DEFAULT_SEARCH }
+export const WEEKS_RANGE = [1, 104] as const
+
+/**
+ * Settings as stored, made current. Rows saved before the rule was in weeks (tries and days) come back switched off
+ * with the default number of weeks: the rule means something new, so it is previewed and confirmed again.
+ */
+export function storedSettings(v: unknown): GiveUpSettings {
+  const o = v && typeof v === 'object' ? v as Record<string, any> : {}
+  const legacy = o.weeks === undefined && (o.tries !== undefined || o.minAgeDays !== undefined)
+  const sr = o.search && typeof o.search === 'object' ? o.search : {}
+  const search: WeeklySearch = {
+    enabled: sr.enabled === true,
+    day: Number.isInteger(sr.day) && sr.day >= 0 && sr.day <= 6 ? sr.day : DEFAULT_SEARCH.day,
+    hour: Number.isInteger(sr.hour) && sr.hour >= 0 && sr.hour <= 23 ? sr.hour : DEFAULT_SEARCH.hour,
+  }
+  const weeks = Number.isInteger(o.weeks) && o.weeks >= WEEKS_RANGE[0] && o.weeks <= WEEKS_RANGE[1] ? o.weeks : DEFAULT_SETTINGS.weeks
+  return { enabled: legacy ? false : o.enabled === true, weeks, action: o.action === 'remove' ? 'remove' : 'unmonitor', search }
+}
+
+/** A settings body checked field by field. A string is why it was refused. A missing `search` keeps the default. */
 export function parseSettings(app: App, v: unknown): GiveUpSettings | string {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return 'Send the settings.'
   const o = v as Record<string, unknown>
-  const tries = Number(o.tries), age = Number(o.minAgeDays)
+  const weeks = Number(o.weeks)
   if (typeof o.enabled !== 'boolean') return 'Say whether it is on or off.'
-  if (!Number.isInteger(tries) || tries < TRIES_RANGE[0] || tries > TRIES_RANGE[1]) return `Tries must be a whole number from ${TRIES_RANGE[0]} to ${TRIES_RANGE[1]}.`
-  if (!Number.isInteger(age) || age < AGE_RANGE[0] || age > AGE_RANGE[1]) return `The minimum age must be from ${AGE_RANGE[0]} to ${AGE_RANGE[1]} days.`
-  if (o.ageFrom !== 'released' && o.ageFrom !== 'first-missing') return 'Say what the age counts from.'
+  if (!Number.isInteger(weeks) || weeks < WEEKS_RANGE[0] || weeks > WEEKS_RANGE[1]) return `Weeks must be a whole number from ${WEEKS_RANGE[0]} to ${WEEKS_RANGE[1]}.`
   if (o.action !== 'unmonitor' && o.action !== 'remove') return 'Pick stop searching or remove.'
   if (o.action === 'remove' && app === 'sonarr') return 'TV episodes can only stop being searched for: removing a whole show is not what this is for.'
-  return { enabled: o.enabled, tries, minAgeDays: age, ageFrom: o.ageFrom, action: o.action }
+  let search = DEFAULT_SEARCH
+  if (o.search !== undefined) {
+    const sr = o.search as Record<string, unknown>
+    if (!sr || typeof sr !== 'object' || typeof sr.enabled !== 'boolean') return 'Say whether the weekly search is on or off.'
+    const day = Number(sr.day), hour = Number(sr.hour)
+    if (!Number.isInteger(day) || day < 0 || day > 6) return 'Pick a day of the week for the weekly search.'
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) return 'Pick an hour from 0 to 23 for the weekly search.'
+    search = { enabled: sr.enabled, day, hour }
+  }
+  return { enabled: o.enabled, weeks, action: o.action, search }
 }
 
-export const sameRule = (a: GiveUpSettings, b: GiveUpSettings) =>
-  a.tries === b.tries && a.minAgeDays === b.minAgeDays && a.ageFrom === b.ageFrom && a.action === b.action
+/** The give-up rule itself (the weekly search is not part of what a preview confirms). */
+export const sameRule = (a: GiveUpSettings, b: GiveUpSettings) => a.weeks === b.weeks && a.action === b.action
+
+// ── the weekly search's calendar ─────────────────────────────────────────────
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+export const weekdayName = (d: number) => WEEKDAYS[d] ?? '?'
+
+/** Local midnight of the Monday that starts the week `ms` falls in, as YYYY-MM-DD: the week's claim key. */
+export function weekKey(ms: number): string {
+  const d = new Date(ms)
+  const back = (d.getDay() + 6) % 7
+  const mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() - back)
+  return `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, '0')}-${String(mon.getDate()).padStart(2, '0')}`
+}
+
+/** This week's scheduled moment (local), in ms. */
+export function scheduledThisWeek(ms: number, s: WeeklySearch): number {
+  const d = new Date(ms)
+  const back = (d.getDay() + 6) % 7
+  const offset = (s.day + 6) % 7 // Monday 0 … Sunday 6
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - back + offset, s.hour, 0, 0, 0).getTime()
+}
+
+/** Due: on, this week's moment has passed, and this week has not been claimed yet. */
+export function searchDue(nowMs: number, s: WeeklySearch, claimedWeek: string | undefined): boolean {
+  return s.enabled && nowMs >= scheduledThisWeek(nowMs, s) && claimedWeek !== weekKey(nowMs)
+}
+
+/** The next time it will run (ms), for the panel. */
+export function nextSearchAt(nowMs: number, s: WeeklySearch, claimedWeek: string | undefined): number {
+  const t = scheduledThisWeek(nowMs, s)
+  if (claimedWeek !== weekKey(nowMs) && nowMs < t) return t
+  if (claimedWeek !== weekKey(nowMs)) return nowMs
+  return scheduledThisWeek(t + 7 * 86_400_000, s)
+}
 
 // ── what is missing, read from an arr ────────────────────────────────────────
 
@@ -311,13 +378,13 @@ export function classify(t: Pick<Track, 'tries' | 'grabs' | 'failures' | 'import
 
 // ── the plan ─────────────────────────────────────────────────────────────────
 
-/** The date its age counts from. */
-export const ageStart = (t: Track, s: GiveUpSettings) => (s.ageFrom === 'first-missing' ? t.firstMissingAt : (t.releasedAt ?? t.firstMissingAt))
-export const ageDays = (t: Track, s: GiveUpSettings, nowMs: number) => Math.floor((nowMs - Date.parse(ageStart(t, s))) / DAY_MS)
+/** How long it has been missing: since it aired or was released, or (when the arr has no date) since HyperProx first saw it. */
+export const missingSince = (t: Track) => t.releasedAt ?? t.firstMissingAt
+export const weeksMissing = (t: Track, nowMs: number) => Math.floor((nowMs - Date.parse(missingSince(t))) / (7 * DAY_MS))
 
-/** Tracks the rule would give up on now: enough tries, old enough, not downloading. */
-export function candidates(tracks: Track[], s: GiveUpSettings, nowMs: number, inQueue: Set<number> = new Set()): Track[] {
-  return tracks.filter(t => t.state === 'tracking' && t.tries >= s.tries && ageDays(t, s, nowMs) >= s.minAgeDays && !inQueue.has(t.arrId))
+/** Tracks the rule would give up on now: missing for at least N weeks AND searched at least N times, not downloading. */
+export function candidates(tracks: Track[], s: Pick<GiveUpSettings, 'weeks'>, nowMs: number, inQueue: Set<number> = new Set()): Track[] {
+  return tracks.filter(t => t.state === 'tracking' && t.tries >= s.weeks && weeksMissing(t, nowMs) >= s.weeks && !inQueue.has(t.arrId))
 }
 
 /** One row for the page: an episode, a film, an album, or a whole season of episodes. */

@@ -14,7 +14,7 @@ import { requiredRole, needsReconfirm } from '../src/lib/roles'
 import { buildArrGiveUpRoutes } from '../src/routes/arr-giveup'
 import { readUpcoming } from '../src/routes/arr-upcoming'
 import {
-  DEFAULT_SETTINGS, candidates, parseKey, classify, historyEvents, lidarrItems, observe, parseSettings, radarrItems, rows, sonarrItems, summarise, wholeSeasons,
+  DEFAULT_SETTINGS, candidates, nextSearchAt, parseKey, searchDue, storedSettings, weekKey, classify, historyEvents, lidarrItems, observe, parseSettings, radarrItems, rows, sonarrItems, summarise, wholeSeasons,
   giveUpMessage, type GiveUpSettings, type Track,
 } from '../src/lib/arr-giveup/logic'
 import { hardRule, isProgramFile, plainRejection, profileInfo, releaseView } from '../src/lib/arr-giveup/releases'
@@ -126,28 +126,57 @@ test('a whole missing season is one row "Season N (k episodes)"; the rest stay p
   assert.equal(r.filter(x => !x.season).length, 2, 'the other show is per episode: its season is not wholly missing')
 })
 
-test('candidates need enough tries AND enough age; the preview sentence counts series', () => {
-  const s: GiveUpSettings = { ...DEFAULT_SETTINGS, enabled: true, tries: 3, minAgeDays: 30 }
-  const t = (key: string, tries: number, releasedAt: string, extra: Partial<Track> = {}): Track => ({
+test('the weeks rule: missing for at least N weeks AND searched at least N times; the preview sentence counts series', () => {
+  const s = { weeks: 3 }
+  const t = (key: string, tries: number, releasedAt: string | null, extra: Partial<Track> = {}): Track => ({
     key, app: 'sonarr', arrId: Number(key.split(':')[1]), title: 'Quiet Harbour', detail: 'S01E01', seriesId: 11, season: 1, episode: 1,
     releasedAt, firstMissingAt: '2026-11-10T00:00:00.000Z', lastSearchSeen: null, tries, grabs: 0, failures: 0, importFailures: 0, state: 'tracking', ...extra,
   })
-  const list = [t('sonarr:1', 3, '2003-01-01T00:00:00.000Z'), t('sonarr:2', 2, '2003-01-01T00:00:00.000Z'), t('sonarr:3', 9, '2026-11-01T00:00:00.000Z'),
-    t('sonarr:4', 5, '2003-01-01T00:00:00.000Z', { seriesId: 12, title: 'Night Ferry' }), t('sonarr:5', 5, '2003-01-01T00:00:00.000Z', { state: 'given-up' })]
+  const list = [
+    t('sonarr:1', 3, '2003-01-01T00:00:00.000Z'),
+    t('sonarr:2', 2, '2003-01-01T00:00:00.000Z'),                  // old, but only two weekly searches so far
+    t('sonarr:3', 9, '2026-11-01T00:00:00.000Z'),                  // searched a lot, but missing only two weeks
+    t('sonarr:4', 5, '2003-01-01T00:00:00.000Z', { seriesId: 12, title: 'Night Ferry' }),
+    t('sonarr:5', 5, '2003-01-01T00:00:00.000Z', { state: 'given-up' }),
+    t('sonarr:6', 5, null),                                          // no air date: counted from first seen missing (six days)
+  ]
   const c = candidates(list, s, NOW)
   assert.deepEqual(c.map(x => x.key), ['sonarr:1', 'sonarr:4'])
   assert.deepEqual(candidates(list, s, NOW, new Set([4])).map(x => x.key), ['sonarr:1'], 'never one that is downloading')
-  assert.deepEqual(candidates(list, { ...s, ageFrom: 'first-missing' }, NOW).map(x => x.key), [], 'first seen missing six days ago')
+  assert.deepEqual(candidates(list, { weeks: 12 }, NOW).map(x => x.key), [], 'twelve weeks needs twelve searches')
   assert.equal(summarise({ sonarr: c }), 'This would give up on 2 TV episodes (2 series).')
   assert.equal(summarise({}), 'Nothing would be given up today.')
 })
 
-test('settings: off by default, 14 tries, 30 days, stop searching; TV can never be removed', () => {
-  assert.deepEqual(DEFAULT_SETTINGS, { enabled: false, tries: 14, minAgeDays: 30, ageFrom: 'released', action: 'unmonitor' })
+test('settings: off by default, 8 weeks, stop searching, weekly search off on Monday 08:00; TV can never be removed', () => {
+  assert.deepEqual(DEFAULT_SETTINGS, { enabled: false, weeks: 8, action: 'unmonitor', search: { enabled: false, day: 1, hour: 8 } })
   assert.match(String(parseSettings('sonarr', { ...DEFAULT_SETTINGS, action: 'remove' })), /TV episodes can only stop being searched for/)
   assert.equal(typeof parseSettings('radarr', { ...DEFAULT_SETTINGS, action: 'remove' }), 'object')
-  assert.match(String(parseSettings('radarr', { ...DEFAULT_SETTINGS, tries: 0 })), /Tries must be/)
+  assert.match(String(parseSettings('radarr', { ...DEFAULT_SETTINGS, weeks: 0 })), /Weeks must be/)
+  assert.match(String(parseSettings('radarr', { ...DEFAULT_SETTINGS, weeks: 105 })), /Weeks must be/)
+  assert.equal((parseSettings('radarr', { ...DEFAULT_SETTINGS, weeks: 104 }) as GiveUpSettings).weeks, 104)
   assert.match(String(parseSettings('radarr', { ...DEFAULT_SETTINGS, action: 'delete-files' })), /Pick stop searching or remove/)
+  assert.match(String(parseSettings('radarr', { ...DEFAULT_SETTINGS, search: { enabled: true, day: 7, hour: 8 } })), /day of the week/)
+  assert.match(String(parseSettings('radarr', { ...DEFAULT_SETTINGS, search: { enabled: true, day: 0, hour: 24 } })), /hour/)
+  assert.deepEqual((parseSettings('radarr', { enabled: false, weeks: 3, action: 'unmonitor' }) as GiveUpSettings).search, DEFAULT_SETTINGS.search, 'no search given: the default')
+  // Rows saved before the rule was in weeks come back switched off, with the default weeks, to be previewed again.
+  assert.deepEqual(storedSettings({ enabled: true, tries: 14, minAgeDays: 30, ageFrom: 'released', action: 'remove' }), { enabled: false, weeks: 8, action: 'remove', search: DEFAULT_SETTINGS.search })
+  assert.deepEqual(storedSettings(null), DEFAULT_SETTINGS)
+  assert.deepEqual(storedSettings({ enabled: true, weeks: 12, action: 'unmonitor', search: { enabled: true, day: 0, hour: 3 } }), { enabled: true, weeks: 12, action: 'unmonitor', search: { enabled: true, day: 0, hour: 3 } })
+})
+
+test('the weekly search calendar: due once its moment has passed in a week not yet claimed', () => {
+  // Fixed local dates: Wednesday 18 Nov 2026 at 10:00 local.
+  const wed10 = new Date(2026, 10, 18, 10, 0).getTime()
+  const mon = { enabled: true, day: 1, hour: 8 }
+  assert.equal(weekKey(wed10), '2026-11-16')
+  assert.equal(weekKey(new Date(2026, 10, 22, 23, 0).getTime()), '2026-11-16', 'Sunday belongs to the week that started on Monday')
+  assert.equal(searchDue(wed10, mon, undefined), true, 'missed Monday (HyperProx was down): it runs now, once')
+  assert.equal(searchDue(wed10, mon, '2026-11-16'), false, 'claimed this week')
+  assert.equal(searchDue(wed10, { ...mon, day: 5 }, undefined), false, 'Friday has not come yet')
+  assert.equal(searchDue(wed10, { ...mon, enabled: false }, undefined), false)
+  assert.equal(nextSearchAt(wed10, mon, '2026-11-16'), new Date(2026, 10, 23, 8, 0).getTime())
+  assert.equal(nextSearchAt(wed10, { ...mon, day: 5 }, undefined), new Date(2026, 10, 20, 8, 0).getTime())
 })
 
 // ── releases ─────────────────────────────────────────────────────────────────
@@ -237,16 +266,19 @@ test('turning the rule on needs a preview of that exact rule; the preview change
     return new Error(`unexpected ${p}`)
   })
   const { svc } = rig({ sonarr: fa.client })
-  const s: GiveUpSettings = { ...DEFAULT_SETTINGS, enabled: true, tries: 1, minAgeDays: 30 }
+  const s: GiveUpSettings = { ...DEFAULT_SETTINGS, enabled: true, weeks: 1 }
   await assert.rejects(svc.saveSettings('sonarr', s, undefined, 'admin@example.com'), (e: any) => e instanceof GiveUpRefusal && e.code === 'preview_required')
   const p = await svc.preview('sonarr', s)
   assert.equal(p.summary, 'This would give up on 4 TV episodes (2 series).')
   assert.deepEqual(p.rows.map(r => r.detail), ['S01E04 Fog Bank', 'Season 2 (3 episodes)'], 'a whole old season is one row')
   assert.equal(p.rows[0].reason.code, 'nothing-usable')
   assert.ok(fa.calls.every(c => c.method === 'GET'), 'a preview only reads')
-  await assert.rejects(svc.saveSettings('sonarr', { ...s, tries: 2 }, p.previewId, 'admin@example.com'), /preview/, 'a different rule from the one previewed')
+  await assert.rejects(svc.saveSettings('sonarr', { ...s, weeks: 2 }, p.previewId, 'admin@example.com'), /preview/, 'a different rule from the one previewed')
   const saved = await svc.saveSettings('sonarr', s, p.previewId, 'admin@example.com')
   assert.equal(saved.enabled, true)
+  // The weekly search alone never needs a preview, and does not turn the rule off.
+  const withSearch = await svc.saveSettings('sonarr', { ...s, search: { enabled: true, day: 0, hour: 6 } }, undefined, 'admin@example.com')
+  assert.equal(withSearch.enabled, true); assert.equal(withSearch.search.day, 0)
   // Switching off never needs a preview.
   assert.equal((await svc.saveSettings('sonarr', { ...s, enabled: false }, undefined, 'admin@example.com')).enabled, false)
 })
@@ -675,4 +707,59 @@ test('downloads: a failed POST gives the search back; something not missing cann
   })
   const s2 = rig({ sonarr: fs2.client })
   await assert.rejects(s2.svc.releases('sonarr-season:11:1', 'admin@example.com'), (e: any) => e.code === 'has_file')
+})
+
+
+test('the weekly search: the arr\'s own missing-search command, claimed for the week first, read back, never while locked', async () => {
+  const cmds: any[] = []
+  let fail = false
+  const fa = fakeArr((m, p, b) => {
+    if (m === 'GET' && p.startsWith('/api/v3/wanted/missing')) return page(fx('radarr-missing.json').records)
+    if (m === 'GET' && p.startsWith('/api/v3/queue')) return page([])
+    if (m === 'GET' && p.startsWith('/api/v3/history')) return page([])
+    if (m === 'POST' && p === '/api/v3/command') { if (fail) return new Error('Radarr answered 500'); cmds.push(b); return { id: 41, status: 'queued' } }
+    if (m === 'GET' && p === '/api/v3/command/41') return { id: 41, status: 'started' }
+    return new Error(`unexpected ${m} ${p}`)
+  })
+  // Wednesday 18 Nov 2026 10:00 local; the search is set for Monday 08:00, so this week's is due (it was missed).
+  const wed10 = new Date(2026, 10, 18, 10, 0).getTime()
+  const r = rig({ radarr: fa.client })
+  r.setNow(wed10)
+  await r.store.setSetting('settings:radarr', { ...DEFAULT_SETTINGS, search: { enabled: true, day: 1, hour: 8 } }, 'test')
+  await r.svc.tick()
+  assert.deepEqual(cmds, [{ name: 'MissingMoviesSearch' }])
+  const st: any = await r.store.getSetting('state:radarr')
+  assert.equal(st.searchWeek, '2026-11-16')
+  assert.deepEqual({ ...st.lastSearch, at: undefined }, { at: undefined, app: 'radarr', count: 2, commandId: 41, status: 'started' })
+  assert.ok(r.audits.some(a => a.action === 'arrstack.giveup.weekly-search' && a.details.missing === 2))
+  assert.ok(!fa.calls.some(c => c.method === 'PUT' || c.method === 'DELETE'), 'the give-up rule is off: nothing else changes')
+  // Later the same week: not again. A failed search is not retried that week either, and says why.
+  r.setNow(wed10 + 3600_000)
+  await r.svc.tick()
+  assert.equal(cmds.length, 1)
+  r.setNow(new Date(2026, 10, 23, 9, 0).getTime())
+  fail = true
+  await r.svc.tick()
+  const st2: any = await r.store.getSetting('state:radarr')
+  assert.equal(st2.searchWeek, '2026-11-23'); assert.equal(st2.lastSearch.status, 'failed'); assert.match(st2.lastSearch.error, /500/)
+  const status = await r.svc.status()
+  assert.equal(status.apps.find(a => a.app === 'radarr')!.nextSearch, new Date(2026, 10, 30, 8, 0).toISOString())
+
+  const locked = fakeArr(() => new Error('must not be called'))
+  const l = rig({ sonarr: locked.client }, { unlocked: () => false })
+  await l.store.setSetting('settings:sonarr', { ...DEFAULT_SETTINGS, search: { enabled: true, day: 1, hour: 8 } }, 'test')
+  l.setNow(wed10)
+  await l.svc.tick()
+  assert.equal(locked.calls.length, 0)
+
+  const son = fakeArr((m, p, b) => {
+    if (m === 'GET' && (p.startsWith('/api/v3/wanted') || p.startsWith('/api/v3/queue') || p.startsWith('/api/v3/history'))) return page([])
+    if (m === 'GET' && p === '/api/v3/series') return []
+    if (m === 'POST') { cmds.push(b); return { id: 7, status: 'queued' } }
+    if (m === 'GET' && p === '/api/v3/command/7') return { id: 7, status: 'completed' }
+    return new Error(`unexpected ${m} ${p}`)
+  })
+  const sr = rig({ sonarr: son.client })
+  assert.equal((await sr.svc.weeklySearch('sonarr', 'test')).status, 'completed')
+  assert.deepEqual(cmds.at(-1), { name: 'MissingEpisodeSearch', monitored: true })
 })
