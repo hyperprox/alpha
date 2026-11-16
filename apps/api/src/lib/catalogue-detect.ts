@@ -72,6 +72,11 @@ export const DETECT: Record<string, Fingerprint[]> = {
     // Current images write <title data-next-head="">Homepage</title>, so the tag may carry attributes.
     match: a => (a.status === 200 && a.body.includes('/_next/') && /<title[^>]*>[^<]*homepage[^<]*<\/title>/i.test(a.body) ? { version: null } : null),
   }],
+  // HAProxy's built-in page for a request no rule matched (a fresh install answers it on port 80).
+  haproxy: [{
+    path: '/',
+    match: a => (a.status === 503 && a.body.includes('No server is available to handle this request.') && /<h1>503 Service Unavailable<\/h1>/.test(a.body) ? { version: null } : null),
+  }],
   ollama: [{
     path: '/api/tags',
     match: a => { const j = json(a); return j && Array.isArray(j.models) && Object.keys(j).length === 1 ? { version: null } : null },

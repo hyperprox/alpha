@@ -65,6 +65,7 @@ import { setExclusionSource as setSendExclusionSource } from '../clusters/send-s
 import { autoConnect, onUnlock, rememberDismissed, setAutoConnectExclusionSource } from '../auto-connect'
 import { homepageService, homepageInventoryChanged, setHomepageDismissedPort, setHomepageExclusionSource } from '../homepage'
 import { nextcloudService, registerNextcloudComposeOwner, setNextcloudDismissedPort } from '../nextcloud'
+import { setHaproxyDismissedPort } from '../haproxy'
 import { onInstallCompleted } from '../catalogue-installer'
 import { placementService } from '../placement/production'
 import { PrismaStore } from '../updates/store'
@@ -137,11 +138,12 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
   steps.push('compose-owners')
   stops.push((deps.composeOwners ?? registerNextcloudComposeOwner)())
 
-  // 3. Auto-connect's dismissal record, for Homepage and Nextcloud.
+  // 3. Auto-connect's dismissal record, for Homepage, Nextcloud and HAProxy.
   steps.push('dismissed')
   const dismissed = deps.dismissed ?? rememberDismissed
   setHomepageDismissedPort((key, label, by) => dismissed('homepage', key, label, by))
   setNextcloudDismissedPort((key, label, by) => dismissed('nextcloud', key, label, by))
+  setHaproxyDismissedPort((key, label, by) => dismissed('haproxy', key, label, by))
 
   // 4. Updates: built, its read-only sources installed; started when the server is ready (below).
   steps.push('updates')

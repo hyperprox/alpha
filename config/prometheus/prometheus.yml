@@ -69,6 +69,14 @@ scrape_configs:
         refresh_interval: 30s
 
 
+  # HAProxy instances HyperProx installed or connected (lib/haproxy/targets.ts writes the list).
+  - job_name: haproxy
+    scrape_interval: 15s
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/haproxy.json
+        refresh_interval: 30s
+
   - job_name: intel-gpu
     scrape_interval: 15s
     file_sd_configs:

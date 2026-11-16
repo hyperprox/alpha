@@ -1,0 +1,7 @@
+[NOTICE]   (7380) : haproxy version is 3.4.7-1~bpo13+1
+[NOTICE]   (7380) : path to executable is /sbin/haproxy
+[WARNING]  (7380) : config : parsing [/tmp/bad.cfg:73] : defaults section 'unnamed_defaults_1' (declared at /tmp/bad.cfg:23) is explicitly referenced by another proxy and implicitly used here. To avoid any ambiguity don't mix both usage. Add a last defaults section not explicitly used or always use explicit references.
+[ALERT]    (7380) : config : parsing [/tmp/bad.cfg:75] : balance only supports 'roundrobin', 'static-rr', 'leastconn', 'source', 'uri', 'url_param', 'hash', 'hdr(name)', 'rdp-cookie(name)', 'log-hash' and 'sticky' options.
+[ALERT]    (7380) : config : Error(s) found in configuration file : /tmp/bad.cfg
+[ALERT]    (7380) : config : Fatal errors found in configuration.
+HPX_EXIT=1

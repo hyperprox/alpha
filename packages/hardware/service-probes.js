@@ -82,6 +82,10 @@ const PROBES = [
   // The Homepage plug-in keeps its own list of dashboards: a finding points at its page.
   { key: 'homepage', label: 'Homepage', port: 3000, path: '/', scheme: 'http', recipeId: 'homepage', pluginId: 'homepage', setting: null, page: '/plugins/homepage', needs: [], multiple: true,
     match: (s, b) => (s === 200 && b.includes('/_next/') && /<title[^>]*>[^<]*homepage[^<]*<\/title>/i.test(b)) || (s === 400 && /"error"\s*:\s*"Host validation failed/.test(b)) },
+  // HAProxy's built-in Prometheus exporter, on the port HAProxy's own documentation uses (8405). A HAProxy installed
+  // from the Catalogue answers only HyperProx's addresses there; the HAProxy plug-in connects what this finds.
+  { key: 'haproxy', label: 'HAProxy', port: 8405, path: '/metrics', scheme: 'http', recipeId: 'haproxy', pluginId: 'haproxy', setting: null, page: '/plugins/haproxy', needs: [], multiple: true,
+    match: (s, b) => s === 200 && /^haproxy_process_/m.test(b) },
   { key: 'tdarr', label: 'Tdarr', port: 8265, path: '/', scheme: 'http', recipeId: 'tdarr', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => s === 200 && title('Tdarr').test(b) },
 ]

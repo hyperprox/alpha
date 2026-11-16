@@ -74,12 +74,13 @@ To run it locally, see [docs/demo.md](docs/demo.md).
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
-| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes; **Plex Media Server** installs from Plex's own repository, is claimed to your Plex account in the flow, and the Plex plug-in connects to it by itself |
+| Catalogue | Guided installs of NPM, HAProxy, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes; **Plex Media Server** installs from Plex's own repository, is claimed to your Plex account in the flow, and the Plex plug-in connects to it by itself |
 | Websites | Its own section: a New website wizard (static site, WordPress or Ghost) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link or open Ghost's admin, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
-| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
+| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud, HAProxy and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and the master password; a message when something new is added |
 | Nextcloud | Version and update, every setup warning from the admin page grouped by severity with a one-click fix, a guided step or an honest "optional" for each, Talk's signalling server and Client Push, PHP, database, background jobs and the log; updates a Docker Compose install (database dump first, master password) |
+| Load balancing | The HAProxy plug-in draws each load balancer as frontends, backends and servers with their live state, weights, sessions, request rates, errors, health checks and response times; drain, maintenance, weights, health checks, adding and removing servers and the balance algorithm are a click each (runtime only, or saved after `haproxy -c`); **Load-balance this app** puts two or more guests behind one name |
 | Backups | The Proxmox Backup Server plug-in: datastores, stale guests, job health and an optional Verify, read-only unless you turn on managing backups (delete, prune, clean up; protected snapshots are never touched) |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
 | Security | Built-in Vaultwarden sign-in with 2FA, secrets in memory only, auto-lock, roles and API tokens (an owner can let one admin token save plug-in settings without the master password; off by default and audited) |
@@ -1169,7 +1170,7 @@ reports, are passed on as they were written.
 ### Catalogue
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
-connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
+connects it to HyperProx: Nginx Proxy Manager, HAProxy, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
 Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr and Plex (below). Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
@@ -1179,7 +1180,7 @@ running containers listening on port 80 or 443, the same list as [Add an existin
 one read-only question per app: Nextcloud's `/status.php`, Jellyfin's `/System/Info/Public`, Gitea's
 `/api/v1/version`, Vaultwarden's `/api/config` (or `/alive`), Grafana's `/api/health`, Uptime Kuma's
 `/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Tautulli's sign-in page, Nginx Proxy
-Manager's `/api/`, Proxmox Backup Server's web page, Unmanic's worker list and Tdarr's start page. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
+Manager's `/api/`, HAProxy's own "no server is available" page, Proxmox Backup Server's web page, Unmanic's worker list and Tdarr's start page. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
 timeout and at most 64 KiB read; a proxy target is asked with the public name as its Host header, as the
 proxy would, and an internal certificate is not checked. A recipe found this way says **Running on** the
 guest and its public name (with the version when the app shows one) and offers **Open**; **Install another…**
@@ -1501,6 +1502,33 @@ Saturday, and a verify every Sunday. Then setup does the chores, each step repor
 The `root@pam` password is generated, kept in the vault and shown to you once; both tokens are kept in
 the same vault item (`apps/proxmox-backup-server-<id>`) and never shown on the page. A backup server the
 PBS plug-in already reads shows as configured; one behind a proxy host is found by its web page.
+
+#### HAProxy from the Catalogue
+
+A load balancer and reverse proxy, installed so that HyperProx can drive it and nothing on your network can change
+it. Catalogue → Reverse proxy → HAProxy; a small container is plenty (1 core, 512 MB, 4 GB).
+
+What the install does, in order:
+
+1. Adds HAProxy's own Debian repository, checks its signing key against a pinned hash, and installs one exact
+   HAProxy release from the 3.4 long-term support line. Later upgrades stay on that line; HAProxy never jumps to
+   another branch by itself.
+2. Writes a hardened starting configuration: modern TLS settings only, sensible timeouts, HTTP health-check
+   defaults, a public frontend on port 80 that answers 503 until it has a rule, and the server name removed
+   from answers.
+3. Turns on the Runtime API as a local socket only (`/run/haproxy/admin.sock`), never as a network port. The
+   stats page listens on the container's own loopback only. The built-in Prometheus exporter answers on port
+   8405, for `/metrics` only, and only to HyperProx's own addresses. If HyperProx's address changes, it updates that list
+   by itself (checked with `haproxy -c` first).
+4. Installs HAProxy Technologies' Data Plane API, checked against the release's published hash, on the
+   container's loopback, with a generated password. The password is saved in the vault before the install runs;
+   the Data Plane keeps only its hash.
+5. Checks that HAProxy answers on port 80, then adds it to the **Proxy page** as a Managed HAProxy (reached
+   through its container), connects the **HAProxy plug-in** to it, and adds its metrics to Prometheus.
+
+Every change HyperProx saves to it goes through the Data Plane API as one transaction: `haproxy -c` checks the
+whole new configuration first, nothing reloads if it fails, and the previous configuration is put back if a
+reload goes wrong.
 
 ### Websites
 
@@ -2600,6 +2628,46 @@ before it runs (if the entry cannot be written, nothing runs), and runs one at a
 update, the signalling update, the database work, mail, two-factor enforcement and app updates also need the
 master password. Viewers see the health and the checks, but not the log, user names, paths, container or
 image names, or the confirm texts, and cannot ask for a fresh read. The page reads Nextcloud again every two minutes while it is open (a reading is kept 30 seconds).
+
+#### HAProxy
+
+HyperProx connects each HAProxy it can see by itself: one it installed from the Catalogue, a HAProxy on the
+Proxy page that runs in a container HyperProx manages, or one the service scan finds (HAProxy's metrics on
+port 8405). It looks inside that guest once, read-only, for an admin-level Runtime API socket in the
+configuration. A guest you told HyperProx to leave alone is never entered; a guest with two such sockets waits
+for you to pick one (Plug-ins → HAProxy, "Connecting by itself").
+
+Open **Plug-ins, HAProxy** (admins only: it shows every backend's addresses and changes live traffic). The page
+reads HAProxy every 10 seconds while it is open and draws:
+
+- **The traffic map.** Each public frontend with its sessions, request rate and errors, a lit line to each
+  backend it sends visitors to, and each backend's servers as tiles: the state in words and colour (up, down,
+  draining, maintenance), sessions and weight as bars, request rate, average response time, errors, and the
+  health check's last result in plain words with when the state last changed. Backends no frontend uses are
+  shown apart.
+- **Problems, each with a fix button.** A server that is down shows why its check failed, with **Drain and
+  investigate** and **Check it again now**. A backend with no healthy server is a red alert at the top, with
+  **Bring it back** for a server left in drain or maintenance. A configuration that fails `haproxy -c` shows the
+  error by line number, with **Check again**.
+
+Tap a server for its actions: back into service, drain (finish current visitors, take no new ones),
+maintenance (no traffic), weight from 0 to 256, health check on or off, check again now, and remove. Tap
+**Manage** on a backend to change how it spreads visitors (round robin, least connections, by visitor address,
+first available, random, or static round robin, each explained) or to add a server, picked from your guests or
+typed as an address. Each change says whether it is **runtime only** (it lasts until HAProxy restarts) or
+**saved** (written to the configuration, checked with `haproxy -c`, then HAProxy reloads). Saving needs the
+Data Plane API, which a Catalogue install has; a HAProxy found any other way gets runtime changes only, and the
+page says so. Destructive changes ask first, and every change is recorded in the audit log with who made it. API tokens
+can read the page's data but never make these changes: they need a signed-in admin.
+
+**Load-balance this app.** Pick two or more guests running the same app, the port it answers on and a health
+check page. HyperProx makes one backend for them with HTTP health checks and a rule in the public frontend that
+sends visitors to it, by host name, or every visitor no other rule matches when you give no name. Give a host
+name and tick **Also publish it** to have HyperProx make the DNS record, the proxy host on your public proxy and
+the certificate too, pointed at this HAProxy; the name is checked first, so a problem there changes nothing.
+
+**Disconnect** removes it from HyperProx only. HAProxy keeps running untouched, and HyperProx does not connect
+it again by itself until you say so.
 
 #### Homepage dashboard
 

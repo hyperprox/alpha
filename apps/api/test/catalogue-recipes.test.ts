@@ -48,10 +48,10 @@ test("every wizard recipe has a health path, an expected status and a first-run 
     assert.ok(r.install.kind === "compose" || !r.needsDocker, r.id)
   }
   assert.deepEqual(findRecipe("uptime-kuma")!.expectStatus, [200, 302])
-  for (const id of ["nginx-proxy-manager", "ollama", "tautulli", "grafana", "vaultwarden", "wordpress"]) assert.equal(findRecipe(id)!.wizard, false)
+  for (const id of ["nginx-proxy-manager", "haproxy", "ollama", "tautulli", "grafana", "vaultwarden", "wordpress"]) assert.equal(findRecipe(id)!.wizard, false)
   // The wizard cannot hand a generated admin secret back yet, so no wizard recipe needs one.
   for (const r of w) assert.notEqual(r.firstRun.kind, "env-admin", r.id)
-  assert.equal(CATALOGUE.length, 20)
+  assert.equal(CATALOGUE.length, 21)
 })
 
 test("env values reach the script quoted, in a private .env, and bad names are refused", () => {

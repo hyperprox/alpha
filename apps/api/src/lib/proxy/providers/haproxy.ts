@@ -33,6 +33,12 @@ export interface HaproxyConfig {
 }
 
 interface Rule { name: string; cond?: string; cond_test?: string }
+
+/** One open transaction, for a change of the HAProxy plug-in's own (lib/haproxy/dataplane.ts). Paths are under the configuration. */
+export interface DataPlaneTx {
+  get<T>(path: string): Promise<T>
+  send<T = unknown>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T>
+}
 interface Server { name: string; address: string; port?: number; ssl?: string; maintenance?: string; verify?: string }
 interface Frontend { name: string; backend_switching_rule_list?: Rule[] }
 
@@ -254,6 +260,25 @@ export class HaproxyProvider implements ProxyProvider {
       await this.http.json('DELETE', `${CFG}/backends/${id}${q}`)
     })
   }
+
+  /**
+   * A configuration change of the HAProxy plug-in's own (lib/haproxy): the same transaction a host gets, validated
+   * with haproxy -c before anything reloads, committed, the reload waited for, the frontends re-checked, and rolled
+   * back if any of that fails. `fn` adds its changes through the transaction.
+   */
+  async configChange(what: string, fn: (tx: DataPlaneTx) => Promise<void>): Promise<void> {
+    await this.transact(what, async tx => {
+      const sep = (p: string) => (p.includes('?') ? '&' : '?')
+      await fn({
+        get: async <T>(path: string) => this.http.get<T>(`${CFG}${path}${sep(path)}transaction_id=${tx}`),
+        send: async <T>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown) =>
+          (await this.http.json<T>(method, `${CFG}${path}${sep(path)}transaction_id=${tx}`, body)).body,
+      })
+    })
+  }
+
+  /** A read of the running configuration (outside any transaction). */
+  async configRead<T>(path: string): Promise<T> { return this.http.get<T>(`${CFG}${path}`) }
 
   async listCertificates(): Promise<ProxyCertificate[]> {
     const certs = (await this.http.get<any[]>('/v3/services/haproxy/storage/ssl_certificates')) ?? []

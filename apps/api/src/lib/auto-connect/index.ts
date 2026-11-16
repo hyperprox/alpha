@@ -40,6 +40,7 @@ export function setAutoConnectExclusionSource(fn: (() => Promise<string[]>) | nu
 const lazy = {
   homepage: async () => (await import('../homepage')).homepageService(),
   nextcloud: async () => (await import('../nextcloud')).nextcloudService(),
+  haproxy: async () => (await import('../haproxy')).haproxyService(),
   plugins: async () => (await import('../../plugins')).PLUGINS,
 }
 
@@ -62,6 +63,15 @@ function adapters(): AutoConnectAdapter[] {
   return [
     { plugin: 'homepage', reconcile: async ctx => (await lazy.homepage()).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.homepage()).autoPick(key, choice, ctx) },
     { plugin: 'nextcloud', reconcile: async ctx => (await lazy.nextcloud()).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.nextcloud()).autoPick(key, choice, ctx) },
+    { plugin: 'haproxy', reconcile: async ctx => {
+        const svc = await lazy.haproxy()
+        const out = await svc.autoConnect(ctx)
+        // A newly connected HAProxy with the metrics frontend joins Prometheus's list.
+        if (out.some(o => o.did === 'connected' || o.did === 'filled')) await (await import('../haproxy')).syncHaproxyTargets(svc).catch(() => false)
+        // HyperProx's own addresses may have changed since the last pass: the metrics allow-lists follow them.
+        else await (await import('../haproxy')).keepScrapersCurrent(svc, { log: m => appLog.warn(m) }).catch(() => ({}))
+        return out
+      }, pick: async (key, choice, ctx) => (await lazy.haproxy()).autoPick(key, choice, ctx) },
     settingsAdapter('unmanic', settingsDeps),
     settingsAdapter('arrstack', settingsDeps),
     settingsAdapter('plex', settingsDeps),

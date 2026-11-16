@@ -21,6 +21,17 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — HAProxy load balancing
+
+### New
+- **Install HAProxy from the Catalogue.** One exact release from the 3.4 long-term support line, from HAProxy's own repository and checked before it is installed, with a hardened starting configuration. When it finishes it is already on the Proxy page, its plug-in is connected and Prometheus is reading its metrics. Nothing on your network can change it: its controls listen inside its own container only.
+  - Technical: recipe `haproxy` (`lib/haproxy/recipe.ts`): `haproxy=3.4.7-1~bpo13+1` from haproxy.debian.net trixie-backports-3.4 (keyring SHA-256 pinned, apt pinned to `3.4.*`), Data Plane API 3.4.6 `.deb` (SHA-256 per arch) on 127.0.0.1:5555 with a SHA-512 crypt password, Runtime API on `/run/haproxy/admin.sock`, stats on 127.0.0.1:8404, Prometheus exporter on :8405 `/metrics` allowed to HyperProx's own addresses only. Setup steps (`lib/haproxy/setup.ts`) register a Managed Proxy instance, connect the plug-in and write `config/prometheus/targets/haproxy.json` (new `haproxy` scrape job).
+- **A HAProxy plug-in built around load balancing.** It draws every frontend, backend and server with its live state, weights, sessions, request rate, errors, health check and response time, and every problem it finds has a fix button: a server that is down, a backend with no healthy server left, a configuration that fails its check.
+  - Technical: `lib/haproxy` (Runtime API reader and command allow-list, reading model, service, auto-connect adapter), `routes/haproxy.ts` (admin only, every action audited first; API tokens are refused for actions, load-balance and disconnect in `tokenForbidden`), `plugins/haproxy.ts`, page `components/plugins/haproxy`. The gallery card reads each HAProxy at most every 20 s. The metrics allow-list (`hyperprox-scrapers.lst`) follows HyperProx's own addresses: checked on every auto-connect pass and targets sync, rewritten and reloaded only when it differs. A failed publish removes the proxy host and DNS record it made. The service scan and the Catalogue's detection know HAProxy too.
+- **Drain, maintenance, weights, health checks, servers and the balance algorithm in a click.** Each change says whether it lasts only until HAProxy restarts or is saved to its configuration, and a saved change is checked before HAProxy reloads, so a bad one is never applied.
+  - Technical: runtime changes go to the Runtime API; saved ones are one Data Plane transaction through `HaproxyProvider.configChange`, validated with `haproxy -c` (`only_validate`) before commit and rolled back if the reload fails.
+- **Load-balance this app.** Pick two or more guests running the same app and HyperProx puts them behind HAProxy with health checks, by host name if you give one, and can publish that name with a DNS record, a proxy host and a certificate as well.
+
 ## 2026-11-16 — Plex Media Server in the Catalogue
 
 ### New
