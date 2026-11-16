@@ -66,6 +66,10 @@ import { autoConnect, onUnlock, rememberDismissed, setAutoConnectExclusionSource
 import { homepageService, homepageInventoryChanged, setHomepageDismissedPort, setHomepageExclusionSource } from '../homepage'
 import { nextcloudService, registerNextcloudComposeOwner, setNextcloudDismissedPort } from '../nextcloud'
 import { onInstallCompleted } from '../catalogue-installer'
+import { setWebProxyDismissedPort, setWebProxyExclusionSource } from '../webproxy'
+import { WEB_PROXY_KINDS } from '../webproxy/probes'
+
+const isWebProxyRecipe = (id: string) => (WEB_PROXY_KINDS as string[]).includes(id)
 import { placementService } from '../placement/production'
 import { PrismaStore } from '../updates/store'
 import { UpdatesRuntime, setUpdatesRuntime } from '../updates/runtime'
@@ -131,6 +135,7 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
     setAutoConnectExclusionSource(exclusions)
     setHomepageExclusionSource(exclusions)
     setSendExclusionSource(exclusions)
+    setWebProxyExclusionSource(exclusions)
   }
 
   // 2. Which compose projects belong to a plug-in's own update, before the daily check or a scheduled run reads them.
@@ -142,6 +147,7 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
   const dismissed = deps.dismissed ?? rememberDismissed
   setHomepageDismissedPort((key, label, by) => dismissed('homepage', key, label, by))
   setNextcloudDismissedPort((key, label, by) => dismissed('nextcloud', key, label, by))
+  setWebProxyDismissedPort((kind, key, label, by) => dismissed(kind, key, label, by))
 
   // 4. Updates: built, its read-only sources installed; started when the server is ready (below).
   steps.push('updates')
@@ -156,6 +162,8 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
   // 5. A finished Catalogue install changes what is on the cluster: Homepage's auto-sync (when on) looks again.
   steps.push('install-hook')
   stops.push(onInstallCompleted(() => homepageInventoryChanged()))
+  //    A web proxy the Catalogue installed is connected to its plug-in now, not at the next auto-connect pass.
+  if (!deps.autoConnect) stops.push(onInstallCompleted(job => { if (isWebProxyRecipe(job.recipeId)) void autoConnect().runFresh('catalogue install').catch(() => {}) }))
 
   // 6. Nextcloud: a detached update from before a restart is watched again at once. Only with the database (or a
   //    test's service): without it there is nothing to resume.
