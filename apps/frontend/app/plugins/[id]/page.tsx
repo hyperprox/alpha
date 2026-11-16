@@ -18,6 +18,7 @@ import { AsusPage } from '@/components/plugins/asus/AsusPage'
 import { PbsPage } from '@/components/plugins/pbs/PbsPage'
 import { NextcloudPage } from '@/components/plugins/nextcloud/NextcloudPage'
 import { HomepagePage } from '@/components/plugins/homepage/HomepagePage'
+import { HaproxyPage } from '@/components/plugins/haproxy/HaproxyPage'
 import { HudHeader, styles as vs, type StatChip } from '@/components/visual/kit'
 import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
@@ -528,5 +529,6 @@ export default function PluginPage(props: { params: Promise<{ id: string }> }) {
   if (params.id === 'pbs') return <PbsPage />
   if (params.id === 'nextcloud') return <NextcloudPage />
   if (params.id === 'homepage') return <HomepagePage />
+  if (params.id === 'haproxy') return <HaproxyPage />
   return params.id === 'home-assistant' ? <HomeAssistantPage /> : <PluginDetailPage params={params} />
 }
