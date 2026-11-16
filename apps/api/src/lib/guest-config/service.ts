@@ -32,6 +32,7 @@ import { createHmac, randomBytes } from 'node:crypto'
 import { maskConfig, isSecretKey, redactConfFile, redactText, redactValue, REDACTED } from './secrets'
 import { splitConf, rewriteRawLines, readScript, writeScript, parseRead, cleanupScript, rawLineAllowed, rawLineForm, addedSources, verifyScript, parseVerify, DEVICE_DIRS, sha256, type RawAllow, type SourceCheck } from './rawfile'
 import { gpuMajors } from './devices'
+import { ExclusionsUnknownRefusal, GuestExcludedRefusal, guestLeftAloneReason } from '../guest-guard'
 import { vpnStatuses, vpnStatusSource, type VpnStatusSource } from './vpn'
 
 // ── what the service reaches ──────────────────────────────────────────────────
@@ -281,23 +282,30 @@ export class GuestConfigService {
       // A viewer never makes HyperProx log in to a node: no looking inside, no driver check.
       return { gpu, driver: null, groups: null, inUse: null, portable: { whyRaw: PORTABLE_WHY_RAW, noWriter: PORTABLE_NO_WRITER }, devices: inv?.devices.filter(d => d.kind === 'gpu') ?? [], inventoryProblem: inv?.problem ?? null, sharers: inv ? sharers(g, inv.devices) : [] }
     }
+    // Looking inside (the driver, the groups, the GPU in use) is entering the guest: a guest left alone is refused.
+    let inside = false
+    if (g.type === 'lxc' && ctx.running) {
+      const why = await this.leftAloneReason(g)
+      if (why) throw new GuestExcludedRefusal(ctx.name ?? String(g.vmid), why)
+      inside = true
+    }
     let driver: ReturnType<typeof driverMatch> | null = null
     if (g.type === 'lxc' && gpu.vendors.includes('nvidia')) {
       let guestVer: string | null = null
-      if (ctx.running) {
+      if (inside) {
         const r = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- sh -c 'ls /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.* /usr/lib64/libnvidia-ml.so.* /usr/lib/libnvidia-ml.so.* 2>/dev/null'`, 20_000).catch(() => null)
         guestVer = r ? containerNvidiaVersion(r.output) : null
       }
       driver = driverMatch(inv?.nvidiaDriver ?? null, guestVer)
     }
     let groups: { render?: number; video?: number } | null = null
-    if (g.type === 'lxc' && ctx.running) {
+    if (inside) {
       const r = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- getent group render video`, 15_000).catch(() => null)
       if (r) { groups = {}; for (const l of r.output.split('\n')) { const [n, , gid] = l.split(':'); if (n === 'render' || n === 'video') groups[n] = Number(gid) } }
     }
     // The GPU it is using now: the first GPU device node visible inside, named from this node's inventory.
     let inUse: { device: string; name: string } | null = null
-    if (g.type === 'lxc' && ctx.running && gpu.entries.length) {
+    if (inside && gpu.entries.length) {
       const r = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- sh -c 'for p in /dev/nvidia0 /dev/dri/renderD*; do [ -c "$p" ] && echo "$p"; done; echo HPX-LOOKED'`, 15_000).catch(() => null)
       const dev = r?.output.split('\n').map(l => l.trim()).find(l => l && l !== 'HPX-LOOKED')
       if (dev) inUse = { device: dev, name: inv?.devices.find(d => d.kind === 'gpu' && d.paths.includes(dev))?.name ?? dev }
@@ -490,6 +498,14 @@ export class GuestConfigService {
   }
 
   shell(): NodeShell { return this.d.shell }
+
+  /**
+   * Why HyperProx must not look inside this guest (hyperprox-ignore tag, read live, or Remote access's list), or null.
+   * Throws ExclusionsUnknownRefusal when that cannot be read: the caller looks inside nothing then.
+   */
+  leftAloneReason(g: { type: GuestType; vmid: number }): Promise<string | null> {
+    return guestLeftAloneReason(this.d.pve, () => this.d.pve.get<any[]>('/cluster/resources?type=vm'), { kind: g.type, vmid: g.vmid })
+  }
 
   /** HA-managed containers with GPU entries, where they run now. For the move watcher. */
   async haGpuGuests(): Promise<Array<{ vmid: number; name: string; node: string; status: string }>> {
@@ -900,7 +916,10 @@ export class GuestConfigService {
       r.rawSurvived = JSON.stringify(rawLines(after)) === JSON.stringify(expectRaw)
       if (!r.rawSurvived) r.problems.push(`The raw lxc.* lines changed across the restart: ${expectRaw.length} before, ${rawLines(after).length} after`)
     } else r.problems.push('The config could not be read back after the restart')
-    if (p.plan.deviceChecks.length && g.type === 'lxc') {
+    // A guest left alone is not looked into, even to confirm a change to its own config.
+    const leftAlone = p.plan.deviceChecks.length && g.type === 'lxc' ? await this.leftAloneReason(g).catch(() => 'unknown') : null
+    if (leftAlone) r.steps.push('not looked inside: HyperProx is set to leave this guest alone')
+    if (p.plan.deviceChecks.length && g.type === 'lxc' && !leftAlone) {
       const list = p.plan.deviceChecks.map(c => `'${c.path}'`).join(' ')
       const out = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- sh -c 'for p in "$@"; do if [ -c "$p" ]; then echo "Y $p"; else echo "N $p"; fi; done' sh ${list}`, 20_000).catch(() => null)
       for (const c of p.plan.deviceChecks) {

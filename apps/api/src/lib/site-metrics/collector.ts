@@ -16,6 +16,7 @@
 
 import { execOnNode, containerScriptCommand, nodeCredential } from '../node-exec'
 import { homePve } from '../pve-env'
+import { GuestExcludedRefusal, guestLeftAloneReason } from '../guest-guard'
 import { isUnlocked } from '../vault/state'
 import { publish as busPublish } from '../notify'
 import type { NotifyEventInput } from '../notify/types'
@@ -48,6 +49,11 @@ export interface CollectorDeps {
   unlocked(): boolean
   now(): Date
   log(m: string): void
+  /**
+   * Is this site's container one HyperProx leaves alone (hyperprox-ignore tag, read live, or Remote access's list)?
+   * Returns why, in words, or null. Throws when that cannot be told: nothing is entered then.
+   */
+  leftAlone?: (site: SiteRecord) => Promise<string | null>
   /** Where HyperProx's own requests come from (own-addresses.ts); none known means none counted as its own. */
   ownAddresses?: () => Promise<Set<string>>
 }
@@ -69,7 +75,21 @@ export function defaultState(site: SiteRecord): SiteState {
   }
 }
 
+export const LEFT_ALONE_WORDS = "HyperProx is set to leave this guest alone, so visitor numbers aren't collected."
+export const LEFT_ALONE_UNKNOWN_WORDS = "HyperProx could not check whether to leave this guest alone, so visitor numbers aren't collected this time."
+
+const guardScope = {}
+/** The one check, shared by the timer's pre-check and the command itself. */
+async function realLeftAlone(site: SiteRecord): Promise<string | null> {
+  const vmid = Number(site.vmid)
+  if (!Number.isSafeInteger(vmid)) return null
+  const pve = homePve()
+  return guestLeftAloneReason(guardScope, () => pve.fetchStrict<any[]>('/cluster/resources?type=vm'), { kind: 'lxc', vmid })
+}
+
 async function realRun(site: SiteRecord, script: string, maxBytes: number) {
+  const why = await realLeftAlone(site)
+  if (why) throw new GuestExcludedRefusal(String(site.vmid), why)
   const cred = await nodeCredential(site.node).catch(() => null)
   if (!cred) throw new Error(`No node login is stored for ${site.node}.`)
   const row = ((await homePve().fetchNode<any[]>('/cluster/status').catch(() => [])) ?? []).find((r: any) => r.type === 'node' && r.name === site.node)
@@ -82,6 +102,7 @@ async function realRun(site: SiteRecord, script: string, maxBytes: number) {
 
 export const realCollectorDeps = (log: (m: string) => void = () => {}): CollectorDeps => ({
   ownAddresses: () => ownAddresses(),
+  leftAlone: realLeftAlone,
   sites: listSites,
   run: realRun,
   health: realHealthDeps(),
@@ -240,7 +261,14 @@ export async function alertInputs(store: MetricsStore, siteId: string, now: Date
 export async function collectSite(site: SiteRecord, d: CollectorDeps): Promise<SiteState> {
   const st = (await d.store.getState(site.id)) ?? defaultState(site)
   if (!st.enabled) return st
-  if (d.unlocked()) {
+  // A guest HyperProx leaves alone is not entered: no log pull, no WP-CLI. The public address check below does not enter it.
+  let blocked: string | null = null
+  if (d.unlocked() && d.leftAlone) {
+    try { if (await d.leftAlone(site)) blocked = LEFT_ALONE_WORDS }
+    catch { blocked = LEFT_ALONE_UNKNOWN_WORDS }   // fail closed
+  }
+  if (blocked) st.lastError = blocked
+  else if (d.unlocked()) {
     try { await pullLog(site, st, d) } catch (e: any) { st.lastError = String(e?.message ?? 'the log could not be read').slice(0, 300) }
     if (st.kind === 'wordpress' && (!st.wordpress || d.now().getTime() - st.wordpress.checkedAt >= WP_CACHE_MS)) {
       try { await refreshWordPress(site, st, d) } catch (e: any) { st.wordpress = { ...(st.wordpress ?? emptyWp(d.now().getTime())), checkedAt: d.now().getTime(), problem: String(e?.message ?? 'failed').slice(0, 200) } }

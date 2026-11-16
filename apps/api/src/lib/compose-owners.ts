@@ -11,7 +11,8 @@
 //
 //  An entry with neither a project name nor a directory covers every compose
 //  project in that guest (the plug-in knows the guest but not yet which project
-//  it is). When an owner's list cannot be read, nobody can tell whether a project
+//  it is). An entry with a project name but no directory covers a project given by directory alone (a policy
+//  compose_dirs entry) the same way: the whole guest. When an owner's list cannot be read, nobody can tell whether a project
 //  is managed, so every compose project is refused until it can (fail closed).
 //
 //  Home cluster only: the plug-ins manage guests of the home cluster.
@@ -74,7 +75,10 @@ export function composeOwnerRefusal(o: ComposeOwnership, vmid: number, project: 
   const hit = o.entries.find(e => e.vmid === vmid && (
     (!e.project && !e.dir)
     || (!!e.project && !!project.name && e.project === project.name)
-    || (!!e.dir && !!project.dir && strip(e.dir) === strip(project.dir))))
+    || (!!e.dir && !!project.dir && strip(e.dir) === strip(project.dir))
+    // A policy compose directory comes with no project name, and an entry that knows its project by name but not its
+    // directory cannot say which directory that is: it covers the whole guest rather than none of it.
+    || (!!e.project && !e.dir && !project.name)))
   return hit ? `Managed by ${hit.page} — update it there` : null
 }
 

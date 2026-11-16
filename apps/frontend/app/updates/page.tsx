@@ -400,7 +400,7 @@ export default function UpdatesPage() {
   const security = inv ? inv.nodes.filter(n => n.pending.some(p => p.security)).length + inv.guests.filter(g => g.pending.some(p => p.security)).length + appsWith.filter(r => r.a.isSecurity).length : 0
   const needsLogin = !!inv && (inv.nodes.some(n => isNoLoginText(n.error)) || inv.guests.some(g => isNoLoginText(g.error)))
   const level: Tone = security ? 'crit' : behind || appsWith.length ? 'warn' : 'good'
-  const verdict = !inv ? 'Reading the inventory' : security ? 'Security updates waiting' : behind || appsWith.length ? 'Updates are waiting' : 'Everything is current'
+  const verdict = !inv ? 'Reading the inventory' : inv.notice ? 'Not every guest could be read' : security ? 'Security updates waiting' : behind || appsWith.length ? 'Updates are waiting' : 'Everything is current'
 
   return (
     <Page remote={remote}>
@@ -425,6 +425,8 @@ export default function UpdatesPage() {
                    onRefresh={refresh} onRun={start} scope={scope} onScope={setScope} />
 
       {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
+
+      {inv?.notice && <Notice tone="warn">{inv.notice}</Notice>}
 
       {needsLogin && (
         <Notice tone="warn">

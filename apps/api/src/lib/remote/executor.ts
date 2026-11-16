@@ -25,7 +25,7 @@ import { execOnNode, nodeCredential, pinHostKey, pinnedHostKey, probeHostKey, ty
 import { loadCredential, type TerminalCredential } from '../ssh-broker'
 import { listManualHosts, listHostAddresses } from '../terminal-hosts'
 import type { Machine } from './types'
-import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, parseTags } from '../guest-guard'
+import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, liveGuestTags, parseTags } from '../guest-guard'
 
 export type { ExecResult }
 
@@ -121,10 +121,9 @@ export function productionRemoteExecutor(
   }
 
   async function liveTags(m: Machine): Promise<string[]> {
-    const rows = await pve.fetchStrict<any[]>('/cluster/resources?type=vm')
-    const row = (rows ?? []).find(r => r?.type === m.kind && Number(r.vmid) === Number(m.vmid))
-    if (!row) throw new TransportError(`${m.name} is not on the cluster any more.`)
-    return parseTags(row.tags)
+    const tags = await liveGuestTags(pve, () => pve.fetchStrict<any[]>('/cluster/resources?type=vm'), m.kind, m.vmid!)
+    if (!tags) throw new TransportError(`${m.name} is not on the cluster any more.`)
+    return tags
   }
 
   /** The one rule, at the one place every script into a guest passes. Nodes and hand-added hosts are not guests. */

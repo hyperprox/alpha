@@ -20,7 +20,7 @@ import {
 } from './commands'
 import { type AppEnv, readGuestApps } from './apps'
 import { IGNORE_TAG, hasIgnoreTag } from '../guest-guard'
-import { lookInsideList, lookInsideReason } from './look-inside'
+import { EXCLUSIONS_UNKNOWN_NOTICE, lookInsideList, lookInsideReason } from './look-inside'
 
 export interface InventoryOptions {
   /** Nodes whose reboot an earlier run deferred. */
@@ -365,6 +365,7 @@ export async function readInventory(exec: UpdatesExecutor, policy: Policy, opts:
       refreshedAt: new Date(exec.now()).toISOString(),
       nodes: nodeRows.map(r => r.node).sort((a, b) => a.node.localeCompare(b.node)),
       guests: guestRows,
+      ...(lookInside === null ? { notice: EXCLUSIONS_UNKNOWN_NOTICE } : {}),
     },
     facts: Object.fromEntries(nodeRows.map(r => [r.node.node, r.facts])),
   }

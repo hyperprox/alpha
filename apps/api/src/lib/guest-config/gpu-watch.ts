@@ -15,7 +15,7 @@ import { detectGpu } from './gpu'
 import type { GuestConfigService } from './service'
 import type { PveConfig } from './keys'
 
-export interface GpuSeen { node: string; device: string | null; deviceName: string | null; checkedAt: number; unknown?: string }
+export interface GpuSeen { node: string; device: string | null; deviceName: string | null; checkedAt: number; unknown?: string; skipped?: boolean }
 
 export interface GpuMoveEvent {
   type: 'guest.gpu.moved' | 'guest.gpu.missing' | 'guest.gpu.home' | 'guest.gpu.unchecked'
@@ -35,6 +35,14 @@ export class GpuMoveWatcher {
 
   /** What the container can see now: the first GPU node inside it, named from the node's inventory. */
   async check(node: string, vmid: number): Promise<GpuSeen> {
+    // A guest HyperProx leaves alone (tag or list) is never looked into, and nothing is announced about it. When that
+    // cannot be told, nothing is entered either.
+    const left = await this.svc.leftAloneReason({ type: 'lxc', vmid }).catch(() => 'unknown')
+    if (left) {
+      const s: GpuSeen = { node, device: null, deviceName: null, checkedAt: this.now(), unknown: left === 'unknown' ? 'HyperProx could not check whether to leave this guest alone, so its GPU is not checked' : 'HyperProx is set to leave this guest alone, so its GPU is not checked', skipped: true }
+      this.seen.set(vmid, s)
+      return s
+    }
     if (this.locked()) return { node, device: null, deviceName: null, checkedAt: this.now(), unknown: 'HyperProx is locked' }
     let out: { code: number; output: string } | null = null
     let err: string | null = null
@@ -67,6 +75,7 @@ export class GpuMoveWatcher {
       if (prev === r.node || r.status !== 'running') continue
       this.last.set(r.vmid, r.node)
       const s = await this.check(r.node, r.vmid)
+      if (s.skipped) continue   // left alone: silently skipped; the note is in `seen`
       const g = { vmid: r.vmid, name: r.name, from: prev, to: r.node }
       const backHome = r.node === this.home.get(r.vmid)
       const e: GpuMoveEvent = s.unknown

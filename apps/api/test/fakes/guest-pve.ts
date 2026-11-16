@@ -1,5 +1,6 @@
 // A small fake Proxmox for the guest config editor: configs with digests, pending values on running guests,
 // volumes that allocate, lxc.* keys refused (as the real API does), HA state, tasks, and a node shell.
+import { setGuestExclusionSource } from '../../src/lib/guest-guard'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -246,6 +247,8 @@ export class FakeShell implements NodeShell {
 }
 
 export function makeService(pve = new FakePve(), shell = new FakeShell(pve)) {
+  // Looking inside a guest asks the leave-alone rule, which fails closed without a list: these services have an empty one.
+  setGuestExclusionSource(async () => [])
   const history = new MemoryHistoryStore()
   const audits: Array<{ action: string; resource: string; details: any }> = []
   let now = 1_000_000

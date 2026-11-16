@@ -59,6 +59,7 @@ export function ClusterHeader({ c }: { c: ReturnType<typeof useUpdatesCluster> }
 
 function checkLine(r: UpdatesCheckCluster): string {
   if (r.result === 'skipped') return `Not checked ${fmtTime(r.at)}: ${r.reason ?? 'skipped'}.${r.lastOkAt ? ` Last full check ${fmtTime(r.lastOkAt)}.` : ''}`
+  if (r.notice) return `Checked ${fmtTime(r.at)}, but not completely: ${r.notice}`
   if (!r.available) return `Checked ${fmtTime(r.at)}: nothing to update.${r.unread.length ? ` ${r.unread.length} not read.` : ''}`
   return `Checked ${fmtTime(r.at)}: ${r.available} machine${r.available === 1 ? '' : 's'} with updates, ${r.packages} package${r.packages === 1 ? '' : 's'}${r.security ? `, ${r.security} security` : ''}.${r.unread.length ? ` ${r.unread.length} not read.` : ''}`
 }

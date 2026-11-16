@@ -159,7 +159,9 @@ export type UpdatesApp = {
   error?:         string
 }
 
-export type UpdatesInventory = { refreshedAt: string; nodes: UpdatesNode[]; guests: UpdatesGuest[]; cluster?: UpdatesClusterRef }
+export type UpdatesInventory = { refreshedAt: string; nodes: UpdatesNode[]; guests: UpdatesGuest[]; cluster?: UpdatesClusterRef
+  /** Something that makes this whole read incomplete (the "never look inside" list could not be read), in plain words. Shown at the top of the page. */
+  notice?: string }
 
 export type UpdatesStepAction =
   | 'preflight' | 'refresh' | 'snapshot' | 'apt' | 'docker' | 'check' | 'ceph'
@@ -337,6 +339,8 @@ export type UpdatesCheckCluster = {
   unread:    string[]
   /** A plain note about how this cluster was read (no policy file: nodes only). */
   note?:     string
+  /** Why this read is incomplete as a whole, in plain words (the "never look inside" list could not be read). */
+  notice?:   string
   available: number             // targets with packages to offer
   packages:  number
   security:  number

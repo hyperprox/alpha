@@ -14,6 +14,9 @@ import type { UpdatesExecutor } from './executor'
 export const REMOTE_EXCLUDED_WORDS = "Excluded in Remote access — HyperProx doesn't look inside this guest"
 export const EXCLUSIONS_UNKNOWN_WORDS = "Remote access's exclusion list could not be read, so HyperProx doesn't look inside any guest until it can"
 
+/** The inventory-level notice, so a read that looked inside no guest never passes for "nothing to update". */
+export const EXCLUSIONS_UNKNOWN_NOTICE = "HyperProx could not read Remote access's list of guests to leave alone, so it did not look inside any guest this time. An empty guest list here does not mean nothing needs updating. It will try again on the next refresh."
+
 /** The list for this executor: undefined where it does not apply (remote clusters), null when it could not be read. */
 export async function lookInsideList(exec: Pick<UpdatesExecutor, 'lookInsideExclusions'>): Promise<string[] | null | undefined> {
   if (!exec.lookInsideExclusions) return undefined

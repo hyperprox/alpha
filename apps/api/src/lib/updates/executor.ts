@@ -17,7 +17,7 @@ import { remoteNodeAddress } from '../clusters/nodes'
 import { runPluginMetrics } from '../plugin-host'
 import { plexPlugin } from '../../plugins/plex'
 import { parsePveAptList } from './commands'
-import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, parseTags } from '../guest-guard'
+import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, guestLeftAloneReason, parseTags } from '../guest-guard'
 
 export type { ExecResult }
 
@@ -147,6 +147,8 @@ export interface ExecutorOptions {
   remote?: boolean
   /** Home: Remote access's "never look inside" list. Default lib/guest-guard.ts excludedMachineIds (fails closed). */
   exclusions?: () => Promise<string[]>
+  /** Home: a guest's live Proxmox tags (null: not on the cluster). Default: /cluster/resources, reused for 5 s. */
+  guestTags?: () => Promise<string[] | null>
 }
 
 /**
@@ -294,10 +296,12 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
     },
 
     async guestExec(g, script, onLine, timeoutMs) {
-      // Home: a guest on Remote access's "never look inside" list is never entered (the list unreadable: none is).
+      // Home: a guest tagged hyperprox-ignore (read live from Proxmox) or on Remote access's "never look inside"
+      // list is never entered, whichever feature asked (certificate deploy and plug-in app steps come only here).
+      // Either unreadable: none is entered.
       if (!remote) {
-        const ids = await (opts.exclusions ?? excludedMachineIds)().catch(() => { throw new ExclusionsUnknownRefusal() })
-        const why = guestExcluded({ kind: g.type, vmid: g.vmid }, { excludedMachines: ids })
+        const why = await guestLeftAloneReason(pve, () => pve.fetchStrict<any[]>('/cluster/resources?type=vm'), { kind: g.type, vmid: g.vmid },
+          { exclusions: opts.exclusions, guestTags: opts.guestTags })
         if (why) throw new GuestExcludedRefusal(g.name || String(g.vmid), why)
       }
       const host = await hostFor(g.node)

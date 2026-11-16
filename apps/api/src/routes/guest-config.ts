@@ -44,6 +44,7 @@ const REFRESH_MS = 15_000
 const lastRefresh = new Map<string, number>()
 import { livePveAdapter, liveNodeShell, prismaAudit, vaultHmacKey } from '../lib/guest-config/pve-adapter'
 import { PrismaHistoryStore } from '../lib/guest-config/history/store'
+import { ExclusionsUnknownRefusal, GuestExcludedRefusal } from '../lib/guest-guard'
 import { GpuMoveWatcher } from '../lib/guest-config/gpu-watch'
 import { publish } from '../lib/notify'
 import { isUnlocked, onLock } from '../lib/vault/state'
@@ -90,6 +91,7 @@ function fail(reply: FastifyReply, e: unknown) {
   // The Proxmox token and node logins come from the vault; while it is locked nothing here can run.
   if (/HyperProx is locked|VaultLocked/i.test(String((e as Error)?.message ?? '')) || (e as Error)?.name === 'VaultLockedError')
     return reply.status(423).send({ success: false, locked: true, error: 'HyperProx is locked — sign in to read or edit guest configs.' })
+  if (e instanceof GuestExcludedRefusal || e instanceof ExclusionsUnknownRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
   if (e instanceof GuestConfigRefusal) return reply.status(STATUS[e.code]).send({ success: false, code: e.code, error: e.message, problems: e.problems })
   return reply.status(500).send({ success: false, error: (e as Error)?.message ?? String(e) })
 }

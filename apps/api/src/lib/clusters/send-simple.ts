@@ -108,8 +108,12 @@ const PLEX_GET_FN = [
   '}',
 ].join('\n')
 
-/** A container tagged hyperprox-ignore (any case) is never entered (checked on the node, from its config; lib/guest-guard.ts). */
-const IGNORED_TAG = `grep -qiE '^tags:.*${IGNORE_TAG}'`
+/**
+ * A container tagged hyperprox-ignore (any case) is never entered (checked on the node, from its config; lib/guest-guard.ts).
+ * The tag must be a whole entry of the tags line (entries are split by ";", "," or a space), so hyperprox-ignored or
+ * not-hyperprox-ignore is a different tag and does not count.
+ */
+export const IGNORED_TAG = `grep -qiE '^tags:(.*[;, ])?${IGNORE_TAG}([;, ]|$)'`
 
 /**
  * Everything discovery needs from one node, read-only. `reach` lists addresses to test on port 22 from here.

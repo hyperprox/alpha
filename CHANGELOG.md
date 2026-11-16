@@ -21,6 +21,26 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — Leave-alone rules apply everywhere
+
+### Fixed
+- **A guest you told HyperProx to leave alone is now left alone by certificate deployments and plug-in updates too.** Before, those could still reach into it. Now they stop and say why on the item that was refused, and nothing is run inside the guest.
+  - Technical: the tag is read live from Proxmox in `guestExec` (`lib/updates/executor.ts`), the one door certificate deploys (`lib/certs/deploy.ts`) and plug-in app steps (`lib/updates/apps.ts`) use, through the shared `liveGuestTags` / `guestLeftAloneReason` in `lib/guest-guard.ts`; a refusal is a `GuestExcludedRefusal` that the deploy records as the target's plain reason. The remote executor uses the same helper.
+- **Visitor numbers are no longer collected from a guest you told HyperProx to leave alone.** The site says so, in plain words, instead of silently reading its logs. If HyperProx cannot tell whether to leave the guest alone, it does not collect either.
+  - Technical: `lib/site-metrics/collector.ts` asks `leftAlone` (live tag plus the exclusion list, fail closed) before the log pull and WP-CLI, and `realRun` asks again; the reason is stored as the site's last error. The public address check does not enter the guest and still runs.
+- **The GPU checks no longer look inside a guest you told HyperProx to leave alone.** The once-a-minute watch skips it quietly; asking for its GPU detail is refused with the reason.
+  - Technical: `lib/guest-config/gpu-watch.ts` skips with a note in `seen` and no event; `GuestConfigService.gpuDetail` throws `GuestExcludedRefusal` (409) or `ExclusionsUnknownRefusal` (503) for a running container, and the post-restart device check is skipped for such a guest.
+- **If HyperProx cannot read the list of guests to leave alone, the Updates page now says so at the top, and the daily check reports it, instead of looking like there is nothing to update.** The daily check counts as incomplete and sends a warning message of its own.
+  - Technical: `UpdatesInventory.notice` and `UpdatesCheckCluster.notice` (both type copies); the per-guest `exclusions-unknown` row reason stays so no guest is read; the check logs at warn, sets the cluster result to partial and notifies even when no update is found.
+- **Compose projects that the Nextcloud page manages are now also protected when they are listed by folder in the Updates policy.** An entry that knows its project name but not its folder now covers the whole guest.
+  - Technical: `composeOwnerRefusal` in `lib/compose-owners.ts`.
+- **A tag that only contains the leave-alone tag in its name (for example one with an extra letter on the end) no longer counts as that tag when one-click setup scans a remote server.**
+  - Technical: `IGNORED_TAG` in `lib/clusters/send-simple.ts` now matches a whole entry of the `tags:` line.
+
+### Improved
+- **Checking whether a guest should be left alone is faster when many guests are checked at once.** Changes to the list in Remote access take effect immediately.
+  - Technical: live tags are reused for 5 s per Proxmox client and the exclusion list for 5 s per process (`GUARD_CACHE_MS`); `setGuestExclusionSource` and `RemoteAccessService.setExclusions` call `invalidateGuardCache()`.
+
 ## 2026-11-15 — Security updates to the software HyperProx is built on
 
 ### Fixed

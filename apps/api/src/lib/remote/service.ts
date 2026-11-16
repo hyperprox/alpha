@@ -18,7 +18,7 @@
 // =============================================================================
 
 import { randomUUID } from 'node:crypto'
-import { IGNORE_TAG, exclusionReason, guestExcluded } from '../guest-guard'
+import { IGNORE_TAG, exclusionReason, guestExcluded, invalidateGuardCache } from '../guest-guard'
 import type { NotifyEventInput } from '../notify/types'
 import type { RemoteExecutor } from './executor'
 import type { Inflight, RemoteRecord, RemoteRecordInput, RemoteStore } from './store'
@@ -560,6 +560,7 @@ export class RemoteAccessService {
     if (bad.length) throw new RemoteInputError(`Not a guest machine id (lxc-<vmid> or qemu-<vmid>): ${bad.map(String).join(', ').slice(0, 200)}`)
     const before = await this.d.store.listExclusions()
     await this.d.store.setExclusions(ids, by)
+    invalidateGuardCache()   // the 5 s read of the list must not outlive the change
     const after = await this.d.store.listExclusions()
     await this.d.store.audit('remote.exclusions', 'vpn', { by, added: after.filter(i => !before.includes(i)), removed: before.filter(i => !after.includes(i)) })
     return after

@@ -177,6 +177,7 @@ function skipWords(reason?: string): string {
  * versions, addresses, tokens or command output: names and counts only.
  */
 export function buildMessage(results: UpdatesCheckCluster[], reminder: boolean): Omit<NotifyEventInput, 'fingerprint'> {
+  const incomplete = results.some(r => r.notice)
   const urgent = results.some(r => r.targets.some(t => t.packages > 0 && (t.security.length > 0 || t.kernel || t.rebootNeeded)))
   const lines: string[] = []
   const plain: string[] = []
@@ -191,6 +192,7 @@ export function buildMessage(results: UpdatesCheckCluster[], reminder: boolean):
   for (const r of results) {
     plain.push(safeName(r.cluster.name))
     if (r.result === 'skipped') { lines.push(`${clusterWords(r.cluster)}: not checked this time (${skipWords(r.reason)}).`); continue }
+    if (r.notice) lines.push(`${clusterWords(r.cluster)}: no guest was looked inside, because Remote access's list of guests to leave alone could not be read. A quiet result here does not mean nothing needs updating.`)
     const offered = r.targets.filter(t => t.packages > 0)
     const held = r.targets.reduce((a, t) => a + t.held, 0)
     if (!offered.length && !held) continue
@@ -207,8 +209,8 @@ export function buildMessage(results: UpdatesCheckCluster[], reminder: boolean):
     type: 'updates.available',
     // A warning only when it matters soon: security fixes, or a kernel or reboot. Otherwise info, which a channel
     // receives when it is set to "everything".
-    severity: urgent ? 'warning' : 'info',
-    title: reminder ? 'Updates still waiting (weekly reminder)' : withSec.length ? 'Security updates available' : 'Updates available',
+    severity: urgent || incomplete ? 'warning' : 'info',
+    title: !lines.some(l => !/no guest was looked inside/.test(l)) ? 'Updates check could not read the guests' : reminder ? 'Updates still waiting (weekly reminder)' : withSec.length ? 'Security updates available' : 'Updates available',
     lines,
     link: '/updates',
     linkLabel: 'Open Updates',
@@ -381,6 +383,12 @@ export class UpdatesChecker {
       packages: offered.reduce((a, t) => a + t.packages, 0),
       security: offered.reduce((a, t) => a + t.security.length, 0),
     }
+    if (inv.notice) {
+      // The list of guests to leave alone could not be read: no guest was looked inside. That is a failed read, not "nothing to update".
+      out.notice = inv.notice
+      out.result = 'partial'
+      this.deps.log?.(`[updates] check ${h.ref.name}: ${inv.notice}`, 'warn')
+    }
     if (stopped) out.reason = `stopped early: ${stopped}; the machines not read are listed`
     if (fileMissing) out.note = 'No policy file: nodes only. Guests are not looked inside until config/updates.yaml exists (it says which to leave alone).'
     return out
@@ -394,20 +402,22 @@ export class UpdatesChecker {
     const days = this.deps.loadPolicy().policy.check.reminderDays
     const last = state.notified.at ? Date.parse(state.notified.at) : 0
     const due = current.length > 0 && this.now().getTime() - last >= days * 86_400_000
-    if (!current.length) { state.notified.keys = []; return }
-    if (!isNew && !due) {
-      // Applied updates drop out, so the same version coming back later counts as new again.
-      state.notified.keys = state.notified.keys.filter(k => current.includes(k))
-      return
-    }
-    const withNews = results.filter(r => r.result === 'skipped' || r.targets.some(t => t.packages > 0 || t.held > 0))
+    // A read that could not see the guests is reported every time it happens, whatever the findings: it must not look like a quiet day.
+    const incomplete = results.filter(r => r.notice)
+    const sendFindings = current.length > 0 && (isNew || due)
+    if (!current.length) state.notified.keys = []
+    else if (!sendFindings) state.notified.keys = state.notified.keys.filter(k => current.includes(k))
+    if (!sendFindings && !incomplete.length) return
+    const withNews = sendFindings
+      ? results.filter(r => r.result === 'skipped' || r.notice || r.targets.some(t => t.packages > 0 || t.held > 0))
+      : incomplete
     const msg = buildMessage(withNews, !isNew)
     if (!msg.lines?.length) return
     if (this.deps.publish) {
       try { await this.deps.publish({ ...msg, fingerprint: 'updates.available' }) }
       catch (e: any) { this.deps.log?.(`[updates] could not send the check message: ${e?.name ?? 'error'}`, 'warn'); return }
     }
-    state.notified = { at: this.now().toISOString(), keys: current }
+    if (sendFindings) state.notified = { at: this.now().toISOString(), keys: current }
   }
 
   // --- schedule -------------------------------------------------------------------------------

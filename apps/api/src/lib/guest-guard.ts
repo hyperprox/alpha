@@ -96,15 +96,72 @@ export class ExclusionsUnknownRefusal extends Error {
 
 let source: (() => Promise<string[]>) | null = null
 
-/** Remote access's "never look inside" list; the routes set it (it lives in Postgres). */
-export function setGuestExclusionSource(fn: (() => Promise<string[]>) | null): void { source = fn }
+/** How long a read of the list or of live tags is reused. Short enough that a new tag bites within seconds. */
+export const GUARD_CACHE_MS = 5_000
 
-/** The list now. Throws ExclusionsUnknownRefusal when it is not available: the caller enters no guest. */
+let clock: () => number = () => Date.now()
+/** Test hook: the clock the 5 s caches use. Call with no argument to restore the real one. */
+export function setGuardClock(fn?: () => number): void { clock = fn ?? (() => Date.now()); invalidateGuardCache() }
+
+let generation = 0
+let idsCache: { at: number; gen: number; ids: string[] } | null = null
+const rowsCache = new WeakMap<object, { at: number; gen: number; rows: any[] }>()
+
+/** Forget every cached read. Called when the exclusion list is changed, so the change bites at once. */
+export function invalidateGuardCache(): void { generation++; idsCache = null }
+
+/** Remote access's "never look inside" list; the routes set it (it lives in Postgres). */
+export function setGuestExclusionSource(fn: (() => Promise<string[]>) | null): void { source = fn; invalidateGuardCache() }
+
+/** The list now (reused for 5 s). Throws ExclusionsUnknownRefusal when it is not available: the caller enters no guest. */
 export async function excludedMachineIds(): Promise<string[]> {
   if (!source) throw new ExclusionsUnknownRefusal()
+  if (idsCache && idsCache.gen === generation && clock() - idsCache.at < GUARD_CACHE_MS) return idsCache.ids
+  const gen = generation
   try {
     const ids = await source()
     if (!Array.isArray(ids)) throw new Error('not a list')
+    if (gen === generation) idsCache = { at: clock(), gen, ids }
     return ids
   } catch { throw new ExclusionsUnknownRefusal() }
+}
+
+// ── live tags ─────────────────────────────────────────────────────────────────
+
+/**
+ * A guest's Proxmox tags as Proxmox has them now, or null when the guest is not on the cluster. `scope` is whatever
+ * object owns `read` (an executor, a client): the resource list is reused for 5 s per scope, so a pass over many
+ * guests asks Proxmox once. Throws when Proxmox does not answer; the caller decides what that means (fail closed).
+ */
+export async function liveGuestTags(scope: object, read: () => Promise<any[] | null | undefined>, kind: string, vmid: number | string): Promise<string[] | null> {
+  let hit = rowsCache.get(scope)
+  if (!hit || hit.gen !== generation || clock() - hit.at >= GUARD_CACHE_MS) {
+    const gen = generation
+    const rows = await read()
+    hit = { at: clock(), gen, rows: Array.isArray(rows) ? rows : [] }
+    rowsCache.set(scope, hit)
+  }
+  const row = hit.rows.find(r => r?.type === kind && Number(r.vmid) === Number(vmid))
+  return row ? parseTags(row.tags) : null
+}
+
+export interface LeftAloneOptions {
+  /** Tags the caller already knows; added to the live ones. */
+  tags?: unknown
+  /** The "never look inside" list; default excludedMachineIds. */
+  exclusions?: () => Promise<string[]>
+  /** Live tags; default liveGuestTags over `read`. */
+  guestTags?: () => Promise<string[] | null>
+}
+
+/**
+ * Why this guest must be left alone, in words, or null. Fails closed: when the list or the guest's live tags cannot
+ * be read the answer is ExclusionsUnknownRefusal, never "fine".
+ */
+export async function guestLeftAloneReason(scope: object, read: () => Promise<any[] | null | undefined>, g: { kind: string; vmid: number }, o: LeftAloneOptions = {}): Promise<string | null> {
+  let tags: string[] | null
+  try { tags = await (o.guestTags ?? (() => liveGuestTags(scope, read, g.kind, g.vmid)))() }
+  catch { throw new ExclusionsUnknownRefusal() }
+  const ids = await (o.exclusions ?? excludedMachineIds)().catch(() => { throw new ExclusionsUnknownRefusal() })
+  return guestExcluded({ kind: g.kind, vmid: g.vmid, tags: [...(tags ?? []), ...parseTags(o.tags)] }, { excludedMachines: ids })
 }

@@ -78,7 +78,8 @@ test('the runner reads the list again before each guest: one added after the pla
 })
 
 test('the production executor refuses to enter an excluded guest at home, fails closed, and leaves remotes alone', async () => {
-  const pve = { fetchStrict: async () => { throw new Error('no proxmox in this test') } } as any
+  // Proxmox answers the live tag read; any other path fails (that is how the test knows the guard was passed).
+  const pve = { fetchStrict: async (p: string) => { if (p === '/cluster/resources?type=vm') return []; throw new Error('no proxmox in this test') } } as any
   const g = { vmid: 102, type: 'lxc' as const, node: 'node-a', name: 'guest-102' }
   await assert.rejects(productionExecutor(pve, { exclusions: async () => ['lxc-102'] }).guestExec(g, 'true'), (e: any) => e instanceof GuestExcludedRefusal)
   await assert.rejects(productionExecutor(pve, { exclusions: async () => { throw new Error('down') } }).guestExec(g, 'true'), (e: any) => e instanceof ExclusionsUnknownRefusal)
