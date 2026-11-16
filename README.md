@@ -1473,7 +1473,8 @@ What the install does, in order:
    from answers.
 3. Turns on the Runtime API as a local socket only (`/run/haproxy/admin.sock`), never as a network port. The
    stats page listens on the container's own loopback only. The built-in Prometheus exporter answers on port
-   8405, for `/metrics` only, and only to HyperProx's own addresses.
+   8405, for `/metrics` only, and only to HyperProx's own addresses. If HyperProx's address changes, it updates that list
+   by itself (checked with `haproxy -c` first).
 4. Installs HAProxy Technologies' Data Plane API, checked against the release's published hash, on the
    container's loopback, with a generated password. The password is saved in the vault before the install runs;
    the Data Plane keeps only its hash.
@@ -2611,7 +2612,8 @@ first available, random, or static round robin, each explained) or to add a serv
 typed as an address. Each change says whether it is **runtime only** (it lasts until HAProxy restarts) or
 **saved** (written to the configuration, checked with `haproxy -c`, then HAProxy reloads). Saving needs the
 Data Plane API, which a Catalogue install has; a HAProxy found any other way gets runtime changes only, and the
-page says so. Destructive changes ask first, and every change is recorded in the audit log with who made it.
+page says so. Destructive changes ask first, and every change is recorded in the audit log with who made it. API tokens
+can read the page's data but never make these changes: they need a signed-in admin.
 
 **Load-balance this app.** Pick two or more guests running the same app, the port it answers on and a health
 check page. HyperProx makes one backend for them with HTTP health checks and a rule in the public frontend that
