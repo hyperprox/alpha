@@ -74,6 +74,10 @@ save_env() {
     "$LISTEN_IP" "$ALLOW" "$REPORT" "$REPORT_PAGE" "\${CACHE_GB:-}" > "$tmp"
   chmod 600 "$tmp"; mv "$tmp" "$ENV"
 }
+# 1 when apt-cacher-ng's socket is really listening on the LAN address, else 0.
+listening() {
+  ss -ltnH "sport = :$PORT" 2>/dev/null | awk '{print $4}' | grep -qxF "$LISTEN_IP:$PORT" && echo 1 || echo 0
+}
 wait_port() {
   local i
   for i in $(seq 1 30); do
@@ -104,6 +108,9 @@ PassThroughPattern: ^([A-Za-z0-9-]+\.)+[A-Za-z][A-Za-z0-9-]*:443$
 # apt-cacher-ng knows by itself.
 ForceManaged: 1
 Remap-ubusec: security.ubuntu.com/ubuntu ; security.ubuntu.com/ubuntu # Ubuntu security
+# apt keeps one answer per host for a run, so deb.debian.org's debug and ports archives must work through the cache too.
+Remap-debdbg: deb.debian.org/debian-debug cdn-fastly.deb.debian.org/debian-debug ; deb.debian.org/debian-debug # Debian debug symbols
+Remap-debports: deb.debian.org/debian-ports cdn-fastly.deb.debian.org/debian-ports ; deb.debian.org/debian-ports # Debian ports
 ReportPage: $REPORT_PAGE
 ExThreshold: 4
 CONF
@@ -135,6 +142,7 @@ stats() {
   echo "version=$(dpkg-query -W -f '\${Version}' apt-cacher-ng 2>/dev/null || true)"
   echo "active=$(systemctl is-active --quiet apt-cacher-ng && echo 1 || echo 0)"
   echo "listen=$LISTEN_IP"
+  echo "listening=$(listening)"
   echo "allow=$ALLOW"
   echo "report=$REPORT"
   echo "cache_gb=\${CACHE_GB:-}"
@@ -217,7 +225,7 @@ selftest() {
 
 case "\${1:-}" in
   probe)
-    echo "kind=apt-cacher-ng"; echo "listen=$LISTEN_IP" ;;
+    echo "kind=apt-cacher-ng"; echo "listen=$LISTEN_IP"; echo "listening=$(listening)" ;;
   stats)
     stats "\${2:-24}" ;;
   maint)

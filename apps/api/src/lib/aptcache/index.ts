@@ -29,6 +29,7 @@ export * from './types'
 const ROW = 'aptcache:'
 const USE = 'aptcache-use:'
 const CLIENTS = 'aptcache-clients'
+const FAILED = 'aptcache-selftest-failed'
 
 const setting = async <T>(id: string): Promise<T | null> => { const r = await wizardStore().get(id); return r && r.kind === 'setting' ? r.data as T : null }
 const putSetting = (id: string, owner: string, data: unknown) => wizardStore().put({ id, kind: 'setting', owner, data, expiresAt: null })
@@ -42,6 +43,8 @@ export const wizardAptCacheStore = (): Store => ({
   async putUse(id, s) { await putSetting(USE + id, s.updatedBy ?? 'system', s) },
   async getClients() { return (await setting<ClientRegistry>(CLIENTS)) ?? {} },
   async putClients(r) { await putSetting(CLIENTS, 'system', r) },
+  async getFailedChecks() { return (await setting<string[]>(FAILED)) ?? [] },
+  async putFailedChecks(ids) { await putSetting(FAILED, 'system', ids) },
 })
 
 /** The home cluster's API, resolved at each call (homePve throws while locked, so never at construction). */

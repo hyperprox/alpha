@@ -75,6 +75,7 @@ test('logic: networks checked like the server, clean-up words, buckets, sizes', 
   for (const octal of ['010.0.0.0/8', `${P3}.010.0/24`, '10.0.0.0/08']) assert.equal(checkNetworks(octal).ok, false, octal)
   assert.match(checkNetworks('010.0.0.0/8').problem!, /leading zeros/)
   assert.equal(repoName('ubusec'), 'Ubuntu security')
+  assert.equal(repoName('debdbg'), 'Debian debug symbols')
   assert.match(expiryWords(reading(), 10 * H).text, /cleaned out 2 hours ago/)
   assert.equal(expiryWords(reading({ expiry: null }), 0).tone, 'warn')
   assert.equal(expiryWords(reading({ expiry: { at: 0, outcome: 'errors' } }), H).tone, 'bad')

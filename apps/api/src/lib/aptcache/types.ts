@@ -43,6 +43,8 @@ export interface CacheReading {
   active: boolean
   version: string | null
   listen: string | null
+  /** Whether its socket is listening on that address right now (null: not reported). */
+  listening: boolean | null
   /** The networks allowed to use it. */
   allow: string[]
   /** Whether the admin page is reachable on the network (its actions always need the password). */

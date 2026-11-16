@@ -19,10 +19,13 @@
 //  guestExec), which refuses a guest HyperProx must leave alone.
 // =============================================================================
 
+import { DEBIAN_FULL_HOSTS, DEBIAN_HOSTS, UBUNTU_CODES } from './mirrors'
+
 export const DROPIN = '/etc/apt/apt.conf.d/01hyperprox-cache'
 export const DETECT = '/usr/local/lib/hyperprox/apt-cache-detect'
 
-const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
+// The same strict rule as everywhere else: no leading zeros (an octet like 010 would be read as octal).
+const IPV4 = /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/
 
 /** The cache's address, checked: an IPv4 address and a port. Anything else is refused before a script is built. */
 export function checkCacheAddress(host: string, port: number): void {
@@ -32,15 +35,28 @@ export function checkCacheAddress(host: string, port: number): void {
 }
 
 /**
- * The archives the cache serves (apt-cacher-ng's own Debian, Debian security and Ubuntu remaps, with ForceManaged on
- * it refuses anything else). Any other http:// source goes direct.
+ * The script's routing, as a bash case on "host/path": the cache only for a host and path it serves with ForceManaged
+ * on (apt-cacher-ng's own mirror lists, lib/aptcache/mirrors.ts); everything else, debug and ports archives included,
+ * DIRECT. apt asks once per host and keeps the answer for that run, so the cache also serves deb.debian.org's debug and
+ * ports archives (HyperProx's own remaps): whichever answer apt kept for that host, those paths still work.
  */
-export const CACHED_HOSTS = ['deb.debian.org', 'security.debian.org', 'cdn-fastly.deb.debian.org', 'ftp.*.debian.org', 'archive.ubuntu.com', '*.archive.ubuntu.com', 'security.ubuntu.com']
+export function routeCases(): string[] {
+  const debianOnly = DEBIAN_HOSTS.filter(h => !DEBIAN_FULL_HOSTS.includes(h))
+  return [
+    'case "$h/$p" in',
+    `  ${DEBIAN_FULL_HOSTS.map(h => `${h}/debian/*|${h}/debian-security/*`).join('|')}) ;;`,
+    `  ${debianOnly.map(h => `${h}/debian/*`).join('|')}) ;;`,
+    '  security.debian.org/*) ;;',
+    `  archive.ubuntu.com/ubuntu/*|security.ubuntu.com/ubuntu/*|${UBUNTU_CODES.map(c => `${c}.archive.ubuntu.com/ubuntu/*`).join('|')}) ;;`,
+    '  *) echo DIRECT; exit 0 ;;',
+    'esac',
+  ]
+}
 
 /**
- * The detect script apt runs before fetching from an http:// source: the cache's address only for an archive the cache
- * serves, and only when the cache itself answers its own usage page (status 200, 401 or 406) within three seconds.
- * Anything else, a 5xx from a sick cache included, prints DIRECT.
+ * The detect script apt runs before fetching from an http:// source: the cache's address only for an archive host and
+ * path the cache serves, and only when the cache itself answers its own usage page (status 200, 401 or 406) within
+ * three seconds. Anything else, a 5xx from a sick cache included, prints DIRECT.
  */
 export function detectScript(host: string, port: number): string {
   checkCacheAddress(host, port)
@@ -50,9 +66,10 @@ export function detectScript(host: string, port: number): string {
     '# It prints the package cache\'s address only for an archive the cache serves, and only when the cache answers',
     '# within three seconds; otherwise DIRECT, and apt fetches straight from the internet. Removed when the setting is',
     '# turned off.',
-    'u=${1:-}; h=${u#*://}; h=${h%%/*}; h=${h%%:*}; h=${h,,}',
+    'u=${1:-}',
     'case "$u" in http://*) ;; *) echo DIRECT; exit 0 ;; esac',
-    `case "$h" in ${CACHED_HOSTS.join('|')}) ;; *) echo DIRECT; exit 0 ;; esac`,
+    'r=${u#http://}; h=${r%%/*}; p=${r#"$h"}; p=${p#/}; h=${h%%:*}; h=${h,,}; [ "$p" != "$r" ] || p=',
+    ...routeCases(),
     `CACHE_HOST=${host}`,
     `CACHE_PORT=${port}`,
     'line=$(timeout 3 bash -c \'exec 3<>"/dev/tcp/$0/$1" && printf "GET / HTTP/1.0\\r\\nHost: %s\\r\\n\\r\\n" "$0" >&3 && head -c 12 <&3\' "$CACHE_HOST" "$CACHE_PORT" 2>/dev/null) || line=',
@@ -70,6 +87,34 @@ export function dropInText(): string {
   ].join('\n')
 }
 
+/** Single-quoted for the shell. */
+const shq = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`
+
+/**
+ * Reads one apt config file (comments left out) and exits 0 when it sets a key under Acquire::http whose name starts
+ * with "proxy" (Proxy, Proxy::<host>, Proxy-Auto-Detect), in any case and any nesting of blocks.
+ */
+export const OWN_PROXY_AWK = String.raw`
+{ sub(/(^|[[:space:]])\/\/.*$/, ""); if ($0 ~ /^[[:space:]]*#/) next; buf = buf " " $0 }
+END {
+  while (match(buf, /\/\*/)) { rest = substr(buf, RSTART + 2); e = index(rest, "*/"); buf = substr(buf, 1, RSTART - 1) (e ? substr(rest, e + 2) : "") }
+  n = 0; tok = ""; L = length(buf)
+  for (i = 1; i <= L; i++) {
+    c = substr(buf, i, 1)
+    if (c == "\"") { j = index(substr(buf, i + 1), "\""); if (j == 0) j = L; tok = tok substr(buf, i, j + 1); i += j; continue }
+    if (c == "{") { nm = tok; gsub(/^[[:space:]]+|[[:space:]]+$/, "", nm); st[++n] = tolower(nm); tok = ""; continue }
+    if (c == "}") { if (n > 0) n--; tok = ""; continue }
+    if (c == ";") {
+      s = tok; gsub(/^[[:space:]]+/, "", s); split(s, w, /[[:space:]]+/); key = tolower(w[1]); pre = ""
+      for (k = 1; k <= n; k++) pre = pre st[k] "::"
+      if ((pre key) ~ /^acquire::http::proxy/) found = 1
+      tok = ""; continue
+    }
+    tok = tok c
+  }
+  exit !found
+}`
+
 /**
  * Point this guest (or node) at the cache. Prints result=set|unchanged|own-proxy|no-apt, the address this machine
  * reaches the cache from (src=, so the plug-in can name clients without keeping their addresses), and whether the
@@ -82,17 +127,22 @@ export function ensureScript(host: string, port: number): string {
   return `set -e
 D=${DROPIN}
 S=${DETECT}
+OWN_AWK=${shq(OWN_PROXY_AWK)}
 if ! command -v apt-get >/dev/null 2>&1; then echo "result=no-apt"; exit 0; fi
 # A proxy set by hand anywhere else wins: HyperProx takes its own setting out and leaves the guest alone. Looked for in
-# every apt config file (any case, the Acquire::http::Proxy form and the nested Acquire { http { Proxy ... } } form),
-# in apt's merged view, and in /etc/environment.
-own=$(grep -rlsiE '^[[:space:]]*acquire::http::proxy|^[[:space:]]*acquire::http[[:space:]]*\\{' /etc/apt/apt.conf /etc/apt/apt.conf.d 2>/dev/null | grep -vx "$D" || true)
-if [ -z "$own" ]; then
-  for f in /etc/apt/apt.conf /etc/apt/apt.conf.d/*; do
-    [ -f "$f" ] && [ "$f" != "$D" ] || continue
-    if grep -qiE '(^|[[:space:];{])acquire[[:space:]]*\\{' "$f" && grep -qiE '(^|[[:space:];{:])proxy(-auto-detect)?([[:space:]]|::|")' "$f"; then own=$f; break; fi
-  done
-fi
+# the files apt reads (apt.conf, and in apt.conf.d names apt accepts: no extension or .conf, not .bak/.dpkg-*/.ucf-*
+# and the like), comments left out, as a key under Acquire::http whichever way it is written (Acquire::http::Proxy,
+# Acquire { http { Proxy ... } }, Acquire::http { Proxy-Auto-Detect ... }), in apt's merged view, and in /etc/environment.
+own=
+for f in /etc/apt/apt.conf /etc/apt/apt.conf.d/*; do
+  [ -f "$f" ] && [ "$f" != "$D" ] || continue
+  b=\${f##*/}
+  case "$f" in /etc/apt/apt.conf.d/*)
+    [[ "$b" =~ ^[A-Za-z0-9_.-]+$ ]] || continue
+    case "$b" in *.conf|*.*) case "$b" in *.conf) ;; *) continue ;; esac ;; esac ;;
+  esac
+  if awk "$OWN_AWK" "$f"; then own=$f; break; fi
+done
 if [ -z "$own" ] && command -v apt-config >/dev/null 2>&1; then
   apt-config dump 2>/dev/null | grep -iE '^acquire::http::proxy' | grep -vF "$S" | grep -q . && own="apt's own settings"
 fi
