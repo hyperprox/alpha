@@ -1733,7 +1733,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 
 | Plug-in | What it shows |
 |---|---|
-| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, and **see what's available** for any missing item |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
 | Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
@@ -1900,6 +1900,43 @@ Lidarr address in the plug-in's settings, which says to leave it blank if you do
   still missing, and **Scheduled** before that. An album's release is a calendar date and is shown as written, not
   shifted by your time zone. **Missing, searching** gains a Music column of monitored albums already out with no
   files. The cover is fetched by HyperProx with the stored key, like the TV posters.
+
+**Give up after X tries.** Under **Missing, searching** on the Upcoming tab. Sonarr, Radarr and Lidarr keep no
+count of how often they have looked for something, so HyperProx counts for them: every few hours it reads each
+missing item's last search time, and each time that moves on while the item still has no file is one try (a
+search while it is downloading does not count). It also reads each app's history, so it can say why an item
+keeps failing: grabbed but the download failed, grabbed but never finished, downloaded but could not be
+imported, or nothing usable found.
+
+- **The rule**, for TV, films and music separately: give up after a number of tries (14 unless you change it), once
+  the item is at least so many days old (30), counted from when it aired or was released, or from when HyperProx first
+  saw it missing. Then either **stop searching** (the item is unmonitored and everything is kept) or, for films and
+  albums only, **remove from library**: the film or album leaves Radarr or Lidarr with no file deleted (there are none,
+  and HyperProx checks again first), and an import-list exclusion stops your lists adding it back. It is off until you
+  turn it on.
+- **Preview first.** Turning a rule on shows exactly what it would give up on today, "This would give up on 12 TV
+  episodes (3 series), 4 films", with the list and the reasons, and you confirm that preview. Then it runs once a day.
+  A whole old season with every episode missing is shown as one line, "Season 2 (10 episodes)", though each episode
+  is still counted on its own.
+- **Never touched**: anything with a file, anything downloading, quality profiles (a show on a deliberately strict
+  profile is never moved to a lower one to find something), and files. Every candidate is read again just before the
+  change, and every change is read back. At most 250 items per app a day. Each run is in the audit log, and one short
+  notification says what was given up.
+- **Given up** lists each item with its tries, how long it has been missing, the reason and what was done.
+  **Try again** (admin, confirmed, audited) monitors it again and asks for a search, or adds a removed film or album
+  back with the profile and folder it had. It is then counted from zero.
+- **See what's available** (admin) on any missing or given-up item runs one interactive search for that item (or
+  that season) and lists every release found, best first: quality and resolution, source, codec, size, seeders and
+  peers (torrents) or age and grabs (usenet), indexer, language, the app's own pick, and in plain English why it was
+  turned down ("Below your quality profile (DVD)", "Too few seeders", "Custom format score too low"). One item is
+  searched at most once every ten minutes; in between you see the last answer. **Download this** grabs that exact
+  release even if it was turned down, without changing the quality profile; the confirm says when it is below the
+  profile and that the app will keep looking for a better copy. HyperProx then watches the queue for about 20
+  seconds to say whether it landed.
+- **Never offered**: AV1, 3D and 48 fps releases are hidden (with a count), torrents with no seeders are hidden unless
+  you ask to see them, and a release with a program file (.exe, .scr, .bat, .msi, .lnk, .js and the like) in its name
+  cannot be downloaded. Indexers do not list a torrent's files before it is downloaded, so after a download starts
+  HyperProx reads its file list from qBittorrent and removes and blocklists it if a program file is in it.
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.
 

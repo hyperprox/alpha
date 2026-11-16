@@ -21,6 +21,21 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — Arr Stack: give up after X tries, and see what is available
+
+### New
+- The Arr Stack can now stop chasing things that never arrive. Sonarr, Radarr and Lidarr do not count how often they have searched, so HyperProx counts for them, and you can set, for TV, films and music separately, "give up after so many tries, once it is at least so many days old". It is off until you turn it on, and turning it on first shows exactly what it would give up on today, with why each one keeps failing.
+  - Technical: `lib/arr-giveup` (logic, releases, service, store, production), routes in `routes/arr-giveup.ts` under `/api/plugins/arrstack/give-up`, new tables `ArrGiveUpItem` and `ArrGiveUpSetting` (migration `20261118120000_arr_give_up`, additive), timer step `arr-give-up` in `lib/services/bootstrap.ts`. A try is the item's `lastSearchTime` moving on while it still has no file; history adds grabs, failed downloads and failed imports.
+- Giving up means it is no longer searched for, and everything is kept. For films and albums you can choose to remove them from the library instead; no file is ever deleted, and an exclusion stops your lists adding them back. Items that have a file, or are downloading, are never touched, and quality profiles are never changed.
+  - Technical: unmonitor through `episode/monitor`, `movie/editor` and `album/monitor`; removal with `deleteFiles=false` and the import-list exclusion, after re-reading that there is no file. Every change is read back. At most 250 items per app a day.
+- It runs once a day. Each run is in the audit log, and you get one short notification when something is given up.
+  - Technical: notification type `arr.gaveup` in the media family; audit actions `arrstack.giveup.*`.
+- A Given up list shows each item with its tries, how long it has been missing, the reason and what was done, with Try again: it searches again, or adds a removed film or album back with the same profile and folder. A whole old season that is missing shows as one line.
+- See what's available: on any missing or given-up item, an admin can run one search and see every release found, best first, with its quality, source, codec, size, seeders or age, indexer, language, and in plain English why it was turned down. Download this grabs that exact release even when it was turned down, and the confirm says when it is below your quality profile. HyperProx then checks the download reached the queue.
+  - Technical: one interactive search per item at most every ten minutes (the last answer is reused in between), six new searches a minute per person, admin only and refused to API tokens. The grab sends only the release's guid and indexer; the queue is filtered by HyperProx, never by the query.
+- AV1, 3D and 48 fps releases are never offered, torrents with no seeders are hidden unless you ask, and a release with a program file in its name cannot be downloaded. If a downloaded torrent turns out to contain a program file, HyperProx removes it and blocklists it.
+- The Missing panel now shows missing and given-up counts side by side.
+
 ## 2026-11-16 — Internal tidy-up
 
 ### Improved
