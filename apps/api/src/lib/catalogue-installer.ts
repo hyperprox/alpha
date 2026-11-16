@@ -30,11 +30,11 @@ import type { LinkRecord } from './transcode/setup'
 import { execOnNode } from './node-exec'
 import type { CreatePVE } from './wizard-executor'
 import type { ExecResult } from './node-exec'
-import { setCredential, setCredentials, getProviderCredentials, vaultWritable, deleteProviderCredentials } from './credentials'
+import { setCredential, setCredentials, getProviderCredentials, vaultWritable, deleteProviderCredentials, getCredential } from './credentials'
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
 import { wizardStore } from './catalogue-store'
-import { auditCredentialUse } from './audit'
+import { auditCredentialUse, auditOrThrow } from './audit'
 import {
   validateNaming, detectConvention, pickNext, managementFallback, namingPolicy, takenAddresses, schemeLabel, bareIp, readSavedNaming, NAMING_ID,
   type NamingSettings, type Detection,
@@ -46,6 +46,9 @@ import {
   GHOST_SETUP_STEPS, ghostOverShell, runGhostSetup, ghostPreview, ghostInstallEnv, dropPendingSmtp, type GhostHttp, type Shell,
 } from './ghost/setup'
 import { mailWanted } from './ghost/recipe'
+import { HAPROXY_SETUP_STEPS, runHaproxySetup, type HaproxySetupDeps } from './haproxy/setup'
+import { HaproxyInstanceStore } from './haproxy/instances'
+import { ownScrapers } from './haproxy/recipe'
 import {
   planPublish, runPublish, cleanupPublish, recordSite, realPublishDeps, PUBLISH_STEPS,
   type PublishDeps, type PublishPlan, type PublishLedger, type PublishInput,
@@ -155,6 +158,24 @@ export interface InstallDeps {
   pbsSetup?:   () => PbsSetupDeps
   /** Ghost's setup requests, given the site's address and the container's shell (default: curl over pct exec). */
   ghostHttp?:  (url: string, sh: Shell) => GhostHttp
+  /** HAProxy's setup: the Proxy page, its plug-in and Prometheus (lib/haproxy/setup.ts). */
+  haproxySetup?: () => HaproxySetupDeps
+  /** HyperProx's own addresses, which may read HAProxy's /metrics. */
+  scrapers?:   () => string[]
+}
+
+/** HAProxy's setup as it runs for real: the Proxy service, the plug-in's store, the audit log and Prometheus. */
+function realHaproxySetupDeps(): HaproxySetupDeps {
+  return {
+    createProxyInstance: async (input, owner) => {
+      const { proxyService } = await import('./proxy')
+      return (await proxyService().createInstance(input, { email: owner })).instance.id
+    },
+    store: new HaproxyInstanceStore({ get: getCredential, set: setCredential }),
+    audit: (a, r, d) => auditOrThrow(a, r, d),
+    syncTargets: async () => (await import('./haproxy')).syncHaproxyTargets(),
+    deleteSecrets: (c, p) => deleteProviderCredentials(c, p),
+  }
 }
 
 const realDeps = (): InstallDeps => ({
@@ -378,7 +399,9 @@ const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan): I
   ...(recipe.setup === 'pbs' ? PBS_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase })) : [
     ...(recipe.setup === 'ghost' ? GHOST_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase })) : []),
     { id: 'verify',    label: 'Check it answers',       status: 'pending' as Phase },
-    { id: 'wire',      label: 'Configure the integration', status: 'pending' as Phase },
+    // HAProxy's own setup takes the place of the generic wiring.
+    ...(recipe.setup === 'haproxy' ? HAPROXY_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase }))
+      : [{ id: 'wire',      label: 'Configure the integration', status: 'pending' as Phase }]),
   ]),
   ...(publish ? PUBLISH_STEPS.map(s => ({ id: s.id, label: s.label, status: 'pending' as Phase })) : []),
 ]
@@ -487,6 +510,16 @@ async function runJob(
     // which moves from the preview's vault item into the site's own.
     const ghost = recipe.setup === 'ghost' ? await ghostInstallEnv({ options, domain: ctx.publish?.domain, ip: job.ip }, deps) : null
     if (ghost) Object.assign(env, ghost.env)
+    // HAProxy: the Data Plane password, saved in the vault before the script runs (a password that exists only in a
+    // script that already ran is a lockout), and the addresses that may read its metrics.
+    let haproxySecret: string | null = null
+    if (recipe.setup === 'haproxy') {
+      if (!await deps.vaultOpen()) throw new Error('HAProxy\'s Data Plane API gets a generated password, which is saved in the vault, and the vault is locked. Sign in to unlock it and try again.')
+      haproxySecret = randomBytes(24).toString('base64url')
+      await deps.saveSecrets('apps', `${recipe.id}-${job.vmid}`, { dataplane_user: 'hyperprox', dataplane_password: haproxySecret })
+      env.HPX_DP_PASSWORD = haproxySecret
+      env.HPX_SCRAPERS = (deps.scrapers ?? ownScrapers)().join(',')
+    }
     if (fr.kind === 'env-admin' && admin) {
       env[fr.passwordEnv] = admin.password
       if (fr.userEnv) env[fr.userEnv] = admin.user
@@ -619,10 +652,18 @@ async function runJob(
       s4.detail = 'no address to check'
     }
 
-    // 5. Hand it to whatever was waiting for it.
-    const s5 = step(job, 'wire')
-    s5.detail = url ? await wireUp(recipe, url) : 'no address, so nothing was configured'
-    s5.status = url ? 'done' : 'skipped'
+    // 5. Hand it to whatever was waiting for it. HAProxy: the Proxy page, its plug-in and Prometheus.
+    if (recipe.setup === 'haproxy') {
+      if (s4.status !== 'done' || !job.ip || !haproxySecret) throw new Error('HAProxy did not answer on port 80, so it was not added to the Proxy page or the plug-in. Its Data Plane password is in the vault under ' + `apps/${recipe.id}-${job.vmid}.`)
+      await runHaproxySetup({
+        name: `HAProxy ${job.vmid}`, ip: job.ip.split('/')[0], node: job.node!, vmid: job.vmid!, secret: haproxySecret, owner: job.owner || 'hyperprox',
+        vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}` },
+      }, id => step(job, id), (deps.haproxySetup ?? realHaproxySetupDeps)())
+    } else {
+      const s5 = step(job, 'wire')
+      s5.detail = url ? await wireUp(recipe, url) : 'no address, so nothing was configured'
+      s5.status = url ? 'done' : 'skipped'
+    }
 
     // 6. Publishing: only a service that answers on its own address gets a public name.
     if (ctx.publish) {

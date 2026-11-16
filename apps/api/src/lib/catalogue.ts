@@ -25,6 +25,7 @@ import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
 import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
+import { HAPROXY_SCRIPT, HAPROXY_RECIPE_ID, HAPROXY_VERSION, HAPROXY_LINE, DATAPLANE_VERSION, METRICS_PORT } from './haproxy/recipe'
 
 /** What a person does the first time they open the service. */
 export type FirstRun =
@@ -133,8 +134,9 @@ export interface CatalogueRecipe {
    * A recipe with its own guided setup after the install, in place of the generic health check and wiring
    * (lib/pbs/catalogue.ts for Proxmox Backup Server: datastore location, tokens, plug-in, optional storage). Ghost's
    * (lib/ghost/setup.ts: the owner, the title, an Admin API key and mail) runs before the generic check and publish.
+   * HAProxy's (lib/haproxy/setup.ts: the Proxy page, its plug-in and Prometheus) runs after the check, in place of the wiring.
    */
-  setup?:      'pbs' | 'ghost'
+  setup?:      'pbs' | 'ghost' | 'haproxy'
   /** Checks across the recipe's options, after each one passed its own kind. */
   checkOptions?: (values: Record<string, string>) => string[]
 }
@@ -538,6 +540,34 @@ export const CATALOGUE: CatalogueRecipe[] = [
     volumes:
       - ./data:/data
       - ./letsencrypt:/etc/letsencrypt` },
+  },
+
+  {
+    id: HAPROXY_RECIPE_ID,
+    detect: DETECT[HAPROXY_RECIPE_ID],
+    name: 'HAProxy',
+    summary: `A load balancer and reverse proxy: HAProxy ${HAPROXY_VERSION} (the ${HAPROXY_LINE} long-term support line). HyperProx adds it to the Proxy page and connects its load-balancing plug-in for you.`,
+    category: 'proxy',
+    port: 80,
+    // A fresh HAProxy has no rule yet, so its own "no server is available" page proves it is serving.
+    healthPath: '/',
+    expectStatus: [503],
+    healthBody: { contains: ['No server is available to handle this request.'] },
+    needsDocker: false,
+    defaults: { cores: 1, memoryMb: 512, diskGb: 4, swapMb: 256 },
+    minimum: { cores: 1, memoryMb: 256, diskGb: 2 },
+    firstRun: { kind: 'none' },
+    wizard: false,
+    firstLogin: 'There is no login page. Open Plug-ins → HAProxy to see and change it; HyperProx holds its Data Plane password in the vault.',
+    notes: [
+      `HAProxy ${HAPROXY_VERSION} from HAProxy's own Debian repository, held to the ${HAPROXY_LINE} line, and the Data Plane API ${DATAPLANE_VERSION}, each checked against a pinned hash.`,
+      'Takes port 80 on this container. Its Runtime API is a local socket, its Data Plane API and stats page listen on the container\'s loopback only: nothing on the network can change it.',
+      `Prometheus reads its metrics on port ${METRICS_PORT}, which answers HyperProx's own addresses only.`,
+      'Every change HyperProx saves is checked with haproxy -c before HAProxy reloads; a change that fails is not applied.',
+      'Load-balance an app from the plug-in: pick two or more guests running it, and optionally a public name.',
+    ],
+    setup: 'haproxy',
+    install: { kind: 'script', script: HAPROXY_SCRIPT },
   },
 
   // ── Local AI ────────────────────────────────────────────────────────────
