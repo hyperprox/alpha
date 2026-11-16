@@ -1,5 +1,5 @@
-// Local plug-ins: the loader, the fixed rules every one of them gets (admin only, every change re-confirmed,
-// no API tokens, audited), and the git-ignore entries that keep them out of git status, the updater and deploy.sh.
+// Local plug-ins: the loader, the fixed rules every one of them gets (admin only, every change re-confirmed unless
+// the plug-in opts out, no API tokens, audited), and the git-ignore entries that keep them out of git status, the updater and deploy.sh.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'fs'
@@ -14,7 +14,7 @@ import { lock, isUnlocked } from '../src/lib/vault/state'
 import { setCredentialTable } from '../src/lib/credentials'
 import { setAuditSink } from '../src/lib/audit'
 import { MemoryApiTokenStore, setApiTokenStore, createApiToken, tokenForbidden } from '../src/lib/api-tokens'
-import { requiredRole, needsReconfirm } from '../src/lib/roles'
+import { requiredRole, needsReconfirm, localPluginSkipsReconfirm, noteLocalPlugin, resetLocalPluginRegistry } from '../src/lib/roles'
 import { loadLocalPlugins, registerLocalPlugins } from '../src/lib/local-plugins'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
@@ -44,12 +44,12 @@ after(async () => { setApiTokenStore(null); setAuditSink(null); if (isUnlocked()
 
 test('the loader: one plug-in per valid folder, bad ids and mismatches reported, a missing folder is none', () => {
   const r = loadLocalPlugins(FIXTURES)
-  assert.deepEqual(r.plugins.map(p => p.plugin.id), ['demo'])
+  assert.deepEqual(r.plugins.map(p => p.plugin.id), ['demo', 'sample'])
   assert.deepEqual(r.errors.map(e => e.id).sort(), ['Bad_Name', 'mismatch'])
   assert.match(r.errors.find(e => e.id === 'mismatch')!.error, /does not match its folder/)
   assert.deepEqual(loadLocalPlugins(path.join(FIXTURES, 'nope')), { plugins: [], errors: [] })
   const reserved = loadLocalPlugins(FIXTURES, ['demo'])
-  assert.equal(reserved.plugins.length, 0)
+  assert.deepEqual(reserved.plugins.map(p => p.plugin.id), ['sample'])
   assert.match(reserved.errors.find(e => e.id === 'demo')!.error, /bundled/)
 })
 
@@ -84,7 +84,7 @@ test('an admin API token is refused, reads included', async () => {
 test('an admin reads freely, changes only after the master password, and every change is audited', async () => {
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const list = await app.inject({ method: 'GET', url: '/api/local', headers: { cookie } })
-  assert.deepEqual(list.json().data, [{ id: 'demo', name: 'Demo' }])
+  assert.deepEqual(list.json().data, [{ id: 'demo', name: 'Demo' }, { id: 'sample', name: 'Sample' }])
   const hello = await app.inject({ method: 'GET', url: '/api/local/demo/hello', headers: { cookie } })
   assert.equal(hello.statusCode, 200, hello.body)
   assert.deepEqual(hello.json().data, { hello: 'demo' })
@@ -109,6 +109,51 @@ test('an admin reads freely, changes only after the master password, and every c
   assert.ok(generic, 'the loader\'s row for every change')
   assert.equal(generic!.details?.status, 200)
   assert.equal(generic!.details?.by, 'admin@example.com')
+})
+
+test('a plug-in that opts out: its changes need no re-confirmation; the others, and unknown ids, still do', () => {
+  assert.equal(localPluginSkipsReconfirm('sample'), true)
+  assert.equal(localPluginSkipsReconfirm('demo'), false)
+  for (const m of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    assert.equal(needsReconfirm(m, '/api/local/sample/echo'), false, m)
+    assert.equal(needsReconfirm(m, '/api/local/sample'), false, m)
+    assert.equal(needsReconfirm(m, '/api/local/demo/echo'), true, m)
+    assert.equal(needsReconfirm(m, '/api/local/unknown/echo'), true, `${m} unregistered id`)
+    assert.equal(needsReconfirm(m, '/api/local/samplex/echo'), true, `${m} a longer id is another plug-in`)
+    assert.equal(needsReconfirm(m, '/api/local'), true, `${m} the list itself`)
+  }
+  // It changes nothing else: still admin only.
+  for (const m of ['GET', 'POST']) assert.equal(requiredRole(m, '/api/local/sample/echo'), 'admin', m)
+  // A registration can be taken back, and a reset forgets them all.
+  noteLocalPlugin('other', { reconfirm: false }); assert.equal(needsReconfirm('POST', '/api/local/other/x'), false)
+  noteLocalPlugin('other', {}); assert.equal(needsReconfirm('POST', '/api/local/other/x'), true)
+  resetLocalPluginRegistry(); assert.equal(needsReconfirm('POST', '/api/local/sample/echo'), true)
+  noteLocalPlugin('sample', { reconfirm: false })
+})
+
+test('the opted-out plug-in: an admin changes without the master password (audited); viewers, operators and tokens are still refused', async () => {
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  const before = audits.length
+  const ok = await app.inject({ method: 'POST', url: '/api/local/sample/echo', headers: { cookie }, payload: { n: 3 } })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.deepEqual(ok.json().data, { n: 3 })
+  const since = audits.slice(before)
+  assert.ok(since.find(a => a.action === 'local.sample.echo'), 'the plug-in\'s own row')
+  assert.equal(since.find(a => a.action === 'local.sample.request')?.details?.status, 200, 'and the loader\'s row')
+  // The other plug-in in the same install keeps the re-confirmation.
+  const demo = await app.inject({ method: 'POST', url: '/api/local/demo/echo', headers: { cookie }, payload: { n: 3 } })
+  assert.equal(demo.statusCode, 403)
+  assert.equal(demo.json().code, 'reconfirm_required')
+  for (const [email, pw] of [['viewer@example.com', 'viewer master password'], ['op@example.com', 'operator master password']]) {
+    const s = await signIn(app, email, pw)
+    const r = await app.inject({ method: 'POST', url: '/api/local/sample/echo', headers: { cookie: s.cookie }, payload: { n: 1 } })
+    assert.equal(r.statusCode, 403, email)
+    assert.equal(r.json().code, 'forbidden', email)
+  }
+  const t = (await createApiToken({ name: 'auto2', role: 'admin' }, 'test', tokens)).token
+  const tr = await app.inject({ method: 'POST', url: '/api/local/sample/echo', headers: { authorization: `Bearer ${t}` }, payload: { n: 1 } })
+  assert.equal(tr.statusCode, 403)
+  assert.equal(tr.json().code, 'token_forbidden')
 })
 
 test('git ignores the local plug-in folders, so git status and the updater never count them as local changes', () => {

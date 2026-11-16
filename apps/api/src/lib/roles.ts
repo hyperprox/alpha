@@ -212,9 +212,32 @@ const HOMEPAGE_RECONFIRM = /^\/api\/plugins\/homepage\/instances\/[^/]+\/(widget
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
-// Local plug-ins (lib/local-plugins.ts): admin for every method, reads included, and every change re-confirmed,
-// which also keeps API tokens out (api-tokens.ts refuses them there for reads too). The plug-in cannot change this.
+// Local plug-ins (lib/local-plugins.ts): admin for every method, reads included, and every change re-confirmed
+// (API tokens are refused there outright by api-tokens.ts, reads too). A plug-in may opt out of the re-confirmation
+// alone (`reconfirm: false`); the list below is consulted only for an id the loader registered.
 const LOCAL = /^\/api\/local(\/|$)/
+const LOCAL_PLUGIN_ID = /^\/api\/local\/([a-z][a-z0-9-]{1,39})(\/|$)/
+
+// Which loaded local plug-ins opted out of the re-confirmation. Filled by registerLocalPlugins (lib/local-plugins.ts)
+// as each one is registered; kept here so the role rules import nothing. An id never registered — a plug-in that
+// failed to load, a typo, anything — keeps the re-confirmation.
+const localNoReconfirm = new Set<string>()
+
+/** Record a registered local plug-in and whether its changes need the master password re-entered (the default). */
+export function noteLocalPlugin(id: string, opts: { reconfirm?: boolean } = {}): void {
+  if (opts.reconfirm === false) localNoReconfirm.add(id)
+  else localNoReconfirm.delete(id)
+}
+
+/** True only for a registered local plug-in that opted out of the re-confirmation. */
+export function localPluginSkipsReconfirm(id: string): boolean {
+  return localNoReconfirm.has(id)
+}
+
+/** Tests: forget every registration. */
+export function resetLocalPluginRegistry(): void {
+  localNoReconfirm.clear()
+}
 
 /**
  * What an API token with the owner-granted plug-in settings permission may do without a re-confirmation: an explicit
@@ -437,7 +460,10 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && VPN.test(p) && !VPN_PREVIEW.test(p)) return true
   for (const [cm, re] of CLUSTERS_RECONFIRM) if (m === cm && re.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && LOCAL.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && LOCAL.test(p)) {
+    const id = LOCAL_PLUGIN_ID.exec(p)?.[1]
+    return !(id && localPluginSkipsReconfirm(id))
+  }
   if (m === 'POST' && p === '/api/self-update/install') return true
   if (m === 'PUT' && p === '/api/self-update/settings') return true
   // ── Vault items and people (routes/secrets.ts delete, routes/users.ts) ─────
