@@ -15,42 +15,16 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
-import { randomUUID } from 'node:crypto'
-import { auditOrThrow } from '../lib/audit'
 import { onLock } from '../lib/vault/state'
 import { isAdmin } from '../lib/http/request-actor'
 import { sendRefusal } from '../lib/failure'
-import { PLUGIN_CATEGORY, fetchWithTimeout, getSettings, saveSettings } from '../lib/plugin-host'
-import { getCredential, setCredential } from '../lib/credentials'
-import { PlexSignin, PlexSigninError, type PlexHttp, type SigninDeps } from '../lib/plex-signin'
-import { findPlugin } from '../plugins'
+import { getSettings } from '../lib/plugin-host'
+import { currentContext } from '../lib/auth'
+import { ownerOf } from './ai'
+import { PlexSigninError, type PlexSignin } from '../lib/plex-signin'
+import { sharedPlexSignin } from '../lib/plex-signin-shared'
 
-/** The setting that holds this install's Plex client identifier. Not secret: plex.tv shows it as the device. */
-export const CLIENT_ID_KEY = 'plex_client_id'
-
-const PLEX_MAX_BYTES = 4 * 1024 * 1024
-
-export const plexHttp: PlexHttp = async (method, url, headers, timeoutMs) => {
-  // buffer() stops reading past 4 MiB (text() has no cap).
-  const r = await fetchWithTimeout(url, headers, false, method, undefined, timeoutMs, PLEX_MAX_BYTES)
-  return { status: r.status, ok: r.ok, json: async () => JSON.parse((await r.buffer()).toString('utf8')) }
-}
-
-export async function plexClientId(): Promise<string> {
-  const have = await getCredential(PLUGIN_CATEGORY, 'plex', CLIENT_ID_KEY)
-  if (have) return have
-  const id = randomUUID()
-  await setCredential(PLUGIN_CATEGORY, 'plex', CLIENT_ID_KEY, id, false)
-  return id
-}
-
-export async function savePlexEndpoint(url: string, serverToken: string): Promise<void> {
-  const p = findPlugin('plex')
-  if (!p) throw new Error('The Plex plug-in is not installed.')
-  await saveSettings(p.manifest, { plex_url: url, plex_token: serverToken })
-}
-
-let shared: PlexSignin | null = null
+export { CLIENT_ID_KEY, plexHttp, plexClientId, savePlexEndpoint } from '../lib/plex-signin-shared'
 
 export function buildPlexSigninRoutes(deps: {
   signin?: PlexSignin
@@ -58,12 +32,7 @@ export function buildPlexSigninRoutes(deps: {
   known?: () => Promise<string | null>
 } = {}): FastifyPluginAsync {
   return async (fastify) => {
-    const svc = deps.signin ?? (shared ??= new PlexSignin({
-      http: plexHttp, clientId: plexClientId, save: savePlexEndpoint,
-      // Throws when the row is not written, so the person is told (the save itself stands).
-      audit: (action, details) => auditOrThrow(action, 'plugin:plex', details),
-      log: (msg, fields) => fastify.log.info(fields ?? {}, msg),
-    } satisfies SigninDeps))
+    const svc = deps.signin ?? sharedPlexSignin((msg, fields) => fastify.log.info(fields ?? {}, msg))
     // No server token is held past a lock.
     onLock(() => svc.dropAll())
     const known = deps.known ?? (async () => (await getSettings('plex').catch(() => ({} as Record<string, string>))).plex_url ?? null)
@@ -83,11 +52,13 @@ export function buildPlexSigninRoutes(deps: {
       return sendRefusal(reply, 500, 'failed', 'The Plex sign-in failed. Try again.')
     }
 
-    fastify.post<{ Body: { known?: unknown } }>('/', async (req, reply) => {
+    // `claim: true` is a sign-in to claim a new server the Catalogue is about to install: it keeps no server list, and
+    // the install (made by the same person) asks for the claim code (lib/plex-signin.ts claimToken).
+    fastify.post<{ Body: { known?: unknown; claim?: unknown } }>('/', async (req, reply) => {
       if (!guard(req, reply)) return
       try {
         const hint = typeof req.body?.known === 'string' && req.body.known.trim() ? req.body.known : await known()
-        return { success: true, data: await svc.start(req.session!.sid, hint) }
+        return { success: true, data: await svc.start(req.session!.sid, hint, req.body?.claim === true ? ownerOf(currentContext()) || undefined : undefined) }
       } catch (e) { return fail(reply, e) }
     })
 

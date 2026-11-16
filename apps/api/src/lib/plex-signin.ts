@@ -27,6 +27,12 @@ export const PLEX_TV = 'https://plex.tv'
 export const POLL_MS = 2000
 /** How long a signed-in flow keeps its servers (and their tokens, in memory) for a choice to be made. */
 export const CHOOSE_MS = 15 * 60_000
+/**
+ * How long a sign-in made to claim a NEW server keeps the account's token, in memory only. The install that
+ * follows can take a while, and Plex's own claim code lives for four minutes, so the code is asked for at the
+ * last moment and the account token is dropped the moment it has been used.
+ */
+export const CLAIM_HOLD_MS = 25 * 60_000
 
 export interface PlexHttpResult { status: number; ok: boolean; json: () => Promise<any> }
 /** One request. Certificates are always verified, and redirects are never followed. */
@@ -166,6 +172,8 @@ interface Flow {
   servers?: PlexServer[]
   known: string | null
   error?: string
+  /** A sign-in made to claim a server the install is about to make (see claimToken). */
+  claim?: { owner: string; token?: string }
   timer?: ReturnType<typeof setTimeout>
   /** Drops the flow at expiresAt, whatever its state. */
   endTimer?: ReturnType<typeof setTimeout>
@@ -225,7 +233,7 @@ export class PlexSignin {
   }
 
   /** A new sign-in for this session. Any earlier one of the same session is cancelled. */
-  async start(sid: string, known?: string | null): Promise<FlowView> {
+  async start(sid: string, known?: string | null, claimFor?: string): Promise<FlowView> {
     this.sweep()
     for (const f of this.flows.values()) if (f.sid === sid) this.drop(f)
     if (this.flows.size >= MAX_FLOWS) throw new PlexSigninError(429, 'slow_down', 'Too many Plex sign-ins are open at once. Try again in a few minutes.')
@@ -244,6 +252,7 @@ export class PlexSignin {
       strong: strong ? { id: strong.id, code: strong.code } : null,
       expiresAt: short.expiresAt, state: 'waiting',
       known: typeof known === 'string' && known.trim() ? known.trim().slice(0, 300) : null,
+      ...(claimFor ? { claim: { owner: claimFor } } : {}),
     }
     this.flows.set(flow.id, flow)
     this.arm(flow)
@@ -300,6 +309,19 @@ export class PlexSignin {
 
   /** The account token is used for these two reads and nothing else, and goes out of scope with this call. */
   private async signedIn(flow: Flow, accountToken: string): Promise<void> {
+    if (flow.claim) {
+      // A sign-in to claim a new server: only the account's name is read now. The token itself is held in memory
+      // (never stored, logged or sent to the page) until the install asks for a claim code, then dropped.
+      const u = await this.d.http('GET', `${PLEX_TV}/api/v2/user`, this.headers(flow.clientId, accountToken), 10_000).catch(() => null)
+      const user = u?.ok ? await u.json().catch(() => null) : null
+      flow.user = (str(user?.username) || str(user?.title) || 'your Plex account').slice(0, 80)
+      flow.claim.token = accountToken
+      flow.state = 'signed-in'
+      flow.expiresAt = this.now() + CLAIM_HOLD_MS
+      if (this.flows.get(flow.id) === flow) this.arm(flow)
+      this.d.log?.('[plex] sign-in for a new server: account signed in', { user: flow.user })
+      return
+    }
     try {
       const h = this.headers(flow.clientId, accountToken)
       const [u, res] = await Promise.all([
@@ -404,6 +426,71 @@ export class PlexSignin {
     }
   }
 
+  private ownClaim(id: string, owner: string): Flow & { claim: { owner: string; token?: string } } {
+    this.sweep()
+    const f = this.flows.get(id)
+    if (!f?.claim || !owner || f.claim.owner !== owner) throw new PlexSigninError(404, 'no_signin', 'That Plex sign-in has ended. Sign in with Plex again.')
+    if (f.state !== 'signed-in' || !f.claim.token) throw new PlexSigninError(409, 'not_signed_in', 'Plex has not confirmed the sign-in yet.')
+    return f as Flow & { claim: { owner: string; token?: string } }
+  }
+
+  /**
+   * A one-time claim code for a new server, from plex.tv, asked for with the held account token. Good for about
+   * four minutes, so it is requested right before it is used.
+   */
+  async claimToken(id: string, owner: string): Promise<string> {
+    const f = this.ownClaim(id, owner)
+    const r = await this.d.http('GET', `${PLEX_TV}/api/claim/token.json`, this.headers(f.clientId, f.claim.token), 10_000).catch(() => null)
+    if (!r || !r.ok) throw new PlexSigninError(502, 'plex_tv', 'plex.tv did not give a claim code. Try the install again in a minute.')
+    const b = await r.json().catch(() => null)
+    const token = str(b?.token)
+    if (!/^claim-[A-Za-z0-9_-]{8,64}$/.test(token)) throw new PlexSigninError(502, 'plex_tv', 'plex.tv answered without a usable claim code. Try again in a minute.')
+    return token
+  }
+
+  /**
+   * After a claim: wait for plex.tv to list the new server under the account, then save its address and its own
+   * token as the Plex plug-in's endpoint (through the normal settings save, so the token goes to the vault). The
+   * account token is used here and nowhere else; the sign-in ends either way.
+   */
+  async connectClaimed(id: string, owner: string, o: { machineId: string; url: string; by: string; tries?: number; wait?: (ms: number) => Promise<unknown> }): Promise<{ server: string; user: string }> {
+    const f = this.ownClaim(id, owner)
+    const wait = o.wait ?? ((ms: number) => new Promise(r => setTimeout(r, ms)))
+    const user = f.user ?? 'your Plex account'
+    try {
+      let server: PlexServer | undefined
+      for (let i = 0; i < (o.tries ?? 24) && !server; i++) {
+        if (i) await wait(5000)
+        const r = await this.d.http('GET', `${PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=0`, this.headers(f.clientId, f.claim.token), 15_000).catch(() => null)
+        if (!r?.ok) continue
+        server = parseResources(await r.json().catch(() => null)).find(s => s.id === o.machineId)
+      }
+      if (!server) throw new PlexSigninError(504, 'not_listed', `plex.tv has not listed the new server under ${user} yet.`)
+      const bad = await this.identity(o.url, server)
+      if (bad) throw new PlexSigninError(502, 'unreachable', `The new server did not accept its own token (${bad}).`)
+      await this.d.save(o.url, server.accessToken)
+      try {
+        await this.d.audit('plex.signin', { message: `Plex server claimed by ${user} and connected`, user, server: server.name, address: o.url, ...auditBy(o.by) })
+      } catch { /* the save stands; the install's own audit row records the install */ }
+      return { server: server.name, user }
+    } finally {
+      this.drop(f)
+    }
+  }
+
+  /** Is this the person's own claim sign-in, signed in and not ended? Nothing is read from plex.tv. */
+  claimReady(id: string, owner: string): { user: string } | null {
+    this.sweep()
+    const f = this.flows.get(id)
+    return f?.claim && owner && f.claim.owner === owner && f.state === 'signed-in' && f.claim.token ? { user: f.user ?? 'your Plex account' } : null
+  }
+
+  /** Forget a claim sign-in once the install no longer needs it. */
+  endClaim(id: string, owner: string): void {
+    const f = this.flows.get(id)
+    if (f?.claim && f.claim.owner === owner) this.drop(f)
+  }
+
   private view(f: Flow): FlowView {
     const v: FlowView = {
       id: f.id, state: f.state, code: f.short.code,
@@ -425,6 +512,7 @@ export class PlexSignin {
     ;(this.d.cancel ?? clearTimeout)(f.timer as any)
     ;(this.d.cancel ?? clearTimeout)(f.endTimer as any)
     f.servers = undefined
+    if (f.claim) f.claim.token = undefined
     this.flows.delete(f.id)
   }
 
