@@ -27,6 +27,7 @@ import { listManualHosts, listHostAddresses } from '../terminal-hosts'
 import type { Machine } from './types'
 import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, liveGuestTags, parseTags } from '../guest-guard'
 import { machineId } from '../guest-id'
+import { nodeExec, type NodeExecOptions } from '../node-exec'
 
 export type { ExecResult }
 
@@ -102,11 +103,13 @@ export function productionRemoteExecutor(
     return ip
   }
 
-  async function nodeCred(node: string): Promise<TerminalCredential> {
-    const c = await nodeCredential(node)
-    if (!c) throw new TransportError(`No login saved for node ${node}. Add one under Settings → Setup checklist (Add node login); node logins are never borrowed from guests.`)
-    return c
-  }
+  /** A command on a node over its own saved login (never a guest's); the address is looked up first. */
+  const onNode = (node: string, command: string, o: Omit<NodeExecOptions, 'host' | 'noLogin' | 'hostFirst' | 'credential' | 'ssh'>) =>
+    nodeExec(node, command, {
+      host: nodeHost, hostFirst: true, credential: nodeCredential, ssh: execOnNode, requirePin: true,
+      noLogin: n => new TransportError(`No login saved for node ${n}. Add one under Settings → Setup checklist (Add node login); node logins are never borrowed from guests.`),
+      ...o,
+    })
 
   async function agentAnswers(m: Machine): Promise<boolean> {
     try { await pve.fetchStrict(`/nodes/${encodeURIComponent(m.node!)}/qemu/${m.vmid}/agent/ping`, 'POST', '', 10_000); return true }
@@ -175,20 +178,16 @@ export function productionRemoteExecutor(
     async run(m, script, o = {}) {
       await refuseExcluded(m)
       if (m.kind === 'node') {
-        return execOnNode({ host: await nodeHost(m.node!), cred: await nodeCred(m.node!), command: 'bash -s', input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true, maxOutputBytes: o.maxOutputBytes })
+        return onNode(m.node!, 'bash -s', { input: script, timeoutMs: o.timeoutMs, onData: o.onData, maxOutputBytes: o.maxOutputBytes })
       }
       if (m.kind === 'lxc') {
-        return execOnNode({
-          host: await nodeHost(m.node!), cred: await nodeCred(m.node!),
-          command: `pct exec ${Number(m.vmid)} -- bash -s`, input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true, maxOutputBytes: o.maxOutputBytes,
-        })
+        return onNode(m.node!, `pct exec ${Number(m.vmid)} -- bash -s`, { input: script, timeoutMs: o.timeoutMs, onData: o.onData, maxOutputBytes: o.maxOutputBytes })
       }
       if (m.kind === 'qemu') {
         if (await agentAnswers(m)) {
           const secs = Math.ceil((o.timeoutMs ?? 15 * 60_000) / 1000)
-          const r = await execOnNode({
-            host: await nodeHost(m.node!), cred: await nodeCred(m.node!), timeoutMs: (secs + 30) * 1000,
-            command: `qm guest exec ${Number(m.vmid)} --timeout ${secs} --pass-stdin 1 -- bash`, input: script, requirePin: true,
+          const r = await onNode(m.node!, `qm guest exec ${Number(m.vmid)} --timeout ${secs} --pass-stdin 1 -- bash`, {
+            timeoutMs: (secs + 30) * 1000, input: script,
             // The agent answers in JSON (escaped, so up to about twice as long); the decoded output is checked below.
             ...(o.maxOutputBytes !== undefined ? { maxOutputBytes: o.maxOutputBytes * 2 + 4096 } : {}),
           })

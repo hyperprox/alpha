@@ -11,7 +11,7 @@
 import type { UpdatesPkgChange } from './types'
 import { livePve } from '../pve-env'
 import type { ProxmoxClient } from '../proxmox-client'
-import { execOnNode, execInGuest, nodeCredential, vmScriptCommand, containerScriptCommand, type ExecResult } from '../node-exec'
+import { execOnNode, execInGuest, nodeCredential, nodeExec, vmScriptCommand, containerScriptCommand, type ExecResult } from '../node-exec'
 import { runInCluster } from '../clusters/context'
 import { remoteNodeAddress } from '../clusters/nodes'
 import { runPluginMetrics } from '../plugin-host'
@@ -176,11 +176,13 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
     return homeNodeAddress(ips, node)
   }
 
+  const noLoginFor = (node: string) => new Error(remote
+    ? `No saved login for node ${node} on this server. Add one under Edit server, Nodes and logins.`
+    : `No saved login for node ${node}. Add one under Settings → Setup checklist (Add node login) before running updates.`)
+
   async function credFor(node: string) {
     const cred = await nodeCredential(node)
-    if (!cred) throw new Error(remote
-      ? `No saved login for node ${node} on this server. Add one under Edit server, Nodes and logins.`
-      : `No saved login for node ${node}. Add one under Settings → Setup checklist (Add node login) before running updates.`)
+    if (!cred) throw noLoginFor(node)
     return cred
   }
 
@@ -290,8 +292,10 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
     },
 
     async nodeExec(node, command, onLine, timeoutMs) {
-      const cred = await credFor(node)
-      return execOnNode({ host: await hostFor(node), cred, command, timeoutMs, onData: lineSplitter(onLine), ...pin(cred) })
+      return nodeExec(node, command, {
+        host: hostFor, noLogin: noLoginFor, timeoutMs, onData: lineSplitter(onLine),
+        ...(remote ? { requirePin: true, port: (cred: { port?: number }) => Number(cred.port) || 22 } : {}),
+      })
     },
 
     async guestExec(g, script, onLine, timeoutMs) {

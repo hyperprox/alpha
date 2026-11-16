@@ -182,6 +182,41 @@ export async function execOnNode(opts: ExecOptions): Promise<ExecResult> {
   return execPinned(opts)
 }
 
+export interface NodeExecOptions extends Omit<ExecOptions, 'host' | 'cred' | 'command' | 'port'> {
+  /** The node's address (each caller knows where it comes from: the cluster's status, a saved address). */
+  host: (node: string) => Promise<string>
+  /** Throws this when the node has no saved login. Without it, a missing (or unreadable) login gives `null`. */
+  noLogin?: (node: string) => Error
+  /** The SSH port: a number, or taken from the login (a remote cluster's own port). */
+  port?: number | ((cred: TerminalCredential) => number | undefined)
+  /** Look the address up before the login (the error for a node with neither is then about the address). */
+  hostFirst?: boolean
+  /** For tests: stand in for the login store and for the SSH call. */
+  credential?: (node: string) => Promise<TerminalCredential | null>
+  ssh?: (o: ExecOptions) => Promise<ExecResult>
+}
+
+/**
+ * Run a command on a node over its stored login. The login is the node's own (never a guest's or the Terminal's shared
+ * one). `null` when there is no login and the caller did not say what to throw.
+ */
+export async function nodeExec(node: string, command: string, o: NodeExecOptions & { noLogin: (node: string) => Error }): Promise<ExecResult>
+export async function nodeExec(node: string, command: string, o: NodeExecOptions): Promise<ExecResult | null>
+export async function nodeExec(node: string, command: string, o: NodeExecOptions): Promise<ExecResult | null> {
+  const { host: findHost, noLogin, port, hostFirst, credential, ssh, ...rest } = o
+  const getCred = credential ?? nodeCredential
+  let host: string | undefined
+  if (hostFirst) host = await findHost(node)
+  const cred = noLogin ? await getCred(node) : await getCred(node).catch(() => null)
+  if (!cred) {
+    if (noLogin) throw noLogin(node)
+    return null
+  }
+  if (host === undefined) host = await findHost(node)
+  const p = typeof port === 'function' ? port(cred) : port
+  return (ssh ?? execOnNode)({ ...rest, host, cred, command, ...(p !== undefined ? { port: p } : {}) })
+}
+
 function execPinned(opts: ExecOptions): Promise<ExecResult> {
   const { host, cred, command, onData } = opts
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000

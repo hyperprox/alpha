@@ -27,7 +27,7 @@ import { redactText } from '../lib/ha/redact'
 import { livePve } from '../lib/pve-env'
 import { auditOrThrow } from '../lib/audit'
 import { isUnlocked } from '../lib/vault/state'
-import { execOnNode, nodeCredential } from '../lib/node-exec'
+import { nodeExec as runOnNode } from '../lib/node-exec'
 import { prometheusBase } from '../lib/service-health'
 import { PlacementRefusal, PlacementService, type Actor } from '../lib/placement/service'
 import type { LogLike } from '../lib/log-once'
@@ -83,10 +83,8 @@ export function placementService(prisma: any, log?: LogLike): PlacementService {
       await publish({ type: 'placement.balance', severity, title, lines, link: '/balance', where: 'Load balancing page', fingerprint }).catch(() => undefined)
     },
     nodeExec: async (node, command) => {
-      const cred = await nodeCredential(node).catch(() => null)
-      if (!cred) return null
-      const r = await execOnNode({ host: await nodeAddress(pve as any, node), cred, command, timeoutMs: 30_000, maxOutputBytes: 2_000_000 })
-      return { code: r.timedOut ? 124 : r.code, output: r.output }
+      const r = await runOnNode(node, command, { host: n => nodeAddress(pve as any, n), timeoutMs: 30_000, maxOutputBytes: 2_000_000 })
+      return r ? { code: r.timedOut ? 124 : r.code, output: r.output } : null
     },
   }, log)
   return production
