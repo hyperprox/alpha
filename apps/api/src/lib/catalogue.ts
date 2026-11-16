@@ -28,6 +28,7 @@ import type { ManagedKind } from './proxy/managed-recipes'
 import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
 import { DNS_BLOCKER_RECIPES } from './dns-blocker/recipes'
 import { THREEPROXY_RECIPE } from './fwdproxy/recipes'
+import { APTCACHE_RECIPE } from './aptcache/recipe'
 import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
 import { HAPROXY_SCRIPT, HAPROXY_RECIPE_ID, HAPROXY_VERSION, HAPROXY_LINE, DATAPLANE_VERSION, METRICS_PORT } from './haproxy/recipe'
 
@@ -139,9 +140,10 @@ export interface CatalogueRecipe {
    * (lib/pbs/catalogue.ts for Proxmox Backup Server: datastore location, tokens, plug-in, optional storage). Ghost's
    * (lib/ghost/setup.ts: the owner, the title, an Admin API key and mail) runs before the generic check and publish.
    * HAProxy's (lib/haproxy/setup.ts: the Proxy page, its plug-in and Prometheus) runs after the check, in place of the wiring.
-   * A forward proxy's (lib/fwdproxy/setup.ts) replaces the generic check with a self-check of its safety rules.
+   * A forward proxy's (lib/fwdproxy/setup.ts) replaces the generic check with a self-check of its safety rules. The
+   * package cache's (lib/aptcache/setup.ts) replaces the generic check with its own self-check, on a cache disk of its own.
    */
-  setup?:      'pbs' | 'ghost' | 'haproxy' | 'fwdproxy'
+  setup?:      'pbs' | 'ghost' | 'haproxy' | 'fwdproxy' | 'aptcache'
   /**
    * A reverse proxy HyperProx can drive: once it answers, the install adds it to the Proxy page as a Managed instance
    * of this kind (lib/proxy/managed-recipes.ts managedInstanceInput), so apps can be published through it from
@@ -878,6 +880,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   // ── Forward proxy ───────────────────────────────────────────────────────
   // 3proxy (HTTP and SOCKS5): locked down by default, with its own plug-in (lib/fwdproxy).
   THREEPROXY_RECIPE,
+  // The package cache for Updates (apt-cacher-ng), with its own plug-in (lib/aptcache).
+  APTCACHE_RECIPE,
 
   // ── Web hosting ─────────────────────────────────────────────────────────
   {
