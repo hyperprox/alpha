@@ -1,5 +1,4 @@
-// =============================================================================
-//  HyperProx — local plug-ins
+// ======================================================================//  HyperProx — local plug-ins
 //
 //  A local plug-in is code that lives on one install and nowhere else: something made for one install's
 //  own server, never meant for the public repository. It sits in a git-ignored folder:
@@ -11,11 +10,12 @@
 //  deploy.sh never see them, and an update (a git checkout) leaves them where they are. When neither
 //  folder exists HyperProx behaves exactly as it does without this file.
 //
-//  The rules are fixed here, not chosen by the plug-in:
+//  The rules are fixed here, not chosen by the plug-in (it may relax only the one said below):
 //    - every route is under /api/local/<id>, and every route there needs the admin role, reads included
 //      (lib/roles.ts);
 //    - every request that is not a read needs the master password re-entered within the last few
-//      minutes, which also keeps API tokens off them (lib/roles.ts);
+//      minutes (lib/roles.ts), unless the plug-in's definition says `reconfirm: false`; that is the one
+//      rule a plug-in may relax, and an id the loader did not register always keeps it;
 //    - API tokens are refused on every /api/local route, reads included (lib/api-tokens.ts);
 //    - every request that is not a read is written to the audit log with who made it and the status it
 //      got (the plug-in adds its own, more detailed rows through host.audit);
@@ -24,14 +24,14 @@
 //  anything HyperProx has (the credential store included). The boundary is write access to the install, so only
 //  code its owner has read belongs in these folders.
 //  A plug-in that fails to load is logged and skipped; it never stops the API starting.
-// =============================================================================
-
+// ======================================================================
 import fs from 'fs'
 import path from 'path'
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { auditCredentialUse, auditOrThrow } from './audit'
 import { deleteCredential, getCredential, setCredential } from './credentials'
 import { auditBy, actorOf } from './http/request-actor'
+import { noteLocalPlugin } from './roles'
 
 /** What a plug-in is given. It holds no other handle on HyperProx. */
 export interface LocalPluginHost {
@@ -60,6 +60,11 @@ export interface LocalApiPlugin {
   name: string
   /** The plug-in's routes, registered under /api/local/<id>. */
   routes(host: LocalPluginHost): FastifyPluginAsync
+  /**
+   * false: its changes go through for a signed-in admin without the master password re-entered. Leave it out (or
+   * true) to keep the re-confirmation. Admin only, no API tokens and the audit rows apply either way.
+   */
+  reconfirm?: boolean
 }
 
 export const LOCAL_ID = /^[a-z][a-z0-9-]{1,39}$/
@@ -152,6 +157,7 @@ export async function registerLocalPlugins(server: FastifyInstance, loaded: Load
         })
         await f.register(plugin.routes(host))
       }, { prefix: `/api/local/${plugin.id}` })
+      noteLocalPlugin(plugin.id, { reconfirm: plugin.reconfirm })
       ready.push({ id: plugin.id, name: plugin.name })
       server.log.info(`[local-plugins] loaded ${plugin.id}`)
     } catch (e: any) {
