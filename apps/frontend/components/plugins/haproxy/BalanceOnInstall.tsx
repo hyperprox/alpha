@@ -40,7 +40,7 @@ export function BalanceOnInstall({ value, onChange }: { value: LbForm | null; on
       <label className="flex items-start gap-2 text-sm min-w-0" style={{ color: 'var(--text)' }}>
         <input type="checkbox" checked={on} onChange={e => onChange(e.target.checked ? EMPTY_LB : null)} />
         <span>Proxy load balancing now (optional)
-          <span className="block text-[12px]" style={{ color: 'var(--text-dim)' }}>Spread traffic for one app across several guests. It is set up once HAProxy is running, and the install is done only when the guests answer their health check. {PROXY_LB_LINE}</span></span>
+          <span className="block text-[12px]" style={{ color: 'var(--text-dim)' }}>Spread traffic for one app across several guests. It is set up once HAProxy is running, and the install is done only when every server is present and at least one answers its health check. {PROXY_LB_LINE}</span></span>
       </label>
       {value && (
         <>

@@ -121,6 +121,8 @@ export interface InstallJob {
   publish?: PublishPlan
   /** What publishing made so far: proxy host, DNS record, certificate. Clean-up removes only these. */
   ledger?: PublishLedger
+  /** HAProxy's optional step: the publish job (lib/haproxy PUBLISH_JOBS) making its public name, so clean-up can read what it made. */
+  balancePublishJob?: string
   /** The Sites entry a finished web install made. */
   siteId?: string
   /** The container's hostname, as planned. */
@@ -676,10 +678,13 @@ async function runJob(
       // The optional step: an app balanced now, through the plug-in's own service. Done only once it reads back healthy.
       if (ctx.balance) {
         const sb = step(job, BALANCE_STEP.id)
-        const lb = await runInstallBalance({ pluginInstanceId: out.pluginInstanceId, balance: ctx.balance, owner: job.owner || 'hyperprox', haproxyIp: job.ip.split('/')[0] }, sb, await (deps.haproxyBalance ?? realBalanceDeps)())
+        const lb = await runInstallBalance({ pluginInstanceId: out.pluginInstanceId, balance: ctx.balance, owner: job.owner || 'hyperprox', haproxyIp: job.ip.split('/')[0] }, sb, await (deps.haproxyBalance ?? realBalanceDeps)(),
+          async r => {
+            if (r.publishJob) job.balancePublishJob = r.publishJob
+            if (r.ledger) job.ledger = { ...(job.ledger ?? {}), ...r.ledger }
+            await persistJob(job).catch(e => persistFailed(job, e))
+          })
         if (lb.url) job.url = lb.url
-        // What the publish made (proxy host, DNS record, certificate) is on this job's ledger too, so clean-up removes it with the install.
-        if (lb.ledger) { job.ledger = { ...(job.ledger ?? {}), ...lb.ledger }; await persistJob(job).catch(e => persistFailed(job, e)) }
       }
     } else {
       const s5 = step(job, 'wire')
@@ -1730,6 +1735,11 @@ async function removePublished(job: InstallJob, deps: WizardDeps): Promise<strin
   const arr = job.arrLedgers || job.arrHostMount ? await arrCleanup(job, deps).catch((e: any) => [`The Arr Stack's clean-up failed: ${e.message}`]) : []
   // A transcoder's NAS mount goes the same way (above); the one link it added to a main Unmanic goes here.
   if (job.tcLink) arr.push(...await tcCleanup(job, deps).catch((e: any) => [`The Unmanic link clean-up failed: ${e.message}`]))
+  // A public name still being made by HAProxy's optional step: what it has made so far is read now.
+  if (job.balancePublishJob) {
+    const live = (await import('./haproxy')).PUBLISH_JOBS.get(job.balancePublishJob)
+    if (live) job.ledger = { ...(job.ledger ?? {}), ...structuredClone(live.ledger) }
+  }
   if (!job.ledger) return arr.length ? ' ' + arr.join(' ') : ''
   const lines = await cleanupPublish(job.ledger, job.owner, deps.publish).catch((e: any) => [`Publishing clean-up failed: ${e.message}`])
   return [...lines, ...arr].length ? ' ' + [...lines, ...arr].join(' ') : ''

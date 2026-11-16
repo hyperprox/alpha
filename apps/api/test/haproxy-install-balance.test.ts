@@ -2,7 +2,7 @@
 // rule), the step through the plug-in's real service with the backend read back, and the install unchanged without it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { previewInstall, applyPreview } from '../src/lib/catalogue-installer'
+import { previewInstall, applyPreview, removeFailedInstall } from '../src/lib/catalogue-installer'
 import { HaproxyService, type GuestRow, type ServiceDeps } from '../src/lib/haproxy/service'
 import { HaproxyInstanceStore } from '../src/lib/haproxy/instances'
 import { backendProblem, type BalanceDeps } from '../src/lib/haproxy/install-balance'
@@ -221,4 +221,63 @@ test('a published name: what the publish made is copied to the install job\'s le
   assert.equal(job.url, 'https://shop.example.com')
   assert.deepEqual(job.ledger, made)
   assert.notEqual(job.ledger!.proxyHost, made.proxyHost, 'a copy, not the publish job\'s own object')
+})
+
+const MADE = { proxyHost: { instanceId: 'npm-1', hostId: '77' }, dnsRecord: { zone: 'example.com', type: 'A' as const, name: 'shop', data: '203.0.113.7' }, certificate: { instanceId: 'npm-1', id: '9' } }
+const NAMED = { ...GOOD, hostname: 'shop.example.com', publish: true, zone: 'example.com', proxyInstanceId: 'npm-1' }
+
+function spyPublish() {
+  const gone: string[] = []
+  const p = publishFake() as any
+  p.dns = async () => ({ getDomains: async () => [{ domain: 'example.com', status: 'ACTIVE' }], getRecords: async () => [{ type: 'A', name: 'shop', data: '203.0.113.7' }], createRecord: async () => {}, deleteRecord: async () => { gone.push('dns') } })
+  p.proxy = { ...p.proxy, deleteHost: async () => { gone.push('host') } }
+  return { p: p as PublishDeps, gone }
+}
+
+test('read-back fails after the publish finished: the install fails, the ledger holds all three, and clean-up removes them', async () => {
+  const f = new FakePve(), r = rig({ upAfter: 1_000_000 })
+  const done = { id: 'j3', status: 'done', url: 'https://shop.example.com', steps: [], domain: 'shop.example.com', owner: OWNER, startedAt: 0, ledger: MADE }
+  const bal: BalanceDeps = { ...r.balance, publishJob: () => done as any,
+    loadBalance: (id, body, actor, publish) => r.balance.loadBalance(id, body, actor, async ip => { await publish!(ip); return { jobId: 'j3' } }) }
+  const sp = spyPublish()
+  const { d } = installDeps(f, r, { haproxyBalance: async () => bal, publish: sp.p })
+  const p = await previewInstall(HAPROXY_INPUT({ balance: NAMED }), OWNER, d)
+  assert.deepEqual(p.errors, [])
+  const job = await settled((await applyPreview(p.preview!.id, OWNER, d)).jobId)
+  assert.equal(job.status, 'failed')
+  assert.match(job.error!, /not done: no server in hpx_lb_shop answers/)
+  assert.deepEqual(job.ledger, MADE)
+  assert.equal(job.balancePublishJob, 'j3')
+  const msg = await removeFailedInstall(job.jobId, OWNER, d)
+  // The DNS record and the proxy host are removed; the certificate is, by the existing clean-up's design, left to expire on the proxy and said so.
+  assert.deepEqual(sp.gone.sort(), ['dns', 'host'], msg)
+  assert.match(msg, /Removed the DNS record shop\.example\.com/)
+  assert.match(msg, /Removed the proxy host/)
+  assert.match(msg, /certificate was left on the proxy/)
+})
+
+test('a publish still running when the step gives up: its job id is on the install job, and clean-up reads what it has made', async () => {
+  const f = new FakePve(), r = rig()
+  const running = { id: 'j4', status: 'running', steps: [], domain: 'shop.example.com', owner: OWNER, startedAt: 0, ledger: { proxyHost: MADE.proxyHost } }
+  const bal: BalanceDeps = { ...r.balance, publishJob: () => running as any,
+    loadBalance: (id, body, actor, publish) => r.balance.loadBalance(id, body, actor, async ip => { await publish!(ip); return { jobId: 'j4' } }) }
+  const { d } = installDeps(f, r, { haproxyBalance: async () => bal })
+  const p = await previewInstall(HAPROXY_INPUT({ balance: NAMED }), OWNER, d)
+  const job = await settled((await applyPreview(p.preview!.id, OWNER, d)).jobId)
+  assert.equal(job.status, 'failed')
+  assert.match(job.error!, /did not finish in time/)
+  assert.equal(job.balancePublishJob, 'j4')
+  assert.deepEqual(job.ledger, { proxyHost: MADE.proxyHost })
+})
+
+test('a picked guest that vanished before the read-back is a plain failure, not a TypeError', async () => {
+  const f = new FakePve(), r = rig()
+  let calls = 0
+  const bal: BalanceDeps = { ...r.balance, guests: async () => (++calls > 0 ? ROWS.filter(x => x.vmid !== 152) : ROWS) }
+  const { d } = installDeps(f, r, { haproxyBalance: async () => bal })
+  const p = await previewInstall(HAPROXY_INPUT({ balance: GOOD }), OWNER, d)
+  const job = await settled((await applyPreview(p.preview!.id, OWNER, d)).jobId)
+  assert.equal(job.status, 'failed')
+  assert.match(job.error!, /CT 152 is no longer on the cluster/)
+  assert.doesNotMatch(job.error!, /TypeError|undefined/)
 })

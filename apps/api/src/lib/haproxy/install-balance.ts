@@ -118,6 +118,8 @@ export function backendProblem(reading: Reading, backend: string, expected: stri
  */
 export async function runInstallBalance(
   o: { pluginInstanceId: string; balance: InstallBalance; owner: string; haproxyIp: string }, s: Step, d: BalanceDeps,
+  /** Told what the publish made, before anything can throw, so the install job's clean-up knows it (see runJob). */
+  record: (r: { publishJob?: string; ledger?: PublishLedger }) => Promise<void> | void = () => {},
 ): Promise<{ backend: string; url?: string; ledger?: PublishLedger }> {
   const actor: Actor = { email: o.owner }
   const body = bodyOf(o.balance)
@@ -125,10 +127,18 @@ export async function runInstallBalance(
   const saved = await d.loadBalance(o.pluginInstanceId, body, actor, publish)
   if (saved.publishProblem) throw new Error(`HAProxy is balancing ${saved.backend}, but publishing ${o.balance.hostname} did not start: ${saved.publishProblem}`)
 
+  // The publish is on the install job from here on, whatever happens next.
+  if (saved.publishJob) await record({ publishJob: saved.publishJob })
+
   const rows = await d.guests()
-  const expected = o.balance.guests.map(g => { const r = rows.find(x => x.kind === g.kind && x.vmid === g.vmid)!; return serverNameFor(r.name, r.vmid) })
+  const gone: string[] = [], expected: string[] = []
+  for (const g of o.balance.guests) {
+    const r = rows.find(x => x.kind === g.kind && x.vmid === g.vmid)
+    if (r) expected.push(serverNameFor(r.name, r.vmid)); else gone.push(`${g.kind === 'qemu' ? 'VM' : 'CT'} ${g.vmid}`)
+  }
   let last = `${saved.backend} was not read back.`, found = { healthy: 0, present: 0 }, ok = false
-  for (let i = 0; i < READBACK_TRIES && !ok; i++) {
+  if (gone.length) last = `${gone.join(', ')} is no longer on the cluster`
+  for (let i = 0; i < READBACK_TRIES && !ok && !gone.length; i++) {
     if (i) await d.wait(READBACK_MS)
     try {
       const r = backendProblem(await d.reading(o.pluginInstanceId), saved.backend, expected)
@@ -141,7 +151,9 @@ export async function runInstallBalance(
   if (saved.publishJob) {
     let job = d.publishJob(saved.publishJob)
     for (let i = 0; i < PUBLISH_TRIES && job?.status === 'running'; i++) { await d.wait(READBACK_MS); job = d.publishJob(saved.publishJob) }
-    if (job?.status === 'done') { url = job.url; ledger = structuredClone(job.ledger) }
+    // A finished publish, or one still running, has made things the clean-up must know; a failed one removed its own.
+    if (job && job.status !== 'failed') { ledger = structuredClone(job.ledger); await record({ publishJob: saved.publishJob, ledger }) }
+    if (job?.status === 'done') url = job.url
     else publishFailure = job?.status === 'failed' ? `${job.error ?? 'it failed'}${job.cleanup?.length ? ` ${job.cleanup.join(' ')}` : ''}` : 'it did not finish in time'
   }
   if (!ok) throw new Error(`HAProxy was installed and ${saved.backend} was saved, but it is not done: ${last}`)
