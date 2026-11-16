@@ -25,9 +25,10 @@
 //                      it nothing is set and every guest command is refused.
 //    2. compose-owners Nextcloud's compose projects, so Updates leaves them to
 //                      its guarded update (lib/compose-owners.ts).
-//    3. dismissed      Homepage's and Nextcloud's port to auto-connect's
-//                      record of what a person disconnected (given here so
-//                      neither imports lib/auto-connect: no import cycle).
+//    3. dismissed      Each auto-connecting plug-in's port (Homepage, Nextcloud,
+//                      HAProxy, the web proxies, the DNS blockers, 3proxy, K3s)
+//                      to auto-connect's record of what a person disconnected
+//                      (given here so none imports lib/auto-connect: no cycle).
 //    4. updates        The Updates runtime (lib/updates/runtime.ts) is built,
 //                      and its read-only sources installed: the assistant's
 //                      targets, the check summary, the cluster-rename guard.
@@ -75,6 +76,7 @@ import { setFwdProxyDismissedPort } from '../fwdproxy'
 import { nextcloudService, registerNextcloudComposeOwner, setNextcloudDismissedPort } from '../nextcloud'
 import { setHaproxyDismissedPort } from '../haproxy'
 import { setDnsBlockerDismissedPort } from '../dns-blocker'
+import { setK3sDismissedPort } from '../k3s'
 import { onInstallCompleted } from '../catalogue-installer'
 import { setWebProxyDismissedPort, setWebProxyExclusionSource } from '../webproxy'
 import { WEB_PROXY_KINDS } from '../webproxy/probes'
@@ -157,7 +159,7 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
   steps.push('compose-owners')
   stops.push((deps.composeOwners ?? registerNextcloudComposeOwner)())
 
-  // 3. Auto-connect's dismissal record, for Homepage, Nextcloud, HAProxy, NGINX, Caddy, Envoy, Pi-hole, AdGuard Home and 3proxy.
+  // 3. Auto-connect's dismissal record, for Homepage, Nextcloud, HAProxy, NGINX, Caddy, Envoy, Pi-hole, AdGuard Home, 3proxy and K3s.
   steps.push('dismissed')
   const dismissed = deps.dismissed ?? rememberDismissed
   setHomepageDismissedPort((key, label, by) => dismissed('homepage', key, label, by))
@@ -166,6 +168,7 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
   setWebProxyDismissedPort((kind, key, label, by) => dismissed(kind, key, label, by))
   setDnsBlockerDismissedPort((kind, key, label, by) => dismissed(kind, key, label, by))
   setFwdProxyDismissedPort((key, label, by) => dismissed('3proxy', key, label, by))
+  setK3sDismissedPort((key, label, by) => dismissed('k3s', key, label, by))
 
   // 4. Updates: built, its read-only sources installed; started when the server is ready (below).
   steps.push('updates')

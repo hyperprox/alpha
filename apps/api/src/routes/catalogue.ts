@@ -12,7 +12,7 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { CATALOGUE, CATEGORY_LABELS, findRecipe } from '../lib/catalogue'
 import {
   getInstallJob, readAdminCredential, previewInstall, applyPreview, removeFailedInstall, getPreview, cleanupCandidates,
-  wizardView, identityView, placementFor, nextIdOf, checkIdentity, readVmidRule, saveVmidRule, WizardRefusal, finishSeerr, seerrWaiting,
+  wizardView, identityView, placementFor, spreadNodes, nextIdOf, checkIdentity, readVmidRule, saveVmidRule, WizardRefusal, finishSeerr, seerrWaiting,
   transcodeHardware, readNamingSettings, saveNamingSettings, detectFromView, proposeFor, readLiveAddresses, notePartial,
   type InstallJob, type WizardDeps, type WizardInput,
 } from '../lib/catalogue-installer'
@@ -236,7 +236,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       try {
         const { view, deps: d } = await wizardView(deps.wizard)
         const rule = await d.readRule()
-        const placed = placementFor(recipe, need, view)
+        const placed = placementFor(recipe, { ...need, avoidNodes: await spreadNodes(recipe, view) }, view)
         const saved = await d.readNaming()
         const detection = detectFromView(view)
         return reply.send({ success: true, data: {

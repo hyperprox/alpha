@@ -194,6 +194,8 @@ export interface PlacementNeed {
   wantsGpu?: boolean
   /** A storage the person chose; otherwise the best one on each node. */
   storage?: string
+  /** Nodes that already run part of the same cluster: eligible, but counted against (spread the cluster out). */
+  avoidNodes?: { nodes: string[]; what: string }
 }
 
 export interface NodeVerdict {
@@ -221,6 +223,8 @@ export const PLACEMENT = Object.freeze({
   gpuPreferBonus:   15,
   guestPenaltyEach: 0.5,
   guestPenaltyMax:  10,
+  /** A node that already runs part of the same cluster (a K3s server or agent), for a recipe that spreads. */
+  spreadPenalty:    30,
 })
 
 // Higher is a better home for a container rootfs: block storage before file shares.
@@ -322,6 +326,10 @@ export function scoreNodes(nodes: PlacementNode[], storages: PlacementStorage[],
     } else if (n.hasGpu && !wantsGpu) {
       score -= PLACEMENT.gpuPenalty
       notes.push('holds a GPU this app does not need')
+    }
+    if (need.avoidNodes?.nodes.includes(n.node)) {
+      score -= PLACEMENT.spreadPenalty
+      notes.push(`already runs ${need.avoidNodes.what}; another node keeps it going if this one goes down`)
     }
     const guests = n.runningGuests ?? 0
     const busy = Math.min(PLACEMENT.guestPenaltyMax, guests * PLACEMENT.guestPenaltyEach)

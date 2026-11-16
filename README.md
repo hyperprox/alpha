@@ -1174,8 +1174,8 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, HAProxy, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr, Plex and the 3proxy
-forward proxy (below), and three proxies: NGINX, Caddy and Envoy (see [NGINX, Caddy and Envoy](#nginx-caddy-and-envoy)). Websites are not listed here: they have their own section,
+Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr, Plex, the 3proxy
+forward proxy and K3s (below), and three proxies: NGINX, Caddy and Envoy (see [NGINX, Caddy and Envoy](#nginx-caddy-and-envoy)). Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
@@ -1191,6 +1191,50 @@ proxy would, and an internal certificate is not checked. A recipe found this way
 guest and its public name (with the version when the app shows one) and offers **Open**; **Install another…**
 then asks before it starts the wizard. The answer is kept five minutes (**Look again** asks now). A recipe whose
 integration already has an address (Settings) still counts as **configured**, as before.
+
+#### K3s (Kubernetes)
+
+[K3s](https://k3s.io) is a small, complete Kubernetes. The **K3s** entry installs a K3s server; **K3s agent** adds a
+worker to a server HyperProx already looks after. When the install finishes, the cluster is running, HyperProx has
+its own two accounts in it, and the K3s plug-in page shows it. There is nothing to copy or paste.
+
+- **Pinned, and checked.** K3s v1.37.1+k3s1 (the newest stable release that was at least two weeks old when it was
+  picked). The K3s program and K3s's own install script are both downloaded from that release and checked against
+  their SHA-256 before they run. Nothing "latest" is ever fetched.
+- **An unprivileged container, not a privileged one.** HyperProx's installer makes containers. Most "K3s in a
+  container" guides make it privileged, switch AppArmor off and open every device, which is root on the node in all but
+  name; HyperProx does none of that. The container stays unprivileged; HyperProx turns on nesting and keyctl from the
+  node (as for the Arr Stack) and reads them back, and K3s is told it runs inside a user namespace, so a pod cannot
+  change the node's kernel settings. This was tested on Proxmox VE 9 with Debian 13: the node, DNS, the built-in
+  ingress and load balancer, metrics and an app behind the ingress all worked, and came back after a restart.
+- **What is built in.** Traefik answers on ports 80 and 443 for your ingresses, ServiceLB gives LoadBalancer services
+  the nodes' own addresses, local-path gives volumes, and metrics-server gives CPU and memory. Turn Traefik or ServiceLB
+  off in the wizard if you bring your own. Swap is off, as Kubernetes expects.
+- **Logins stay in the vault.** The admin kubeconfig and the join token are read from inside the new container and
+  kept only in the vault (**Plug-ins, K3s, Details** says which item); reveal them there. HyperProx uses the admin login
+  once, to make its own two accounts in `kube-system`: `hyperprox-reader`, which can read what the page shows and the
+  pod logs and nothing else (never secrets or config maps; HyperProx checks it cannot read secrets before it keeps
+  anything), and `hyperprox-operator`, used only for the actions you confirm. Kubernetes permissions cannot be narrowed
+  to exactly those actions, so it has the rights they need (changing workloads and their size, deleting and evicting
+  pods, changing nodes), and three admission policies HyperProx adds to the cluster narrow it further: through that
+  account a workload's pod template cannot change at all except its restart time (so what it runs and what it may do,
+  privileges, host access, capabilities, service account, volumes, where it is scheduled, stay exactly as they are),
+  and on a node nothing may change except whether it takes new pods. **Roll back**, which does change a template, is
+  sent with the admin login instead, only after you confirm it. The kubeconfig
+  kept in the vault is rebuilt from the checked parts (address, CA, client certificate); nothing else of what was read
+  is kept.
+- **A privileged pod is still root on this cluster.** It cannot reach the Proxmox node, but it does control the K3s
+  container and the whole K3s cluster. Run privileged workloads only if you trust them.
+- **The API stays on your network.** The Kubernetes API (port 6443) gets no public name and no port forward. Publish
+  an app through its ingress instead.
+- **More nodes.** The finished page offers **Add an agent on another node**. The wizard fills in the server, takes
+  the join token from the vault, and recommends a Proxmox node that does not run this cluster yet, so one node going
+  down does not take every worker with it. Agents and the server must reach each other on your network (pod traffic
+  is routed over the LAN, with no tunnel).
+- **Upgrades.** The K3s page says when a newer stable K3s is out. HyperProx does not upgrade it for you yet: drain a
+  node, run K3s's install with the new version, uncordon it, one node at a time.
+- **Not automatic yet:** a backup job for the container. K3s keeps its state in `/var/lib/rancher/k3s`; back the
+  container up in Proxmox.
 
 #### Arr Stack
 
@@ -1848,6 +1892,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 | Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; read-only unless you turn on backup management, which adds deleting, pruning and clean-up (see below) |
 | Pi-hole and AdGuard Home | Each DNS blocker as a shield with the share of queries blocked, a 24-hour chart, the domains blocked most (an Allow button each), the busiest devices (hideable), each upstream DNS server with its state and answer time, how old the block lists are, and whether blocking is on; every problem has a fix button (see below) |
 | 3proxy | A forward proxy: open connections per protocol (HTTP and SOCKS5), traffic, refusals and who used it; restart, users and allowed networks (see below) |
+| K3s | Each Kubernetes cluster: nodes with CPU and memory rings, pods in trouble (crash loop, an image that cannot be pulled, pending and why, restarting) with their last log lines and a fix for each, workloads with ready against desired, warning events, ingresses and services with their addresses, namespaces, and whether a newer K3s is out. Restart, roll back, scale, delete a pod, cordon, uncordon and drain, each confirmed (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
@@ -2978,6 +3023,41 @@ its Details show totals and refusals only, never a user name or a client address
 
 Adding, removing or resetting a user and changing the settings ask for your master password. Every action is
 audited. HyperProx changes the proxy only through its helper's fixed commands, with checked names and networks.
+
+#### K3s
+
+**Plug-ins, K3s** shows each K3s cluster HyperProx looks after. A cluster installed from the Catalogue is connected
+by itself. So is a K3s server HyperProx finds on your guests: the service scan sees a Kubernetes API answering on
+port 6443, HyperProx looks inside that guest once, read-only, for K3s's admin login, and connects it the same way
+(never a guest tagged `hyperprox-ignore` or on Remote access's "never look inside" list). Note that connecting means
+HyperProx creates its two service accounts and three admission policies in every K3s it finds this way; tag a guest
+`hyperprox-ignore` if you do not want that. Only when it finds an API
+but no K3s login it can read (another Kubernetes, or a cluster outside your Proxmox) does the page ask: **Connect a
+cluster** takes that cluster's kubeconfig, and the join token if you want the Catalogue to add agents to it.
+
+The page opens with the cluster's nodes ready, pods running, pods in trouble and the version, then:
+
+- **Pods in trouble**, each as a card that says what is wrong in words: a crash loop with its exit code, an image that
+  cannot be pulled and why, pending and what the scheduler said (not enough CPU, say), or restarting. Admins also see
+  its last log lines. Each card has the buttons that can actually help: **Roll back to the previous version** for a bad
+  image, **Restart** or **Delete pod** for a crash, **Uncordon**, **Scale down** or **Add a node** for a pod that cannot
+  be placed, and **Show logs**.
+- **Nodes**, each with CPU and memory rings, Ready or the reason it is not, cordoned or not, its version and address,
+  with **Cordon**, **Uncordon** and **Drain**. A drain first shows what will move to other nodes, what stays
+  (DaemonSet pods) and anything that would be deleted for good (a pod nothing would start again), which you must
+  tick to go ahead.
+- **Workloads** (Deployments, StatefulSets, DaemonSets) with ready against desired, and **Restart** and **Scale**.
+- **Warning events** of the last hour, **Network** (ingresses with a link to open, services with their addresses),
+  **Namespaces**, and a note when a newer stable K3s is out.
+
+Every action is for admins, asks for the master password (once every five minutes), says what it will do before it
+runs, is checked against the cluster at that moment (a button never acts on something that has gone), is written to
+the audit log, and is sent with the separate `hyperprox-operator` account, which the admission policies (see K3s in the Catalogue above) keep from
+changing what a workload runs or a node beyond cordoning; a roll back is sent with the admin login, after you confirm it. API tokens cannot act on a cluster.
+Below admin, the page leaves out addresses (nodes, ingresses, services) and the text of events and logs. Logs are for
+admins too, as they hold whatever an app printed. **Remove** (under Details) deletes HyperProx's two accounts and three
+admission policies from the cluster and its logins from the vault; the cluster keeps running, and auto-connect does not add it
+back by itself.
 
 ### Settings
 

@@ -93,6 +93,11 @@ const PROBES = [
   // AdGuard Home's login page names no product in its title: its green Safari pin icon and its own login script are its own.
   { key: 'adguard', label: 'AdGuard Home', port: 80, path: '/login.html', scheme: 'http', recipeId: 'adguard-home', pluginId: 'adguard', setting: null, page: '/plugins/adguard', needs: ['its login'], multiple: true,
     match: (s, b) => s === 200 && /rel="mask-icon" href="assets\/safari-pinned-tab\.svg" color="#67B279"[\s\S]*src="login\.[0-9a-f]+\.js"/.test(b) },
+  // A Kubernetes API answers 401 with its own Status object to anyone without a credential. The K3s plug-in keeps its
+  // own cluster list: auto-connect looks inside the guest for K3s's admin login, and the page asks for a kubeconfig
+  // only when there is none to find.
+  { key: 'k3s', label: 'Kubernetes API (K3s)', port: 6443, path: '/version', scheme: 'https', recipeId: 'k3s', pluginId: 'k3s', setting: null, page: '/plugins/k3s', needs: [], multiple: true,
+    match: (s, b) => s === 401 && /"kind"\s*:\s*"Status"/.test(b) && /"reason"\s*:\s*"Unauthorized"/.test(b) },
   { key: 'tdarr', label: 'Tdarr', port: 8265, path: '/', scheme: 'http', recipeId: 'tdarr', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => s === 200 && title('Tdarr').test(b) },
 ]

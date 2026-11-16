@@ -77,6 +77,11 @@ export const DETECT: Record<string, Fingerprint[]> = {
     path: '/',
     match: a => (a.status === 503 && a.body.includes('No server is available to handle this request.') && /<h1>503 Service Unavailable<\/h1>/.test(a.body) ? { version: null } : null),
   }],
+  // A Kubernetes API answers a stranger 401 with its own Status object (the shared scan finds it on port 6443).
+  k3s: [{
+    path: '/version',
+    match: a => (a.status === 401 && /"kind"\s*:\s*"Status"/.test(a.body) && /"reason"\s*:\s*"Unauthorized"/.test(a.body) ? { version: null } : null),
+  }],
   ollama: [{
     path: '/api/tags',
     match: a => { const j = json(a); return j && Array.isArray(j.models) && Object.keys(j).length === 1 ? { version: null } : null },

@@ -134,7 +134,9 @@ test('catalogue: the list leaves out the website recipes (sent apart for the Web
     || (r.stack === 'transcode' && /-(worker|node)$/.test(r.id))
     // A forward proxy answers no web page of its own (it only proxies, and only with a password): its plug-in finds it by
     // the install record and the helper it leaves in the container (lib/fwdproxy), never by a probe through it.
-    || r.category === 'forward-proxy'), 'every catalogue app can be detected')
+    || r.category === 'forward-proxy'
+    // A K3s agent runs no API of its own: the server it joins is what is detected.
+    || r.id === 'k3s-agent'), 'every catalogue app can be detected')
 })
 
 test('nav: Websites is its own rail item at /sites; a site page is titled under it and links back', async () => {
