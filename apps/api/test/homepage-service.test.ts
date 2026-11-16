@@ -898,7 +898,10 @@ test('removed guest: forgetting a dashboard revokes its Proxmox token, empties i
   const t = setup({ inv: () => inventory({ services: [{ key: 'proxmox', url: 'https://10.0.0.2:8006', guest: null, source: 'cluster' }] }) })
   const remembered: string[] = []
   ;(t.svc as any).d.dismissed = async (id: string) => { remembered.push(id) }
-  const i = await t.svc.connect('lxc-130', me)
+  // An invented guest for this test (the shared fixture's machine, under another ID).
+  ;(t.svc as any).d.exec.listMachines = async () => [{ ...machine, id: 'lxc-9105', vmid: 9105 }]
+  const i = await t.svc.connect('lxc-9105', me)
+  assert.equal(i.vmid, 9105)
   await t.svc.createProxmoxToken(i.id, me)
   const scripts = t.guest.scripts.length
   const words = await t.svc.forgetRemoved(i.id, 'admin@example.org')
