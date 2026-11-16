@@ -21,6 +21,12 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — Proxy hosts live on their cards
+
+### Improved
+- **The Proxy page no longer has a separate host table; every host card now does the work.** Each card shows its provider, whether it is live or off, its certificate and the days left, and any extra domains, and admins can edit, turn on or off, or delete a host right on the card. Hosts that are off still appear, and the list is no longer cut off after 24 cards.
+  - Technical: `components/proxy/HostCard.tsx` replaces the page's `HostTile`, `HostRow` and the collapsible table; the page still sends the same preview request (`hostActionRequest`) and opens the same editor, and the search and filters above the cards are unchanged.
+
 ## 2026-11-16 — Internal tidy-up
 
 ### Improved

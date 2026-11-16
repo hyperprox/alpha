@@ -3,7 +3,7 @@
 // =============================================================================
 //  HyperProx — Proxy page
 //  Every proxy instance (Nginx Proxy Manager, Traefik, Caddy, HAProxy,
-//  Pangolin; several of each) in one table. Every host names the instance
+//  Pangolin; several of each) as host cards. Every card names the instance
 //  that owns it; hosts made outside HyperProx are read-only. Every write is
 //  previewed first, then applied, then read back from the proxy.
 // =============================================================================
@@ -13,21 +13,13 @@ import { useFocusTrap } from '@/lib/focus-trap'
 import { alpha } from '@/lib/theme'
 import { atLeast, errorText, failureText } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { Details, HudHeader, Page, Panel, Pill, styles, type PillTone, type StatChip } from '@/components/visual/kit'
+import { HudHeader, Page, Panel, styles, type StatChip } from '@/components/visual/kit'
+import { Badge, HostCard, KIND_COLOR, KIND_SHORT, daysLeft, hostActionRequest, type HostAction, type HostView, type Kind } from '@/components/proxy/HostCard'
 
 // ---------------------------------------------------------------------------
 //  Types (the API's shapes, apps/api/src/lib/proxy/types.ts)
 // ---------------------------------------------------------------------------
 
-type Kind = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin'
-
-interface HostView {
-  id: string; instanceId: string; instanceName: string; kind: Kind
-  domains: string[]; forwardScheme: 'http' | 'https'; forwardHost: string; forwardPort: number
-  enabled: boolean; readOnly: boolean; readOnlyReason?: string
-  tls: { kind: 'none' | 'certificate' | 'auto'; certificateId?: string; expiresAt?: string | null; forced?: boolean }
-  online?: boolean | null; websockets?: boolean; detail?: string; native?: Record<string, any>
-}
 // Viewers get id, kind, name, mode and status only; the rest is for admins.
 interface Instance {
   id: string; kind: Kind; kindLabel: string; name: string; url?: string; mode: 'byo' | 'managed'
@@ -40,9 +32,6 @@ interface Cert { id: string; names: string[]; expiresAt: string | null; issuer: 
 interface Health { ok: boolean; version?: string; checks: { name: string; ok: boolean; detail: string; warn?: boolean }[] }
 interface Plan { id: string; instanceName: string; action: string; changes: string[]; consequences: string[]; warnings: string[]; expiresAt: string }
 interface ApplyResult { ok: boolean; message: string; mismatch: string[]; cleanup?: Plan }
-
-const KIND_SHORT: Record<Kind, string> = { npm: 'NPM', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin' }
-const KIND_COLOR: Record<Kind, string> = { npm: 'var(--accent)', traefik: 'var(--accent-2)', caddy: 'var(--good)', haproxy: 'var(--violet-2)', pangolin: 'var(--warn-2)' }
 
 // ---------------------------------------------------------------------------
 //  Style
@@ -69,20 +58,6 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const json = await res.json().catch(() => null)
   if (!json?.success) throw new Error(errorText(json, 'The proxy did not answer as expected.', res.status))
   return json.data as T
-}
-
-function daysLeft(iso?: string | null): number | null {
-  if (!iso) return null
-  const t = Date.parse(iso.replace(' ', 'T'))
-  return Number.isFinite(t) ? Math.floor((t - Date.now()) / 86_400_000) : null
-}
-
-function Badge({ label, color, title }: { label: string; color: string; title?: string }) {
-  return (
-    <span title={title} className="font-mono px-1.5 py-0.5 rounded whitespace-nowrap" style={{
-      fontSize: 10, background: `${alpha(color, 8)}`, color, border: `1px solid ${alpha(color, 19)}`,
-    }}>{label}</span>
-  )
 }
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
@@ -460,78 +435,6 @@ function InstancesPanel({ instances, kinds, admin, onChanged }: { instances: Ins
 }
 
 // ---------------------------------------------------------------------------
-//  Host table
-// ---------------------------------------------------------------------------
-
-function HostRow({ h, admin, onEdit, onAction }: { h: HostView; admin: boolean; onEdit: (h: HostView) => void; onAction: (h: HostView, a: 'enable' | 'disable' | 'delete') => void }) {
-  const days = daysLeft(h.tls.expiresAt)
-  const tlsCol = h.tls.kind === 'none' ? 'var(--text-dim)' : days !== null && days < 0 ? 'var(--crit-2)' : days !== null && days < 30 ? 'var(--warn-2)' : 'var(--good)'
-  const tlsLabel = h.tls.kind === 'none' ? 'No TLS' : h.tls.kind === 'auto' ? 'Auto TLS' : 'Certificate'
-  const dot = !h.enabled ? 'var(--text-dim)' : h.online === false ? 'var(--warn-2)' : 'var(--good)'
-  return (
-    <tr style={{ borderBottom: '1px solid var(--border-soft)' }}>
-      <td className="px-4 py-3 w-6"><div className="w-2 h-2 rounded-full" style={{ background: dot }} title={h.enabled ? (h.online === false ? 'Enabled, not answering' : 'Enabled') : 'Disabled'} /><span className="sr-only">{h.enabled ? (h.online === false ? 'Enabled, not answering' : 'Enabled') : 'Disabled'}</span></td>
-      <td className="px-4 py-3">
-        <div className="font-mono text-sm" style={{ color: 'var(--text-bright)' }}>{h.domains[0] ?? <span style={{ color: 'var(--text-dim)' }}>(no Host rule)</span>}</div>
-        {h.domains.length > 1 && <div className="text-xs" style={{ color: 'var(--text-dim)' }} title={h.domains.join(', ')}>+{h.domains.length - 1} more</div>}
-        {h.detail && h.kind !== 'npm' && <div className="text-xs font-mono truncate" style={{ color: 'var(--text-dim)', maxWidth: 360 }} title={h.detail}>{h.detail}</div>}
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2"><Badge label={KIND_SHORT[h.kind]} color={KIND_COLOR[h.kind]} /><span className="text-sm" style={{ color: 'var(--text)' }}>{h.instanceName}</span></div>
-      </td>
-      <td className="px-4 py-3"><span className="text-xs font-mono" style={{ color: 'var(--text-soft)' }}>{h.forwardHost ? `${h.forwardScheme}://${h.forwardHost}:${h.forwardPort}` : '—'}</span></td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
-          <Badge label={tlsLabel} color={tlsCol} />
-          {days !== null && <span className="text-xs font-mono" style={{ color: days < 14 ? 'var(--crit-2)' : 'var(--text-dim)' }}>{days}d</span>}
-        </div>
-      </td>
-      <td className="px-4 py-3">
-        {h.readOnly ? <Badge label="READ-ONLY" color="var(--text-muted)" title={h.readOnlyReason ?? 'Made outside HyperProx; never rewritten'} />
-          : admin ? (
-            <div className="flex items-center gap-1">
-              <button onClick={() => onEdit(h)} className="px-3 py-1 rounded-md text-sm" style={{ color: 'var(--accent)', border: '1px solid var(--accent)' }}>Edit</button>
-              <button onClick={() => onAction(h, h.enabled ? 'disable' : 'enable')} className="px-3 py-1 rounded-md text-sm"
-                style={{ color: h.enabled ? 'var(--crit)' : 'var(--good)', border: `1px solid ${h.enabled ? 'var(--crit)' : 'var(--good)'}` }}>{h.enabled ? 'Off' : 'On'}</button>
-              <button onClick={() => onAction(h, 'delete')} className="px-2 py-1 rounded-md text-sm" style={{ color: 'var(--text-dim)' }} aria-label="Delete">✕</button>
-            </div>
-          ) : null}
-      </td>
-    </tr>
-  )
-}
-
-/** A host as a tile: its domain, a state pill and an SSL pill (both in words), and the flow domain → proxy → upstream. */
-function HostTile({ h }: { h: HostView }) {
-  const days = daysLeft(h.tls.expiresAt)
-  const state: { text: string; tone: PillTone | undefined } = !h.enabled ? { text: 'disabled', tone: undefined }
-    : h.online === false ? { text: 'not answering', tone: 'warn' } : { text: 'live', tone: 'good' }
-  const tls: { text: string; tone: PillTone | undefined } = h.tls.kind === 'none' ? { text: 'no TLS', tone: undefined }
-    : days !== null && days < 0 ? { text: 'cert expired', tone: 'bad' }
-    : days !== null && days < 30 ? { text: `TLS ${days}d left`, tone: 'warn' }
-    : { text: h.tls.kind === 'auto' ? 'auto TLS' : 'TLS ok', tone: 'good' }
-  const upstream = h.forwardHost ? `${h.forwardHost}:${h.forwardPort}` : null
-  return (
-    <li className="rounded-lg p-3" style={{ background: 'var(--ground-deep)', border: '1px solid var(--border-soft)', minWidth: 0, opacity: h.enabled ? 1 : 0.7 }}>
-      <div className="font-mono text-sm" style={{ color: 'var(--text-bright)', overflowWrap: 'anywhere' }}>
-        {h.domains[0] ?? <span style={{ color: 'var(--text-dim)' }}>(no Host rule)</span>}
-        {h.domains.length > 1 && <span className="text-xs" style={{ color: 'var(--text-dim)' }} title={h.domains.join(', ')}> +{h.domains.length - 1}</span>}
-      </div>
-      <div className="flex gap-1.5 flex-wrap mt-2">
-        <Pill tone={state.tone}>{state.text}</Pill>
-        <Pill tone={tls.tone}>{tls.text}</Pill>
-        {h.readOnly && <Pill title={h.readOnlyReason ?? 'Made outside HyperProx; never rewritten'}>read-only</Pill>}
-      </div>
-      <div className="flex items-center gap-1.5 flex-wrap mt-2 font-mono text-xs" style={{ color: 'var(--text-soft)' }} aria-label={`Flow: domain to ${h.instanceName} to ${upstream ?? 'no upstream'}`}>
-        <span>domain</span><span aria-hidden style={{ color: 'var(--accent)' }}>→</span>
-        <span title={KIND_SHORT[h.kind]}>{h.instanceName}</span><span aria-hidden style={{ color: 'var(--accent)' }}>→</span>
-        <span style={{ overflowWrap: 'anywhere' }}>{upstream ? `${h.forwardScheme}://${upstream}` : 'no upstream'}</span>
-      </div>
-    </li>
-  )
-}
-
-// ---------------------------------------------------------------------------
 //  Page
 // ---------------------------------------------------------------------------
 
@@ -572,9 +475,10 @@ export default function ProxyPage() {
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', onShow) }
   }, [load])
 
-  const act = async (h: HostView, action: 'enable' | 'disable' | 'delete') => {
+  const act = async (h: HostView, action: HostAction) => {
     setActionError(null)
-    try { setPlan(await api<Plan>(`/api/proxy/instances/${h.instanceId}/preview`, { method: 'POST', body: JSON.stringify({ action, hostId: h.id }) })) }
+    const req = hostActionRequest(h, action)
+    try { setPlan(await api<Plan>(req.url, req.init)) }
     catch (e: any) { setActionError(failureText(e)) }
   }
 
@@ -610,9 +514,6 @@ export default function ProxyPage() {
   const title = failing.length ? `${failing.length} prox${failing.length === 1 ? 'y is' : 'ies are'} not answering`
     : offline ? `${offline} host${offline === 1 ? ' is' : 's are'} not answering`
     : `${counts.enabled} of ${counts.total} hosts are live`
-
-  const TILE_LIMIT = 24
-  const tiles = shown.slice(0, TILE_LIMIT)
 
   return (
     <Page>
@@ -661,31 +562,10 @@ export default function ProxyPage() {
 
         {shown.length === 0 ? <p className={styles.empty}>No hosts match the current filter</p> : (
           <ul className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 17rem), 1fr))', listStyle: 'none', padding: 0, margin: 0 }} aria-label="Proxy hosts">
-            {tiles.map(h => <HostTile key={`${h.instanceId}/${h.id}`} h={h} />)}
+            {shown.map(h => <HostCard key={`${h.instanceId}/${h.id}`} h={h} admin={admin} onEdit={setEditing} onAction={act} />)}
           </ul>
         )}
-        {shown.length > TILE_LIMIT && (
-          <p className={styles.empty} style={{ marginTop: 12 }}>Showing the first {TILE_LIMIT} of {shown.length}. The table below lists every host.</p>
-        )}
       </Panel>
-
-      <Details summary="Host table" sub="every host, with edit, on/off and delete" open={false}>
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th scope="col"><span className="sr-only">State</span></th>
-                {['Domain', 'Proxy', 'Target', 'TLS'].map(h => <th key={h} scope="col">{h}</th>)}
-                <th scope="col"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map(h => <HostRow key={`${h.instanceId}/${h.id}`} h={h} admin={admin} onEdit={setEditing} onAction={act} />)}
-              {shown.length === 0 && <tr><td colSpan={6} className="text-center" style={{ color: 'var(--text-muted)' }}>No hosts match the current filter</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </Details>
 
       {editing !== undefined && <HostForm host={editing} instances={writable} onClose={() => setEditing(undefined)} onPlan={p => { setEditing(undefined); setPlan(p) }} />}
       {plan && <PlanDialog plan={plan} onClose={() => setPlan(null)} onDone={load} />}
