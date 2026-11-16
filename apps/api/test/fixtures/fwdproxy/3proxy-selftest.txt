@@ -1,0 +1,12 @@
+check	running	ok	3proxy is running on 10.20.30.37.
+check	http_auth	ok	Without a password: refused (407).
+check	http_ok	ok	With a password: https://downloads.example.org/ answered 200 through the proxy.
+check	connect_443	ok	A tunnel to port 22 was refused (403); only 443 is allowed.
+check	self	ok	The proxy refused to reach itself (403).
+check	localhost	ok	A name for this machine (localhost) was refused (403).
+check	lan	ok	A private address (10.255.255.1) was refused (403).
+check	socks_auth	ok	Without a password: refused by the proxy.
+check	socks_ok	ok	With a password: https://downloads.example.org/ answered 200 through SOCKS.
+check	socks_self	ok	The proxy refused to reach itself.
+check	socks_localhost	ok	A name for this machine (localhost) was refused.
+check	socks_lan	ok	A private address (10.255.255.1) was refused.

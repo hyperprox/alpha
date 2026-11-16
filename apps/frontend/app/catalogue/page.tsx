@@ -52,7 +52,7 @@ interface Job {
 
 /** Category names, matching the API's labels; the API's own label wins when it sends one. */
 const CATEGORY_LABEL: Record<string, string> = {
-  proxy: 'Reverse proxy', ai: 'AI', media: 'Media', monitoring: 'Monitoring', apps: 'Apps', web: 'Web hosting',
+  proxy: 'Reverse proxy', 'forward-proxy': 'Forward proxy', ai: 'AI', media: 'Media', monitoring: 'Monitoring', apps: 'Apps', web: 'Web hosting',
 }
 const categoryLabel = (r: { category: string; categoryLabel?: string }) => r.categoryLabel ?? CATEGORY_LABEL[r.category] ?? r.category
 

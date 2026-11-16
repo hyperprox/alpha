@@ -23,6 +23,7 @@ import { homepagePlugin } from './homepage'
 import { haproxyPlugin }  from './haproxy'
 import { nginxPlugin, caddyPlugin, envoyPlugin } from './web-proxies'
 import { piholePlugin, adguardPlugin } from './dns-blocker'
+import { threeProxyPlugin } from './threeproxy'
 
 export const PLUGINS: Plugin[] = [
   arrstackPlugin,
@@ -42,6 +43,7 @@ export const PLUGINS: Plugin[] = [
   envoyPlugin,
   piholePlugin,
   adguardPlugin,
+  threeProxyPlugin,
 ]
 
 export function findPlugin(id: string): Plugin | undefined {

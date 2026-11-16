@@ -43,6 +43,7 @@ const lazy = {
   haproxy: async () => (await import('../haproxy')).haproxyService(),
   webproxy: async () => (await import('../webproxy')).webProxyService(),
   dns: async (kind: 'pihole' | 'adguard') => (await import('../dns-blocker')).dnsBlockerService(kind),
+  fwdproxy: async () => (await import('../fwdproxy')).fwdProxyService(),
   plugins: async () => (await import('../../plugins')).PLUGINS,
 }
 
@@ -78,6 +79,8 @@ function adapters(): AutoConnectAdapter[] {
     ...(['nginx', 'caddy', 'envoy'] as const).map(kind => ({ plugin: kind, reconcile: async (ctx: AdapterContext) => (await lazy.webproxy()).autoConnect(kind, ctx) })),
     { plugin: 'pihole', reconcile: async ctx => (await lazy.dns('pihole')).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.dns('pihole')).autoPick(key, choice, ctx) },
     { plugin: 'adguard', reconcile: async ctx => (await lazy.dns('adguard')).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.dns('adguard')).autoPick(key, choice, ctx) },
+    // 3proxy: a finished Catalogue install, its helper confirmed read-only, connected (lib/fwdproxy).
+    { plugin: '3proxy', reconcile: async ctx => (await lazy.fwdproxy()).autoConnect(ctx) },
     settingsAdapter('unmanic', settingsDeps),
     settingsAdapter('arrstack', settingsDeps),
     settingsAdapter('plex', settingsDeps),

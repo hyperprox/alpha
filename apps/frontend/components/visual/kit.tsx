@@ -98,6 +98,7 @@ const PATHS: Record<string, string> = {
   error: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 8v5M12 16h.01',
   plugin: 'M9 3h6v4h4v6h-4v4H9v-4H5V7h4z',
   cloud: 'M7 19h10a4.5 4.5 0 0 0 .6-8.96A6 6 0 0 0 6.2 8.6 5.2 5.2 0 0 0 7 19z',
+  proxy: 'M3 12h6M15 12h6M18 9l3 3-3 3M9 7h6v10H9zM12 3v4M12 17v4',
 }
 
 export function Icon({ name, size = 16, className, label }: { name: string; size?: number; className?: string; label?: string }) {

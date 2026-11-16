@@ -48,6 +48,7 @@ import { nextcloudRoutes }      from './routes/nextcloud'
 import { haproxyRoutes }        from './routes/haproxy'
 import { homepageRoutes }       from './routes/homepage'
 import { webProxyRoutes }       from './routes/webproxy'
+import { fwdProxyRoutes }       from './routes/fwdproxy'
 import { autoConnectRoutes } from './routes/auto-connect'
 import { removedGuestsRoutes } from './routes/removed-guests'
 import { catalogueRoutes } from './routes/catalogue'
@@ -207,6 +208,7 @@ async function main() {
   await server.register(haproxyRoutes,         { prefix: '/api/plugins/haproxy' })
   await server.register(homepageRoutes,        { prefix: '/api/plugins/homepage' })
   for (const kind of ['nginx', 'caddy', 'envoy'] as const) await server.register(webProxyRoutes(kind), { prefix: `/api/plugins/${kind}` })
+  await server.register(fwdProxyRoutes,        { prefix: '/api/plugins/3proxy' })
   await server.register(autoConnectRoutes,     { prefix: '/api/auto-connect' })
   await server.register(removedGuestsRoutes,   { prefix: '/api/removed-guests' })
   // Local plug-ins in the git-ignored apps/api/src/local-plugins (none: nothing is registered but an empty list).

@@ -1174,8 +1174,8 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, HAProxy, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr and Plex (below), and
-three proxies: NGINX, Caddy and Envoy (see [NGINX, Caddy and Envoy](#nginx-caddy-and-envoy)). Websites are not listed here: they have their own section,
+Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr, Plex and the 3proxy
+forward proxy (below), and three proxies: NGINX, Caddy and Envoy (see [NGINX, Caddy and Envoy](#nginx-caddy-and-envoy)). Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
@@ -1441,6 +1441,33 @@ folder that is already there is left alone.
 
 **Public name.** None. Plex's own remote access needs port 32400 forwarded to the container on your router, or a
 proxy host you add yourself.
+
+#### 3proxy from the Catalogue (a forward proxy)
+
+A forward proxy lets the devices on your network go out to the web through one place. **3proxy 0.9.9.2** (under
+**Forward proxy**) is a small proxy that speaks HTTP (port 3128) and SOCKS5 (port 1080) at once; either can be
+turned off. It comes from the project's own Debian package, checked against the SHA-256 the project publishes,
+installs in about a minute and runs as an unprivileged user.
+
+**Locked down from the start.** An open proxy is found and abused within hours, so it starts shut:
+
+- **Sign-in always.** Every request needs a user and password. The first user's password is generated, kept
+  in the vault and shown once after the install (and any time through the vault). HyperProx never puts it in a
+  log, a message or a command line.
+- **Only your network may use it.** You pick the networks at install (default: the network the container is
+  on). Each must lie wholly inside 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16 and be written as its network
+  address (10.0.5.0/24, not 10.0.5.7/24).
+- **Only on your network.** It listens only on the container's own address. HyperProx refuses to install it on
+  a public address, and the install script checks again inside the container.
+- **It cannot be turned on your own services.** Addresses on your network are refused unless you allow them;
+  the proxy itself, loopback (by address or by name), link-local (cloud metadata) and multicast are always refused.
+- **HTTPS tunnels go only to port 443**, SOCKS never connects to port 25 (mail), and at most 256 connections are
+  open at once.
+
+The install finishes by proving it: from the proxy itself, a request without a password must be refused, one
+with the first user's password must work, a tunnel to another port must be refused, and the proxy must refuse
+to reach itself, localhost and your network. A proxy that fails this is not handed over. Then its plug-in connects
+it by itself (see [3proxy](#3proxy-forward-proxy) under Plug-ins). Do not forward a port to it from your router.
 
 #### Proxmox Backup Server from the Catalogue
 
@@ -1820,6 +1847,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 | ASUS router | Stock Asuswrt or Merlin, without Home Assistant: model, firmware, uptime, CPU and RAM; internet status with live down and up rates; each Wi-Fi band with its network name, channel and clients; connected devices with connection, signal and time online; what needs attention; reboot behind the confirm step (see below) |
 | Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; read-only unless you turn on backup management, which adds deleting, pruning and clean-up (see below) |
 | Pi-hole and AdGuard Home | Each DNS blocker as a shield with the share of queries blocked, a 24-hour chart, the domains blocked most (an Allow button each), the busiest devices (hideable), each upstream DNS server with its state and answer time, how old the block lists are, and whether blocking is on; every problem has a fix button (see below) |
+| 3proxy | A forward proxy: open connections per protocol (HTTP and SOCKS5), traffic, refusals and who used it; restart, users and allowed networks (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
@@ -2854,6 +2882,35 @@ the file is not laid out simply enough to do that safely, it says so and shows t
 token so it can be revoked; a token that is already gone from Proxmox counts as revoked. A dashboard with a
 token cannot be disconnected until the token is revoked. When the guest cannot be reached to take its keys off,
 disconnecting asks again and names what is left there.
+
+#### 3proxy (forward proxy)
+
+A 3proxy installed from the Catalogue gets its plug-in page (**Plug-ins, 3proxy**; admins only, since it shows who
+used the proxy). HyperProx connects it by itself after the install: it looks inside that container once, read-only,
+to confirm HyperProx's proxy helper is there, and records it. A guest tagged `hyperprox-ignore`, on Remote access's
+exclusion list or in an excluded subnet is never connected, and **Disconnect** is remembered. The plug-in's card and
+its Details show totals and refusals only, never a user name or a client address.
+
+- **How to use this proxy**: its address and port for each protocol, with copy buttons, and where to put them
+  on Windows, macOS, iPhone and Android, Firefox, apps with a SOCKS setting and the command line.
+- **Locked down**: a shield with the rules in force, and **Prove it now**, which runs the install's self-check
+  again from the proxy with a user's password from the vault (it never leaves HyperProx).
+- **Health**: each problem with its fix button: **Start it again** when it stopped, **Block my network again** when
+  you had allowed it, and **New password** for a user whose password is not in the vault, or whose password change
+  did not finish in time (the proxy may still have the old one).
+- **Traffic**: a trace of requests a minute and bytes over 15 minutes to a day, open connections per protocol,
+  requests per protocol, who used it by user and by device, and what was refused and why (no or wrong password,
+  blocked by a rule). The figures come from 3proxy's own log, read in the container while the page is open.
+- **Users**: add one (HyperProx makes the password and keeps it in the vault), **Show password** through the
+  vault, **New password**, and **Remove** (the last user cannot be removed). A removed user or changed password
+  stops working at once.
+- **Settings**: the networks that may use it, whether it may reach your own network (asks you to confirm), and
+  **Figures per user and device**: off shows only totals, 3proxy's log then keeps no client address or user name,
+  and the log it wrote so far is emptied.
+- **Restart** starts 3proxy again on its current config, after you confirm.
+
+Adding, removing or resetting a user and changing the settings ask for your master password. Every action is
+audited. HyperProx changes the proxy only through its helper's fixed commands, with checked names and networks.
 
 ### Settings
 
