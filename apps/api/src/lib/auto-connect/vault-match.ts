@@ -23,7 +23,7 @@ import { originParts } from '../net/ip'
 
 const ITEM_PREFIX = 'hyperprox:'
 
-export type CredentialKind = 'api_key' | 'token' | 'login'
+export type CredentialKind = 'api_key' | 'token' | 'login' | 'password'
 
 export interface VaultChoice { id: string; name: string }
 
@@ -59,6 +59,8 @@ export function credentialOf(item: SecretItem, kind: CredentialKind): { secret: 
   const field = (re: RegExp) => Object.keys(f).find(k => re.test(k) && (f[k] ?? '').trim())
   const username = f.username?.trim() ? f.username.trim() : null
   if (kind === 'login') return username && f.password ? { secret: f.password, username } : null
+  // Pi-hole signs in with a password alone: an item for that very address (the URI rule in matchVault) with one.
+  if (kind === 'password') return f.password && f.password.trim() ? { secret: f.password, username } : null
   const named = field(kind === 'api_key' ? /^(x-)?api[ _-]?key$|^apikey$/i : /^(x-plex-)?token$|^api[ _-]?token$/i)
   if (named) return { secret: f[named], username }
   // A login's password is taken for a key only when the item itself says it is one ("Sonarr API key", "Plex token"):

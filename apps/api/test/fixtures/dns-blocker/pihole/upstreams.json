@@ -1,0 +1,47 @@
+{
+ "upstreams": [
+  {
+   "ip": "blocklist",
+   "name": "blocklist",
+   "port": -1,
+   "count": 7,
+   "statistics": {
+    "response": 0,
+    "variance": 0
+   }
+  },
+  {
+   "ip": "cache",
+   "name": "cache",
+   "port": -1,
+   "count": 42,
+   "statistics": {
+    "response": 0,
+    "variance": 0
+   }
+  },
+  {
+   "ip": "1.1.1.1",
+   "name": "one.one.one.one",
+   "port": 53,
+   "count": 24,
+   "statistics": {
+    "response": 0.027016878128051758,
+    "variance": 0.006937021750317364
+   }
+  },
+  {
+   "ip": "9.9.9.9",
+   "name": "dns9.quad9.net",
+   "port": 53,
+   "count": 9,
+   "statistics": {
+    "response": 0,
+    "variance": 0
+   }
+  }
+ ],
+ "total_queries": 82,
+ "forwarded_queries": 33,
+ "took": 2.9087066650390625e-05
+}

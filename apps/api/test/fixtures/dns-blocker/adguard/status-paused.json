@@ -1,0 +1,14 @@
+{
+ "version": "v0.107.79",
+ "language": "",
+ "dns_addresses": [
+  "192.0.2.244"
+ ],
+ "dns_port": 53,
+ "http_port": 80,
+ "protection_disabled_duration": 1799867,
+ "start_time": 1794799833152.0684,
+ "protection_enabled": false,
+ "dhcp_available": true,
+ "running": true
+}

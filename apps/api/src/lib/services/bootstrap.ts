@@ -65,6 +65,7 @@ import { setExclusionSource as setSendExclusionSource } from '../clusters/send-s
 import { autoConnect, onUnlock, rememberDismissed, setAutoConnectExclusionSource } from '../auto-connect'
 import { homepageService, homepageInventoryChanged, setHomepageDismissedPort, setHomepageExclusionSource } from '../homepage'
 import { nextcloudService, registerNextcloudComposeOwner, setNextcloudDismissedPort } from '../nextcloud'
+import { setDnsBlockerDismissedPort } from '../dns-blocker'
 import { onInstallCompleted } from '../catalogue-installer'
 import { placementService } from '../placement/production'
 import { PrismaStore } from '../updates/store'
@@ -142,6 +143,7 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
   const dismissed = deps.dismissed ?? rememberDismissed
   setHomepageDismissedPort((key, label, by) => dismissed('homepage', key, label, by))
   setNextcloudDismissedPort((key, label, by) => dismissed('nextcloud', key, label, by))
+  setDnsBlockerDismissedPort((kind, key, label, by) => dismissed(kind, key, label, by))
 
   // 4. Updates: built, its read-only sources installed; started when the server is ready (below).
   steps.push('updates')

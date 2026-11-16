@@ -40,6 +40,7 @@ export function setAutoConnectExclusionSource(fn: (() => Promise<string[]>) | nu
 const lazy = {
   homepage: async () => (await import('../homepage')).homepageService(),
   nextcloud: async () => (await import('../nextcloud')).nextcloudService(),
+  dns: async (kind: 'pihole' | 'adguard') => (await import('../dns-blocker')).dnsBlockerService(kind),
   plugins: async () => (await import('../../plugins')).PLUGINS,
 }
 
@@ -62,6 +63,8 @@ function adapters(): AutoConnectAdapter[] {
   return [
     { plugin: 'homepage', reconcile: async ctx => (await lazy.homepage()).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.homepage()).autoPick(key, choice, ctx) },
     { plugin: 'nextcloud', reconcile: async ctx => (await lazy.nextcloud()).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.nextcloud()).autoPick(key, choice, ctx) },
+    { plugin: 'pihole', reconcile: async ctx => (await lazy.dns('pihole')).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.dns('pihole')).autoPick(key, choice, ctx) },
+    { plugin: 'adguard', reconcile: async ctx => (await lazy.dns('adguard')).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.dns('adguard')).autoPick(key, choice, ctx) },
     settingsAdapter('unmanic', settingsDeps),
     settingsAdapter('arrstack', settingsDeps),
     settingsAdapter('plex', settingsDeps),

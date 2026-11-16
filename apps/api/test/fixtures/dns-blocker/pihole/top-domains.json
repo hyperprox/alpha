@@ -1,0 +1,39 @@
+{
+ "domains": [
+  {
+   "domain": "example.com",
+   "count": 32
+  },
+  {
+   "domain": "10.2.0.192.in-addr.arpa",
+   "count": 8
+  },
+  {
+   "domain": "1.1.1.1.in-addr.arpa",
+   "count": 8
+  },
+  {
+   "domain": "1.0.0.127.in-addr.arpa",
+   "count": 8
+  },
+  {
+   "domain": "20.2.0.192.in-addr.arpa",
+   "count": 8
+  },
+  {
+   "domain": "9.9.9.9.in-addr.arpa",
+   "count": 7
+  },
+  {
+   "domain": "debian.org",
+   "count": 2
+  },
+  {
+   "domain": "kernel.org",
+   "count": 2
+  }
+ ],
+ "total_queries": 82,
+ "blocked_queries": 7,
+ "took": 4.3392181396484375e-05
+}

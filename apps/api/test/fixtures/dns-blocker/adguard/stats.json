@@ -1,0 +1,156 @@
+{
+ "time_units": "hours",
+ "top_queried_domains": [
+  {
+   "example.com": 2
+  },
+  {
+   "ads.google.com": 1
+  },
+  {
+   "debian.org": 1
+  },
+  {
+   "kernel.org": 1
+  }
+ ],
+ "top_clients": [
+  {
+   "192.0.2.205": 7
+  }
+ ],
+ "top_blocked_domains": [
+  {
+   "doubleclick.net": 1
+  },
+  {
+   "pagead2.googlesyndication.com": 1
+  }
+ ],
+ "top_upstreams_responses": [
+  {
+   "1.1.1.1:53": 2
+  },
+  {
+   "9.9.9.9:53": 2
+  }
+ ],
+ "top_upstreams_avg_time": [
+  {
+   "1.1.1.1:53": 0.20604599999999998
+  },
+  {
+   "9.9.9.9:53": 0.1330965
+  }
+ ],
+ "dns_queries": [
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  7
+ ],
+ "blocked_filtering": [
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  2
+ ],
+ "replaced_safebrowsing": [
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0
+ ],
+ "replaced_parental": [
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0
+ ],
+ "num_dns_queries": 7,
+ "num_blocked_filtering": 2,
+ "num_replaced_safebrowsing": 0,
+ "num_replaced_safesearch": 0,
+ "num_replaced_parental": 0,
+ "avg_processing_time": 0.097051
+}

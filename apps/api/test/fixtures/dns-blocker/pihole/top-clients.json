@@ -1,0 +1,22 @@
+{
+ "clients": [
+  {
+   "name": "localhost",
+   "ip": "127.0.0.1",
+   "count": 39
+  },
+  {
+   "name": "",
+   "ip": "192.0.2.251",
+   "count": 29
+  },
+  {
+   "name": "laptop",
+   "ip": "192.0.2.205",
+   "count": 14
+  }
+ ],
+ "total_queries": 82,
+ "blocked_queries": 7,
+ "took": 2.9802322387695312e-05
+}

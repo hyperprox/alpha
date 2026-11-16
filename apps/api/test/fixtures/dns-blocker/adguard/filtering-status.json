@@ -1,0 +1,23 @@
+{
+ "filters": [
+  {
+   "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt",
+   "name": "AdGuard DNS filter",
+   "last_updated": "2026-11-16T03:30:39Z",
+   "id": 1,
+   "rules_count": 192134,
+   "enabled": true
+  },
+  {
+   "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt",
+   "name": "AdAway Default Blocklist",
+   "id": 2,
+   "rules_count": 0,
+   "enabled": false
+  }
+ ],
+ "whitelist_filters": null,
+ "user_rules": [],
+ "interval": 24,
+ "enabled": true
+}
