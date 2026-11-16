@@ -60,6 +60,7 @@ know or do before they install. Newest entry at the top.
   - Technical: `/api/gpu/all/metrics-status` and `/api/gpu/:node/metrics-status` add `guests` (from each guest's config, via `configGpuKind`, cached 60 s) and `live` to every GPU; `lib/gpu-live.ts`; card in `components/dashboard/GpuCard.tsx`.
 - **Built-in graphics now show live figures, not just "monitored".** Intel shows how busy it is, the 3D, video (encode and decode) and enhance engines, the clock speed and the power draw. AMD shows how busy it is, video memory, shared memory, and the temperature. A figure that is not reported shows a dash, and hovering it says why.
   - Technical: Intel from the `igpu_*` series, AMD from `node_drm_*` and the amdgpu hwmon chip, read through `gpuFigures` plus `readGpuLive`; series are tied to a Proxmox node by their `node` label, or by `instance` through the cluster address list. The card re-reads every 15 seconds.
+
 ## 2026-11-16 — Removed guests are cleaned up, and plug-ins can be disconnected
 
 ### New
