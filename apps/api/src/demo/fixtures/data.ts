@@ -1,4 +1,3 @@
-import { sidOf as guestSid } from '../../lib/guest-id'
 // =============================================================================
 //  HyperProx demo — the invented world every fixture is drawn from
 //
@@ -63,7 +62,7 @@ export const GUESTS: DemoGuest[] = [
 
 export const nodeOf = (name: string) => NODES.find(n => n.node === name)!
 export const guestByVmid = (vmid: number) => GUESTS.find(x => x.vmid === vmid)
-export const sidOf = (x: DemoGuest) => guestSid(x.type, x.vmid)
+export const sidOf = (x: DemoGuest) => `${x.type === 'lxc' ? 'ct' : 'vm'}:${x.vmid}`
 
 /** A stable pseudo-random number in [0,1) for a key, so the same page always shows the same figures. */
 export function seeded(key: string): number {

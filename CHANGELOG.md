@@ -21,6 +21,12 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — Internal tidy-up
+
+### Improved
+- Internal tidy-up; nothing changes in how HyperProx works.
+  - Technical: shared helpers replace per-feature copies: `lib/guest-id.ts` (machine ids, HA service ids, guest paths), `listGuests()` in `lib/pve/guests.ts`, `runningBackups()` in `lib/pve/tasks.ts`, `shq()` / `shqStrict()` in `lib/shell.ts`, `nodeExec()` in `lib/node-exec.ts` and `sightingsOf()` in `lib/catalogue/sightings.ts`. Each feature keeps its own policy for an answer it cannot read; those policies are pinned by new tests.
+
 ## 2026-11-16 — Leave-alone rules apply everywhere
 
 ### Fixed
