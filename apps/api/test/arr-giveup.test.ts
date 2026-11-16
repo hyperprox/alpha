@@ -14,7 +14,7 @@ import { requiredRole, needsReconfirm } from '../src/lib/roles'
 import { buildArrGiveUpRoutes } from '../src/routes/arr-giveup'
 import { readUpcoming } from '../src/routes/arr-upcoming'
 import {
-  DEFAULT_SETTINGS, candidates, nextSearchAt, parseKey, searchDue, storedSettings, weekKey, classify, historyEvents, lidarrItems, observe, parseSettings, radarrItems, rows, sonarrItems, summarise, wholeSeasons,
+  DEFAULT_SETTINGS, candidates, filmReleased, nextSearchAt, scheduledThisWeek, tryWeek, parseKey, searchDue, storedSettings, weekKey, classify, historyEvents, lidarrItems, observe, parseSettings, radarrItems, rows, sonarrItems, summarise, wholeSeasons,
   giveUpMessage, type GiveUpSettings, type Track,
 } from '../src/lib/arr-giveup/logic'
 import { hardRule, isProgramFile, plainRejection, profileInfo, releaseView } from '../src/lib/arr-giveup/releases'
@@ -61,31 +61,46 @@ test('missing lists: Sonarr episodes, only Radarr films it calls available, only
   })
   const films = radarrItems(fx('radarr-missing.json').records, NOW)
   assert.deepEqual(films.map(f => f.title), ['Harbour Lights', 'The Lantern Keeper'], 'the unreleased film is not overdue')
-  assert.equal(films[0].releasedAt, '1996-03-01T00:00:00.000Z', 'the first date that has passed')
+  assert.equal(films[0].releasedAt, '2020-02-20T00:00:00.000Z', 'minimum availability "released": the digital release first')
   const albums = lidarrItems(fx('lidarr-missing.json').records, NOW)
   assert.deepEqual(albums.map(a => a.detail), ['Low Songs'], 'part-complete and future albums are left alone')
 })
 
 // ── counting tries ───────────────────────────────────────────────────────────
 
-test('a try is lastSearchTime moving on while it still has no file; a search while downloading is not a try', () => {
+test('a try is a search in a new calendar week while it still has no file; the search before watching is not one; a search while downloading is not one', () => {
   const items = sonarrItems(fx('sonarr-missing.json').records)
   const first = observe([], items, [], 0, NOW_ISO)
-  const t101 = first.tracks.find(t => t.key === 'sonarr:101')!
-  assert.equal(t101.tries, 1, 'already searched since it aired: one try at once')
-  assert.equal(first.tracks.find(t => t.key === 'sonarr:201')!.tries, 0, 'never searched')
+  assert.ok(first.tracks.every(t => t.tries === 0), 'searches from before HyperProx was watching are remembered, not counted')
+  assert.equal(first.tracks.find(t => t.key === 'sonarr:101')!.lastSearchSeen, '2026-11-01T10:00:00.000Z')
   // The same reading again: nothing moved.
   const same = observe(first.tracks, items, [], 0, NOW_ISO)
   assert.equal(same.newTries, 0)
-  // Sonarr searched again for 101 and 102; 102 is downloading, so it does not count.
-  const later = items.map(i => (i.arrId === 101 || i.arrId === 102 ? { ...i, lastSearchTime: '2026-11-15T10:00:00.000Z' } : i))
+  // Searched again for 101 and 102; 102 is downloading, so it does not count.
+  const later = items.map(i => (i.arrId === 101 || i.arrId === 102 ? { ...i, lastSearchTime: '2026-11-16T10:00:00.000Z' } : i))
   const next = observe(same.tracks, later, [], 0, NOW_ISO, new Set([102]))
-  assert.equal(next.tracks.find(t => t.key === 'sonarr:101')!.tries, 2)
-  assert.equal(next.tracks.find(t => t.key === 'sonarr:102')!.tries, 1)
-  assert.equal(next.tracks.find(t => t.key === 'sonarr:102')!.lastSearchSeen, '2026-11-15T10:00:00.000Z', 'remembered, so it is not counted later')
+  assert.equal(next.tracks.find(t => t.key === 'sonarr:101')!.tries, 1)
+  assert.equal(next.tracks.find(t => t.key === 'sonarr:102')!.tries, 0)
+  assert.equal(next.tracks.find(t => t.key === 'sonarr:102')!.lastSearchSeen, '2026-11-16T10:00:00.000Z', 'remembered, so it is not counted later')
+  // Searched again the same week (a backfill job every two hours): still one try for that week.
+  const again = observe(next.tracks, later.map(i => (i.arrId === 101 ? { ...i, lastSearchTime: '2026-11-19T02:00:00.000Z' } : i)), [], 0, NOW_ISO)
+  assert.equal(again.tracks.find(t => t.key === 'sonarr:101')!.tries, 1)
+  const nextWeek = observe(again.tracks, later.map(i => (i.arrId === 101 ? { ...i, lastSearchTime: '2026-11-23T02:00:00.000Z' } : i)), [], 0, NOW_ISO)
+  assert.equal(nextWeek.tracks.find(t => t.key === 'sonarr:101')!.tries, 2, 'a new week, a new try')
   // 103 got a file: it is not in the missing list any more, so it is dropped.
   const filed = observe(next.tracks, later.filter(i => i.arrId !== 103), [], 0, NOW_ISO)
   assert.deepEqual(filed.dropped, ['sonarr:103'])
+})
+
+test('a film counts as out by its own minimum availability', () => {
+  const m = { digitalRelease: '2020-02-20T00:00:00Z', physicalRelease: '2019-07-01T00:00:00Z', inCinemas: '2019-03-01T00:00:00Z', releaseDate: '2019-07-01T00:00:00Z' }
+  assert.equal(filmReleased({ ...m, minimumAvailability: 'released' }, NOW), '2020-02-20T00:00:00.000Z', 'released: digital first')
+  assert.equal(filmReleased({ ...m, minimumAvailability: 'released', digitalRelease: null }, NOW), '2019-07-01T00:00:00.000Z', 'then physical')
+  assert.equal(filmReleased({ ...m, minimumAvailability: 'released', digitalRelease: '2027-01-01T00:00:00Z', physicalRelease: null }, NOW), '2019-03-01T00:00:00.000Z', 'a future date does not count; then the cinema')
+  assert.equal(filmReleased({ ...m, minimumAvailability: 'inCinemas' }, NOW), '2019-03-01T00:00:00.000Z', 'inCinemas: the cinema date')
+  assert.equal(filmReleased({ ...m, minimumAvailability: 'announced' }, NOW), '2019-03-01T00:00:00.000Z', 'announced: the cinema date')
+  assert.equal(filmReleased({ ...m }, NOW), '2020-02-20T00:00:00.000Z', 'no minimum availability: as released')
+  assert.equal(filmReleased({ releaseDate: '2018-01-01T00:00:00Z', minimumAvailability: 'released' }, NOW), '2018-01-01T00:00:00.000Z', 'no dates: Radarr\'s own')
 })
 
 test('history: grabs, failed downloads and failed imports are counted once each, by event id', () => {
@@ -126,26 +141,32 @@ test('a whole missing season is one row "Season N (k episodes)"; the rest stay p
   assert.equal(r.filter(x => !x.season).length, 2, 'the other show is per episode: its season is not wholly missing')
 })
 
-test('the weeks rule: missing for at least N weeks AND searched at least N times; the preview sentence counts series', () => {
+test('the weeks rule: missing N weeks (from the later of release and first seen missing) AND searched in N weeks; the preview sentence counts series', () => {
   const s = { weeks: 3 }
   const t = (key: string, tries: number, releasedAt: string | null, extra: Partial<Track> = {}): Track => ({
     key, app: 'sonarr', arrId: Number(key.split(':')[1]), title: 'Quiet Harbour', detail: 'S01E01', seriesId: 11, season: 1, episode: 1,
-    releasedAt, firstMissingAt: '2026-11-10T00:00:00.000Z', lastSearchSeen: null, tries, grabs: 0, failures: 0, importFailures: 0, state: 'tracking', ...extra,
+    releasedAt, firstMissingAt: '2026-09-01T00:00:00.000Z', lastSearchSeen: null, tries, grabs: 0, failures: 0, importFailures: 0, state: 'tracking', ...extra,
   })
   const list = [
     t('sonarr:1', 3, '2003-01-01T00:00:00.000Z'),
-    t('sonarr:2', 2, '2003-01-01T00:00:00.000Z'),                  // old, but only two weekly searches so far
-    t('sonarr:3', 9, '2026-11-01T00:00:00.000Z'),                  // searched a lot, but missing only two weeks
+    t('sonarr:2', 2, '2003-01-01T00:00:00.000Z'),                  // old, but searched in only two weeks so far
+    t('sonarr:3', 9, '2026-11-01T00:00:00.000Z'),                  // searched a lot, but aired two weeks ago
     t('sonarr:4', 5, '2003-01-01T00:00:00.000Z', { seriesId: 12, title: 'Night Ferry' }),
     t('sonarr:5', 5, '2003-01-01T00:00:00.000Z', { state: 'given-up' }),
-    t('sonarr:6', 5, null),                                          // no air date: counted from first seen missing (six days)
+    t('sonarr:6', 30, '1975-01-01T00:00:00.000Z', { firstMissingAt: '2026-11-10T00:00:00.000Z' }), // very old, just added: six days
   ]
   const c = candidates(list, s, NOW)
   assert.deepEqual(c.map(x => x.key), ['sonarr:1', 'sonarr:4'])
   assert.deepEqual(candidates(list, s, NOW, new Set([4])).map(x => x.key), ['sonarr:1'], 'never one that is downloading')
-  assert.deepEqual(candidates(list, { weeks: 12 }, NOW).map(x => x.key), [], 'twelve weeks needs twelve searches')
+  assert.deepEqual(candidates(list, { weeks: 12 }, NOW).map(x => x.key), [], 'twelve weeks needs twelve weeks of searches')
   assert.equal(summarise({ sonarr: c }), 'This would give up on 2 TV episodes (2 series).')
   assert.equal(summarise({}), 'Nothing would be given up today.')
+})
+
+test('weeks = 1 cannot fire on the search made when it was added', () => {
+  const items = sonarrItems(fx('sonarr-missing.json').records)
+  const addedTwoWeeksAgo = observe([], items, [], 0, '2026-11-01T00:00:00.000Z').tracks
+  assert.deepEqual(candidates(addedTwoWeeksAgo, { weeks: 1 }, NOW), [], 'old enough, but no search since it was first seen')
 })
 
 test('settings: off by default, 8 weeks, stop searching, weekly search off on Monday 08:00; TV can never be removed', () => {
@@ -158,7 +179,7 @@ test('settings: off by default, 8 weeks, stop searching, weekly search off on Mo
   assert.match(String(parseSettings('radarr', { ...DEFAULT_SETTINGS, action: 'delete-files' })), /Pick stop searching or remove/)
   assert.match(String(parseSettings('radarr', { ...DEFAULT_SETTINGS, search: { enabled: true, day: 7, hour: 8 } })), /day of the week/)
   assert.match(String(parseSettings('radarr', { ...DEFAULT_SETTINGS, search: { enabled: true, day: 0, hour: 24 } })), /hour/)
-  assert.deepEqual((parseSettings('radarr', { enabled: false, weeks: 3, action: 'unmonitor' }) as GiveUpSettings).search, DEFAULT_SETTINGS.search, 'no search given: the default')
+  assert.equal((parseSettings('radarr', { enabled: false, weeks: 3, action: 'unmonitor' }) as any).search, undefined, 'no search given: the saved one is kept')
   // Rows saved before the rule was in weeks come back switched off, with the default weeks, to be previewed again.
   assert.deepEqual(storedSettings({ enabled: true, tries: 14, minAgeDays: 30, ageFrom: 'released', action: 'remove' }), { enabled: false, weeks: 8, action: 'remove', search: DEFAULT_SETTINGS.search })
   assert.deepEqual(storedSettings(null), DEFAULT_SETTINGS)
@@ -265,7 +286,9 @@ test('turning the rule on needs a preview of that exact rule; the preview change
     if (p === '/api/v3/series') return fx('sonarr-series.json')
     return new Error(`unexpected ${p}`)
   })
-  const { svc } = rig({ sonarr: fa.client })
+  const { svc, store } = rig({ sonarr: fa.client })
+  // Watched since October, and searched in two weeks since.
+  await store.save(observe([], sonarrItems(sonarrRecs), [], 0, '2026-10-01T00:00:00.000Z').tracks.map(t => ({ ...t, tries: 2 })))
   const s: GiveUpSettings = { ...DEFAULT_SETTINGS, enabled: true, weeks: 1 }
   await assert.rejects(svc.saveSettings('sonarr', s, undefined, 'admin@example.com'), (e: any) => e instanceof GiveUpRefusal && e.code === 'preview_required')
   const p = await svc.preview('sonarr', s)
@@ -760,6 +783,79 @@ test('the weekly search: the arr\'s own missing-search command, claimed for the 
     return new Error(`unexpected ${m} ${p}`)
   })
   const sr = rig({ sonarr: son.client })
-  assert.equal((await sr.svc.weeklySearch('sonarr', 'test')).status, 'completed')
+  assert.equal(await sr.svc.weeklySearch('sonarr', 'test'), null, 'not switched on: not due')
+  await sr.store.setSetting('settings:sonarr', { ...DEFAULT_SETTINGS, search: { enabled: true, day: 1, hour: 8 } }, 'test')
+  sr.setNow(wed10)
+  assert.equal((await sr.svc.weeklySearch('sonarr', 'test'))!.status, 'completed')
   assert.deepEqual(cmds.at(-1), { name: 'MissingEpisodeSearch', monitored: true })
+})
+
+
+test('weeks across a daylight-saving change and a year boundary', () => {
+  // Whatever the zone (run under TZ=America/Toronto too): the week holding a clock change is still one week.
+  const sun1Nov = new Date(2026, 10, 1, 23, 0).getTime()   // DST ends in North America this day
+  assert.equal(weekKey(sun1Nov), '2026-10-26')
+  assert.equal(weekKey(new Date(2026, 9, 26, 0, 30).getTime()), '2026-10-26')
+  assert.equal(weekKey(new Date(2026, 10, 2, 0, 30).getTime()), '2026-11-02')
+  const sunSlot = { enabled: true, day: 0, hour: 8 }
+  assert.equal(new Date(scheduledThisWeek(sun1Nov, sunSlot)).getHours(), 8, 'the slot is 08:00 local on the change day')
+  assert.equal(new Date(scheduledThisWeek(sun1Nov, sunSlot)).getDate(), 1)
+  // The spring change (8 March 2026): the slot keeps its local hour.
+  const sun8Mar = new Date(2026, 2, 8, 12, 0).getTime()
+  assert.equal(new Date(scheduledThisWeek(sun8Mar, sunSlot)).getHours(), 8)
+  // Year boundary: Thursday 31 Dec 2026 and Sunday 3 Jan 2027 are the same week.
+  assert.equal(weekKey(new Date(2026, 11, 31, 12).getTime()), '2026-12-28')
+  assert.equal(weekKey(new Date(2027, 0, 3, 23).getTime()), '2026-12-28')
+  assert.equal(weekKey(new Date(2027, 0, 4, 0, 1).getTime()), '2027-01-04')
+  const monSlot = { enabled: true, day: 1, hour: 8 }
+  assert.equal(nextSearchAt(new Date(2026, 11, 31, 12).getTime(), monSlot, '2026-12-28'), new Date(2027, 0, 4, 8).getTime())
+  // The try weeks are UTC and cross a year the same way.
+  assert.equal(tryWeek('2026-12-31T12:00:00Z'), '2026-12-28'); assert.equal(tryWeek('2027-01-03T23:00:00Z'), '2026-12-28')
+})
+
+test('two ticks, or two processes sharing the database, start one weekly search and one daily run', async () => {
+  const cmds: any[] = []
+  const handler = (m: string, p: string, b?: any) => {
+    if (m === 'GET' && (p.startsWith('/api/v3/wanted') || p.startsWith('/api/v3/queue') || p.startsWith('/api/v3/history'))) return page([])
+    if (m === 'POST') { cmds.push(b); return { id: 5, status: 'queued' } }
+    if (m === 'GET' && p === '/api/v3/command/5') return { id: 5, status: 'started' }
+    return new Error(`unexpected ${m} ${p}`)
+  }
+  const a = fakeArr(handler), b2 = fakeArr(handler)
+  const one = rig({ radarr: a.client })
+  const wed10 = new Date(2026, 10, 18, 10, 0).getTime()
+  one.setNow(wed10)
+  // A second process: its own service, the same store (the database).
+  const two = new GiveUpService({
+    clients: { sonarr: async () => null, radarr: async () => b2.client, lidarr: async () => null }, qbit: async () => null, store: one.store,
+    audit: async () => {}, publish: async () => {}, now: () => wed10, sleep: async () => {}, unlocked: () => true,
+  })
+  await one.store.setSetting('settings:radarr', { ...DEFAULT_SETTINGS, enabled: true, search: { enabled: true, day: 1, hour: 8 } }, 'test')
+  await Promise.all([one.svc.tick(), two.tick(), one.svc.weeklySearch('radarr', 'x'), two.weeklySearch('radarr', 'y')])
+  assert.equal(cmds.length, 1, 'one search for the week')
+  const st: any = await one.store.getSetting('state:radarr')
+  assert.equal(st.searchWeek, '2026-11-16'); assert.equal(st.lastActDay, '2026-11-18')
+})
+
+test('saving settings without the weekly search keeps the saved one; the search slot needs no preview', async () => {
+  const { svc } = rig({})
+  await svc.saveSettings('radarr', { enabled: false, weeks: 4, action: 'unmonitor', search: { enabled: true, day: 3, hour: 22 } }, undefined, 'admin@example.com')
+  const kept = await svc.saveSettings('radarr', { enabled: false, weeks: 6, action: 'unmonitor' }, undefined, 'admin@example.com')
+  assert.deepEqual(kept.search, { enabled: true, day: 3, hour: 22 })
+  assert.equal((await svc.settings('radarr')).weeks, 6)
+})
+
+test('the weekly search does not start if HyperProx locks while it reads the missing list', async () => {
+  let unlocked = true
+  const fa = fakeArr((m, p) => {
+    if (m === 'GET' && p.startsWith('/api/v3/wanted')) { unlocked = false; return page([]) }
+    if (m === 'POST') return new Error('must not post')
+    return new Error(`unexpected ${m} ${p}`)
+  })
+  const r = rig({ radarr: fa.client }, { unlocked: () => unlocked })
+  r.setNow(new Date(2026, 10, 18, 10, 0).getTime())
+  await r.store.setSetting('settings:radarr', { ...DEFAULT_SETTINGS, search: { enabled: true, day: 1, hour: 8 } }, 'test')
+  const run = await r.svc.weeklySearch('radarr', 'test')
+  assert.equal(run!.status, 'failed'); assert.match(run!.error!, /locked/)
+  assert.ok(!fa.calls.some(c => c.method === 'POST'))
 })

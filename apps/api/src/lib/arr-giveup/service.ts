@@ -27,12 +27,13 @@ import crypto from 'node:crypto'
 import type { CoreEndpointClient } from '../plugin-host'
 import type { NotifyEventInput } from '../notify/types'
 import {
-  APPS, APP_NAME, APP_WHAT, candidates, nextSearchAt, searchDue, storedSettings, weekKey, classify, giveUpMessage, historyEvents, isApp, lidarrItems, observe as fold,
+  APPS, APP_NAME, APP_WHAT, candidates, localWhen, nextSearchAt, searchDue, serverClock, storedSettings, weekKey, classify, giveUpMessage, historyEvents, isApp, lidarrItems, observe as fold,
   parseKey, radarrItems, reasonCounts, rows, sameRule, sonarrItems, summarise, wholeSeasons,
   type App, type GiveUpSettings, type Restore, type Row, type Track,
 } from './logic'
 import { isProgramFile, profileInfo, releaseView, type ReleaseRow, type ReleaseView } from './releases'
 import type { GiveUpStore } from './store'
+import type { ParsedSettings } from './logic'
 
 export class GiveUpRefusal extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); this.name = 'GiveUpRefusal' }
@@ -82,7 +83,7 @@ const READ_MS = 120_000
 const msg = (e: any) => String(e?.message ?? e).slice(0, 200)
 const chunk = <T,>(l: T[], n: number): T[][] => { const o: T[][] = []; for (let i = 0; i < l.length; i += n) o.push(l.slice(i, i + n)); return o }
 
-interface Preview { id: string; app: App; settings: GiveUpSettings; at: number; count: number }
+interface Preview { id: string; app: App; settings: ParsedSettings; at: number; count: number }
 interface Search { target: string; app: App; at: number; used?: boolean; raw: any[]; profile: ReturnType<typeof profileInfo>; label: string; wanted: Set<number>; seriesId?: number; season?: number; givenUpKeys: string[] }
 
 export class GiveUpService {
@@ -112,7 +113,8 @@ export class GiveUpService {
     return storedSettings(await this.d.store.getSetting<unknown>(`settings:${app}`))
   }
   private async appState(app: App): Promise<AppState> { return (await this.d.store.getSetting<AppState>(`state:${app}`)) ?? { historyId: 0 } }
-  private async setAppState(app: App, s: AppState) { await this.d.store.setSetting(`state:${app}`, s, 'hyperprox') }
+  /** Merged into the stored state field by field (compare-and-set), so two writers never undo each other's claim. */
+  private async patchAppState(app: App, p: Partial<AppState>) { await this.d.store.patchSetting(`state:${app}`, p as Record<string, unknown>) }
 
   // ── reading ────────────────────────────────────────────────────────────────
 
@@ -186,7 +188,7 @@ export class GiveUpService {
     const done = await this.settled(c, app, res.tracks.filter(t => t.state === 'given-up' && t.action === 'unmonitor'))
     await this.d.store.save(res.tracks.filter(t => !done.has(t.key)))
     await this.d.store.drop([...res.dropped, ...done])
-    await this.setAppState(app, { ...st, historyId: res.historyId, observedAt: this.iso() })
+    await this.patchAppState(app, { historyId: res.historyId, observedAt: this.iso() })
     return { app, tracking: res.tracks.filter(t => t.state === 'tracking').length, newTries: res.newTries, dropped: res.dropped.length + done.size }
   }
 
@@ -225,7 +227,9 @@ export class GiveUpService {
 
   // ── status and preview ─────────────────────────────────────────────────────
 
-  async status(): Promise<{ apps: Array<{ app: App; configured: boolean; settings: GiveUpSettings; tracking: number; givenUp: number; soon: number; observedAt: string | null; lastRun: RunResult | null; lastSearch: SearchRun | null; nextSearch: string | null }>; givenUp: Row[] }> {
+  async status(): Promise<{ apps: Array<{ app: App; configured: boolean; settings: GiveUpSettings; tracking: number; givenUp: number; soon: number; observedAt: string | null; lastRun: RunResult | null; lastSearch: (SearchRun & { when: string }) | null; nextSearch: string | null
+      /** Server-time wording ("Monday 08:00") and the server's clock, so the panel words every time the same way. */
+      nextSearchWhen: string | null; clock: ReturnType<typeof serverClock> }>; givenUp: Row[] }> {
     const apps = []
     const given: Track[] = []
     for (const app of APPS) {
@@ -239,8 +243,10 @@ export class GiveUpService {
       const soon = s.weeks > 1 ? candidates(tracking, { weeks: s.weeks - 1 }, this.d.now()).length - candidates(tracking, s, this.d.now()).length : 0
       apps.push({
         app, configured, settings: s, tracking: tracking.length, givenUp: all.length - tracking.length, soon, observedAt: st.observedAt ?? null,
-        lastRun: st.lastRun ?? null, lastSearch: st.lastSearch ?? null,
+        lastRun: st.lastRun ?? null, lastSearch: st.lastSearch ? { ...st.lastSearch, when: localWhen(Date.parse(st.lastSearch.at)) } : null,
         nextSearch: s.search.enabled ? new Date(nextSearchAt(this.d.now(), s.search, st.searchWeek)).toISOString() : null,
+        nextSearchWhen: s.search.enabled ? localWhen(nextSearchAt(this.d.now(), s.search, st.searchWeek)) : null,
+        clock: serverClock(this.d.now(), st.searchWeek),
       })
     }
     return { apps, givenUp: rows(given).sort((a, b) => String(b.gaveUpAt).localeCompare(String(a.gaveUpAt))).slice(0, 500) }
@@ -254,7 +260,7 @@ export class GiveUpService {
   }
 
   /** Exactly what the rule would give up on today, from fresh counts. Changes nothing in the arr. */
-  async preview(app: App, s: GiveUpSettings): Promise<{ previewId: string; app: App; summary: string; count: number; series?: number; rows: Row[]; reasons: ReturnType<typeof reasonCounts>; tracking: number; capped: boolean; observedAt: string | null }> {
+  async preview(app: App, s: ParsedSettings): Promise<{ previewId: string; app: App; summary: string; count: number; series?: number; rows: Row[]; reasons: ReturnType<typeof reasonCounts>; tracking: number; capped: boolean; observedAt: string | null }> {
     const c = await this.client(app)
     const st = await this.appState(app)
     if (!st.observedAt || this.d.now() - Date.parse(st.observedAt) > 3600_000) await this.observe(app)
@@ -273,8 +279,10 @@ export class GiveUpService {
   }
 
   /** Save one app's rule. Turning it on (or changing the rule while on) needs a preview of that exact rule. */
-  async saveSettings(app: App, s: GiveUpSettings, previewId: unknown, by: string): Promise<GiveUpSettings> {
+  async saveSettings(app: App, given: ParsedSettings, previewId: unknown, by: string): Promise<GiveUpSettings> {
     const cur = await this.settings(app)
+    // A body without the weekly search keeps the one already saved.
+    const s: GiveUpSettings = { ...given, search: given.search ?? cur.search }
     if (s.enabled && !(cur.enabled && sameRule(cur, s))) {
       const p = typeof previewId === 'string' ? this.previews.get(previewId) : undefined
       if (!p || p.app !== app || !sameRule(p.settings, s) || this.d.now() - p.at > PREVIEW_TTL_MS) {
@@ -289,7 +297,7 @@ export class GiveUpService {
 
   // ── the daily run ──────────────────────────────────────────────────────────
 
-  /** One timer tick: observe every app; once a day, act for each app whose rule is on. Skips while locked. */
+  /** One timer tick: observe every app; once a week its search, once a day its give-up run. Skips while locked. */
   async tick(): Promise<RunResult[]> {
     if (!this.d.unlocked() || this.busy) return []
     this.busy = true
@@ -300,13 +308,11 @@ export class GiveUpService {
         if (!st.observedAt || this.d.now() - Date.parse(st.observedAt) >= OBSERVE_EVERY_MS - 60_000) {
           await this.observe(app).catch(e => this.d.log?.(`[arr-giveup] ${app}: reading failed: ${msg(e)}`))
         }
+        await this.weeklySearch(app, 'the weekly search').catch(e => this.d.log?.(`[arr-giveup] ${app}: weekly search failed: ${msg(e)}`))
         const s = await this.settings(app)
-        if (searchDue(this.d.now(), s.search, (await this.appState(app)).searchWeek)) {
-          await this.weeklySearch(app, 'the weekly search').catch(e => this.d.log?.(`[arr-giveup] ${app}: weekly search failed: ${msg(e)}`))
-        }
-        const st2 = await this.appState(app)
-        // Once per calendar day (UTC), whatever time the last one ran.
-        if (!s.enabled || st2.lastActDay === dayOf(this.d.now())) continue
+        if (!s.enabled || !this.d.unlocked()) continue
+        // Once per calendar day (UTC), claimed in the database first, so two processes (or a restart) never run it twice.
+        if (!(await this.d.store.claimSetting(`state:${app}`, 'lastActDay', dayOf(this.d.now())))) continue
         const r = await this.run(app, s, 'the daily run').catch(e => ({ at: this.iso(), app, given: 0, skipped: [], failed: [], error: msg(e) } as RunResult))
         out.push(r)
       }
@@ -315,32 +321,43 @@ export class GiveUpService {
   }
 
   /**
-   * The weekly search: the arr's own "search for everything missing" command, once a week. Claimed for the week before
-   * it starts (a failure is not retried that week), audited, and the command read back: "queued" is not "done".
+   * The weekly search, when it is due: the arr's own "search for everything missing" command. The week is claimed in
+   * the database before anything is sent (compare-and-set: of two processes or ticks, one wins; a failed search is not
+   * retried that week). The claim is short; the missing count and the command run outside the shared lock. Audited,
+   * and the command read back: "queued" is not "done". Null when it was not due (or another caller took the week).
+   *
+   * Weeks and the slot are in the server's local time. If the server's time zone changes, the week key and the slot
+   * move with it: at worst one week's search runs twice (the new zone's week has no claim yet) or once a day early or
+   * late. Nothing else depends on it.
    */
-  async weeklySearch(app: App, by: string): Promise<SearchRun> {
-    return this.locked(async () => {
-      const at = this.iso()
-      await this.setAppState(app, { ...(await this.appState(app)), searchWeek: weekKey(this.d.now()) })
-      const run: SearchRun = { at, app, count: 0, commandId: null, status: 'not started' }
-      try {
-        const c = (await this.client(app))!
-        if (!c.post) throw new Error('Searches cannot be started from here.')
-        run.count = (await this.missing(c, app)).length
-        await this.d.audit('arrstack.giveup.weekly-search', { app, by, command: MISSING_COMMAND[app].name, missing: run.count })
-        const cmd = await c.post(`${API[app]}/command`, MISSING_COMMAND[app], READ_MS)
-        run.commandId = Number.isInteger(Number(cmd?.id)) ? Number(cmd.id) : null
-        run.status = String(cmd?.status ?? 'unknown')
-        if (run.commandId !== null) {
-          await this.sleep(5000)
-          const back = await c.get(`${API[app]}/command/${run.commandId}`, 15_000).catch(() => null)
-          if (back?.status) run.status = String(back.status)
-          if (back?.status === 'failed' && back?.message) run.error = String(back.message).slice(0, 160)
-        }
-      } catch (e) { run.error = msg(e); run.status = 'failed' }
-      await this.setAppState(app, { ...(await this.appState(app)), lastSearch: run })
-      return run
+  async weeklySearch(app: App, by: string): Promise<SearchRun | null> {
+    const claimed = await this.locked(async () => {
+      const s = await this.settings(app)
+      const st = await this.appState(app)
+      if (!searchDue(this.d.now(), s.search, st.searchWeek)) return false
+      return this.d.store.claimSetting(`state:${app}`, 'searchWeek', weekKey(this.d.now()))
     })
+    if (!claimed) return null
+    const run: SearchRun = { at: this.iso(), app, count: 0, commandId: null, status: 'not started' }
+    try {
+      const c = (await this.client(app))!
+      if (!c.post) throw new Error('Searches cannot be started from here.')
+      run.count = (await this.missing(c, app)).length
+      // Locked while it read the list (an idle sign-out): the keys may be gone, so it does not start.
+      if (!this.d.unlocked()) throw new Error('HyperProx locked before the search could start.')
+      await this.d.audit('arrstack.giveup.weekly-search', { app, by, command: MISSING_COMMAND[app].name, missing: run.count })
+      const cmd = await c.post(`${API[app]}/command`, MISSING_COMMAND[app], READ_MS)
+      run.commandId = Number.isInteger(Number(cmd?.id)) ? Number(cmd.id) : null
+      run.status = String(cmd?.status ?? 'unknown')
+      if (run.commandId !== null) {
+        await this.sleep(5000)
+        const back = await c.get(`${API[app]}/command/${run.commandId}`, 15_000).catch(() => null)
+        if (back?.status) run.status = String(back.status)
+        if (back?.status === 'failed' && back?.message) run.error = String(back.message).slice(0, 160)
+      }
+    } catch (e) { run.error = msg(e); run.status = 'failed' }
+    await this.patchAppState(app, { lastSearch: run })
+    return run
   }
 
   /** Give up on what the rule says, now. Every candidate is re-read live first. */
@@ -350,8 +367,8 @@ export class GiveUpService {
   private async runNow(app: App, s: GiveUpSettings, by: string): Promise<RunResult> {
     const c = (await this.client(app))!
     const res: RunResult = { at: this.iso(), app, given: 0, skipped: [], failed: [] }
-    // Claimed before anything changes: a run that fails part-way is not run again the same day.
-    await this.setAppState(app, { ...(await this.appState(app)), lastActAt: res.at, lastActDay: dayOf(this.d.now()) })
+    // Claimed before anything changes (the tick claims the day first): a run that fails part-way is not run again that day.
+    await this.patchAppState(app, { lastActAt: res.at, lastActDay: dayOf(this.d.now()) })
     const tracks = await this.d.store.tracks(app)
     const inQueue = this.queueIds(app, await this.queue(c, app))
     const list = candidates(tracks, s, this.d.now(), inQueue).slice(0, MAX_PER_RUN)
@@ -391,8 +408,7 @@ export class GiveUpService {
     // The change is made and saved: an audit failure now is logged, never thrown (that would hide what was done).
     await this.d.audit('arrstack.giveup.run.done', { app, by, given: given.length, skipped: res.skipped.length, failed: res.failed.length, failures: res.failed.slice(0, 10) })
       .catch(e => this.d.log?.(`[arr-giveup] ${app}: the after-run audit entry could not be written: ${msg(e)}`))
-    const st = await this.appState(app)
-    await this.setAppState(app, { ...st, lastRun: { ...res, skipped: res.skipped.slice(0, 20), failed: res.failed.slice(0, 20) } })
+    await this.patchAppState(app, { lastRun: { ...res, skipped: res.skipped.slice(0, 20), failed: res.failed.slice(0, 20) } })
     const m = giveUpMessage(given)
     if (m) {
       await this.d.publish({
@@ -488,7 +504,7 @@ export class GiveUpService {
 
   /** Back to being counted, from zero. */
   private retracked(t: Track): Track {
-    const { gaveUpAt: _g, action: _a, reason: _r, reasonCode: _c, restore: _x, ...rest } = t
+    const { gaveUpAt: _g, action: _a, reason: _r, reasonCode: _c, restore: _x, lastTryWeek: _w, ...rest } = t
     return { ...rest, state: 'tracking', tries: 0, grabs: 0, failures: 0, importFailures: 0, firstMissingAt: this.iso(), lastSearchSeen: this.iso() }
   }
 

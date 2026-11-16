@@ -70,8 +70,11 @@ export function storedSettings(v: unknown): GiveUpSettings {
   return { enabled: legacy ? false : o.enabled === true, weeks, action: o.action === 'remove' ? 'remove' : 'unmonitor', search }
 }
 
-/** A settings body checked field by field. A string is why it was refused. A missing `search` keeps the default. */
-export function parseSettings(app: App, v: unknown): GiveUpSettings | string {
+/** A checked settings body: `search` is absent when the body left it out (the saved one is kept). */
+export type ParsedSettings = Omit<GiveUpSettings, 'search'> & { search?: WeeklySearch }
+
+/** A settings body checked field by field. A string is why it was refused. */
+export function parseSettings(app: App, v: unknown): ParsedSettings | string {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return 'Send the settings.'
   const o = v as Record<string, unknown>
   const weeks = Number(o.weeks)
@@ -79,7 +82,7 @@ export function parseSettings(app: App, v: unknown): GiveUpSettings | string {
   if (!Number.isInteger(weeks) || weeks < WEEKS_RANGE[0] || weeks > WEEKS_RANGE[1]) return `Weeks must be a whole number from ${WEEKS_RANGE[0]} to ${WEEKS_RANGE[1]}.`
   if (o.action !== 'unmonitor' && o.action !== 'remove') return 'Pick stop searching or remove.'
   if (o.action === 'remove' && app === 'sonarr') return 'TV episodes can only stop being searched for: removing a whole show is not what this is for.'
-  let search = DEFAULT_SEARCH
+  let search: WeeklySearch | undefined
   if (o.search !== undefined) {
     const sr = o.search as Record<string, unknown>
     if (!sr || typeof sr !== 'object' || typeof sr.enabled !== 'boolean') return 'Say whether the weekly search is on or off.'
@@ -88,11 +91,11 @@ export function parseSettings(app: App, v: unknown): GiveUpSettings | string {
     if (!Number.isInteger(hour) || hour < 0 || hour > 23) return 'Pick an hour from 0 to 23 for the weekly search.'
     search = { enabled: sr.enabled, day, hour }
   }
-  return { enabled: o.enabled, weeks, action: o.action, search }
+  return { enabled: o.enabled, weeks, action: o.action, ...(search ? { search } : {}) }
 }
 
 /** The give-up rule itself (the weekly search is not part of what a preview confirms). */
-export const sameRule = (a: GiveUpSettings, b: GiveUpSettings) => a.weeks === b.weeks && a.action === b.action
+export const sameRule = (a: Pick<GiveUpSettings, 'weeks' | 'action'>, b: Pick<GiveUpSettings, 'weeks' | 'action'>) => a.weeks === b.weeks && a.action === b.action
 
 // ── the weekly search's calendar ─────────────────────────────────────────────
 
@@ -113,6 +116,18 @@ export function scheduledThisWeek(ms: number, s: WeeklySearch): number {
   const back = (d.getDay() + 6) % 7
   const offset = (s.day + 6) % 7 // Monday 0 … Sunday 6
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() - back + offset, s.hour, 0, 0, 0).getTime()
+}
+
+/** "Monday 08:00", in the server's local time (the panel labels every such time "server time"). */
+export function localWhen(ms: number): string {
+  const d = new Date(ms)
+  return `${weekdayName(d.getDay())} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/** The server's clock as the panel needs it to word a schedule: day (0 = Monday), hour, minute, and whether this week's search was claimed. */
+export function serverClock(ms: number, claimedWeek: string | undefined): { day: number; hour: number; minute: number; weekClaimed: boolean } {
+  const d = new Date(ms)
+  return { day: (d.getDay() + 6) % 7, hour: d.getHours(), minute: d.getMinutes(), weekClaimed: claimedWeek === weekKey(ms) }
 }
 
 /** Due: on, this week's moment has passed, and this week has not been claimed yet. */
@@ -180,9 +195,17 @@ export function sonarrItems(records: any[]): MissingItem[] {
 }
 
 /** The first of a film's release dates that has passed (digital, physical, then cinema); else Radarr's own releaseDate. */
-function filmReleased(m: any, nowMs: number): string | null {
-  const dates = [m?.digitalRelease, m?.physicalRelease, m?.inCinemas].map(iso).filter((d): d is string => !!d && Date.parse(d) <= nowMs).sort()
-  return dates[0] ?? iso(m?.releaseDate)
+/**
+ * When a film counts as out, by Radarr's own minimum availability for it: "released" (the default) prefers the digital
+ * release, then the physical one, then the cinema date; "inCinemas" and "announced" prefer the cinema date. Only a date
+ * that has passed counts; with none, Radarr's own releaseDate.
+ */
+export function filmReleased(m: any, nowMs: number): string | null {
+  const avail = String(m?.minimumAvailability ?? 'released')
+  const order = avail === 'inCinemas' || avail === 'announced'
+    ? [m?.inCinemas, m?.digitalRelease, m?.physicalRelease] : [m?.digitalRelease, m?.physicalRelease, m?.inCinemas]
+  for (const d of order.map(iso)) if (d && Date.parse(d) <= nowMs) return d
+  return iso(m?.releaseDate)
 }
 
 /** Radarr's wanted/missing records. Radarr lists unreleased films there too: only the ones it calls available count. */
@@ -240,6 +263,9 @@ export interface Track {
   firstMissingAt: string
   /** The last `lastSearchTime` counted. */
   lastSearchSeen: string | null
+  /** The week (tryWeek) of the last try counted. */
+  lastTryWeek?: string
+  /** Searches seen in different calendar weeks while it had no file (at most one a week). */
   tries: number
   grabs: number
   failures: number
@@ -258,14 +284,24 @@ export interface Track {
 }
 
 /** A new track. One try is counted at once when the arr has already searched since it aired. */
+/** The calendar week (UTC, its Monday) an instant falls in: at most one try is counted per week. */
+export function tryWeek(isoTime: string): string {
+  const d = new Date(isoTime)
+  const mon = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 6) % 7)))
+  return mon.toISOString().slice(0, 10)
+}
+
+/**
+ * A new track starts at no tries: a search that ran before HyperProx was watching (often the one made when it was
+ * added) is remembered, so it is not counted later, but it is not a try.
+ */
 export function newTrack(i: MissingItem, nowIso: string): Track {
-  const searched = !!i.lastSearchTime && (!i.releasedAt || i.lastSearchTime >= i.releasedAt)
   return {
     key: i.key, app: i.app, arrId: i.arrId, title: i.title, detail: i.detail,
     ...(i.seriesId ? { seriesId: i.seriesId } : {}), ...(i.season !== undefined ? { season: i.season, episode: i.episode } : {}),
     ...(i.artistId ? { artistId: i.artistId } : {}),
     releasedAt: i.releasedAt, firstMissingAt: nowIso, lastSearchSeen: i.lastSearchTime,
-    tries: searched ? 1 : 0, grabs: 0, failures: 0, importFailures: 0, state: 'tracking',
+    tries: 0, grabs: 0, failures: 0, importFailures: 0, state: 'tracking',
   }
 }
 
@@ -311,14 +347,16 @@ export function observe(prev: Track[], items: MissingItem[], events: HistoryEven
     if (!t) { const n = newTrack(i, nowIso); byKey.set(i.key, n); newTries += n.tries; continue }
     if (t.state === 'given-up') {
       // Someone searched for it again by hand (monitored it): it is ours to count again, from zero.
-      const { gaveUpAt: _g, action: _a, reason: _r, reasonCode: _c, restore: _x, ...rest } = t
+      const { gaveUpAt: _g, action: _a, reason: _r, reasonCode: _c, restore: _x, lastTryWeek: _w, ...rest } = t
       byKey.set(i.key, { ...rest, title: i.title, detail: i.detail, releasedAt: i.releasedAt, state: 'tracking', tries: 0, grabs: 0, failures: 0, importFailures: 0, firstMissingAt: nowIso, lastSearchSeen: i.lastSearchTime })
       continue
     }
     t.title = i.title; t.detail = i.detail; t.releasedAt = i.releasedAt
     // A search that ran while it was already downloading is not a failed try.
     if (i.lastSearchTime && (!t.lastSearchSeen || i.lastSearchTime > t.lastSearchSeen)) {
-      if (!inQueue.has(i.arrId)) { t.tries += 1; newTries += 1 }
+      // At most one try per calendar week, however often it was searched in it.
+      const wk = tryWeek(i.lastSearchTime)
+      if (!inQueue.has(i.arrId) && wk !== t.lastTryWeek) { t.tries += 1; newTries += 1; t.lastTryWeek = wk }
       t.lastSearchSeen = i.lastSearchTime
     }
   }
@@ -378,8 +416,11 @@ export function classify(t: Pick<Track, 'tries' | 'grabs' | 'failures' | 'import
 
 // ── the plan ─────────────────────────────────────────────────────────────────
 
-/** How long it has been missing: since it aired or was released, or (when the arr has no date) since HyperProx first saw it. */
-export const missingSince = (t: Track) => t.releasedAt ?? t.firstMissingAt
+/**
+ * How long it has been missing, for the weeks rule: from the LATER of when it aired or was released and when HyperProx
+ * first saw it missing. An old film added (or searched for again) last week has been missing one week, not thirty years.
+ */
+export const missingSince = (t: Track) => (t.releasedAt && t.releasedAt > t.firstMissingAt ? t.releasedAt : t.firstMissingAt)
 export const weeksMissing = (t: Track, nowMs: number) => Math.floor((nowMs - Date.parse(missingSince(t))) / (7 * DAY_MS))
 
 /** Tracks the rule would give up on now: missing for at least N weeks AND searched at least N times, not downloading. */
