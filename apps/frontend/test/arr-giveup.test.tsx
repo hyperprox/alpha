@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { ItemCard, PreviewView, ReleaseCard, ReleaseList, RuleCard } from '../components/plugins/arr/GiveUp'
-import { grabConfirm, hiddenWord, lastSearchWord, missingTarget, rowTarget, ruleWord, searchWhen, sizeWord, swarm, type AppStatus, type Release, type ReleaseAnswer, type Row } from '../components/plugins/arr/giveup-view'
+import { grabConfirm, hiddenWord, lastSearchWord, missingTarget, rowTarget, ruleWord, searchConfirm, searchWhen, slotPassed, sizeWord, swarm, type AppStatus, type Release, type ReleaseAnswer, type Row } from '../components/plugins/arr/giveup-view'
 
 const noop = () => {}
 const NOW = Date.parse('2026-11-16T12:00:00Z')
@@ -69,22 +69,32 @@ test('the confirm says when a release is below the profile, and that the profile
 
 test('the rule card: counts, the weekly search and the weeks rule in words; the form only for an admin; TV cannot be removed', () => {
   const st: AppStatus = { app: 'sonarr', configured: true, settings: { enabled: false, weeks: 8, action: 'unmonitor', search: { enabled: true, day: 1, hour: 8 } },
-    tracking: 1129, givenUp: 0, soon: 0, observedAt: null, lastRun: null, nextSearch: null,
-    lastSearch: { at: new Date(2026, 10, 15, 8, 0).toISOString(), app: 'sonarr', count: 1129, commandId: 9, status: 'completed' } }
+    tracking: 1129, givenUp: 0, soon: 0, observedAt: null, lastRun: null, nextSearch: '2026-11-23T13:00:00.000Z', nextSearchWhen: 'Monday 08:00',
+    clock: { day: 2, hour: 10, minute: 0, weekClaimed: true },
+    lastSearch: { at: '2026-11-15T13:00:00.000Z', when: 'Sunday 08:00', app: 'sonarr', count: 1129, commandId: 9, status: 'completed' } }
   const html = renderToStaticMarkup(<RuleCard st={st} canAct onPreview={noop} onSave={noop} onOff={noop} />)
   assert.match(html, /<b>1129<\/b> counted/)
-  assert.match(html, /Searches for everything missing every Monday at 08:00/)
-  assert.match(html, /Last weekly search: Sunday 08:00 — 1129 episodes searched \(completed\)\./)
+  assert.match(html, /Searches for everything missing every Monday at 08:00 \(server time\)\. Next: Monday 08:00 \(server time\)\./)
+  assert.match(html, /Last weekly search: Sunday 08:00 \(server time\) — 1,129 episodes searched \(completed\)\./)
+  assert.match(html, /Day \(server time\)/); assert.match(html, /Hour \(server time\)/)
   assert.match(html, /Give up after 8 weeks of weekly searches with nothing found, then stop searching/)
   assert.match(html, /Give up after \(weeks\)/); assert.ok(!/Tries|Days old/.test(html), 'one weeks field, no tries or days inputs')
   assert.match(html, /Preview, then turn on/); assert.match(html, /Save weekly search/); assert.ok(!/remove from library/.test(html))
   const films = renderToStaticMarkup(<RuleCard st={{ ...st, app: 'radarr', lastSearch: { ...st.lastSearch!, app: 'radarr', count: 68 } }} canAct onPreview={noop} onSave={noop} onOff={noop} />)
-  assert.match(films, /remove from library/); assert.match(films, /68 films searched/)
+  assert.match(films, /remove from library/); assert.match(films, /68 films searched \(/)
   const viewer = renderToStaticMarkup(<RuleCard st={st} canAct={false} onPreview={noop} onSave={noop} onOff={noop} />)
   assert.ok(!/<input|<button/.test(viewer))
   assert.equal(ruleWord({ ...st.settings, weeks: 3, action: 'remove' }, 'radarr'), 'Give up after 3 weeks of weekly searches with nothing found, then remove it from the library (no files are deleted). A film must be missing at least 3 weeks and searched at least 3 times.')
   assert.equal(searchWhen({ enabled: true, day: 0, hour: 6 }), 'every Sunday at 06:00')
-  assert.match(String(lastSearchWord({ at: new Date(2026, 10, 15, 8, 0).toISOString(), app: 'radarr', count: 0, commandId: null, status: 'failed', error: 'Radarr answered 500' }, 'radarr')), /did not run: Radarr answered 500/)
+  assert.match(String(lastSearchWord({ at: 'x', when: 'Sunday 08:00', app: 'radarr', count: 0, commandId: null, status: 'failed', error: 'Radarr answered 500' }, 'radarr')), /Sunday 08:00 \(server time\) — it did not run: Radarr answered 500/)
+  // The confirm before switching the weekly search on: the count at once, and when it first runs.
+  const wedClock = { day: 2, hour: 10, minute: 0, weekClaimed: false }
+  assert.equal(searchConfirm({ enabled: true, day: 1, hour: 8 }, wedClock, 1129, 'sonarr'),
+    "Once a week, every Monday at 08:00 (server time), Sonarr asks your indexers for everything missing: 1,129 episodes at once today. The first search runs now (within 15 minutes), because this week's time has passed.")
+  assert.match(searchConfirm({ enabled: true, day: 5, hour: 8 }, wedClock, 68, 'radarr'), /68 films at once today\. The next search is Friday at 08:00 \(server time\)\./)
+  assert.match(searchConfirm({ enabled: true, day: 1, hour: 8 }, { ...wedClock, weekClaimed: true }, 1, 'lidarr'), /1 album at once today\. The next search is Monday at 08:00 \(server time\) next week\./)
+  assert.equal(slotPassed({ enabled: true, day: 4, hour: 9 }, wedClock), false, 'Thursday 09:00 is still to come on a Wednesday')
+  assert.equal(slotPassed({ enabled: true, day: 3, hour: 10 }, wedClock), true, 'Wednesday 10:00 has just come')
 })
 
 test('the preview: the sentence, the reasons and the items', () => {

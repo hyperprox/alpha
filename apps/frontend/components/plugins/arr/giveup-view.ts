@@ -19,7 +19,10 @@ export interface Row {
   gaveUpAt?: string; action?: 'unmonitor' | 'remove'; season?: { number: number; episodes: number }
 }
 export interface RunResult { at: string; app: App; given: number; skipped: Array<{ title: string; why: string }>; failed: Array<{ title: string; why: string }>; error?: string }
-export interface AppStatus { app: App; configured: boolean; settings: Settings; tracking: number; givenUp: number; soon: number; observedAt: string | null; lastRun: RunResult | null; lastSearch: SearchRun | null; nextSearch: string | null }
+export interface AppStatus { app: App; configured: boolean; settings: Settings; tracking: number; givenUp: number; soon: number; observedAt: string | null; lastRun: RunResult | null; lastSearch: (SearchRun & { when: string }) | null; nextSearch: string | null
+  nextSearchWhen: string | null; clock: ServerClock }
+/** The server's clock: day 0 = Monday. Every schedule time on the page is the server's. */
+export interface ServerClock { day: number; hour: number; minute: number; weekClaimed: boolean }
 export interface Status { apps: AppStatus[]; givenUp: Row[] }
 export interface Preview {
   previewId: string; app: App; summary: string; count: number; series?: number; rows: Row[]
@@ -102,12 +105,29 @@ export const hourWord = (h: number) => `${String(h).padStart(2, '0')}:00`
 /** "Every Monday at 08:00". */
 export const searchWhen = (w: WeeklySearch) => `every ${DAYS[w.day] ?? '?'} at ${hourWord(w.hour)}`
 
-/** "Last weekly search: Sunday 08:00 — 68 films searched (completed)." */
-export function lastSearchWord(r: SearchRun | null, app: App): string | null {
+/** "Last weekly search: Sunday 08:00 (server time) — 68 films searched (completed)." The time comes worded by the server. */
+export function lastSearchWord(r: (SearchRun & { when: string }) | null, app: App): string | null {
   if (!r) return null
-  const d = new Date(r.at)
-  const when = `${DAYS[d.getDay()]} ${hourWord(d.getHours()).slice(0, 2)}:${String(d.getMinutes()).padStart(2, '0')}`
+  const when = `${r.when} (server time)`
   if (r.error) return `Last weekly search: ${when} — it did not run: ${r.error}`
-  const what = APP_LABEL[app] === 'TV' ? (r.count === 1 ? 'episode' : 'episodes') : APP_LABEL[app] === 'Films' ? (r.count === 1 ? 'film' : 'films') : (r.count === 1 ? 'album' : 'albums')
-  return `Last weekly search: ${when} — ${r.count} ${what} searched (${r.status}).`
+  return `Last weekly search: ${when} — ${countWord(r.count, app)} searched (${r.status}).`
+}
+
+export function countWord(n: number, app: App): string {
+  const one = app === 'sonarr' ? 'episode' : app === 'radarr' ? 'film' : 'album'
+  return `${n.toLocaleString('en-US')} ${n === 1 ? one : `${one}s`}`
+}
+
+/** Has this week's slot for `w` already passed on the server's clock? */
+export function slotPassed(w: WeeklySearch, c: ServerClock): boolean {
+  const slotDay = (w.day + 6) % 7
+  return slotDay < c.day || (slotDay === c.day && w.hour * 60 <= c.hour * 60 + c.minute)
+}
+
+/** The confirm text for turning the weekly search on (or moving it). */
+export function searchConfirm(w: WeeklySearch, c: ServerClock, missing: number, app: App): string {
+  const head = `Once a week, ${searchWhen(w)} (server time), ${APP_NAME[app]} asks your indexers for everything missing: ${countWord(missing, app)} at once today.`
+  const when = slotPassed(w, c) && !c.weekClaimed ? 'The first search runs now (within 15 minutes), because this week\'s time has passed.'
+    : `The next search is ${DAYS[w.day]} at ${hourWord(w.hour)} (server time)${slotPassed(w, c) ? ' next week' : ''}.`
+  return `${head} ${when}`
 }

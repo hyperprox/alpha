@@ -18,7 +18,7 @@ import { ModalFrame } from '@/components/layout/ModalFrame'
 import { Panel, Pill, styles as s } from '@/components/visual/kit'
 import c from './giveup.module.css'
 import {
-  ACTION_WORD, APPS, APP_LABEL, APP_NAME, DAYS, grabConfirm, hiddenWord, hourWord, lastSearchWord, ruleWord, searchWhen, rowTarget, sinceWord, sizeWord, swarm,
+  ACTION_WORD, APPS, APP_LABEL, APP_NAME, DAYS, grabConfirm, hiddenWord, hourWord, lastSearchWord, ruleWord, searchConfirm, searchWhen, rowTarget, sinceWord, sizeWord, swarm,
   type App, type AppStatus, type GrabAnswer, type Preview, type Release, type ReleaseAnswer, type Row, type Settings, type Status,
 } from './giveup-view'
 
@@ -120,6 +120,8 @@ export function RuleCard({ st, canAct, onPreview, onSave, onOff }: {
   const app = st.app
   const last = lastSearchWord(st.lastSearch, app)
   const searchChanged = JSON.stringify(draft.search) !== JSON.stringify(st.settings.search)
+  const [confirming, setConfirming] = useState(false)
+  const saveSearch = () => onSave(app, { ...st.settings, search: draft.search })
   return (
     <div className={c.rule} data-on={st.settings.enabled}>
       <div className={c.itemHead}>
@@ -135,27 +137,33 @@ export function RuleCard({ st, canAct, onPreview, onSave, onOff }: {
             {st.settings.enabled && <span><b>{st.soon}</b> next week</span>}
           </div>
           <p className={c.note}>
-            {st.settings.search.enabled ? `Searches for everything missing ${searchWhen(st.settings.search)}.` : 'No weekly search from HyperProx.'}
-            {st.nextSearch ? ` Next: ${new Date(st.nextSearch).toLocaleString([], { weekday: 'long', hour: '2-digit', minute: '2-digit' })}.` : ''}
+            {st.settings.search.enabled ? `Searches for everything missing ${searchWhen(st.settings.search)} (server time).` : 'No weekly search from HyperProx.'}
+            {st.nextSearchWhen ? ` Next: ${st.nextSearchWhen} (server time).` : ''}
           </p>
           {last && <p className={c.meta}>{last}</p>}
           <p className={c.note}>{ruleWord(st.settings.enabled ? st.settings : draft, app)}</p>
           {canAct && (
             <div className={c.form}>
               <label className={c.inline}><input type="checkbox" checked={draft.search.enabled} onChange={e => setSearch({ enabled: e.target.checked })} /> Weekly search</label>
-              <label>Day
+              <label>Day (server time)
                 <select value={draft.search.day} onChange={e => setSearch({ day: Number(e.target.value) })}>
                   {DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
                 </select>
               </label>
-              <label>Hour
+              <label>Hour (server time)
                 <select value={draft.search.hour} onChange={e => setSearch({ hour: Number(e.target.value) })}>
                   {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{hourWord(h)}</option>)}
                 </select>
               </label>
               <div className={c.btns}>
-                <button type="button" className={c.ghost} disabled={!searchChanged} onClick={() => onSave(app, { ...st.settings, search: draft.search })}>Save weekly search</button>
+                <button type="button" className={c.ghost} disabled={!searchChanged} onClick={() => (draft.search.enabled ? setConfirming(true) : saveSearch())}>Save weekly search</button>
               </div>
+              {confirming && (
+                <div className={c.btns}>
+                  <ConfirmBox text={searchConfirm(draft.search, st.clock, st.tracking, app)} yes="Save it"
+                    onYes={() => { setConfirming(false); saveSearch() }} onNo={() => setConfirming(false)} />
+                </div>
+              )}
               <label>Give up after (weeks) <input type="number" min={1} max={104} value={draft.weeks} onChange={e => set({ weeks: Number(e.target.value) })} /></label>
               <label>Then
                 <select value={draft.action} onChange={e => set({ action: e.target.value as Settings['action'] })}>
