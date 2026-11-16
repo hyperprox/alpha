@@ -1,0 +1,8 @@
+check=running ok apt-cacher-ng is running
+check=listen ok only on 10.20.30.40:3142 (and loopback)
+check=clients ok only 10.20.30.51/32 may use it
+check=fetch ok a Debian index came through the cache
+check=https ok an HTTPS repository goes through (tunnelled, not cached)
+check=no_private_tunnel ok a tunnel to an address on a private or loopback network is refused
+check=managed_only ok anything but a package archive is refused (403)
+check=admin ok the admin actions need the password from the vault
