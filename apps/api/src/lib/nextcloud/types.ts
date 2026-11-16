@@ -7,7 +7,8 @@ import type { Deployment } from './detect'
 import type { LogEntry, NcStatus, ServerInfo, Severity, UpdateInfo } from './parse'
 import type { ActionId, Remedy, Suggestions } from './checks'
 
-export interface BusyHoursLike { days?: number[]; start: string; end: string; label?: string }
+// Defined beside suggestWindow, its reader, so checks.ts does not import this file back.
+export type { BusyHoursLike } from './checks'
 
 export interface Actor { sid: string; email: string; role: Role; token: string | null }
 

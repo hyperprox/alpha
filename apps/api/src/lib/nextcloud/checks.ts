@@ -16,7 +16,12 @@
 
 import type { Deployment } from './detect'
 import type { SetupCheck, Severity } from './parse'
-import type { BusyHoursLike } from './types'
+
+/**
+ * A busy window as Load balancing stores it (lib/placement/store.ts): kept here, with the code that reads it, so this
+ * file needs nothing from types.ts (which imports this file's action and remedy types).
+ */
+export interface BusyHoursLike { days?: number[]; start: string; end: string; label?: string }
 
 export type ActionId =
   | 'maintenance-window' | 'phone-region' | 'server-id' | 'disable-app-api' | 'install-notify-push' | 'notify-push-setup'
