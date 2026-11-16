@@ -330,7 +330,10 @@ if ! apt-get install -y -qq -o Dpkg::Options::=--force-confold "plexmediaserver=
   rm -f /tmp/plex.deb
 fi
 
-# Plex's package may rewrite its repository file; the one written above is the one that stays.
+# The package's own scripts may touch the repository file: write the signed form again and check it, so apt keeps
+# trusting only the pinned key for this repository.
+echo "deb [signed-by=/usr/share/keyrings/plexmediaserver.gpg] https://repo.plex.tv/deb public main" > /etc/apt/sources.list.d/plexmediaserver.list
+grep -q 'signed-by=/usr/share/keyrings/plexmediaserver.gpg' /etc/apt/sources.list.d/plexmediaserver.list || { echo "Plex's repository file is not in its signed form." >&2; exit 9; }
 systemctl enable plexmediaserver
 systemctl restart plexmediaserver
 echo "Plex Media Server $PLEX_VERSION is starting."`

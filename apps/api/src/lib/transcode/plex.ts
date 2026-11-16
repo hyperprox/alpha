@@ -57,6 +57,17 @@ export function parseIdentity(status: number, body: string): Identity | null {
 
 const JSON_HEADERS = { Accept: 'application/json' }
 
+/** Plex turns a request away with 401 or 403 once it is claimed and no token came with it. */
+export class PlexAuthRefused extends Error {
+  constructor() { super('Plex wants its token for this now that it is claimed.'); this.name = 'PlexAuthRefused' }
+}
+/** Headers for a request to the server: with the server's own token when there is one (after a claim). */
+const hdr = (token?: string): Record<string, string> => (token ? { ...JSON_HEADERS, 'X-Plex-Token': token } : JSON_HEADERS)
+const guard = <T extends { status: number }>(r: T | null): T | null => {
+  if (r && (r.status === 401 || r.status === 403)) throw new PlexAuthRefused()
+  return r
+}
+
 async function identity(d: TcSetupDeps, base: string): Promise<Identity | null> {
   const r = await d.http({ method: 'GET', url: `${base}/identity`, headers: JSON_HEADERS, timeoutMs: 6000 }).catch(() => null)
   return r ? parseIdentity(r.status, r.body) : null
@@ -92,15 +103,15 @@ export async function claimServer(d: TcSetupDeps, base: string, claimToken: stri
  * cannot be read back through the API: the answer is the server's HTTP 200, and the value was seen to land in its
  * preferences file in the install test. The step says so.
  */
-export async function enableHardwareTranscoding(d: TcSetupDeps, base: string): Promise<{ status: 'done' | 'skipped'; detail: string }> {
-  const put = await d.http({ method: 'PUT', url: `${base}/:/prefs?HardwareAcceleratedCodecs=1`, headers: JSON_HEADERS, timeoutMs: 15_000 }).catch(() => null)
+export async function enableHardwareTranscoding(d: TcSetupDeps, base: string, token?: string): Promise<{ status: 'done' | 'skipped'; detail: string }> {
+  const put = guard(await d.http({ method: 'PUT', url: `${base}/:/prefs?HardwareAcceleratedCodecs=1`, headers: hdr(token), timeoutMs: 15_000 }).catch(() => null))
   if (!put || put.status < 200 || put.status >= 300) return { status: 'skipped', detail: `Plex would not take the hardware transcoding setting (HTTP ${put?.status ?? 'no answer'}). Turn it on in Plex under Settings, Transcoder.` }
   return { status: 'done', detail: 'Hardware transcoding is switched on. Plex uses the graphics card only for an account with a Plex Pass, and shows this setting only once such an account owns the server.' }
 }
 
 /** The folders Plex itself can see under a path (its own folder browser), or null when it cannot be read. */
-export async function browse(d: TcSetupDeps, base: string, path: string): Promise<string[] | null> {
-  const r = await d.http({ method: 'GET', url: `${base}/services/browse/${Buffer.from(path, 'utf8').toString('base64')}?includeFiles=0`, headers: JSON_HEADERS, timeoutMs: 15_000 }).catch(() => null)
+export async function browse(d: TcSetupDeps, base: string, path: string, token?: string): Promise<string[] | null> {
+  const r = guard(await d.http({ method: 'GET', url: `${base}/services/browse/${Buffer.from(path, 'utf8').toString('base64')}?includeFiles=0`, headers: hdr(token), timeoutMs: 15_000 }).catch(() => null))
   if (!r || r.status !== 200) return null
   try { return (JSON.parse(r.body)?.MediaContainer?.Path ?? []).map((p: any) => String(p?.path ?? '')).filter(Boolean) } catch { return null }
 }
@@ -111,8 +122,8 @@ const LIBS = [
 ] as const
 
 /** The libraries the server has now: title and the folders each reads. */
-async function sections(d: TcSetupDeps, base: string): Promise<Array<{ title: string; locations: string[] }> | null> {
-  const r = await d.http({ method: 'GET', url: `${base}/library/sections`, headers: JSON_HEADERS, timeoutMs: 15_000 }).catch(() => null)
+async function sections(d: TcSetupDeps, base: string, token?: string): Promise<Array<{ title: string; locations: string[] }> | null> {
+  const r = guard(await d.http({ method: 'GET', url: `${base}/library/sections`, headers: hdr(token), timeoutMs: 15_000 }).catch(() => null))
   if (!r || r.status !== 200) return null
   try {
     return (JSON.parse(r.body)?.MediaContainer?.Directory ?? []).map((x: any) => ({ title: String(x?.title ?? ''), locations: (x?.Location ?? []).map((l: any) => String(l?.path ?? '')) }))
@@ -123,10 +134,10 @@ async function sections(d: TcSetupDeps, base: string): Promise<Array<{ title: st
  * Add a Movies and a TV Shows library where the folders exist. A folder that already has a library, by that folder
  * or by that name, is left alone. Each library is read back from the list.
  */
-export async function addLibraries(d: TcSetupDeps, base: string): Promise<{ status: 'done' | 'skipped'; detail: string }> {
-  const have = await sections(d, base)
+export async function addLibraries(d: TcSetupDeps, base: string, token?: string): Promise<{ status: 'done' | 'skipped'; detail: string }> {
+  const have = await sections(d, base, token)
   if (have === null) return { status: 'skipped', detail: 'Plex would not list its libraries. Add your libraries in Plex under Settings, Libraries.' }
-  const dirs = await browse(d, base, LIBRARY_DIR)
+  const dirs = await browse(d, base, LIBRARY_DIR, token)
   if (dirs === null) return { status: 'skipped', detail: `Plex could not look inside ${LIBRARY_DIR}. Add your libraries in Plex under Settings, Libraries.` }
   const made: string[] = [], kept: string[] = [], absent: string[] = []
   for (const l of LIBS) {
@@ -134,12 +145,12 @@ export async function addLibraries(d: TcSetupDeps, base: string): Promise<{ stat
     if (!dirs.includes(folder)) { absent.push(l.folder); continue }
     if (have.some(h => h.title === l.name || h.locations.includes(folder))) { kept.push(l.name); continue }
     const q = new URLSearchParams({ name: l.name, type: l.type, agent: l.agent, scanner: l.scanner, language: 'en-US', location: folder })
-    const r = await d.http({ method: 'POST', url: `${base}/library/sections?${q.toString()}`, headers: JSON_HEADERS, timeoutMs: 30_000 }).catch(() => null)
+    const r = guard(await d.http({ method: 'POST', url: `${base}/library/sections?${q.toString()}`, headers: hdr(token), timeoutMs: 30_000 }).catch(() => null))
     if (!r || r.status < 200 || r.status >= 300) fail(`Plex refused to add the ${l.name} library (HTTP ${r?.status ?? 'no answer'}).`)
     made.push(l.name)
   }
   if (made.length) {
-    const back = await sections(d, base)
+    const back = await sections(d, base, token)
     const miss = made.filter(n => !back?.some(b => b.title === n))
     if (miss.length) fail(`Plex did not list the ${miss.join(' and ')} library after it was added.`)
   }

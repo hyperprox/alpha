@@ -72,9 +72,9 @@ export function judgeMedia(out: string, l: Layout, vmid: number, needWrite = tru
  * it nesting and keyctl (Docker needs both) and its hardware devices, start it again. The Arr Stack's own script
  * does this with the library on top; the device pairs are checked the same way there.
  */
-export function prepareNoLibraryScript(o: { vmid: number; extra: Array<[string, string]> }): string {
+export function prepareNoLibraryScript(o: { vmid: number; extra: Array<[string, string]>; docker?: boolean }): string {
   if (!Number.isInteger(o.vmid) || o.vmid < 100) throw new Error('Bad container id.')
-  const set = ['--features nesting=1,keyctl=1']
+  const set = o.docker === false ? [] : ['--features nesting=1,keyctl=1']
   for (const [flag, value] of o.extra) {
     if (!/^--dev\d{1,2}$/.test(flag)) throw new Error('Refused: only device settings may be added.')
     set.push(`${flag} ${sq(safe(value))}`)

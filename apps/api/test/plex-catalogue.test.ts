@@ -11,7 +11,7 @@ import { CATALOGUE, findRecipe, checkOptions } from "../src/lib/catalogue"
 import { DETECT } from "../src/lib/catalogue-detect"
 import { PLEX_RECIPE, PLEX_ID, TRANSCODE_IDS } from "../src/lib/transcode/recipes"
 import { PLEX_SCRIPT, PLEX_VERSION, PLEX_DEB_SHA256, PLEX_KEY_SHA256, plexScriptEnv, NVIDIA_RUN_SHA256 } from "../src/lib/transcode/compose"
-import { parseIdentity, waitForPlex, claimServer, enableHardwareTranscoding, addLibraries, browse, plexUrl, type PlexClaimDeps } from "../src/lib/transcode/plex"
+import { PlexAuthRefused, parseIdentity, waitForPlex, claimServer, enableHardwareTranscoding, addLibraries, browse, plexUrl, type PlexClaimDeps } from "../src/lib/transcode/plex"
 import { tcInstallEnv, tcJobSteps, tcRunSetup } from "../src/lib/transcode/catalogue"
 import { judgeMedia } from "../src/lib/transcode/media"
 import { layoutFromOptions } from "../src/lib/transcode/media"
@@ -84,6 +84,9 @@ test("script: valid shell, never deletes data or prompts, installs the exact bui
   assert.match(PLEX_SCRIPT, /PLEX_KEY_SHA256  \/tmp\/plex\.key/)
   assert.match(PLEX_SCRIPT, /PLEX_DEB_SHA256  \/tmp\/plex\.deb/)
   assert.match(PLEX_SCRIPT, /signed-by=\/usr\/share\/keyrings\/plexmediaserver\.gpg\] https:\/\/repo\.plex\.tv\/deb public main/)
+  // The repository file is written in its signed form again after the package, and checked.
+  assert.ok(PLEX_SCRIPT.lastIndexOf("signed-by=/usr/share/keyrings/plexmediaserver.gpg") > PLEX_SCRIPT.indexOf('"plexmediaserver=$PLEX_VERSION"'))
+  assert.match(PLEX_SCRIPT, /grep -q 'signed-by=\/usr\/share\/keyrings\/plexmediaserver\.gpg'/)
   // Plex runs as the stack's own uid and gid, and a library that cannot be written is not a failure (Plex only reads).
   assert.match(PLEX_SCRIPT, /useradd -u "\$TC_PUID" -g "\$TC_PGID"/)
   assert.doesNotMatch(PLEX_SCRIPT, /exit 4/)
@@ -127,12 +130,14 @@ test("identity: JSON and XML are read the same, claimed or not, and anything els
 
 type Answer = { status: number; body?: string }
 /** A pretend Plex server: the recorded answers, a library list that grows when one is added, and a log of every call. */
-function fakePlex(o: { claimable?: boolean; startAfter?: number; libraries?: "empty" | "two"; folders?: "both" | "none"; claimRefuses?: boolean; hardwareStatus?: number } = {}) {
-  const st = { calls: [] as string[], claimed: false, tries: 0, sections: o.libraries === "two" ? JSON.parse(fx("sections-two.json")) : JSON.parse(fx("sections-empty.json")), created: [] as string[], claimUrls: [] as string[] }
+function fakePlex(o: { startClaimed?: boolean; claimable?: boolean; startAfter?: number; libraries?: "empty" | "two"; folders?: "both" | "none"; claimRefuses?: boolean; hardwareStatus?: number } = {}) {
+  const st = { calls: [] as string[], claimed: o.startClaimed === true, refused: [] as string[], tries: 0, sections: o.libraries === "two" ? JSON.parse(fx("sections-two.json")) : JSON.parse(fx("sections-empty.json")), created: [] as string[], claimUrls: [] as string[] }
   const http = async (r: any) => {
     const u = new URL(r.url); const path = u.pathname + u.search
     st.calls.push(`${r.method} ${path}`)
     const ans = (a: Answer) => ({ status: a.status, headers: {}, body: a.body ?? "" })
+    // A claimed server turns away every request but /identity and the claim itself unless it carries its own token.
+    if (st.claimed && u.pathname !== "/identity" && u.pathname !== "/myplex/claim" && r.headers?.["X-Plex-Token"] !== SERVER_TOKEN) { st.refused.push(`${r.method} ${u.pathname}`); return ans({ status: 401, body: "<h1>401 Unauthorized</h1>" }) }
     if (u.pathname === "/identity") {
       if (st.tries++ < (o.startAfter ?? 0)) throw new Error("connect ECONNREFUSED")
       return ans({ status: 200, body: st.claimed ? fx("identity-claimed.json") : fx("identity.json") })
@@ -185,8 +190,8 @@ test("setup: the claim is read back from /identity, and a refused or ignored cla
 test("setup: hardware transcoding is switched on, and a server that will not take it is reported, not fatal", async () => {
   const ok = await enableHardwareTranscoding(sd(fakePlex().http), "http://x:32400")
   assert.equal(ok.status, "done"); assert.match(ok.detail, /Plex Pass/)
-  const no = await enableHardwareTranscoding(sd(fakePlex({ hardwareStatus: 401 }).http), "http://x:32400")
-  assert.equal(no.status, "skipped"); assert.match(no.detail, /HTTP 401/)
+  const no = await enableHardwareTranscoding(sd(fakePlex({ hardwareStatus: 500 }).http), "http://x:32400")
+  assert.equal(no.status, "skipped"); assert.match(no.detail, /HTTP 500/)
 })
 
 test("setup: Plex's folder browser is asked the way the real server needs (base64 path, includeFiles=0)", async () => {
@@ -216,6 +221,18 @@ test("setup: with no movies or tv folder there is nothing to point at, and that 
   assert.equal(r.status, "skipped"); assert.match(r.detail, /No \/data\/media\/movies or \/data\/media\/tv folder/); assert.deepEqual(p.st.created, [])
   const broken = await addLibraries(sd(async () => ({ status: 500, headers: {}, body: "" })), "http://x:32400")
   assert.equal(broken.status, "skipped"); assert.match(broken.detail, /would not list its libraries/)
+})
+
+test("setup: a claimed server turns a tokenless request away, and the same request with the server's token works", async () => {
+  const p = fakePlex({ startClaimed: true })
+  const d = sd(async (r: any) => p.http(r))
+  await assert.rejects(addLibraries(d, "http://x:32400"), PlexAuthRefused)
+  await assert.rejects(enableHardwareTranscoding(d, "http://x:32400"), PlexAuthRefused)
+  await assert.rejects(browse(d, "http://x:32400", "/data/media"), PlexAuthRefused)
+  assert.deepEqual(p.st.created, [])
+  assert.equal((await enableHardwareTranscoding(d, "http://x:32400", SERVER_TOKEN)).status, "done")
+  assert.match((await addLibraries(d, "http://x:32400", SERVER_TOKEN)).detail, /Added Movies and TV Shows/)
+  assert.equal(p.st.created.length, 2)
 })
 
 // ── The claim: Sign in with Plex made in the wizard ──────────────────────────
@@ -339,7 +356,7 @@ function nodeRunner(pve: FakePve, hw: Record<string, string>, calls: string[], o
       const vmid = Number(/V=(\d+)/.exec(script)![1])
       const mp0 = /-mp0 '([^']+)'/.exec(script)?.[1]?.replace(/^pool:(\d+)/, "pool:vm-$1-disk-1")
       const devs = Object.fromEntries([...script.matchAll(/--dev(\d+) '([^']+)'/g)].map(m => [`dev${m[1]}`, m[2]]))
-      pve.configs[vmid] = { ...pve.configs[vmid], features: "nesting=1,keyctl=1", ...(mp0 ? { mp0 } : {}), ...devs }
+      pve.configs[vmid] = { ...pve.configs[vmid], ...(script.includes("--features") ? { features: "nesting=1,keyctl=1" } : {}), ...(mp0 ? { mp0 } : {}), ...devs }
       return { code: 0, output: `${script.includes("fstab") ? "@@arr mounted\n" : ""}@@arr prepared\n` }
     }
     return { code: 0, output: `@@arr resolved /mnt/media\n@@arr reachable\n@@arr owner 101000:101000\n@@arr space 1099511627776 2199023255552\n@@arr fstype ext4\n${o.writable === false ? "@@arr readonly /mnt/media\n" : "@@arr writable\n"}` }
@@ -377,8 +394,9 @@ test("preview: the hardware is resolved against the node; NVIDIA only with a dri
   assert.equal(intel.preview!.plan.options!.TC_ACCEL, "vaapi")
   assert.ok(intel.checks.some(c => /renderD128/.test(c)))
   assert.ok(intel.checks.some(c => /no Plex sign-in|No Plex sign-in/.test(c)) && intel.warnings.some(w => /not claimed/.test(w)))
-  // The container is not given Docker's keyctl line for Plex.
+  // Plex is a package: the container is not made a Docker host, and the preview says so.
   assert.ok(!intel.checks.some(c => /Docker needs both/.test(c)))
+  assert.ok(intel.checks.some(c => /neither nesting nor keyctl/.test(c)))
   const nv = await previewInstall(planInput(931, "192.0.2.71", { TC_ACCEL: "nvidia" }), OWNER, d({ "node-a": NVIDIA }))
   assert.deepEqual(nv.errors, [], JSON.stringify(nv)); assert.equal(nv.preview!.plan.options!.TC_NVIDIA_VERSION, "580.173.02")
   const old = await previewInstall(planInput(932, "192.0.2.72", { TC_ACCEL: "nvidia" }), OWNER, d({ "node-a": NVIDIA_OLD }))
@@ -421,12 +439,15 @@ test("wizard (Plex): preview then apply makes the container with its graphics an
   const r = await previewInstall(planInput(940, "192.0.2.80", { TC_MEDIA: "nfs", TC_NFS_HOST: "10.0.0.20", TC_NFS_EXPORT: "/Media", PLEX_SIGNIN: c.flow }), OWNER, d)
   assert.deepEqual(r.errors, [], JSON.stringify(r))
   const job = await applyPreview(r.preview!.id, OWNER, d)
-  assert.deepEqual(job.steps.map(s => s.id), ["container", "network", "install", "tc-ready", "tc-claim", "tc-hardware", "tc-libraries", "tc-plugin"])
+  assert.deepEqual(job.steps.map(s => s.id), ["container", "network", "install", "tc-ready", "tc-hardware", "tc-libraries", "tc-claim", "tc-plugin"])
   const done = await settled(job.jobId)
   assert.equal(done.status, "completed", `${done.error} ${JSON.stringify(done.steps)}`)
   assert.ok(done.steps.every(s => s.status === "done"), JSON.stringify(done.steps))
-  // The node login gave the container nesting and keyctl, the render node with the node's group, and the NAS mount: never shared.
+  // The node login gave the container the render node with the node's group, and the NAS mount: never shared.
   const prep = calls.find(x => x.includes("@@arr prepared"))!
+  assert.doesNotMatch(prep, /--features/, "no nesting or keyctl for a package install")
+  assert.equal(pve.creates[0].body.get("features"), null, "the create call sets no features either")
+  assert.equal(pve.configs[940].features, undefined)
   assert.match(prep, /--dev0 '\/dev\/dri\/renderD128,gid=993'/); assert.match(prep, /-mp0 '\/mnt\/hyperprox-arr\/940,mp=\/data,backup=0'/)
   assert.doesNotMatch(prep, /shared=1/)
   assert.deepEqual(done.tcGroups, [993])
@@ -436,6 +457,7 @@ test("wizard (Plex): preview then apply makes the container with its graphics an
   // Claimed through the real claim path: the code went to Plex's own address, once, and the account token never left plex.tv calls.
   assert.equal(plex.st.claimed, true); assert.equal(plex.st.claimUrls.length, 1); assert.ok(plex.st.claimUrls[0].startsWith("http://192.0.2.80:32400/myplex/claim?token=" + CLAIM))
   assert.ok(plex.st.created.length === 2)
+  assert.deepEqual(plex.st.refused, [], "the chores ran before the claim, so the claimed server never had to turn one away")
   assert.deepEqual(saved, [["http://192.0.2.80:32400", SERVER_TOKEN]])
   assert.deepEqual(plugins.plex, { plex_url: "http://192.0.2.80:32400", plex_token: SERVER_TOKEN })
   assert.deepEqual(vault, {}, "nothing generated, so nothing in the vault")
@@ -488,8 +510,23 @@ test("wizard (Plex): it cannot be installed into an existing container, because 
 test("steps: Plex's own chores replace the generic check and wiring, in order", () => {
   const generic = [{ id: "container", label: "c", status: "pending" }, { id: "network", label: "n", status: "pending" }, { id: "install", label: "i", status: "pending" },
     { id: "verify", label: "v", status: "pending" }, { id: "wire", label: "w", status: "pending" }]
-  assert.deepEqual(tcJobSteps(generic, "plex").map(s => s.id), ["container", "network", "install", "tc-ready", "tc-claim", "tc-hardware", "tc-libraries", "tc-plugin"])
-  assert.throws(() => tcInstallEnv("plex", { options: { TC_ACCEL: "auto" }, groups: [], ip: "1.2.3.4", hostname: "p" }), /resolved hardware/)
+  assert.deepEqual(tcJobSteps(generic, "plex").map(s => s.id), ["container", "network", "install", "tc-ready", "tc-hardware", "tc-libraries", "tc-claim", "tc-plugin"])
+  assert.throws(() => tcInstallEnv("plex", { options: { TC_ACCEL: "auto" }, groups: [], ip: "192.0.2.4", hostname: "p" }), /resolved hardware/)
+})
+
+test("setup: chores a claimed server refuses are tried again with its own token once the plug-in is connected", async () => {
+  const p = fakePlex({ startClaimed: true }); const settings: Record<string, string> = {}
+  const claim: PlexClaimDeps = {
+    claimReady: () => ({ user: "casey" }), claimToken: async () => CLAIM, endClaim: () => {},
+    connectClaimed: async (_i, _o, o) => { settings.plex_url = o.url; settings.plex_token = SERVER_TOKEN; return { server: "New server", user: "casey" } },
+  }
+  const arr: any = { http: p.http, nodeRun: async () => ({ code: 0, output: "" }), pluginSettings: async () => ({ ...settings }), savePluginSettings: async () => {}, plexClaim: claim }
+  const steps: Record<string, any> = {}
+  await tcRunSetup({ kind: "plex", ip: "192.0.2.91", hostname: "plex", owner: OWNER, options: { PLEX_SIGNIN: "3f2b9c1e-5d4a-4c1b-9e2f-0a1b2c3d4e5f", TC_ACCEL: "vaapi", PLEX_LIBRARIES: "1" }, onLink: () => {} },
+    id => (steps[id] ??= { status: "pending" }), { arr: () => arr, wait: async () => {} })
+  assert.deepEqual(p.st.refused.sort(), ["GET /library/sections", "PUT /:/prefs"], "refused first, without a token")
+  assert.equal(steps["tc-hardware"].status, "done"); assert.equal(steps["tc-libraries"].status, "done"); assert.match(steps["tc-libraries"].detail, /Added Movies and TV Shows/)
+  assert.equal(steps["tc-plugin"].status, "done"); assert.equal(p.st.created.length, 2)
 })
 
 test("setup: tcRunSetup for Plex ends the claim sign-in even when the server never answers", async () => {

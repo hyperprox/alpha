@@ -296,7 +296,7 @@ export async function createFromPlan(
   // backups), or a NAS export the node mounts, given to the container after the create, before its first start.
   const pbs = recipe.setup === 'pbs' ? plan.options ?? {} : null
   if (pbs?.PBS_LOCATION === 'disk') set('mp0', `${plan.storage}:${Number(pbs.PBS_SIZE_GB)},mp=${DATASTORE_BASE}/${pbs.PBS_DATASTORE},backup=0`)
-  set('unprivileged', 1); set('features', 'nesting=1'); set('onboot', 1); set('start', pbs?.PBS_LOCATION === 'nas' ? 0 : 1)
+  set('unprivileged', 1); if (recipe.id !== 'plex') set('features', 'nesting=1'); set('onboot', 1); set('start', pbs?.PBS_LOCATION === 'nas' ? 0 : 1)
   set('password', randomBytes(18).toString('base64url') + 'Aa1')
   set('description', `${recipe.name}, installed by HyperProx on ${new Date().toISOString().slice(0, 10)}.\n${installMark(jobId)}`)
   const upid = await client.fetchStrict<string>(`/nodes/${enc(plan.node)}/lxc`, 'POST', body.toString())

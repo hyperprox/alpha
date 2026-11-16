@@ -1403,6 +1403,10 @@ since removed that build from the repository, the same build is fetched from the
 against a pinned SHA-256 of the package; if Plex no longer publishes it, the install stops and says HyperProx needs
 updating. After the install, apt in the container updates Plex like any other package.
 
+**Order.** HyperProx turns hardware transcoding on and adds the libraries before it claims the server, because a claimed server turns away requests that carry no token. If it is refused anyway, it asks again with the server's own token, read from the vault, once the plug-in is connected.
+
+**No Docker settings.** Plex is a package, so its container is an ordinary unprivileged one with no nesting and no keyctl (checked: Plex runs in such a container).
+
 **Claiming the server, in the flow.** Step 1 has **Sign in with Plex**: the 4-character code to enter at
 plex.tv/link, the same sign-in the Plex plug-in's page uses. HyperProx keeps the account's token in memory only
 (never stored, logged or sent to the page), asks plex.tv for a one-time claim code at the last moment (it lives about
@@ -1414,7 +1418,7 @@ that step says what happened, because the server works.
 
 **The Plex plug-in connects by itself.** Once plex.tv lists the new server under the account, HyperProx saves its
 address and the server's own token as the Plex plug-in's settings, through the normal settings save, so the token goes
-in the vault. The account's token is not what is saved. The Plex page (now streaming, Clear-out, Library) works at
+in the vault. What is saved is the token plex.tv lists for that server; for a server you own, Plex may make that the same token as your account's own, so treat it like your Plex password (it is in the vault, never in a settings file, and an existing Sign in with Plex on the Plex page saves exactly the same thing). The Plex page (now streaming, Clear-out, Library) works at
 once.
 
 **Graphics.** Intel or AMD graphics: the node's render device is shared with the container, and a group with the node's
