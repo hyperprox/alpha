@@ -12,6 +12,7 @@
 //  action anyway. No route takes a command, a path or a container name.
 // =============================================================================
 
+import { forgetReadings } from '../lib/ai/reading-cache'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
 import { actorOf, isAdmin, auditBy } from '../lib/http/request-actor'
@@ -99,7 +100,11 @@ export const nextcloudRoutes: FastifyPluginAsync = async (fastify) => {
 
   // ?force=1 removes even when the app password HyperProx made cannot be revoked (the answer says it is left).
   fastify.delete<P & { Querystring: { force?: string } }>('/instances/:iid', async (req, reply) => {
-    try { return { success: true, data: await svc().remove(req.params.iid, actorOf(req), req.query.force === '1') } } catch (e) { return fail(reply, e) }
+    try {
+      const data = await svc().remove(req.params.iid, actorOf(req), req.query.force === '1')
+      forgetReadings({ id: 'plugin:nextcloud' })
+      return { success: true, data }
+    } catch (e) { return fail(reply, e) }
   })
 
   // The whole reading. One that cannot be read is a normal state: 200 with ok:false and the reason.

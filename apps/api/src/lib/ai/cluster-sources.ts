@@ -15,6 +15,8 @@ import type { AskSource, SourceSummary } from './ask'
 import { answerQuestion } from './ask'
 import type { ModelCall } from './extract'
 import { gatherClusterSummary, clusterSummary, clusterAnswer, gatherBackups, backupSummary, backupAnswer, type ClusterSummary } from './ask-sources'
+import { clusterHealth } from './health'
+import { isInventoryQuestion } from './inventory'
 import { aboutLine, withoutClusterWords, type ClusterRef } from './clusters'
 import type { ClusterPanel, GpuRow } from '../clusters/overview'
 import type { JobRow } from '../clusters/files'
@@ -38,6 +40,8 @@ export interface ClusterSourceDeps {
   monitoring(id: string): Record<string, NodeMonitoring>
   /** Cluster names by id, for copy jobs that name the other end. */
   nameOf(id: string): string
+  /** The Ceph warnings the person accepted for this cluster (its Updates policy): known warnings, never problems. */
+  accepted?(id: string): string[]
   now?: number
 }
 
@@ -49,7 +53,11 @@ const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? o
 //  Status (the Command center panel in words)
 // ---------------------------------------------------------------------------
 
-export function statusSummary(c: ClusterRef, p: ClusterPanel, now = Date.now()): SourceSummary {
+/**
+ * `s`: the cluster summary, read beside the panel, so Ceph and HA health are said here exactly as on the cluster line
+ * (lib/ai/health.ts): the panel alone does not read Ceph, and once said "nothing needs attention" beside a Ceph warning.
+ */
+export function statusSummary(c: ClusterRef, p: ClusterPanel, now = Date.now(), s: ClusterSummary | null = null): SourceSummary {
   if (!p.reachable) {
     // The panel's own error can name an address or a certificate fingerprint: plain words only.
     const why = /certificate/i.test(p.error ?? '') ? 'its certificate changed, so HyperProx sent it nothing' : 'it is not answering right now'
@@ -66,12 +74,17 @@ export function statusSummary(c: ClusterRef, p: ClusterPanel, now = Date.now()):
     lines.push(`Last backup: ${hours < 48 ? `${hours} hours ago` : `${Math.round(hours / 24)} days ago`}, on ${p.lastBackup.node}, ${p.lastBackup.ok ? 'finished cleanly' : 'did not finish cleanly'}.`)
   } else lines.push('Last backup: none found in the recent task lists.')
   lines.push(`Monitoring: ${p.monitoring ? 'installed' : 'not installed'}.`)
-  const att = p.attention.filter(a => a.severity !== 'info')
-  if (att.length) lines.push('Needs attention: ' + att.slice(0, 6).map(a => a.title).join('; ') + '.')
+  const h = clusterHealth(s && !s.partial.includes('resources') ? s : null, p)
+  if (h.ceph) lines.push(`${h.ceph}.`)
+  // The panel's own words where it has them ("The last backup did not finish cleanly"), the summary's for the rest.
+  const said = p.attention.filter(a => a.severity !== 'info').map(a => a.title)
+  const att = [...said, ...h.problems.filter(x => !said.some(t => t.toLowerCase() === x.toLowerCase()) && !/^nodes? .* offline$/i.test(x))]
+  if (att.length) lines.push('Needs attention: ' + att.slice(0, 6).join('; ') + '.')
   else lines.push('Nothing needs attention.')
+  if (h.known.length) lines.push(`Known warning${h.known.length === 1 ? '' : 's'}: ${h.known.join('; ')}.`)
   const headline = `${c.name}: ${p.nodes.online}/${p.nodes.total} nodes online, ${p.guests.running}/${p.guests.total} guests running` +
-    (att.length ? `, ${plural(att.length, 'thing')} need${att.length === 1 ? 's' : ''} attention.` : ', nothing needs attention.')
-  return { headline, lines, data: p }
+    (att.length ? `, ${plural(att.length, 'thing')} need${att.length === 1 ? 's' : ''} attention.` : h.known.length ? ', nothing needs attention (a known warning).' : ', nothing needs attention.')
+  return { headline, lines, attention: att, data: p }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,11 +98,11 @@ export function gpuLine(g: GpuRow): string {
 }
 
 export function gpuSummary(c: ClusterRef, p: ClusterPanel): SourceSummary {
-  if (!p.reachable) return { headline: `${c.name} GPUs: cannot be read.`, lines: [], unread: [`${c.name}'s GPU list`] }
-  if (!p.gpus.length) return { headline: `${c.name}: no GPU found.`, lines: ['No GPU is listed in Proxmox\'s PCI list on any online node.'], data: p }
+  if (!p.reachable) return { headline: `GPUs on ${c.name}: cannot be read.`, lines: [], unread: [`${c.name}'s GPU list`] }
+  if (!p.gpus.length) return { headline: `GPUs on ${c.name}: none found.`, lines: ['No GPU is listed in Proxmox\'s PCI list on any online node.'], data: p }
   const lines = p.gpus.map(gpuLine)
   if (p.gpuNote) lines.push(p.gpuNote)
-  return { headline: `${c.name}: ${plural(p.gpus.length, 'GPU')}, ${p.gpus.filter(g => g.state === 'measured').length} measured.`, lines, data: p }
+  return { headline: `GPUs on ${c.name}: ${plural(p.gpus.length, 'GPU')}, ${p.gpus.filter(g => g.state === 'measured').length} measured.`, lines, data: p }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,13 +131,13 @@ const size = (b: number) => (b >= 1024 ** 4 ? `${(b / 1024 ** 4).toFixed(1)} TB`
 
 /** The Command center's network storage in words. A row is named by its Proxmox storage ids, never its server address. */
 export function networkStorageSummary(c: ClusterRef, p: ClusterPanel): SourceSummary {
-  if (!p.reachable) return { headline: `${c.name} network storage: cannot be read.`, lines: [], unread: [`${c.name}'s network storage`] }
+  if (!p.reachable) return { headline: `Network storage on ${c.name}: cannot be read.`, lines: [], unread: [`${c.name}'s network storage`] }
   const rows = p.networkStorage ?? []
-  if (!rows.length) return { headline: `${c.name}: no network storage.`, lines: [`No NFS or CIFS storage is mounted on ${c.name}'s online nodes.`], data: p }
+  if (!rows.length) return { headline: `Network storage on ${c.name}: none.`, lines: [`No NFS or CIFS storage is mounted on ${c.name}'s online nodes.`], data: p }
   const lines = rows.map((n, i) => `${n.names.length ? n.names.join(', ') : rows.length > 1 ? `NAS mount ${i + 1} (not a Proxmox storage)` : 'A NAS mount (not a Proxmox storage)'}: ` +
     `${plural(n.shares, 'share')} on ${plural(n.volumes, 'volume')}, ${n.pct}% used (${size(n.usedBytes)} of ${size(n.totalBytes)}).`)
   const full = rows.filter(n => n.pct >= 90).length
-  return { headline: `${c.name}: ${plural(rows.length, 'network storage server')}${full ? `, ${full} over 90% full` : ''}.`, lines, data: p }
+  return { headline: `Network storage on ${c.name}: ${plural(rows.length, 'server')}${full ? `, ${full} over 90% full` : ''}.`, lines, data: p }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,24 +174,27 @@ export function hardwareSummary(c: ClusterRef, s: { nodes: ScannedNode[]; summar
 
 /** A source bound to `c`: its load always runs in that cluster's context. */
 function bound(c: ClusterRef, d: ClusterSourceDeps, s: Omit<AskSource, 'load'> & { load(): Promise<SourceSummary> }): AskSource {
-  return { ...s, load: () => d.inCluster(c.id, () => s.load()) }
+  return { ...s, scope: c.id, load: () => d.inCluster(c.id, () => s.load()) }
 }
 
 /** Sources whose loads all run in cluster `id`'s context, whatever context the caller is in. */
 export function boundTo(id: string, sources: AskSource[], inCluster: <T>(id: string, fn: () => Promise<T>) => Promise<T>): AskSource[] {
-  return sources.map(s => ({ ...s, load: () => inCluster(id, () => s.load()) }))
+  return sources.map(s => ({ ...s, scope: id, load: () => inCluster(id, () => s.load()), ...(s.hints ? { hints: () => inCluster(id, () => s.hints!()) } : {}) }))
 }
 
 /** The per-cluster sources (both kinds of cluster). Home adds its home-only sources beside these. */
 export function perClusterSources(c: ClusterRef, d: ClusterSourceDeps): AskSource[] {
   let panelP: Promise<ClusterPanel> | null = null
   const panel = () => (panelP ??= d.panel(c))
+  // One read of the guest list, shared by the cluster and status sources of one question.
+  let sumP: Promise<ClusterSummary> | null = null
+  const summary = () => (sumP ??= gatherClusterSummary(d.fetchStrict, { accepted: () => d.accepted?.(c.id) ?? [] }))
   const exact = (_p: string, s: SourceSummary) => (s.unread?.length && !s.lines.length ? null : s.lines.join(' '))
   return [
     bound(c, d, {
       id: 'cluster', title: 'Cluster', blurb: 'Proxmox nodes, guests, HA, storage, Ceph',
       aliases: /\b(cluster|nodes?|guests?|containers?|cts?|lxcs?|vms?|virtual machines?|memory|ram|cpu|storage|disk|space|ceph|ha|proxmox|pve|version|running|stopped)\b/,
-      load: async () => clusterSummary(await gatherClusterSummary(d.fetchStrict)),
+      load: async () => clusterSummary(await summary()),
       answer: (p, s) => clusterAnswer(p, s.data as ClusterSummary),
     }),
     bound(c, d, {
@@ -190,7 +206,7 @@ export function perClusterSources(c: ClusterRef, d: ClusterSourceDeps): AskSourc
     bound(c, d, {
       id: 'status', title: 'Status', blurb: 'how the cluster is doing, what needs attention',
       aliases: /\b(doing|status|health\w*|okay|ok|attention|problems?|issues?|wrong|alright|all right)\b/,
-      load: async () => statusSummary(c, await panel(), d.now),
+      load: async () => { const [p, s] = await Promise.all([panel(), summary().catch(() => null)]); return statusSummary(c, p, d.now, s) },
       answer: exact,
     }),
     bound(c, d, {
@@ -204,6 +220,8 @@ export function perClusterSources(c: ClusterRef, d: ClusterSourceDeps): AskSourc
       aliases: /\b(monitor\w*|node.?exporter|prometheus|grafana|metrics)\b/,
       load: async () => monitoringSummary(c, d.monitoring(c.id), c.kind === 'home' ? await panel().catch(() => null) : null),
       answer: exact,
+      // Home's monitoring is the setup checklist's; it says nothing about health.
+      ...(c.kind === 'home' ? { overview: false as const } : {}),
     }),
     bound(c, d, {
       id: 'network-storage', title: 'Network storage', blurb: 'NFS and CIFS storage mounted on the nodes, and how full it is',
@@ -222,6 +240,7 @@ export function perClusterSources(c: ClusterRef, d: ClusterSourceDeps): AskSourc
       aliases: /\b(hardware|scan|pci|devices?)\b/,
       load: async () => hardwareSummary(c, await d.scan(c.id)),
       answer: exact,
+      overview: false,
     }),
   ]
 }
@@ -232,6 +251,7 @@ export function homeOnlySource(c: ClusterRef): AskSource {
   return {
     id: 'home-only', title: 'Home-only features', blurb: 'features the home cluster has and a remote does not',
     aliases: /\b(dns|domains?|zones?|records?|cname|proxy|proxies|reverse proxy|npm|nginx|certs?|certificates?|ssl|tls|https|let'?s ?encrypt|plug-?ins?|home assistant|sonarr|radarr|tautulli)\b/,
+    overview: false,
     load: async () => ({ headline: `${c.name}: DNS, proxy, certificates and plug-ins are home-only.`, lines: [line] }),
     answer: () => line,
   }
@@ -249,6 +269,12 @@ export interface AcrossDeps {
   services?: string[]
   /** Every cluster, to take their names out of the question before sources are picked. */
   clusters: ClusterRef[]
+  /** Who is asking (their role), for the reading cache of slow areas. */
+  cacheKey?: string
+  /** Told which areas each answer was read from. */
+  used?(titles: string[]): void
+  /** The inventory's detail for who is asking (lib/ai/ask.ts AnswerContext). */
+  inventoryDetail?: 'basic' | 'full'
 }
 
 /**
@@ -258,19 +284,26 @@ export interface AcrossDeps {
  */
 export async function answerAcross(prompt: string, targets: ClusterRef[], d: AcrossDeps): Promise<string> {
   const q = withoutClusterWords(prompt, d.clusters) || prompt
+  // "What's on Lab": the cluster's name is the whole object of the question, so it is read before the name goes.
+  const inventory = isInventoryQuestion(prompt, d.clusters.map(c => c.name)) || isInventoryQuestion(q)
+  const used = new Set<string>()
   const parts = await Promise.all(targets.map(async c => {
     const sources = d.sourcesFor(c)
-    let a = await answerQuestion(q, { sources, call: d.call, fallback: d.fallback, services: d.services })
+    let a = await answerQuestion(q, { sources, call: d.call, fallback: d.fallback, services: d.services, cacheKey: d.cacheKey, inventory, clusterName: c.name, inventoryDetail: d.inventoryDetail,
+      used: t => t.forEach(x => used.add(x)) })
     if (a === null) {
       const status = sources.find(s => s.id === 'status')
       if (status) {
+        used.add(status.title)
         const sum = await status.load().catch(() => null)
         a = sum ? sum.lines.join(' ') : `I could not read ${c.name} just now.`
       } else a = d.fallback
     }
     return { c, a: a.trim() }
   }))
+  d.used?.([...used])
   const head = aboutLine(targets)
   if (parts.length === 1) return `${head}\n${parts[0].a}`
-  return `${head}\n` + parts.map(({ c, a }) => `${c.name}: ${a}`).join('\n')
+  // A long answer (a roll-call, an inventory) goes under its cluster's name; a one-liner beside it.
+  return `${head}\n` + parts.map(({ c, a }) => (a.includes('\n') ? `\n${c.name}:\n${a}` : `${c.name}: ${a}`)).join('\n')
 }

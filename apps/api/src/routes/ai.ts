@@ -23,6 +23,11 @@ import { currentContext, type RequestContext } from '../lib/auth'
 import { startLoop, type Extraction, type IntentResult, type LoopDeps } from '../lib/ai/loop'
 import { matchIntent, NO_TASK_ANSWER, confidentDeploy } from '../lib/ai/intent'
 import { answerQuestion, type AskSource } from '../lib/ai/ask'
+import { hintsForRole } from '../lib/ai/inventory-hints'
+import { isInventoryQuestion } from '../lib/ai/inventory'
+import { peekInventory, homeInventory, INVENTORY_FRESH_MS } from '../lib/homepage'
+import { loadPolicy, policyForCluster } from '../lib/updates/policy'
+import { hasRole } from '../lib/roles'
 import { coreSources, pluginSources, type CertLite } from '../lib/ai/ask-sources'
 import { PLUGINS }            from '../plugins'
 import { pveFromEnv, connectionKey } from '../lib/pve-env'
@@ -43,7 +48,11 @@ import { perClusterSources, homeOnlySource, answerAcross, boundTo, type ClusterS
 import { parseAction, prepareAction, applyAction, type ActionPlan, type PrepareDeps, type ApplyDeps } from '../lib/ai/actions'
 import type { ModelCall }     from '../lib/ai/extract'
 import { runPluginSummary }   from '../lib/plugin-host'
-import { isUnlocked }         from '../lib/vault/state'
+import { isUnlocked, onLock } from '../lib/vault/state'
+import { forgetReadings } from '../lib/ai/reading-cache'
+
+// Readings kept for slow areas were read while unlocked: none outlives a lock.
+onLock(() => forgetReadings())
 import { productionCertsService } from '../lib/certs/service'
 import { extractFields }      from '../lib/ai/extract'
 import { getTemplate }        from '../lib/ai/templates'
@@ -165,10 +174,26 @@ let haService: HAControlService | undefined
 const ha = () => (haService ??= productionHAControl())
 const beside = (clusterId: string | null) => { const c = clusterId ? getCluster(clusterId) : null; return c && c.kind === 'remote' ? c.name : null }
 
-async function nasEntries(): Promise<NasEntry[]> {
+/**
+ * Every NAS with its reading. `cachedFirst` (the assistant's answers): the reading HyperProx already holds, however
+ * old, with its time, and a new one taken in the background when it is stale; a NAS never read is waited for. A NAS
+ * can take ten seconds to answer, and a question should not wait on that.
+ */
+async function nasEntries(o: { cachedFirst?: boolean } = {}): Promise<NasEntry[]> {
   const svc = qnapService()
   const list = await svc.instances.list()
   return Promise.all(list.map(async m => {
+    const base = { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC }
+    // A NAS HyperProx holds back from (a refused login) is said as such, never shown as if it were fine.
+    const held = o.cachedFirst ? svc.blockedReason(m.id) : null
+    if (held) return { ...base, reading: null, error: held }
+    const hit = o.cachedFirst ? svc.peek(m.id) : null
+    if (hit) {
+      if (svc.stale(m.id)) void svc.reading(m.id).catch(() => {})
+      const failed = svc.lastFailure(m.id)
+      if (failed && failed.at > hit.at) return { ...base, reading: hit.reading, at: hit.at, failedSince: failed.at, error: plainReason(failed.error, m.name) }
+      return { ...base, reading: hit.reading, error: null, at: hit.at }
+    }
     try { return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: await svc.reading(m.id), error: null } }
     catch (e: any) { return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: null, error: plainReason(e, m.name) } }
   }))
@@ -355,6 +380,7 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
     scan: id => scanCluster(id, { useLogin: false }),
     monitoring: id => clusterRow(id)?.monitoring ?? {},
     nameOf: id => clusterRow(id)?.name ?? 'a removed cluster',
+    accepted: () => acceptedWarnings(c),
   }
   const extra = perClusterSources(c, d)
   // Updates work on a remote too: its own tree, as its Updates page last read it.
@@ -367,7 +393,7 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
   // What is attached to HyperProx itself: every NAS, the alerts, notification channels, every house, the websites.
   // Before the per-cluster sources, so "is my NAS healthy" is the NAS and not the cluster's network storage.
   const attached: AskSource[] = [
-    qnapSource({ list: nasEntries, role, unlocked: isUnlocked }),
+    qnapSource({ list: () => nasEntries({ cachedFirst: true }), role, unlocked: isUnlocked }),
     pbsSource({ unlocked: isUnlocked, list: async () => {
       const svc = pbsService()
       return Promise.all((await svc.instances.list()).map(async m => {
@@ -410,11 +436,23 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
     ...boundTo(HOME_ID, coreSources({
       fetchStrict, facts: facts ?? EMPTY_FACTS, unlocked: isUnlocked, role,
       certs,
+      accepted: () => acceptedWarnings(c),
+      // What each guest is, for "what's on my cluster": what HyperProx already found, never a new scan.
+      // Admins only: below admin the inventory reads no detector, website list or address (hintsForRole).
+      appHints: () => hintsForRole(role, {
+        peek: peekInventory, build: homeInventory, freshMs: INVENTORY_FRESH_MS, budgetMs: 2500, now: Date.now,
+        sites: async () => (await siteLites()).map(x => ({ name: x.name, kindName: x.kindName, vmid: x.vmid })),
+      }),
     }), runInCluster),
     ...boundTo(HOME_ID, attached, runInCluster),
     ...extra.filter(s => s.id !== 'cluster' && s.id !== 'backups'),
     ...boundTo(HOME_ID, pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary, detail: runPluginDetail, skip: ['qnap', 'pbs'] }), runInCluster),
   ]
+}
+
+/** The Ceph warnings accepted for this cluster in the Updates policy (ceph.accepted_warnings): said as known warnings. */
+function acceptedWarnings(c: ClusterRef): string[] {
+  return policyForCluster(loadPolicy(), c).policy.acceptedWarnings ?? []
 }
 
 /** Home's facts when they could not be gathered: every source they feed reads as unread, never as empty. */
@@ -638,7 +676,7 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         const draft = owner ? deps.websiteDrafts.get(owner) : null
         // A deploy request while a question is open is a new request, not the answer: the draft is dropped.
         if (draft && owner && confidentDeploy(prompt)) deps.websiteDrafts.drop(owner)
-        if (isWebsiteRequest(prompt) || (draft && !confidentDeploy(prompt) && !parseAction(prompt) && !isQuestionPrompt(prompt) && !/\?\s*$/.test(prompt))) {
+        if (isWebsiteRequest(prompt) || (draft && !confidentDeploy(prompt) && !parseAction(prompt) && !isQuestionPrompt(prompt) && !isInventoryQuestion(prompt) && !/\?\s*$/.test(prompt))) {
           if (!owner) return reply.status(401).send({ ok: false, error: 'Sign in to do that.' })
           if (current.kind !== 'home') return said(`Making a website is only available on the home cluster, from the assistant with ${home.name} selected. Nothing was planned.`)
           const r = await websiteTurn(prompt, { owner, role: sess?.role, token: isTokenSid(sess?.sid), unlocked: deps.prepareDeps().unlocked() }, deps.websiteDrafts, deps.websiteDeps())
@@ -669,12 +707,15 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
           // Home's DNS and proxy sources read home's facts, gathered in home's context whatever this request's is.
           const homeFacts = targets.clusters.some(c => c.kind === 'home')
             ? await deps.inCluster(HOME_ID, () => deps.facts()).catch(() => null) : null
+          let used: string[] = []
           const message = await answerAcross(prompt, targets.clusters, {
             sourcesFor: c => deps.clusterSources(c, homeFacts, (fastify as any).prisma),
             call: deps.askCall(chosen, model), fallback: NO_TASK_ANSWER, clusters,
             services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]),
+            cacheKey: sess?.role ?? 'none', used: t => { used = t },
+            inventoryDetail: sess?.role && hasRole(sess.role, 'admin') ? 'full' : 'basic',
           })
-          return said(message, { clusters: targets.clusters })
+          return said(message, { clusters: targets.clusters, ...(used.length ? { sources: used } : {}) })
         }
 
         let facts: TemplateFacts, settings: TemplateSettings
@@ -684,11 +725,15 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
           return sendFailure(req, reply, err, 'Cannot read the cluster, so there is nothing to plan against.', { status: 502 })
         }
 
+        // The areas a read-only answer was read from: shown under it, behind "Sources used".
+        let used: string[] = []
         const loopDeps: LoopDeps = {
           facts, settings, now: () => new Date(),
           intent: p => deps.intent(p, chosen, model),
           ask: p => answerQuestion(p, { sources: deps.sources(facts, (fastify as any).prisma), call: deps.askCall(chosen, model), fallback: NO_TASK_ANSWER,
-            services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]) }),
+            services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]),
+            cacheKey: sess?.role ?? 'none', clusterName: current.name, used: t => { used = t },
+            inventoryDetail: sess?.role && hasRole(sess.role, 'admin') ? 'full' : 'basic' }),
           extract: (t, text, f, opts) => deps.extract(t, text, f, { ...opts, provider: chosen, model }),
         }
         let s
@@ -707,7 +752,7 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         // Not a task: the answer is shown, and nothing is planned.
         const t = s.template ? getTemplate(s.template) : undefined
         if (s.state === 'answer' || !t) {
-          return reply.send({ ok: true, conversational: true, provider: chosen, message: s.answer || NO_TASK_ANSWER })
+          return reply.send({ ok: true, conversational: true, provider: chosen, message: s.answer || NO_TASK_ANSWER, ...(used.length ? { sources: used } : {}) })
         }
 
         const fields = s.fields

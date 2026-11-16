@@ -42,6 +42,8 @@ export interface Scenario {
     /** Text the answer must contain. */
     answer_includes?: string[]
     answer_excludes?: string[]
+    /** Text the answer must contain exactly once: an area said twice is a bug. */
+    answer_once?: string[]
     preflight?: "all-pass" | Record<string, boolean>
   }
   outcome?: unknown
@@ -106,6 +108,10 @@ export function checkScenario(s: Scenario, r: RunResult): string[] {
   if (e.model_calls !== undefined && r.modelCalls !== e.model_calls) out.push(`model calls: expected ${e.model_calls}, got ${r.modelCalls}`)
   for (const t of e.answer_includes ?? []) if (!(r.state.answer ?? "").includes(t)) out.push(`answer lacks "${t}": ${r.state.answer}`)
   for (const t of e.answer_excludes ?? []) if ((r.state.answer ?? "").includes(t)) out.push(`answer has "${t}": ${r.state.answer}`)
+  for (const t of e.answer_once ?? []) {
+    const n = (r.state.answer ?? "").split(t).length - 1
+    if (n !== 1) out.push(`answer has "${t}" ${n} times, not once: ${r.state.answer}`)
+  }
   if (e.preflight !== undefined) out.push("preflight: not supported by the runner yet")
   return out
 }
@@ -165,6 +171,7 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
           if (p === "/cluster/ceph/status") return fake.ceph
           if (p === "/cluster/ha/status/current") return fake.ha
           if (p === "/nodes") return fake.nodes
+          if (p === "/cluster/backup" && fake.backupJobs) return fake.backupJobs
           const t = /^\/nodes\/([^/]+)\/tasks\?/.exec(p)
           if (t) return fake.backupTasks[t[1]] ?? []
           const l = /^\/nodes\/[^/]+\/tasks\/([^/]+)\/log/.exec(p)
@@ -172,11 +179,13 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
           throw new Error("unexpected " + p)
         }
         const sources = [
-          ...coreSources({ fetchStrict: fetchStrict as never, facts, unlocked: () => fake.unlocked, certs: async () => fake.certs, now: 1767225600000 }),
+          ...coreSources({ fetchStrict: fetchStrict as never, facts, unlocked: () => fake.unlocked, certs: async () => fake.certs, now: 1767225600000, accepted: () => fake.accepted ?? [] }),
           ...pluginSources({ plugins: [homeAssistantPlugin], unlocked: () => fake.unlocked,
             run: p => p.summary!({ get: async () => fake.haStates } as never) }),
         ]
-        return answerQuestion(prompt, { sources, call: askCall, fallback: "canned", services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]) })
+        return answerQuestion(prompt, { sources, call: askCall, fallback: "canned", services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]), now: () => 1767225600000,
+          // The fake cluster is read as an admin, who sees what runs in each guest.
+          inventoryDetail: "full" })
       },
     } : {}),
   }

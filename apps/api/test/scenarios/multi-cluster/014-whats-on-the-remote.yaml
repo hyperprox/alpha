@@ -1,0 +1,9 @@
+id: multi-014-whats-on-the-remote
+prompt: "What's on Remote server?"
+open: home
+expect:
+  kind: answer
+  # The remote's own guests, by node, with the stopped ones grouped; never home's.
+  includes: ["Answering about Remote server (remote).", "On Remote server: 2 guests, 1 running and 1 stopped", "- plex (container 201): Plex", "Stopped (1): media-vm (VM 202, node1)."]
+  excludes: ["gitea", "Attached:"]
+found_by: "live bug 2026-11-16: per-cluster \"what's on <remote>\""

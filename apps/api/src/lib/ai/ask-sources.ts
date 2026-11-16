@@ -13,6 +13,8 @@ import type { Plugin, PluginDetail } from '../plugin-host'
 import { visualLines } from './visual-lines'
 import { APP_VERSION } from '../version'
 import { hasRole, type Role } from '../roles'
+import { clusterHealth, cephChecksOf, type CephCheck } from './health'
+import type { AppHints } from './inventory'
 
 // ---------------------------------------------------------------------------
 //  Cluster (Proxmox, HA, storage, Ceph)
@@ -20,10 +22,15 @@ import { hasRole, type Role } from '../roles'
 
 export interface ClusterSummary {
   nodes: Array<{ node: string; online: boolean; cores: number; memUsedMb: number; memTotalMb: number }>
-  guests: Array<{ vmid: number; node: string; type: 'lxc' | 'qemu'; name: string; running: boolean }>
+  guests: Array<{ vmid: number; node: string; type: 'lxc' | 'qemu'; name: string; running: boolean; tags?: string[] }>
+  /** Guest templates: not guests that run, listed apart. */
+  templates?: Array<{ vmid: number; node: string; type: 'lxc' | 'qemu'; name: string }>
   storages: Array<{ storage: string; node: string; shared: boolean; usedPct: number; totalGb: number }>
   ceph: string | null
-  ha: { total: number; problems: string[] } | null
+  /** Ceph's health checks, each marked known when the person accepted it (lib/ai/health.ts). */
+  cephChecks?: CephCheck[]
+  /** `sids`: every HA resource (ct:101, vm:200), so a guest can say it is HA-managed. */
+  ha: { total: number; problems: string[]; sids?: string[] } | null
   version: string
   /** Sources that could not be read: resources. */
   partial: string[]
@@ -31,7 +38,10 @@ export interface ClusterSummary {
 
 type Fetch = <T>(path: string) => Promise<T>
 
-export async function gatherClusterSummary(fetchStrict: Fetch): Promise<ClusterSummary> {
+const tagsOf = (t: unknown) => String(t ?? '').split(/[;,\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean)
+
+/** `accepted`: the Ceph warnings the person accepted (the Updates policy's ceph.accepted_warnings). */
+export async function gatherClusterSummary(fetchStrict: Fetch, o: { accepted?: () => string[] } = {}): Promise<ClusterSummary> {
   const [resR, cephR, haR] = await Promise.allSettled([
     fetchStrict<any[]>('/cluster/resources'),
     fetchStrict<any>('/cluster/ceph/status'),
@@ -44,17 +54,24 @@ export async function gatherClusterSummary(fetchStrict: Fetch): Promise<ClusterS
     if (r?.type === 'node') {
       out.nodes.push({ node: String(r.node), online: r.status === 'online', cores: Number(r.maxcpu ?? 0),
         memUsedMb: Math.round(Number(r.mem ?? 0) / 1048576), memTotalMb: Math.round(Number(r.maxmem ?? 0) / 1048576) })
+    } else if ((r?.type === 'lxc' || r?.type === 'qemu') && r.vmid && Number(r.template ?? 0) === 1) {
+      (out.templates ??= []).push({ vmid: Number(r.vmid), node: String(r.node), type: r.type, name: String(r.name ?? '') })
     } else if ((r?.type === 'lxc' || r?.type === 'qemu') && r.vmid && !r.template) {
-      out.guests.push({ vmid: Number(r.vmid), node: String(r.node), type: r.type, name: String(r.name ?? ''), running: r.status === 'running' })
+      out.guests.push({ vmid: Number(r.vmid), node: String(r.node), type: r.type, name: String(r.name ?? ''), running: r.status === 'running', tags: tagsOf(r.tags) })
     } else if (r?.type === 'storage' && Number(r.maxdisk) > 0) {
       out.storages.push({ storage: String(r.storage), node: String(r.node), shared: Boolean(r.shared),
         usedPct: Math.round(100 * Number(r.disk ?? 0) / Number(r.maxdisk)), totalGb: Math.round(Number(r.maxdisk) / 1073741824) })
     }
   }
-  if (cephR.status === 'fulfilled' && typeof cephR.value?.health?.status === 'string') out.ceph = cephR.value.health.status
+  if (cephR.status === 'fulfilled' && typeof cephR.value?.health?.status === 'string') {
+    out.ceph = cephR.value.health.status
+    let accepted: string[] = []
+    try { accepted = o.accepted?.() ?? [] } catch { accepted = [] }
+    out.cephChecks = cephChecksOf(cephR.value, accepted)
+  }
   if (haR.status === 'fulfilled' && Array.isArray(haR.value)) {
     const svc = haR.value.filter(x => x?.type === 'service')
-    out.ha = { total: svc.length, problems: svc.filter(x => ['error', 'fence', 'recovery'].includes(String(x.state))).map(x => String(x.sid)) }
+    out.ha = { total: svc.length, problems: svc.filter(x => ['error', 'fence', 'recovery'].includes(String(x.state))).map(x => String(x.sid)), sids: svc.map(x => String(x.sid)) }
   }
   return out
 }
@@ -123,12 +140,13 @@ export function clusterSummary(s: ClusterSummary): SourceSummary {
   const st = uniqueStorages(s)
   if (st.length) lines.push('Storage used: ' + st.map(x => `${x.storage} ${x.usedPct}% of ${x.totalGb} GB`).join('; '))
   if (s.ha) lines.push(`HA: ${s.ha.total} resources` + (s.ha.problems.length ? `; in trouble: ${s.ha.problems.join(', ')}` : '; none in trouble'))
-  if (s.ceph) lines.push(`Ceph health: ${s.ceph}`)
+  const h = clusterHealth(s)
+  if (s.ceph) lines.push(`Ceph health: ${s.ceph}` + (s.cephChecks?.length ? ` (${s.cephChecks.map(c => `${c.message}${c.known ? ', a known warning' : ''}`).join('; ')})` : ''))
   const offline = s.nodes.filter(n => !n.online).length
   const headline = s.partial.length ? 'Cluster: could not be read.'
     : `Cluster: ${s.nodes.length - offline}/${s.nodes.length} nodes online, ${s.guests.filter(g => g.running).length}/${s.guests.length} guests running` +
-      (s.ceph ? `, Ceph ${s.ceph}` : '') + '.'
-  return { headline, lines, unread: s.partial.length ? ['the guest, node and storage list'] : undefined, data: s }
+      (h.ceph ? `, ${h.ceph}` : '') + '.'
+  return { headline, lines, unread: s.partial.length ? ['the guest, node and storage list'] : undefined, attention: s.partial.length ? undefined : h.problems, data: s }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,23 +155,42 @@ export function clusterSummary(s: ClusterSummary): SourceSummary {
 
 export interface BackupRun { vmid: string; node: string; ok: boolean; status: string }
 
+export type Cadence = 'daily' | 'weekly' | 'other'
+
+/** The latest run of one backup job. */
+export interface JobRun {
+  /** The job's schedule as Proxmox has it ("02:00", "sun 01:00"); null when the run could not be matched to a job. */
+  schedule: string | null
+  cadence: Cadence | null
+  /** Unix seconds: when the run began, and when its last node finished (null while running). */
+  start: number
+  end: number | null
+  guests: BackupRun[]
+  running: number
+}
+
 export interface BackupReport {
   /** Unix seconds: when the most recent scheduled run began, and when its last node finished (null while running). */
   start: number | null
   end: number | null
   /** Seconds the nodes' clocks are ahead of UTC, read from their own task logs; null when it could not be told. */
   offset: number | null
-  /** One row per guest across every node of that run. */
+  /** One row per guest across every node of the most recent run. */
   guests: BackupRun[]
   /** Guests whose backup had started but not finished, on a node whose task is still going. */
   running: number
   /** Nodes whose tasks or logs could not be read. */
   unread: string[]
+  /** The latest run of every backup job, most recent first. Just the most recent run when the jobs cannot be read. */
+  jobs: JobRun[]
+  /** Enabled jobs with no run in the lookback window. */
+  idle: Array<{ schedule: string | null; cadence: Cadence | null }>
 }
 
 const enc = encodeURIComponent
 const RUN_WINDOW_S = 20 * 60          // the nodes start one scheduled run within seconds of each other
-const LOOKBACK_S = 3 * 86400
+const LOOKBACK_S = 8 * 86400          // a weekly job's last run is always inside it
+const MAX_RUNS_EXAMINED = 12
 
 const localSeconds = (stamp: string) => Date.parse(stamp.replace(' ', 'T') + 'Z') / 1000
 
@@ -189,63 +226,237 @@ export function parseBackupLog(node: string, lines: string[], finished: boolean,
 }
 
 /**
- * The most recent scheduled backup run across ALL nodes. Each node runs its own vzdump task for the job (its
- * id is empty, so /cluster/tasks cannot say which guests were in it, and it lists only the newest tasks of
- * the whole cluster), so each node's recent vzdump tasks are listed and the log of every task in the run is
- * read for its per-guest results.
+ * Which job a run or a job is, as one comparable key: the guests it selects ("all" with what it excludes, a pool, or
+ * the ids), where it writes (storage) and how (mode). A run says it in the "starting new backup job: vzdump ..." line
+ * near the top of its log (after any lock-waiting lines); a job in its /cluster/backup entry.
+ */
+function selectionKey(sel: string, storage: string | null, mode: string | null): string {
+  return `${sel}|storage=${storage ?? ''}|mode=${mode ?? 'snapshot'}`
+}
+
+export function selectionOfLog(line: string): string | null {
+  const m = /starting new backup job: vzdump\s*(.*)$/.exec(line)
+  if (!m) return null
+  const args = m[1]
+  const opt = (k: string) => new RegExp(`--${k}\\s+'?([^\\s']+)'?`).exec(args)?.[1] ?? null
+  let sel: string | null
+  if (opt('all') === '1') sel = `all:${(opt('exclude') ?? '').split(/[,\s]+/).filter(Boolean).sort().join(',')}`
+  else if (opt('pool')) sel = `pool:${opt('pool')}`
+  else {
+    const ids = (/^([\d\s]+)/.exec(args)?.[1] ?? '').split(/\s+/).filter(Boolean)
+    sel = ids.length ? `ids:${[...new Set(ids)].sort().join(',')}` : null
+  }
+  return sel ? selectionKey(sel, opt('storage'), opt('mode')) : null
+}
+
+export function selectionOfJob(j: any): string | null {
+  let sel: string | null
+  if (Number(j?.all) === 1) sel = `all:${String(j.exclude ?? '').split(/[,\s]+/).filter(Boolean).sort().join(',')}`
+  else if (j?.pool) sel = `pool:${j.pool}`
+  else {
+    const ids = String(j?.vmid ?? '').split(/[,\s]+/).filter(Boolean)
+    sel = ids.length ? `ids:${[...new Set(ids)].sort().join(',')}` : null
+  }
+  return sel ? selectionKey(sel, j?.storage ? String(j.storage) : null, j?.mode ? String(j.mode) : null) : null
+}
+
+/** Minutes past midnight a schedule fires at ("sun 01:00" -> 60); null when it has no single time. */
+export function scheduleMinutes(schedule: string | null): number | null {
+  const m = /(?:^|\s)(\d{1,2}):(\d{2})$/.exec(String(schedule ?? '').trim())
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null
+}
+
+export function cadenceOf(schedule: string | null): Cadence | null {
+  if (!schedule) return null
+  const s = schedule.trim().toLowerCase()
+  if (/^(\*-\*-\*\s+)?\d{1,2}:\d{2}$/.test(s) || /^daily$/.test(s) || /^mon\.\.sun\s/.test(s)) return 'daily'
+  if (/^(mon|tue|wed|thu|fri|sat|sun)[a-z]*\s+\d{1,2}:\d{2}$/.test(s) || s === 'weekly') return 'weekly'
+  return 'other'
+}
+
+/**
+ * The latest run of EVERY backup job across ALL nodes. Each node runs its own vzdump task for a job and starts it
+ * within seconds of the others, so tasks that start together are one run. Which job a run belongs to is read from the
+ * first line of one of its logs (the guests it selects), matched against /cluster/backup. Only the runs that are the
+ * latest of a job have their whole logs read, for the per-guest results. When the job list cannot be read, the most
+ * recent run alone is reported, as before.
  */
 export async function gatherBackups(fetchStrict: Fetch, now = Date.now()): Promise<BackupReport> {
+  const empty = (unread: string[]): BackupReport => ({ start: null, end: null, offset: null, guests: [], running: 0, unread, jobs: [], idle: [] })
+  const jobsP = fetchStrict<any[]>('/cluster/backup').then(l => (Array.isArray(l) ? l : null), () => null)
   const nodes = (await fetchStrict<any[]>('/nodes')).map(n => String(n?.node ?? '')).filter(Boolean)
   const unread: string[] = []
   const lists = await Promise.all(nodes.map(async node => {
-    try { return (await fetchStrict<any[]>(`/nodes/${enc(node)}/tasks?typefilter=vzdump&limit=10`)).map(t => ({ ...t, node })) }
+    try { return (await fetchStrict<any[]>(`/nodes/${enc(node)}/tasks?typefilter=vzdump&limit=50`)).map(t => ({ ...t, node })) }
     catch { unread.push(node); return [] }
   }))
   const since = now / 1000 - LOOKBACK_S
   const tasks = lists.flat().filter(t => t?.type === 'vzdump' && Number(t.starttime) > since && t.upid)
-  if (!tasks.length) return { start: null, end: null, offset: null, guests: [], running: 0, unread }
-  const start = Math.max(...tasks.map(t => Number(t.starttime)))
-  const run = tasks.filter(t => start - Number(t.starttime) <= RUN_WINDOW_S)
+    .sort((a, b) => Number(b.starttime) - Number(a.starttime))
+  const jobList = await jobsP
+  if (!tasks.length) {
+    const r = empty([...new Set(unread)])
+    r.idle = (jobList ?? []).filter(j => j?.type !== 'vzdump' ? false : Number(j.enabled ?? 1) !== 0).map(j => ({ schedule: j.schedule ? String(j.schedule) : null, cadence: cadenceOf(j.schedule ? String(j.schedule) : null) }))
+    return r
+  }
 
-  const guests: BackupRun[] = []
-  let running = 0, end: number | null = 0, offset: number | null = null
-  await Promise.all(run.map(async t => {
-    const node = String(t.node), finished = !!t.endtime
-    let log: string[]
-    try { log = (await fetchStrict<any[]>(`/nodes/${enc(node)}/tasks/${enc(String(t.upid))}/log?limit=0`)).map(x => String(x?.t ?? '')) }
-    catch { unread.push(node); return }
-    const r = parseBackupLog(node, log, finished, String(t.status ?? ''))
-    guests.push(...r.guests); running += r.running
-    if (!finished) end = null
-    else if (end !== null) end = Math.max(end, Number(t.endtime))
-    if (finished && r.localEnd && offset === null) {
-      const diff = localSeconds(r.localEnd) - Number(t.endtime), q = Math.round(diff / 900) * 900
-      if (Math.abs(diff - q) < 300) offset = q
+  // Tasks that start within a few minutes of each other, for the same job, are one run.
+  const windows: Array<typeof tasks> = []
+  for (const t of tasks) {
+    const cur = windows[windows.length - 1]
+    if (cur && Number(cur[0].starttime) - Number(t.starttime) <= RUN_WINDOW_S) cur.push(t)
+    else windows.push([t])
+  }
+
+  /** A task's job key and local start (minutes past midnight), from the top of its log. */
+  const head = async (t: any): Promise<{ key: string | null; tod: number | null }> => {
+    let key: string | null = null, tod: number | null = null
+    try {
+      const l = await fetchStrict<any[]>(`/nodes/${enc(String(t.node))}/tasks/${enc(String(t.upid))}/log?start=0&limit=10`)
+      for (const x of l ?? []) {
+        const line = String(x?.t ?? '')
+        key ??= selectionOfLog(line)
+        const st = /Backup started at \d{4}-\d\d-\d\d (\d\d):(\d\d)/.exec(line)
+        if (st && tod === null) tod = Number(st[1]) * 60 + Number(st[2])
+      }
+    } catch { /* this task's log cannot be read: another task of the run may say it */ }
+    return { key, tod }
+  }
+
+  const wanted = (jobList ?? []).filter(j => (j?.type ?? 'vzdump') === 'vzdump' && Number(j?.enabled ?? 1) !== 0)
+    .map(j => ({ key: selectionOfJob(j), schedule: j.schedule ? String(j.schedule) : null }))
+  const picked: Array<{ run: typeof tasks; schedule: string | null }> = []
+  const left = new Map<string, Array<{ schedule: string | null }>>()
+  if (!jobList || !wanted.length) picked.push({ run: windows[0], schedule: null })
+  else {
+    for (const w of wanted) if (w.key) left.set(w.key, [...(left.get(w.key) ?? []), { schedule: w.schedule }])
+    for (const win of windows.slice(0, MAX_RUNS_EXAMINED)) {
+      if (!left.size) break
+      // Two jobs can start in the same few minutes: the window splits by job key.
+      const heads = await Promise.all(win.map(head))
+      const known = [...new Set(heads.map(h => h.key).filter((k): k is string => !!k))]
+      const runs = new Map<string, { run: typeof tasks; tod: number | null }>()
+      win.forEach((t, n) => {
+        // A task whose log said nothing belongs to the window's one job, when there is just one.
+        const k = heads[n].key ?? (known.length === 1 ? known[0] : null)
+        if (!k) return
+        const r = runs.get(k) ?? { run: [], tod: null }
+        r.run.push(t); r.tod ??= heads[n].tod
+        runs.set(k, r)
+      })
+      for (const [k, r] of runs) {
+        const owners = left.get(k)
+        if (!owners?.length) continue   // a manual backup, or a job already matched to a newer run
+        // Two jobs with the same guests, storage and mode: the one whose time of day this run started at.
+        let pick = 0
+        if (owners.length > 1 && r.tod !== null) {
+          const dist = (o: { schedule: string | null }) => {
+            const m = scheduleMinutes(o.schedule)
+            if (m === null) return 1e9
+            const d = Math.abs(m - r.tod!)
+            return Math.min(d, 1440 - d)
+          }
+          pick = owners.reduce((best, o, i) => (dist(o) < dist(owners[best]) ? i : best), 0)
+        }
+        picked.push({ run: r.run, schedule: owners.splice(pick, 1)[0].schedule })
+        if (!owners.length) left.delete(k)
+      }
     }
+    // Jobs the logs could not be matched to (none had a readable first line): the newest run stands in, unnamed.
+    if (!picked.length) picked.push({ run: windows[0], schedule: null })
+  }
+
+  let offset: number | null = null
+  const jobs: JobRun[] = await Promise.all(picked.map(async ({ run, schedule }) => {
+    const guests: BackupRun[] = []
+    let running = 0, end: number | null = 0
+    await Promise.all(run.map(async t => {
+      const node = String(t.node), finished = !!t.endtime
+      let log: string[]
+      try { log = (await fetchStrict<any[]>(`/nodes/${enc(node)}/tasks/${enc(String(t.upid))}/log?limit=0`)).map(x => String(x?.t ?? '')) }
+      catch { unread.push(node); return }
+      const r = parseBackupLog(node, log, finished, String(t.status ?? ''))
+      guests.push(...r.guests); running += r.running
+      if (!finished) end = null
+      else if (end !== null) end = Math.max(end, Number(t.endtime))
+      if (finished && r.localEnd && offset === null) {
+        const diff = localSeconds(r.localEnd) - Number(t.endtime), q = Math.round(diff / 900) * 900
+        if (Math.abs(diff - q) < 300) offset = q
+      }
+    }))
+    guests.sort((a, b) => Number(a.vmid) - Number(b.vmid))
+    return { schedule, cadence: cadenceOf(schedule), start: Math.max(...run.map(t => Number(t.starttime))), end: end || null, guests, running }
   }))
-  guests.sort((a, b) => Number(a.vmid) - Number(b.vmid))
-  return { start, end: end || null, offset, guests, running, unread: [...new Set(unread)] }
+  jobs.sort((a, b) => b.start - a.start)
+  // Jobs no run in the window was matched to. Only when some run was matched: otherwise the logs said nothing.
+  const anyMatched = picked.some(p => p.schedule !== null)
+  const idle = anyMatched ? [...left.values()].flat().map(w => ({ schedule: w.schedule, cadence: cadenceOf(w.schedule) })) : []
+  const latest = jobs[0]
+  return { start: latest.start, end: latest.end, offset, guests: latest.guests, running: latest.running, unread: [...new Set(unread)], jobs, idle }
 }
+
+const plural2 = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`
 
 export function backupSummary(r: BackupReport, now = Date.now()): SourceSummary {
   const unread = r.unread.length ? [`the backup tasks of ${r.unread.join(', ')}`] : undefined
-  if (r.start === null || (!r.guests.length && !r.running)) {
+  const jobs = r.jobs?.length ? r.jobs : r.start !== null ? [{ schedule: null, cadence: null, start: r.start, end: r.end, guests: r.guests, running: r.running }] : []
+  if (r.start === null || !jobs.some(j => j.guests.length || j.running)) {
     return r.unread.length && r.start === null
       ? { headline: 'Backups: could not be read.', lines: ['No backup run could be read.'], unread, data: r }
-      : { headline: 'Backups: no backup job finished in the last 3 days.', lines: ['No backup job finished in the last 3 days.'], unread, data: r }
+      : { headline: 'Backups: no backup job ran in the last 8 days.', lines: ['No backup job ran in the last 8 days.'], unread, attention: (r.idle ?? []).length ? ['no backup job ran in the last 8 days'] : undefined, data: r }
   }
   const at = (t: number) => t + (r.offset ?? 0)
   const clock = (t: number) => new Date(at(t) * 1000).toISOString().slice(11, 16) + (r.offset === null ? ' UTC' : '')
   const day = (t: number) => new Date(at(t) * 1000).toISOString().slice(0, 10)
-  const label = now / 1000 - r.start < 30 * 3600 ? `Last night's backup (${clock(r.start)})` : `Last backup (${day(r.start)} ${clock(r.start)})`
-  const bad = r.guests.filter(g => !g.ok)
-  const okN = r.guests.length - bad.length
-  const lines = [r.end === null
-    ? `${label} is still running: ${plural(okN, 'guest')} done, ${bad.length} failed so far, ${r.running} in progress.`
-    : `${label}: ${plural(okN, 'guest')} backed up, ${bad.length} failed, finished ${clock(r.end)}.`]
-  if (bad.length) lines.push('Failed: ' + bad.slice(0, 10).map(g => `${g.vmid ? 'guest ' + g.vmid : g.node} (${g.status})`).join(', '))
-  const headline = r.end === null ? `Backups: running, ${okN} guests done.` : `Backups: ${okN} guests ok, ${bad.length} failed (${clock(r.start)} run).`
-  return { headline, lines, unread, data: r }
+  const weekday = (t: number) => ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(at(t) * 1000).getUTCDay()]
+  const recent = (t: number) => now / 1000 - t < 30 * 3600
+  const nameOf = (j: JobRun) => j.cadence === 'weekly' ? `the weekly job (${j.schedule})` : j.schedule ? `the ${j.schedule} job` : 'the last run'
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+
+  // One job (or the jobs could not be read): the sentence as it always was.
+  const runLine = (j: JobRun, label: string) => {
+    const bad = j.guests.filter(g => !g.ok), okN = j.guests.length - bad.length
+    return j.end === null
+      ? `${label} is still running: ${plural2(okN, 'guest')} done, ${bad.length} failed so far, ${j.running} in progress.`
+      : `${label}: ${plural2(okN, 'guest')} backed up, ${bad.length} failed, finished ${clock(j.end)}.`
+  }
+  const failedLine = (j: JobRun) => {
+    const bad = j.guests.filter(g => !g.ok)
+    return bad.length ? 'Failed: ' + bad.slice(0, 10).map(g => `${g.vmid ? 'guest ' + g.vmid : g.node} (${g.status})`).join(', ') : null
+  }
+  const lines: string[] = []
+  const attention: string[] = []
+  if (jobs.length === 1 && !(r.idle ?? []).length) {
+    const j = jobs[0]
+    const label = recent(j.start) ? `Last night's backup (${clock(j.start)})` : `Last backup (${day(j.start)} ${clock(j.start)})`
+    lines.push(runLine(j, label))
+    const f = failedLine(j); if (f) { lines.push(f); attention.push(f.replace(/^Failed: /, '')) }
+    const bad = j.guests.filter(g => !g.ok).length, okN = j.guests.length - bad
+    const headline = j.end === null ? `Backups: running, ${okN} guests done.` : `Backups: ${okN} of ${j.guests.length} guests backed up (${clock(j.start)} run)${bad ? `, ${bad} failed` : ''}.`
+    return { headline, lines, unread, attention: attention.length ? attention : undefined, data: r }
+  }
+
+  // Several jobs: the latest run of each, in one line, with any failure named.
+  const phrases: string[] = []
+  for (const j of jobs) {
+    const bad = j.guests.filter(g => !g.ok).length, n = j.guests.length, okN = n - bad
+    const when = recent(j.start) ? (/^(0\d|1[0-1]|1[8-9]|2\d):/.test(clock(j.start)) ? 'last night' : `today at ${clock(j.start)}`) : `on ${weekday(j.start)} ${day(j.start)}`
+    lines.push(runLine(j, `${cap(nameOf(j))}, latest run ${when === 'last night' ? `last night (${clock(j.start)})` : when}`))
+    const f = failedLine(j); if (f) { lines.push(f); attention.push(f.replace(/^Failed: /, '')) }
+    if (j.end === null) phrases.push(`${nameOf(j)} is running (${okN} done)`)
+    else if (bad) phrases.push(`${nameOf(j)}: ${bad} of ${n} failed`)
+    else if (j.cadence === 'daily' || (j === jobs[0] && recent(j.start))) phrases.push(`${okN} of ${n} guests backed up ${when}${j.cadence === 'daily' ? '' : ` (${nameOf(j)})`}`)
+    else phrases.push(`${j.cadence === 'weekly' ? 'weekly job' : nameOf(j)} OK (${okN} of ${n} ${when})`)
+    if (j.cadence === 'daily' && now / 1000 - j.start > 36 * 3600) attention.push(`${nameOf(j)} has not run since ${day(j.start)}`)
+  }
+  for (const i of r.idle ?? []) {
+    const w = i.cadence === 'weekly' ? `the weekly job (${i.schedule})` : i.schedule ? `the ${i.schedule} job` : 'a job'
+    lines.push(`${cap(w)}: no run in the last 8 days.`)
+    phrases.push(`${w}: no run in the last 8 days`)
+    if (i.cadence === 'daily' || i.cadence === 'weekly') attention.push(`${w} has not run in the last 8 days`)
+  }
+  const headline = `Backups: ${phrases.join('; ')}.`
+  return { headline, lines, unread, attention: attention.length ? attention : undefined, data: r }
 }
 
 export function backupAnswer(prompt: string, s: SourceSummary): string | null {
@@ -265,7 +476,8 @@ export function certSummary(certs: CertLite[]): SourceSummary {
   const name = (c: CertLite) => c.names[0] ?? c.source
   const lines = [`${certs.length} certificates; ${soon.length} expire within 30 days; ${certs.filter(c => c.verdict === 'critical' || c.verdict === 'error').length} critical or in error.`]
   for (const c of dated.slice(0, 6)) lines.push(`${name(c)}: ${c.daysLeft} days left (${(c.notAfter ?? '').slice(0, 10)})`)
-  return { headline: `Certificates: ${certs.length}, ${soon.length} expiring within 30 days.`, lines, data: { certs, soon } }
+  const attention = soon.length ? [soon.slice(0, 4).map(c => `${name(c)} in ${c.daysLeft} days`).join(', ') + (soon.length > 4 ? `, and ${soon.length - 4} more` : '')] : undefined
+  return { headline: `Certificates: ${certs.length}, ${soon.length ? `${soon.length} expiring within 30 days` : 'none expiring within 30 days'}.`, lines, attention, data: { certs, soon } }
 }
 
 export function certAnswer(prompt: string, s: SourceSummary): string | null {
@@ -298,6 +510,10 @@ export interface CoreDeps {
   now?: number
   /** Who is asking. Given and below admin: certificates are not read (the Certificates page is admin only). */
   role?: Role
+  /** The Ceph warnings the person accepted (the Updates policy): said as known warnings, never as problems. */
+  accepted?(): string[]
+  /** What each guest is and its address, for "what's on my cluster" (lib/ai/inventory-hints.ts). */
+  appHints?(): Promise<AppHints | null>
 }
 
 export const ADMIN_ONLY_CERTS = 'The Certificates page is admin only, so I show certificates to admins only.'
@@ -308,8 +524,9 @@ export function coreSources(d: CoreDeps): AskSource[] {
     {
       id: 'cluster', title: 'Cluster', blurb: 'Proxmox nodes, guests, HA, storage, Ceph',
       aliases: /\b(cluster|nodes?|guests?|containers?|cts?|lxcs?|vms?|virtual machines?|memory|ram|cpu|storage|disk|space|ceph|ha|proxmox|pve|version|running|stopped)\b/,
-      load: async () => clusterSummary(await gatherClusterSummary(d.fetchStrict)),
+      load: async () => clusterSummary(await gatherClusterSummary(d.fetchStrict, { accepted: d.accepted })),
       answer: (p, s) => clusterAnswer(p, s.data as ClusterSummary),
+      ...(d.appHints ? { hints: d.appHints } : {}),
     },
     {
       id: 'dns', title: 'DNS', blurb: 'zones and records',
@@ -319,7 +536,7 @@ export function coreSources(d: CoreDeps): AskSource[] {
         const prov = d.facts.zoneProvider ?? {}
         const label: Record<string, string> = { godaddy: 'GoDaddy', cloudflare: 'Cloudflare' }
         const lines = d.facts.zones.map(z => `${z}${prov[z] ? ` (${label[prov[z]] ?? prov[z]})` : ''}: ${d.facts.records[z]?.length ?? 'unknown'} records`)
-        return { headline: `DNS: ${d.facts.zones.length} zones.`, lines: lines.length ? lines : ['No DNS zones are configured.'], unread: unread.length ? unread : undefined }
+        return { headline: `DNS: ${plural(d.facts.zones.length, 'zone')}.`, lines: lines.length ? lines : ['No DNS zones are configured.'], unread: unread.length ? unread : undefined }
       },
       answer: (p, s) => /\bhow many\b.*\b(zones?|domains?)\b/i.test(p) ? s.headline.replace('DNS: ', 'You have ') : null,
     },
@@ -329,7 +546,7 @@ export function coreSources(d: CoreDeps): AskSource[] {
       load: async () => {
         const n = d.facts.proxyHosts.length
         const unread = fp.includes('proxy') ? ['the proxy host list'] : undefined
-        return { headline: d.facts.hasReverseProxy ? `Proxy: ${n} hosts.` : 'Proxy: not configured.',
+        return { headline: d.facts.hasReverseProxy ? `Proxy: ${plural(n, 'host')}.` : 'Proxy: not configured.',
           lines: d.facts.hasReverseProxy ? [`${n} proxy hosts`, ...d.facts.proxyHosts.slice(0, 15)] : ['No reverse proxy is configured.'], unread }
       },
       answer: (p, s) => /\bhow many\b.*\b(proxy|hosts?|sites?|websites?)\b/i.test(p) && !s.unread ? s.lines[0] + '.' : null,

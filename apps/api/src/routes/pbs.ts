@@ -13,6 +13,7 @@
 //  forget or delete route.
 // =============================================================================
 
+import { forgetReadings } from '../lib/ai/reading-cache'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
 import { hasRole } from '../lib/roles'
@@ -114,6 +115,7 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       await svc().instances.remove(req.params.iid)
       svc().forget(req.params.iid)
+      forgetReadings({ id: 'pbs' })
       await auditCredentialUse('pbs.instance.remove', `pbs:${req.params.iid}`, { ...auditBy(actorOf(req)) })
       return { success: true }
     } catch (e) { return fail(reply, e) }

@@ -16,6 +16,7 @@
 import { plainReason, sendRefusal } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
+import { forgetReadings } from '../lib/ai/reading-cache'
 import { probeCertificate } from '../lib/clusters/tls-pin'
 import { hasRole } from '../lib/roles'
 import { detailOf, qnapService, startQnapAlerts, viewerReading } from '../lib/qnap'
@@ -102,6 +103,8 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       await svc().instances.remove(req.params.iid)
       svc().forget(req.params.iid)
+      // The assistant's kept QNAP reading named the removed NAS.
+      forgetReadings({ id: 'qnap' })
       await auditCredentialUse('qnap.instance.remove', `qnap:${req.params.iid}`, { ...auditBy(actorOf(req)) })
       return { success: true }
     } catch (e) { return fail(reply, e) }

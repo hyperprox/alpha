@@ -125,8 +125,13 @@ export interface TwoFactorView {
   admins: Array<{ uid: string; state: 'on' | 'off' | null }>
 }
 
+/** How long a kept reading may still be shown by peek (the assistant's own limit, lib/ai/when.ts). */
+const KEPT_MAX_AGE_MS = 6 * 3600_000
+
 export class NextcloudService {
   private cache = new Map<string, { at: number; r: Reading }>()
+  private inflight = new Map<string, Promise<Reading>>()
+  private failed = new Map<string, { at: number; error: unknown }>()
   private jobs = new Map<string, Job>()
   private busy = new Set<string>()
   private actionTimes = new Map<string, number[]>()
@@ -664,10 +669,35 @@ export class NextcloudService {
     return out
   }
 
+  /** The last reading taken of this Nextcloud, however old, without asking it (null when there is none). */
+  peek(id: string): { at: number; reading: Reading; stale: boolean } | null {
+    const hit = this.cache.get(id)
+    // Too old to be worth showing: the instance is read again instead.
+    if (!hit || this.now() - hit.at >= KEPT_MAX_AGE_MS) return null
+    return { at: hit.at, reading: hit.r, stale: this.now() - hit.at >= CACHE_MS }
+  }
+
+  /** The newest read of this instance that failed, and when; null when the newest read worked. */
+  lastFailure(id: string): { at: number; error: unknown } | null {
+    return this.failed.get(id) ?? null
+  }
+
   async reading(id: string, o: { fresh?: boolean } = {}): Promise<Reading> {
     const hit = this.cache.get(id)
     // A fresh read is honoured at most every FRESH_MS: a page (or a person) asking again and again cannot keep the guest busy.
     if (hit && this.now() - hit.at < (o.fresh ? FRESH_MS : CACHE_MS)) return hit.r
+    // One read of an instance at a time: a page and a question asking together share it.
+    const running = this.inflight.get(id)
+    if (running) return running
+    const p = this.readNow(id).then(
+      r => { this.failed.delete(id); return r },
+      e => { this.failed.set(id, { at: this.now(), error: e }); throw e },
+    )
+    this.inflight.set(id, p)
+    try { return await p } finally { if (this.inflight.get(id) === p) this.inflight.delete(id) }
+  }
+
+  private async readNow(id: string): Promise<Reading> {
     const m = await this.meta(id)
     let dep = m.deployment
     const missing: string[] = []
