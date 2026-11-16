@@ -44,13 +44,24 @@ const USER_FORBIDDEN = ['exec', 'auth-provider', 'tokenFile', 'client-certificat
 /** Keys that read a file or change where and how the API is reached: refused on every cluster. */
 const CLUSTER_FORBIDDEN = ['certificate-authority', 'proxy-url', 'tls-server-name']
 
-/** Every key anywhere in the document, at any depth. */
-function everyKey(v: unknown, out: string[] = [], depth = 0): string[] {
+/** At most this many values are looked at in one kubeconfig: a backstop if anything ever shares a subtree. */
+export const MAX_NODES = 10_000
+
+/** Every key anywhere in the document, at any depth, visiting at most MAX_NODES values. */
+function everyKey(v: unknown, out: string[] = [], depth = 0, seen = { n: 0 }): string[] {
+  if (++seen.n > MAX_NODES) throw new KubeconfigError('That kubeconfig is far larger than a real one.')
   if (depth > 20) throw new KubeconfigError('That kubeconfig is nested too deeply.')
-  if (Array.isArray(v)) for (const x of v) everyKey(x, out, depth + 1)
-  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { out.push(k); everyKey(x, out, depth + 1) }
+  if (Array.isArray(v)) for (const x of v) everyKey(x, out, depth + 1, seen)
+  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { out.push(k); everyKey(x, out, depth + 1, seen) }
   return out
 }
+
+/**
+ * A YAML anchor (&name) or alias (*name). A kubeconfig never needs one, and an alias repeated inside aliases
+ * (a "billion laughs") expands to billions of values from a few kilobytes. Base64, tokens and https addresses
+ * contain neither character in that position.
+ */
+const ANCHOR_OR_ALIAS = /(^|[\s:[{,?-])[&*][^\s,\]}]/m
 
 const FALSE_WORDS = /^(false|no|off|0|n)$/i
 const MERGE = 'That kubeconfig uses a YAML merge key (<<), which HyperProx does not accept. Use the K3s server\'s own k3s.yaml.'
@@ -61,6 +72,7 @@ export function parseKubeconfig(text: string): AdminLogin {
   if (text.length > MAX) throw new KubeconfigError('That is too long for a kubeconfig.')
   // A merge key copies one entry into another: what is checked and what a client reads could differ.
   if (/(^|[\s{,[-])<<\s*:/m.test(text)) throw new KubeconfigError(MERGE)
+  if (ANCHOR_OR_ALIAS.test(text)) throw new KubeconfigError('That kubeconfig uses YAML anchors or aliases (& or *), which a kubeconfig never needs and HyperProx does not accept. Use the K3s server\'s own k3s.yaml.')
   let doc: any
   try { doc = yaml.load(text, { schema: yaml.FAILSAFE_SCHEMA }) } catch { throw new KubeconfigError('That is not a kubeconfig: it does not read as YAML.') }
   if (!doc || typeof doc !== 'object' || !Array.isArray(doc.clusters) || !Array.isArray(doc.users)) throw new KubeconfigError('That is not a kubeconfig: it has no clusters and users.')

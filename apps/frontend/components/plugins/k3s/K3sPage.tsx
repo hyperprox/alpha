@@ -178,7 +178,7 @@ function ClusterView({ c, admin, onRemoved }: { c: Cluster; admin: boolean; onRe
 
           <DetailsSection count={3}>
             <section className="rounded-lg border p-3 text-sm" style={{ background: 'var(--surface)', borderColor: 'var(--border)', color: 'var(--text-soft)' }}>
-              <p>Reads use HyperProx&apos;s read-only account <code>hyperprox-reader</code> in kube-system (no secrets, no config maps). The buttons use a second account, <code>hyperprox-operator</code>, used for nothing else; admission policies in the cluster stop it from making a workload privileged or giving it host access, and from changing a node beyond cordoning.</p>
+              <p>Reads use HyperProx&apos;s read-only account <code>hyperprox-reader</code> in kube-system (no secrets, no config maps). The buttons use a second account, <code>hyperprox-operator</code>, used for nothing else; admission policies in the cluster stop it from changing what a workload runs (only its restart time) and a node beyond cordoning. A roll back uses the admin login, after you confirm it.</p>
               <p className="mt-2">The admin kubeconfig{c.hasJoinToken ? ' and the join token are' : ' is'} in the vault ({`plugin/k3s.${c.id}.admin`}), where an admin can reveal {c.hasJoinToken ? 'them' : 'it'}. The Kubernetes API stays on your network: HyperProx gives it no public name.</p>
               {c.url && <p className="mt-2 font-mono">{c.url} · CA {c.caFingerprint.slice(0, 29)}…</p>}
             </section>

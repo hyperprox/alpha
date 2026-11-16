@@ -1217,8 +1217,10 @@ its own two accounts in it, and the K3s plug-in page shows it. There is nothing 
   anything), and `hyperprox-operator`, used only for the actions you confirm. Kubernetes permissions cannot be narrowed
   to exactly those actions, so it has the rights they need (changing workloads and their size, deleting and evicting
   pods, changing nodes), and two admission policies HyperProx adds to the cluster narrow it further: through that
-  account a workload can never be made privileged or given a host path, the host's network, PID or IPC, or a
-  capability it did not already have, and on a node nothing may change except whether it takes new pods. The kubeconfig
+  account a workload's pod template cannot change at all except its restart time (so what it runs and what it may do,
+  privileges, host access, capabilities, service account, volumes, where it is scheduled, stay exactly as they are),
+  and on a node nothing may change except whether it takes new pods. **Roll back**, which does change a template, is
+  sent with the admin login instead, only after you confirm it. The kubeconfig
   kept in the vault is rebuilt from the checked parts (address, CA, client certificate); nothing else of what was read
   is kept.
 - **A privileged pod is still root on this cluster.** It cannot reach the Proxmox node, but it does control the K3s
@@ -3051,7 +3053,7 @@ The page opens with the cluster's nodes ready, pods running, pods in trouble and
 Every action is for admins, asks for the master password (once every five minutes), says what it will do before it
 runs, is checked against the cluster at that moment (a button never acts on something that has gone), is written to
 the audit log, and is sent with the separate `hyperprox-operator` account, which the admission policies (see K3s in the Catalogue above) keep from
-widening a workload's access or changing a node beyond cordoning. API tokens cannot act on a cluster.
+changing what a workload runs or a node beyond cordoning; a roll back is sent with the admin login, after you confirm it. API tokens cannot act on a cluster.
 Below admin, the page leaves out addresses (nodes, ingresses, services) and the text of events and logs. Logs are for
 admins too, as they hold whatever an app printed. **Remove** (under Details) deletes HyperProx's two accounts and two
 admission policies from the cluster and its logins from the vault; the cluster keeps running, and auto-connect does not add it

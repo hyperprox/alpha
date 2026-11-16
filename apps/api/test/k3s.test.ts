@@ -15,7 +15,7 @@ import { K3sInstanceStore, parseIndex } from '../src/lib/k3s/instances'
 import { K3sService, K3sRefusal, classifyDrain, cleanTarget } from '../src/lib/k3s/service'
 import { K3sHttpError, type Call } from '../src/lib/k3s/transport'
 import { tileOf } from '../src/plugins/k3s'
-import { readingFor, viewOf } from '../src/routes/k3s'
+import { readingFor, viewOf, scrubForViewer } from '../src/routes/k3s'
 
 const FX = path.join(__dirname, 'fixtures/k3s')
 const raw = JSON.parse(fs.readFileSync(path.join(FX, 'cluster.json'), 'utf8'))
@@ -129,6 +129,25 @@ test('a kubeconfig gives its server, CA and client certificate; dangerous or inc
 /** The fixture with one more user (and a context for it) that is never the current one. */
 const withOtherUser = (user: string) => KUBECONFIG.replace('users:\n', `users:\n- name: other\n  user:\n${user}\n`)
 
+test('YAML anchors and aliases are refused before anything is walked: a billion-laughs kubeconfig is cheap to refuse', () => {
+  const levels = ['a: &a ["x","x","x","x","x","x","x","x","x"]']
+  for (let i = 1; i < 10; i++) levels.push(`${String.fromCharCode(97 + i)}: &${String.fromCharCode(97 + i)} [${Array(9).fill('*' + String.fromCharCode(96 + i)).join(',')}]`)
+  const bomb = `apiVersion: v1\n${levels.join('\n')}\nclusters: [*j]\nusers: [*j]\n`
+  assert.ok(bomb.length < 64 * 1024)
+  const t = Date.now()
+  assert.throws(() => parseKubeconfig(bomb), /anchors or aliases/)
+  assert.ok(Date.now() - t < 1000, 'refused at once, not after expanding it')
+  assert.throws(() => parseKubeconfig(KUBECONFIG.replace('users:\n- name: default\n  user:', 'users:\n- name: default\n  user: &u')), /anchors or aliases/)
+  assert.throws(() => parseKubeconfig(KUBECONFIG.replace('    cluster: default\n', '    cluster: *c\n')), /anchors or aliases/)
+  // The real one, its base64 and its https address, never trip it.
+  assert.ok(parseKubeconfig(KUBECONFIG).cert)
+})
+
+test('a document with more values than any kubeconfig is refused by the walk itself (the backstop)', () => {
+  const many = KUBECONFIG.replace('current-context: default', `current-context: default\nextensions:\n${Array.from({ length: 10_500 }, (_, i) => `- ${i % 10}`).join('\n')}`)
+  assert.throws(() => parseKubeconfig(many), /far larger than a real one|too long/)
+})
+
 test('every entry is checked, not only the one used: proxies, turned-off checks in any spelling, exec anywhere, merge keys', () => {
   const bad = (text: string, why: RegExp) => assert.throws(() => parseKubeconfig(text), (e: any) => e instanceof KubeconfigError && why.test(e.message), why.source)
   bad(KUBECONFIG.replace(/(server: \S+)/, '$1\n    proxy-url: http://10.0.0.9:3128'), /proxy-url/)
@@ -189,10 +208,15 @@ test('the admission guard on the action account: what each policy refuses, in Ku
   }
   assert.equal(OPERATOR_USER, 'system:serviceaccount:kube-system:hyperprox-operator')
   assert.deepEqual(wp.spec.matchConstraints.resourceRules, [{ apiGroups: ['apps'], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['deployments', 'statefulsets', 'daemonsets'] }])
-  const rules = wp.spec.validations.map((v: any) => v.expression).join('\n')
-  for (const k of ['privileged', 'hostPath', 'hostNetwork', 'hostPID', 'hostIPC', 'capabilities.add']) assert.ok(rules.includes(k), k)
-  // Each one allows what the old object already had: "unless the old object already had them".
-  for (const v of wp.spec.validations.slice(0, 5)) assert.match(v.expression, /oldObject|variables\.oldC/)
+  // The whole pod spec is frozen for the action account, for all three kinds: privileged, host paths and namespaces,
+  // capabilities, privilege escalation, seccomp, sysctls, hostUsers, runtime class, node selection, tolerations,
+  // service account and new volumes are all inside it. Labels too; annotations except the restart time.
+  const ex = wp.spec.validations.map((v: any) => v.expression)
+  assert.equal(ex[0], 'object.spec.template.spec == oldObject.spec.template.spec')
+  assert.equal(ex[1], 'variables.newL == variables.oldL')
+  assert.match(ex[2], /k == 'kubectl\.kubernetes\.io\/restartedAt' \|\| \(k in variables\.oldA && variables\.oldA\[k\] == variables\.newA\[k\]\)/)
+  assert.match(ex[2], /variables\.oldA\.all\(k, k == 'kubectl\.kubernetes\.io\/restartedAt' \|\| k in variables\.newA\)/, 'an annotation cannot be removed either')
+  assert.equal(wp.spec.validations.length, 3)
   assert.deepEqual(np.spec.matchConstraints.resourceRules, [{ apiGroups: [''], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['nodes'] }])
   assert.ok(!np.spec.validations[0].expression.includes('unschedulable'), 'the one field it may change is not compared')
   for (const f of ['metadata.labels', 'metadata.annotations', 'spec.taints', 'spec.providerID']) assert.ok(np.spec.validations[0].expression.includes(`has(object.${f})`), f)
@@ -331,11 +355,15 @@ test('actions: admin only, never an API token, checked against the cluster, audi
   assert.deepEqual(fc.writes[3].body, { spec: { unschedulable: true } })
 })
 
-test('roll back restores the previous ReplicaSet\'s template, guarded by the deployment\'s uid', async () => {
-  const { svc, m, fc } = await connected()
+test('roll back restores the previous ReplicaSet\'s template, with the admin login (the action account cannot change a template)', async () => {
+  const { svc, m, fc, audits } = await connected()
   const r = await svc.act(m.id, 'rollback', { kind: 'Deployment', namespace: 'demo', name: 'web' }, admin)
   assert.match(r.done, /back to revision 1 \(nginx:1\.29-alpine\)/)
   const w = fc.writes[0]
+  assert.equal(w.who, 'admin')
+  assert.equal(audits[0].d.via, 'admin login')
+  await svc.act(m.id, 'restart', { kind: 'Deployment', namespace: 'demo', name: 'web' }, admin)
+  assert.equal(fc.writes[1].who, 'operator', 'everything else stays on the action account')
   assert.equal(w.contentType, 'application/json-patch+json')
   assert.equal(w.body[0].op, 'test')
   assert.equal(w.body[1].path, '/spec/template')
@@ -378,6 +406,10 @@ test('a reading carries the failing pods\' last lines for admins only; viewers l
   assert.ok(v.services.every(x => x.clusterIP === null && !x.external.length))
   assert.ok(v.events.every(e => e.message === ''))
   assert.ok(!JSON.stringify(v).includes('10.0.0.40'), 'no address reaches a viewer')
+  assert.ok(v.workloads.every(w => w.images.length === 0))
+  assert.equal(v.problems.find(p => p.state === 'image')!.message, 'The image cannot be pulled.')
+  assert.ok(!/docker\.io|nginx:9/.test(JSON.stringify(v)), 'no registry or image name reaches a viewer')
+  assert.equal(scrubForViewer('Readiness probe failed: Get "http://10.42.0.9:8080/ready": refused from 10.0.0.40:6443'), 'Readiness probe failed: Get "[image]": refused from [address]')
   assert.ok(readingFor(r, true).problems.some(p => p.lastLines))
   assert.equal('url' in viewOf({ id: 'k1', url: 'https://10.0.0.40:6443' }, false), false)
   const tile = tileOf([{ id: m.id, name: 'lab', reading: r, error: null }])

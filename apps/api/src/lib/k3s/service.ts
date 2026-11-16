@@ -100,6 +100,18 @@ export class K3sService {
     return this.transport({ url: s.url, ca: s.ca, token: a.operatorToken })
   }
 
+  /**
+   * The admin login (K3s's own, from the vault). Used for one action only, a roll back, which changes a pod template:
+   * the admission policy keeps the action account from ever doing that. Only after an admin confirmed it.
+   */
+  private async adminLogin(id: string) {
+    const s = await this.d.store.secrets(id)
+    const a = await this.d.store.adminSecrets(id)
+    if (!s || !a) throw new K3sRefusal('no_credential', 'This cluster\'s admin login is not in the vault. Remove it and connect it again.')
+    const l = parseKubeconfig(a.kubeconfig)
+    return this.transport({ url: s.url, ca: l.ca, cert: l.cert, key: l.key, token: l.token })
+  }
+
   private mustAdmin(actor: Actor) {
     if (actor.token) throw new K3sRefusal('token_forbidden', 'API tokens cannot change a K3s cluster; sign in as an admin.', 403)
     if (!hasRole(actor.role, 'admin')) throw new K3sRefusal('forbidden', 'Only an admin can change a K3s cluster.', 403)
@@ -236,8 +248,9 @@ export class K3sService {
         const pre = await this.drainPreview(id, target.name, actor)
         if (pre.lost.length) throw new K3sRefusal('would_lose_pods', `Draining ${target.name} would delete ${pre.lost.length} pod${pre.lost.length === 1 ? '' : 's'} that nothing makes again (${pre.lost.slice(0, 5).join(', ')}). Confirm that to go ahead.`, 409, { lost: pre.lost })
       }
-      await this.d.audit(`k3s.action.${action}`, `k3s:${id}`, { ...auditBy(actor), cluster: m.name, kind: target.kind, namespace: target.namespace ?? null, name: target.name, ...(scale !== undefined ? { replicas: scale } : {}) })
-      const op = await this.operator(id)
+      await this.d.audit(`k3s.action.${action}`, `k3s:${id}`, { ...auditBy(actor), cluster: m.name, kind: target.kind, namespace: target.namespace ?? null, name: target.name,
+        via: action === 'rollback' ? 'admin login' : 'hyperprox-operator', ...(scale !== undefined ? { replicas: scale } : {}) })
+      const op = action === 'rollback' ? await this.adminLogin(id) : await this.operator(id)
       const done = await this.run(op, action, target, scale)
       this.cache.delete(id)
       return { done }

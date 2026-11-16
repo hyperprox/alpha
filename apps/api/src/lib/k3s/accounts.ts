@@ -7,11 +7,11 @@
 //
 //    hyperprox-reader     get/list/watch on what the K3s page shows, and pod
 //                         logs. Never secrets or config maps. Every read uses it.
-//    hyperprox-operator   the rights the confirmed actions need (patch workloads
-//                         and their scale, delete and evict pods, patch nodes),
-//                         narrowed by two admission policies (below): no
-//                         privileged containers, host access or new capabilities
-//                         on a workload, nothing but cordoning on a node.
+//    hyperprox-operator   the rights restart, scale, delete pod, cordon, uncordon
+//                         and drain need, narrowed by two admission policies
+//                         (below): a workload's pod template cannot change
+//                         except its restart time, a node nothing but cordoning.
+//                         A roll back uses the admin login, after a confirmation.
 //
 //  Each gets a long-lived token Secret (type service-account-token), which
 //  Kubernetes fills in. Server-side apply makes all of it idempotent: running
@@ -37,7 +37,6 @@ export const READER_RULES = [
 export const OPERATOR_RULES = [
   { apiGroups: ['apps'], resources: ['deployments', 'statefulsets', 'daemonsets'], verbs: ['get', 'patch'] },
   { apiGroups: ['apps'], resources: ['deployments/scale', 'statefulsets/scale'], verbs: ['get', 'patch'] },
-  { apiGroups: ['apps'], resources: ['replicasets'], verbs: ['get', 'list'] },
   { apiGroups: [''], resources: ['pods'], verbs: ['get', 'list', 'delete'] },
   { apiGroups: [''], resources: ['pods/eviction'], verbs: ['create'] },
   { apiGroups: [''], resources: ['nodes'], verbs: ['get', 'patch'] },
@@ -47,23 +46,30 @@ export const OPERATOR_RULES = [
 //
 // RBAC cannot say "patch a deployment, but only its restart annotation or its template's image". So two
 // ValidatingAdmissionPolicies (admissionregistration.k8s.io/v1, Kubernetes 1.30 and later) watch every update the
-// action account sends: a workload's pod template may not gain privileged containers, host paths, the host's network,
-// PID or IPC namespaces, or added capabilities the old object did not already have; on a node, nothing may change but
-// whether it takes new pods. Made before any token exists, removed with the accounts.
+// action account sends: a workload's pod template may not change at all except its restart time (so nothing it runs
+// or may do can be widened); on a node, nothing may change but whether it takes new pods. A roll back, which does
+// change the template, is sent with the admin login after the person confirms it. Made before any token exists,
+// removed with the accounts.
 
 export const OPERATOR_USER = `system:serviceaccount:${NS}:${OPERATOR}`
 export const WORKLOAD_POLICY = 'hyperprox-operator-workloads'
 export const NODE_POLICY = 'hyperprox-operator-nodes'
 
-/** CEL: the pod spec's containers (init containers too) of `o` (object or oldObject). */
-const containers = (o: string) => `${o}.spec.template.spec.containers + (has(${o}.spec.template.spec.initContainers) ? ${o}.spec.template.spec.initContainers : [])`
-const flag = (o: string, f: string) => `(has(${o}.spec.template.spec.${f}) && ${o}.spec.template.spec.${f} == true)`
-const capsOf = (c: string) => `(has(${c}.securityContext) && has(${c}.securityContext.capabilities) && has(${c}.securityContext.capabilities.add) ? ${c}.securityContext.capabilities.add : [])`
+/** The one pod-template annotation a restart sets; nothing else in the template may change through the action account. */
+export const RESTARTED_AT = 'kubectl.kubernetes.io/restartedAt'
 const same = (path: string, empty: string) => `(has(object.${path}) ? object.${path} : ${empty}) == (has(oldObject.${path}) ? oldObject.${path} : ${empty})`
+/** CEL: two annotation maps are equal once the restart annotation is left out of both. */
+const sameButRestart = (a: string, b: string) =>
+  `${a}.all(k, k == '${RESTARTED_AT}' || (k in ${b} && ${b}[k] == ${a}[k])) && ${b}.all(k, k == '${RESTARTED_AT}' || k in ${a})`
 
 export function guardPolicies(): Array<{ path: string; body: Record<string, unknown> }> {
   const labels = { ...MANAGED_BY }
   const match = [{ name: 'is-hyperprox-operator', expression: `request.userInfo.username == '${OPERATOR_USER}'` }]
+  // The action account only ever restarts (a new restart annotation) or scales (through the scale subresource, which
+  // this policy does not match: it changes replicas and nothing else). So the pod template is frozen: its whole spec
+  // (containers, images, commands, security contexts, volumes, service account, host namespaces, node selection,
+  // runtime class, sysctls, everything), its labels, and its annotations (AppArmor and seccomp ones included) apart
+  // from the restart time. A roll back is done with the admin login instead, after the person confirms it.
   const workloads = {
     apiVersion: 'admissionregistration.k8s.io/v1', kind: 'ValidatingAdmissionPolicy', metadata: { name: WORKLOAD_POLICY, labels },
     spec: {
@@ -71,18 +77,15 @@ export function guardPolicies(): Array<{ path: string; body: Record<string, unkn
       matchConstraints: { resourceRules: [{ apiGroups: ['apps'], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['deployments', 'statefulsets', 'daemonsets'] }] },
       matchConditions: match,
       variables: [
-        { name: 'newC', expression: containers('object') },
-        { name: 'oldC', expression: containers('oldObject') },
+        { name: 'newA', expression: "has(object.spec.template.metadata) && has(object.spec.template.metadata.annotations) ? object.spec.template.metadata.annotations : {}" },
+        { name: 'oldA', expression: "has(oldObject.spec.template.metadata) && has(oldObject.spec.template.metadata.annotations) ? oldObject.spec.template.metadata.annotations : {}" },
+        { name: 'newL', expression: "has(object.spec.template.metadata) && has(object.spec.template.metadata.labels) ? object.spec.template.metadata.labels : {}" },
+        { name: 'oldL', expression: "has(oldObject.spec.template.metadata) && has(oldObject.spec.template.metadata.labels) ? oldObject.spec.template.metadata.labels : {}" },
       ],
       validations: [
-        { expression: `!variables.newC.exists(c, has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged == true) || variables.oldC.exists(c, has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged == true)`,
-          message: 'HyperProx may not make a container privileged.' },
-        { expression: `!(has(object.spec.template.spec.volumes) && object.spec.template.spec.volumes.exists(v, has(v.hostPath))) || (has(oldObject.spec.template.spec.volumes) && oldObject.spec.template.spec.volumes.exists(v, has(v.hostPath)))`,
-          message: 'HyperProx may not give a workload a host path.' },
-        { expression: `!${flag('object', 'hostNetwork')} || ${flag('oldObject', 'hostNetwork')}`, message: 'HyperProx may not put a workload on the host network.' },
-        { expression: `!${flag('object', 'hostPID')} || ${flag('oldObject', 'hostPID')}`, message: 'HyperProx may not give a workload the host PID namespace.' },
-        { expression: `!${flag('object', 'hostIPC')} || ${flag('oldObject', 'hostIPC')}`, message: 'HyperProx may not give a workload the host IPC namespace.' },
-        { expression: `variables.newC.all(c, ${capsOf('c')}.all(x, variables.oldC.exists(o, x in ${capsOf('o')})))`, message: 'HyperProx may not add a capability a container did not already have.' },
+        { expression: 'object.spec.template.spec == oldObject.spec.template.spec', message: 'HyperProx\'s action account may restart or scale a workload, never change what its pods run or are allowed to do.' },
+        { expression: 'variables.newL == variables.oldL', message: 'HyperProx\'s action account may not change a workload\'s pod labels.' },
+        { expression: sameButRestart('variables.newA', 'variables.oldA'), message: 'HyperProx\'s action account may change only the restart time in a pod template\'s annotations.' },
       ],
     },
   }

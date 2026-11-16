@@ -40,16 +40,27 @@ export function viewOf<T extends Partial<K3sMeta> & { url?: string }>(m: T, admi
   const { url: _u, ...rest } = m
   return rest as T
 }
+
+/** Addresses and image references taken out of a line a viewer reads (registry hosts, IPs, quoted image names). */
+export function scrubForViewer(text: string): string {
+  return text
+    .replace(/"[^"\s]*[./:@][^"\s]*"/g, '"[image]"')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, '[address]')
+    .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?\/[^\s"]*/gi, '[image]')
+}
+
 /**
  * What a viewer sees of a reading: the shape and the health, without the network map (node addresses, ingress hosts
- * and paths, service addresses), the pods' log lines or the events' text, which can name anything an app printed.
+ * and paths, service addresses), the pods' log lines, the events' text and the images (registries), and with addresses scrubbed from
+ * the problem messages.
  */
 export function readingFor(r: Reading, admin: boolean): Reading {
   if (admin) return r
   return {
     ...r,
     nodes: r.nodes.map(n => ({ ...n, ip: null })),
-    problems: r.problems.map(({ lastLines: _l, ...p }) => p),
+    problems: r.problems.map(({ lastLines: _l, ...p }) => ({ ...p, message: p.state === 'image' ? 'The image cannot be pulled.' : scrubForViewer(p.message) })),
+    workloads: r.workloads.map(w => ({ ...w, images: [] })),
     events: r.events.map(e => ({ ...e, message: '' })),
     services: r.services.map(x => ({ ...x, clusterIP: null, external: [] })),
     ingresses: r.ingresses.map(i => ({ ...i, hosts: [], addresses: [], paths: [] })),
