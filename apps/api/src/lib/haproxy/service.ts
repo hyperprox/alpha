@@ -21,13 +21,13 @@
 
 import type { AdapterContext, Outcome } from '../auto-connect/core'
 import { RT, RuntimeRefusal, answerProblem, checkName, checkWeight, runtimeScript, splitAnswers, type AdminState } from './runtime'
-import { buildReading, type Reading } from './model'
+import { buildReading, cleanCheck, type Reading } from './model'
 import {
   ALGORITHMS, checkAlgorithm, checkHostname, checkNewServer, createLoadBalance, persistAddServer, persistBalance, persistHealth,
   persistMaintenance, persistRemoveServer, persistWeight, CHECK_PATH_RE, type ConfigWriter, type NewServer,
 } from './dataplane'
 import { HaproxyInstanceStore, type HaproxyGuest, type HaproxyInstance } from './instances'
-import { HAPROXY_CONFIG, PUBLIC_FRONTEND } from './recipe'
+import { HAPROXY_CONFIG, PUBLIC_FRONTEND, scraperList } from './recipe'
 
 export class HaproxyRefusal extends Error {
   constructor(readonly code: string, message: string, readonly status = 400) { super(message); this.name = 'HaproxyRefusal' }
@@ -283,7 +283,7 @@ export class HaproxyService {
    * name is given). `publish` (planned by the caller before anything changes) then publishes the host name through the
    * Proxy page and DNS, pointed at HAProxy, in the background.
    */
-  async loadBalance(id: string, body: Record<string, unknown>, actor: Actor, publish?: (ip: string) => Promise<{ jobId: string }>): Promise<ActionResult & { backend: string; publishJob?: string }> {
+  async loadBalance(id: string, body: Record<string, unknown>, actor: Actor, publish?: (ip: string) => Promise<{ jobId: string }>): Promise<ActionResult & { backend: string; publishJob?: string; publishProblem?: string }> {
     const i = await this.instance(id)
     const self = await this.guestOf(i)
     const list = Array.isArray(body.guests) ? body.guests as Record<string, unknown>[] : []
@@ -311,22 +311,46 @@ export class HaproxyService {
       servers.push(checkNewServer({ name: serverNameFor(row.name, row.vmid), address, port, weight: 100, check: true }))
     }
     if (publish && !hostname) throw new HaproxyRefusal('bad_input', 'Publishing needs the host name visitors will use.')
+    // Everything that can be refused is checked before anything is saved: a refusal after the save would hide it.
+    const lbIp = self.addresses[0]
+    if (publish && !lbIp) throw new HaproxyRefusal('bad_input', 'HAProxy\'s guest has no address to point the public name at.')
     const w = await this.writer(i)
     return this.once(i.id, async () => {
       await this.d.audit('haproxy.load-balance', `haproxy:${i.id}`, { backend, servers: servers.map(x => `${x.name}=${x.address}:${x.port}`), hostname, algorithm, publish: !!publish, guest: i.guest.vmid, by: actor.email })
       try {
         await createLoadBalance(w, { backend, algorithm: algorithm!, servers, frontend: PUBLIC_FRONTEND, hostname: hostname ?? null, checkPath })
       } catch (e) { throw plainError(e) }
+      const target = hostname ? `visitors to ${hostname}` : 'every visitor no other rule matches'
+      const saved = `HAProxy now spreads ${target} across ${servers.length} servers by ${algorithm}, checking each with GET ${checkPath}. ${SAVED_NOTE}`
+      // Saved from here on: a publish that cannot start is reported beside what was saved, never in its place.
       let publishJob: string | undefined
       if (publish) {
-        const ip = self.addresses[0]
-        if (!ip) throw new HaproxyRefusal('bad_input', 'HAProxy\'s guest has no address to point the name at.')
-        publishJob = (await publish(ip)).jobId
+        try { publishJob = (await publish(lbIp!)).jobId } catch (e: any) {
+          return { ok: true, scope: 'saved', backend, publishProblem: String(e?.message ?? e).slice(0, 300),
+            message: `${saved} Publishing ${hostname} did not start, so no DNS record, proxy host or certificate was made: ${String(e?.message ?? e).slice(0, 300)}` }
+        }
       }
-      const target = hostname ? `visitors to ${hostname}` : 'every visitor no other rule matches'
       return { ok: true, scope: 'saved', backend, ...(publishJob ? { publishJob } : {}),
-        message: `HAProxy now spreads ${target} across ${servers.length} servers by ${algorithm}, checking each with GET ${checkPath}. ${SAVED_NOTE}${publishJob ? ' The public name, proxy host and certificate are being set up now.' : ''}` }
+        message: `${saved}${publishJob ? ' The public name, proxy host and certificate are being set up now.' : ''}` }
     })
+  }
+
+  /**
+   * Keep the metrics allow-list current: HyperProx's own addresses, written to the guest's hyperprox-scrapers.lst.
+   * Nothing changes when the list is the same; otherwise the new file is checked with haproxy -c (the old one is put
+   * back if that fails) and HAProxy reloads. A HAProxy without the list (not a Catalogue install) is left alone.
+   */
+  async refreshScrapers(id: string, addresses: string[]): Promise<'same' | 'reloaded' | 'not-managed'> {
+    const i = await this.instance(id)
+    await this.guestOf(i)
+    const list = scraperList(addresses)
+    if (!list.length) throw new HaproxyRefusal('bad_input', 'HyperProx has no network address to allow, so the list was left as it is.')
+    const r = await this.d.exec(i.guest, scrapersScript(list), { timeoutMs: 60_000 })
+    if (/HPX_NO_LIST/.test(r.output)) return 'not-managed'
+    if (/HPX_SAME/.test(r.output)) return 'same'
+    if (r.code !== 0 || !/HPX_RELOADED/.test(r.output)) throw new HaproxyRefusal('refused', `HAProxy's metrics allow-list could not be updated: ${cleanCheck(r.output)}`, 422)
+    await this.d.audit('haproxy.metrics-allow-list', `haproxy:${i.id}`, { guest: i.guest.vmid, addresses: list, by: 'system' })
+    return 'reloaded'
   }
 
   /** A person disconnects one: it is remembered, so auto-connect never adds it back by itself. */
@@ -418,6 +442,21 @@ export function plainError(e: unknown): unknown {
     return new HaproxyRefusal('unreachable', `HAProxy's Data Plane API did not take the change (it answered ${status}). Nothing was applied.`, 502)
   }
   return e
+}
+
+/** Rewrites hyperprox-scrapers.lst to exactly `list` (checked IPv4 addresses) when it differs, validated, then reloads. */
+export function scrapersScript(list: string[]): string {
+  const ok = scraperList(list)
+  if (ok.length !== list.length || !ok.length) throw new RuntimeRefusal('Only IPv4 addresses go in the metrics allow-list.')
+  return [
+    'F=/etc/haproxy/hyperprox-scrapers.lst',
+    '[ -f "$F" ] || { echo HPX_NO_LIST; exit 0; }',
+    "NEW=$(cat <<'HPX_LIST'", ...ok, 'HPX_LIST', ')',
+    '[ "$(cat "$F")" = "$NEW" ] && { echo HPX_SAME; exit 0; }',
+    'cp -p "$F" "$F.prev" && printf \'%s\\n\' "$NEW" > "$F.new" && chmod 644 "$F.new" && mv "$F.new" "$F"',
+    'if ! haproxy -c -q -f /etc/haproxy/haproxy.cfg 2>&1; then mv "$F.prev" "$F"; echo HPX_CHECK_FAILED; exit 1; fi',
+    'rm -f "$F.prev"; systemctl reload haproxy && echo HPX_RELOADED',
+  ].join('\n')
 }
 
 /** A server name HAProxy accepts, from a guest's name and id. */

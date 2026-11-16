@@ -68,6 +68,8 @@ function adapters(): AutoConnectAdapter[] {
         const out = await svc.autoConnect(ctx)
         // A newly connected HAProxy with the metrics frontend joins Prometheus's list.
         if (out.some(o => o.did === 'connected' || o.did === 'filled')) await (await import('../haproxy')).syncHaproxyTargets(svc).catch(() => false)
+        // HyperProx's own addresses may have changed since the last pass: the metrics allow-lists follow them.
+        else await (await import('../haproxy')).keepScrapersCurrent(svc, { log: m => appLog.warn(m) }).catch(() => ({}))
         return out
       }, pick: async (key, choice, ctx) => (await lazy.haproxy()).autoPick(key, choice, ctx) },
     settingsAdapter('unmanic', settingsDeps),
