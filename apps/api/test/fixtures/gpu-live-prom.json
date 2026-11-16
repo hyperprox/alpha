@@ -1,0 +1,39 @@
+{
+  "_note": "Prometheus instant-query answers, recorded for an invented three-node cluster. node-a: Intel graphics; node-b: AMD APU graphics; node-c: a discrete NVIDIA card. Rows are post-aggregation, as Prometheus returns them.",
+  "answers": [
+    { "has": "igpu_engines_render_3d", "result": [
+      { "metric": { "node": "node-a", "pci": "" }, "value": [1794800000, "37"] } ] },
+    { "has": "igpu_engines_video_enhance", "result": [
+      { "metric": { "node": "node-a", "pci": "" }, "value": [1794800000, "4.5"] } ] },
+    { "has": "igpu_engines_video_[0-9]", "result": [
+      { "metric": { "node": "node-a", "pci": "" }, "value": [1794800000, "62.4"] } ] },
+    { "has": "igpu_engines_.+_busy", "result": [
+      { "metric": { "node": "node-a", "pci": "" }, "value": [1794800000, "62.4"] } ] },
+    { "has": "igpu_frequency_actual", "result": [
+      { "metric": { "node": "node-a", "pci": "" }, "value": [1794800000, "949.6"] } ] },
+    { "has": "igpu_power_gpu", "result": [
+      { "metric": { "node": "node-a", "pci": "" }, "value": [1794800000, "3.84"] } ] },
+    { "has": "node_drm_gpu_busy_percent", "result": [
+      { "metric": { "__name__": "node_drm_gpu_busy_percent", "card": "card1", "instance": "192.0.2.12:9100", "job": "node", "node": "node-b" }, "value": [1794800000, "21"] } ] },
+    { "has": "node_drm_memory_vram_used_bytes", "result": [
+      { "metric": { "card": "card1", "instance": "192.0.2.12:9100", "node": "node-b" }, "value": [1794800000, "19742720"] } ] },
+    { "has": "node_drm_memory_vram_size_bytes", "result": [
+      { "metric": { "card": "card1", "instance": "192.0.2.12:9100", "node": "node-b" }, "value": [1794800000, "3221225472"] } ] },
+    { "has": "node_drm_memory_gtt_used_bytes", "result": [
+      { "metric": { "card": "card1", "instance": "192.0.2.12:9100", "node": "node-b" }, "value": [1794800000, "12832768"] } ] },
+    { "has": "node_drm_memory_gtt_size_bytes", "result": [
+      { "metric": { "card": "card1", "instance": "192.0.2.12:9100", "node": "node-b" }, "value": [1794800000, "6768021504"] } ] },
+    { "has": "node_hwmon_temp_celsius", "result": [
+      { "metric": { "node": "node-b" }, "value": [1794800000, "78.5"] } ] },
+    { "has": "nvidia_smi_utilization_gpu_ratio", "result": [
+      { "metric": { "node": "node-c", "uuid": "00000000-0000-0000-0000-000000000001" }, "value": [1794800000, "0.18"] } ] },
+    { "has": "nvidia_smi_memory_used_bytes", "result": [
+      { "metric": { "node": "node-c", "uuid": "00000000-0000-0000-0000-000000000001" }, "value": [1794800000, "3221225472"] } ] },
+    { "has": "nvidia_smi_memory_total_bytes", "result": [
+      { "metric": { "node": "node-c", "uuid": "00000000-0000-0000-0000-000000000001" }, "value": [1794800000, "8589934592"] } ] },
+    { "has": "nvidia_smi_temperature_gpu", "result": [
+      { "metric": { "node": "node-c", "uuid": "00000000-0000-0000-0000-000000000001" }, "value": [1794800000, "47"] } ] }
+  ],
+  "unlabelled": { "has": "igpu_engines", "result": [
+    { "metric": { "instance": "192.0.2.11:8081", "job": "intel-gpu" }, "value": [1794800000, "9"] } ] }
+}

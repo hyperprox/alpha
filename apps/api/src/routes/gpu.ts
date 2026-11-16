@@ -12,6 +12,8 @@ import { getProviderCredentials } from '../lib/credentials'
 import { ProxmoxClient } from '../lib/proxmox-client'
 import { hardware, gpuBadges } from '../lib/hardware'
 import { answerData } from '../lib/http/answer'
+import { livePromQuery } from '../lib/clusters/overview'
+import { readGpuLive, gpuGuests, withLiveAndGuests, withNodeFromAddress, type LiveFigures, type GuestsByKind } from '../lib/gpu-live'
 
 export type GPUType = 'nvidia' | 'amd' | 'intel-igpu' | 'intel-arc' | 'unknown'
 
@@ -74,25 +76,44 @@ export const gpuRoutes: FastifyPluginAsync = async (fastify) => {
   // GET /api/gpu/:node/metrics-status — is its exporter answering
   fastify.get('/:node/metrics-status', async (req: any, r) => answerData(r, async () => {
     const client = await getProxmoxClient()
-    return statusFor(req.params.node, client, await nodeAddresses(client))
+    const addrs = await nodeAddresses(client)
+    return statusFor(req.params.node, client, addrs, await extras(client, [req.params.node], addrs))
   }))
 
   // GET /api/gpu/all/metrics-status — every node
   fastify.get('/all/metrics-status', async (_, r) => answerData(r, async () => {
     const client = await getProxmoxClient()
     const [nodes, addrs] = await Promise.all([client.getNodes(), nodeAddresses(client)])
-    return Promise.all(nodes.map((n: any) => statusFor(n.node, client, addrs)))
+    const names: string[] = nodes.map((n: any) => n.node)
+    const found = await Promise.all(names.map(n => detectNodeGPUs(n, client)))
+    const withGpu = names.filter((_, i) => found[i].length > 0)
+    const more = await extras(client, withGpu, addrs)
+    return Promise.all(names.map((n, i) => statusFor(n, client, addrs, more, found[i])))
   }))
 }
 
-async function statusFor(node: string, client: ProxmoxClient, addrs: Record<string, string>) {
-  const gpus = await detectNodeGPUs(node, client)
+interface Extras { live: LiveFigures | null; guests: Record<string, GuestsByKind> | null }
+
+/** Live figures and guests, read once for every node asked about. Either is null when it could not be read. */
+async function extras(client: ProxmoxClient, nodes: string[], addrs: Record<string, string>): Promise<Extras> {
+  const byAddr: Record<string, string> = {}
+  for (const [n, a] of Object.entries(addrs)) byAddr[a] = n
+  const [live, guests] = await Promise.all([
+    readGpuLive(withNodeFromAddress(livePromQuery, byAddr)).catch(() => null),
+    nodes.length ? gpuGuests(client, nodes).catch(() => null) : Promise.resolve(null),
+  ])
+  return { live, guests }
+}
+
+async function statusFor(node: string, client: ProxmoxClient, addrs: Record<string, string>, more: Extras, found?: NodeGPU[]) {
+  const gpus = found ?? await detectNodeGPUs(node, client)
   if (!gpus.length) return { node, reachable: false, gpus: [], install: null }
   const gpu = gpus.find(g => EXPORTER_PORTS[g.type]) ?? gpus[0]
   const port = EXPORTER_PORTS[gpu.type]
-  if (!port) return { node, reachable: false, gpus, port: null, install: SETUP_HINT }
+  const rich = (list: NodeGPU[], reachable: boolean) => withLiveAndGuests(list, reachable ? more.live : null, more.guests)
+  if (!port) return { node, reachable: false, gpus: rich(gpus, false), port: null, install: SETUP_HINT }
   const reachable = await reachableAt(addrs[node] ?? node, port)
-  return { node, reachable, gpus, port, install: reachable ? null : SETUP_HINT }
+  return { node, reachable, gpus: rich(gpus, reachable), port, install: reachable ? null : SETUP_HINT }
 }
 
 /** Node name to the address it answers on: names do not reliably resolve from a container. */

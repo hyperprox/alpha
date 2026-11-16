@@ -18,11 +18,24 @@ function gpuFull() {
   }
 }
 
+const DEMO_GPU_GUESTS: Record<string, Array<{ vmid: number; name: string; type: 'lxc'; status: string }>> = {
+  'pve-b': [{ vmid: 203, name: 'immich', type: 'lxc', status: 'running' }],
+  'pve-c': [{ vmid: 301, name: 'plex', type: 'lxc', status: 'running' }, { vmid: 303, name: 'unmanic', type: 'lxc', status: 'running' }],
+}
+
+function demoGpuLive(node: string, vendor: string) {
+  const blank = { engines: null, freqMHz: null, powerW: null, vramUsed: null, vramTotal: null, gttUsed: null, gttTotal: null, tempC: null, note: null }
+  if (vendor === 'intel') return { ...blank, kind: 'intel', busy: Math.round(wobble(34, 14, node + 'ib')), engines: { render: Math.round(wobble(12, 8, node + 'ir')), video: Math.round(wobble(34, 14, node + 'iv')), enhance: Math.round(wobble(4, 3, node + 'ie')) }, freqMHz: Math.round(wobble(900, 200, node + 'if')), powerW: +wobble(4.2, 1.2, node + 'ip').toFixed(1) }
+  if (vendor === 'amd') return { ...blank, kind: 'amd', busy: Math.round(wobble(9, 6, node + 'ab')), vramUsed: 402653184, vramTotal: 2147483648, gttUsed: 188743680, gttTotal: 7516192768, tempC: Math.round(wobble(52, 4, node + 'at')) }
+  return { ...blank, kind: 'nvidia', busy: Math.round(wobble(18, 8, 'gpu')), vramUsed: 3156213760, vramTotal: 12884901888, tempC: Math.round(wobble(48, 3, node + 'nt')) }
+}
+
 export function gpuStatus() {
   return NODES.map(n => ({
     node: n.node, reachable: true, port: n.gpu?.vendor === 'nvidia' ? 9835 : n.gpu?.vendor === 'intel' ? 8081 : 9100, install: null,
     gpus: n.gpu ? [{ node: n.node, type: n.gpu.vendor === 'nvidia' ? 'nvidia' : n.gpu.vendor === 'intel' ? 'intel-igpu' : 'amd-igpu', vendor: n.gpu.vendor,
-      vendorName: n.gpu.vendor === 'nvidia' ? 'NVIDIA' : n.gpu.vendor === 'intel' ? 'Intel' : 'AMD', deviceName: n.gpu.name, deviceId: n.gpu.deviceId, pciId: n.gpu.pci, dedicated: n.gpu.dedicated }] : [],
+      vendorName: n.gpu.vendor === 'nvidia' ? 'NVIDIA' : n.gpu.vendor === 'intel' ? 'Intel' : 'AMD', deviceName: n.gpu.name, deviceId: n.gpu.deviceId, pciId: n.gpu.pci, dedicated: n.gpu.dedicated,
+      live: demoGpuLive(n.node, n.gpu.vendor), guests: DEMO_GPU_GUESTS[n.node] ?? [] }] : [],
   }))
 }
 

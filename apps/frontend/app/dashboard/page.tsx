@@ -21,6 +21,9 @@ import {
   formatBinary as formatBytes, formatBinaryPair, summarizeStorage, summarizeHA, powerStatus, serviceState, cephHealthWord,
   type ServiceState,
 } from '@/components/dashboard/summaries'
+import { CardTitle } from '@/components/dashboard/CardTitle'
+import { GPUPanel, type GPUInfoFull } from '@/components/dashboard/GpuCard'
+import type { NodeGPUStatus } from '@/lib/gpu-card'
 import { buildAttention, attentionTitle, attentionItems, type AttnItem } from '@/components/dashboard/attention'
 
 // Types
@@ -33,8 +36,6 @@ interface GPUInfo  { name: string; vram_total: number; vram_used: number; gpu_ut
 interface ClusterTotals { cpu_used: number; cpu_total: number; cpu_pct: number; mem_used: number; mem_total: number; mem_pct: number; disk_used: number; disk_total: number; disk_pct: number }
 interface ServiceInfo { connected: boolean; state?: ServiceState; url?: string; version?: string; message?: string; total?: number; enabled?: number; disabled?: number; ssl?: number; expiring?: number }
 
-interface GPUConsumer { pid: number; vram_mb: number; process: string; ct_id: string|null; ct_name: string|null; vram_pct: number }
-interface GPUInfoFull { name: string; vram_total: number; vram_used: number; vram_free: number; gpu_util: number; temp: number; power_draw: number; power_limit: number; vram_pct: number; power_pct: number; consumers: GPUConsumer[] }
 interface NodeNetStats { node: string; netin: number; netout: number; netin_mb: number; netout_mb: number }
 interface BwLink {
   id: string; label: string; kind: 'wan' | 'lan'
@@ -54,29 +55,8 @@ interface ClusterPower {
 interface BandwidthData { links: BwLink[]; unavailable: Array<{ plugin: string; reason: string }>; at: number }
 interface CephIOStats { read_bps: number; write_bps: number; read_ops: number; write_ops: number }
 interface NetworkData { nodes: NodeNetStats[]; ceph_io: CephIOStats|null; total_in: number; total_out: number }
-interface NodeGPUStatus {
-  node: string
-  reachable: boolean
-  gpus: { type: string; vendorName: string; deviceName: string; dedicated: boolean }[]
-  port: number
-  install: { title: string; steps: string[] } | null
-}
 interface FastData { nodes: PVENode[]; vms: PVEVM[]; gpu: GPUInfoFull|null; cluster: ClusterTotals; network?: NetworkData; gpuStatus?: NodeGPUStatus[]; storage?: any[]; clusterName?: string|null }
 interface SlowData { ceph: CephStatus|null; osds: CephOSD[]; ha: HAEntry[]; services: { npm: ServiceInfo; grafana?: ServiceInfo; prometheus?: ServiceInfo } }
-
-// One title treatment for every card: the kit's uppercase condensed heading, led by a status dot in the
-// card's colour. The name itself never takes the colour, so a card titled in green or red is never mistaken for
-// a card reporting green or red; the badge beside it says the state in words.
-function CardTitle({ title, accent = ACCENT, badge, right }: { title: string; accent?: string; badge?: React.ReactNode; right?: React.ReactNode }) {
-  return (
-    <h2 className={vs.panelTitle} style={{ alignItems: 'center' }}>
-      <span aria-hidden className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:accent, boxShadow:`0 0 8px ${alpha(accent, 60)}` }}/>
-      <span className="truncate min-w-0">{title}</span>
-      {badge}
-      {right && <span className={vs.panelActs} style={{ fontFamily:'var(--font-mono)', fontSize:12 }}>{right}</span>}
-    </h2>
-  )
-}
 
 // Panel chrome — every card wears the same frame, so the eye can stop parsing
 // borders and start reading numbers.
@@ -185,183 +165,6 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, ha, power, stamp }: 
       )}
 
     </Panel>
-  )
-}
-
-// Every GPU, one row each, "node · name" first so a cut-off row still says where it is. The full name is the
-// row's title. Load figures for each GPU are on the Command center and in Grafana; this says which are watched.
-function GpuList({ rows }: { rows: Array<{ node: string; name: string; reachable: boolean }> }) {
-  if (!rows.length) return null
-  return (
-    <div className="space-y-1.5 mt-3">
-      {rows.map((r, i) => (
-        <div key={`${r.node}-${i}`} className="flex items-center gap-2 text-xs font-mono min-w-0">
-          <span className="truncate min-w-0 flex-1" style={{ color:'var(--text)' }} title={`${r.node}: ${r.name}`}>{r.node} · {r.name.replace(/^(NVIDIA|Intel|AMD)\s+/i, '')}</span>
-          {r.reachable
-            ? <span className="shrink-0 inline-flex items-center gap-1" style={{ color:'var(--good)' }}><CheckIcon size={12}/> monitored</span>
-            : <Link href="/settings/setup-checklist" className="shrink-0 font-semibold" style={{ color:'var(--accent)' }}>not monitored · set up</Link>}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// GPU panel — dynamic, supports NVIDIA/AMD/Intel iGPU/Arc
-function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: NodeGPUStatus[] }) {
-  const allGPUs = (gpuStatus ?? []).filter(n => n.gpus.length > 0)
-  const anyReachable = allGPUs.some(n => n.reachable)
-  // Vendor colours identify the maker and must not borrow the status palette: red for AMD read as a fault.
-  const gpuTypeColors: Record<string, string> = { 'nvidia': 'var(--good)', 'amd': 'var(--violet-2)', 'intel-igpu': 'var(--accent-2)', 'intel-arc': 'var(--accent)' }
-  const gpuTypeLabels: Record<string, string> = { 'nvidia': 'NVIDIA', 'amd': 'AMD', 'intel-igpu': 'Intel iGPU', 'intel-arc': 'Intel Arc' }
-
-  // No GPUs detected at all
-  if (allGPUs.length === 0) return (
-    <section className={vs.panel} aria-label="GPU">
-      <CardTitle title="GPU" accent="var(--text-dimmer)"/>
-      <p className={vs.empty}>No GPU detected</p>
-    </section>
-  )
-
-  // NVIDIA with full telemetry — show detailed panel
-  if (gpu) {
-    const accent = 'var(--violet)'
-    const vramC  = gpu.vram_pct  > 90 ? 'var(--crit-2)' : gpu.vram_pct  > 75 ? 'var(--warn-2)' : accent
-    const powerC = gpu.power_pct > 80 ? 'var(--crit-2)' : gpu.power_pct > 60 ? 'var(--warn-2)' : 'var(--good)'
-    const tempC  = gpu.temp > 80 ? 'var(--crit-2)' : gpu.temp > 65 ? 'var(--warn-2)' : 'var(--good)'
-    const consumers = gpu.consumers ?? []
-    const unaccounted = gpu.vram_used - consumers.reduce((s, c) => s + c.vram_mb, 0)
-    return (
-      <section className={vs.panel}>
-        <div className="flex items-center justify-between mb-4">
-          <CardTitle title="GPU" accent={accent}/>
-          <span className="text-xs font-mono text-gray-500 truncate ml-2" style={{ maxWidth:140 }}>{gpu.name.replace('NVIDIA ','')}</span>
-        </div>
-        <div className="mb-3">
-          <div className="flex justify-between text-xs font-mono mb-1">
-            <span className="text-gray-500">VRAM</span>
-            <span style={{ color:vramC }}>{gpu.vram_used} / {gpu.vram_total} MB</span>
-          </div>
-          <div className="h-3 rounded-full overflow-hidden flex" style={{ background:'var(--text-faint)' }}>
-            {consumers.map((c, i) => {
-              const pct = (c.vram_mb / gpu.vram_total) * 100
-              const colors = ['var(--violet)','var(--accent)','var(--good)','var(--warn)','var(--crit-soft)']
-              return <div key={c.pid} title={`${c.ct_name ?? c.process}: ${c.vram_mb}MB`} className="h-full" style={{ width:`${pct}%`, background:colors[i % colors.length] }}/>
-            })}
-            {unaccounted > 0 && <div className="h-full" style={{ width:`${(unaccounted/gpu.vram_total)*100}%`, background:'var(--text-dimmer)' }}/>}
-          </div>
-        </div>
-        {consumers.length > 0 && (
-          <div className="space-y-1 mb-4">
-            {consumers.map((c, i) => {
-              const colors = ['var(--violet)','var(--accent)','var(--good)','var(--warn)','var(--crit-soft)']
-              return (
-                <div key={c.pid} className="flex items-center gap-2 text-xs font-mono">
-                  <div className="w-2 h-2 rounded-sm" style={{ background:colors[i % colors.length] }}/>
-                  <span style={{ color:'var(--text-bright)' }}>{c.ct_name ?? c.process}</span>
-                  {c.ct_id && <span className="text-gray-600">CT {c.ct_id}</span>}
-                  <span className="ml-auto" style={{ color:colors[i % colors.length] }}>{c.vram_mb} MB ({c.vram_pct}%)</span>
-                </div>
-              )
-            })}
-          </div>
-        )}
-        <div className="flex flex-wrap justify-around items-start gap-y-3">
-          <Speedometer value={gpu.gpu_util}   label="Load"  size={92} color={accent}/>
-          <Speedometer value={gpu.vram_pct}   label="VRAM"  size={92} color={vramC}
-            caption={`${gpu.vram_used} MB`}/>
-          <Speedometer value={gpu.temp}       label="Temp"  size={92} unit="°" color={tempC} max={100}/>
-          <Speedometer value={gpu.power_draw} label="Power" size={92} unit="W" color={powerC}
-            max={gpu.power_limit || 250} caption={`limit ${gpu.power_limit}W`}/>
-        </div>
-        {/* The card above is the first NVIDIA GPU; every other GPU in the cluster gets a row here. */}
-        <GpuList rows={allGPUs.flatMap(n => n.gpus.map(g => ({ node: n.node, name: g.deviceName, reachable: n.reachable, nv: g.type === 'nvidia' })))
-          .filter((r, i, all) => !(r.nv && all.findIndex(x => x.nv) === i)).map(({ nv: _nv, ...r }) => r)}/>
-      </section>
-    )
-  }
-
-  // Non-NVIDIA with reachable exporter — show active state
-  if (anyReachable) {
-    const color = 'var(--good)'
-    return (
-      <section className={vs.panel}>
-        <div className="mb-3">
-          <CardTitle title="GPU" accent={color}
-            badge={<span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${alpha(color, 8)}`, color, border:`1px solid ${alpha(color, 19)}` }}>ACTIVE</span>}/>
-        </div>
-        <div className="space-y-2">
-          {allGPUs.filter(n=>n.reachable).flatMap(n => n.gpus.map((g, i) => {
-            const gpuColor = gpuTypeColors[g.type] ?? 'var(--violet)'
-            return (
-              <div key={`${n.node}-${i}`} className="flex items-center gap-2 p-2 rounded min-w-0" style={{ background:'var(--ground-deep)', border:`1px solid ${alpha(gpuColor, 13)}` }}>
-                <span className="text-xs font-mono truncate min-w-0 flex-1" title={`${n.node}: ${g.deviceName}`}><b style={{ color:gpuColor }}>{n.node}</b> <span className="text-gray-500">· {g.deviceName}</span></span>
-                {/* Status is green whatever the vendor: the vendor colour only tints the node name and border. */}
-                <span className="shrink-0 inline-flex items-center gap-1 text-xs font-mono" style={{ color:'var(--good)' }}><CheckIcon size={12}/> active</span>
-              </div>
-            )
-          }))}
-          {allGPUs.filter(n=>!n.reachable).flatMap(n => n.gpus.map((g, i) => (
-            <div key={`${n.node}-${i}`} className="flex items-center gap-2 p-2 rounded min-w-0" style={{ background:'var(--ground-deep)', border:'1px solid color-mix(in srgb, var(--warn-2) 13%, transparent)' }}>
-              <span className="text-xs font-mono truncate min-w-0 flex-1" title={`${n.node}: ${g.deviceName}`}><b style={{ color:'var(--warn-2)' }}>{n.node}</b> <span className="text-gray-500">· {g.deviceName}</span></span>
-              <Link href="/settings/setup-checklist" className="shrink-0 text-xs font-mono font-semibold" style={{ color:'var(--warn-2)' }}>not monitored · set up</Link>
-            </div>
-          )))}
-        </div>
-        <div className="text-sm text-gray-600 mt-3">View detailed metrics in Monitoring → Grafana</div>
-      </section>
-    )
-  }
-
-  // No exporter reachable — show install instructions
-  const uniqueSteps = allGPUs[0]?.install?.steps ?? []
-  const allSameSteps = allGPUs.every(n => JSON.stringify(n.install?.steps) === JSON.stringify(uniqueSteps))
-  return (
-    <section className={vs.panel}>
-      <div className="mb-3">
-        <CardTitle title="GPU" accent="var(--warn-2)" badge={<>
-          {allGPUs.every(n => !n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>EXPORTER NOT INSTALLED</span>}
-          {allGPUs.some(n => n.reachable) && !allGPUs.every(n => n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>PARTIAL</span>}
-        </>}/>
-      </div>
-      <div className="flex gap-2 flex-wrap mb-3">
-        {allGPUs.map(n => {
-          const gpu0 = n.gpus[0]
-          const color = gpuTypeColors[gpu0.type] ?? 'var(--violet)'
-          return <span key={n.node} className="text-xs font-mono px-2 py-1 rounded" style={{ background:`${alpha(color, 8)}`, color, border:`1px solid ${alpha(color, 19)}` }}>{n.node} — {gpuTypeLabels[gpu0.type] ?? gpu0.type}</span>
-        })}
-      </div>
-      {allSameSteps ? (
-        <div className="space-y-1.5">
-          <div className="text-sm text-gray-500 mb-1">Run on each Proxmox node:</div>
-          {uniqueSteps.map((step, i) => {
-            const isCmd = ['docker','apt','curl','systemctl'].some(p => step.startsWith(p))
-            return (
-              <div key={i} className="flex items-center gap-2">
-                <span className="text-xs font-mono flex-1 truncate" style={{ color: isCmd ? 'var(--accent)' : 'var(--text-muted)' }}>{step}</span>
-                {isCmd && <button onClick={() => { try { navigator.clipboard.writeText(step) } catch { const el = document.createElement('textarea'); el.value=step; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) } }} className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ background:'color-mix(in srgb, var(--accent) 8%, transparent)', color:'var(--accent)', border:'1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}>copy</button>}
-              </div>
-            )
-          })}
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {allGPUs.map(n => n.install && (
-            <div key={n.node} className="rounded p-2" style={{ background:'var(--ground-deep)', border:'1px solid var(--text-faint)' }}>
-              <div className="text-xs font-mono text-gray-500 mb-1">{n.node}:</div>
-              {n.install.steps.map((step, i) => {
-                const isCmd = ['docker','apt','curl','systemctl'].some(p => step.startsWith(p))
-                return (
-                  <div key={i} className="flex items-center gap-2">
-                    <span className="text-xs font-mono flex-1 truncate" style={{ color: isCmd ? 'var(--accent)' : 'var(--text-muted)' }}>{step}</span>
-                    {isCmd && <button onClick={() => { try { navigator.clipboard.writeText(step) } catch { const el = document.createElement('textarea'); el.value=step; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) } }} className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ background:'color-mix(in srgb, var(--accent) 8%, transparent)', color:'var(--accent)', border:'1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}>copy</button>}
-                  </div>
-                )
-              })}
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
   )
 }
 
@@ -798,6 +601,20 @@ export default function DashboardView() {
     }
     poll()
     const id = setInterval(poll, 5000)
+    return () => { alive = false; clearInterval(id) }
+  }, [])
+
+  // The GPU card's figures (load, clocks, temperature, guests) are not on the WebSocket feed: ask again every 15 seconds,
+  // and keep the last answer when one try fails.
+  useEffect(() => {
+    let alive = true
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch('/api/gpu/all/metrics-status')
+        const j = await r.json()
+        if (alive && j?.success && Array.isArray(j.data)) setFast(prev => (prev ? { ...prev, gpuStatus: j.data } : prev))
+      } catch { /* the card keeps its last reading */ }
+    }, 15_000)
     return () => { alive = false; clearInterval(id) }
   }, [])
 
