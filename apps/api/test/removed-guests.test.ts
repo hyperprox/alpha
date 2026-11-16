@@ -424,20 +424,23 @@ test('the config probe: only "does not exist" on every node is missing; a 403 or
   assert.deepEqual(r.state().removed, {})
 })
 
-test('mass disappearance: many guests missing at once does not count, and says so once', async () => {
+test('mass disappearance: a token that can no longer see guests keeps the alert and decides nothing', async () => {
   const many = [100, 101, 102, 103, 104, 105, 106].map(v => guest(v, `g${v}`))
   const few = many.slice(0, 2)
   const w = world()
   w.jobs = []
-  const r = svc(w, [ok(0, many), ...passes(5, few, 5 * MIN), ok(60 * MIN, many)])
-  await tickN(r, 6)
+  // Proxmox will not say they are gone (a token that lost VM.Audit answers 403): they stay "cannot see".
+  const r = svc(w, [ok(0, many), ...passes(8, few, 5 * MIN), ok(60 * MIN, many)], [], 'unknown')
+  await tickN(r, 9)
   assert.deepEqual(r.state().removed, {}, 'none of them is removed')
   assert.deepEqual(r.state().absent, {}, 'no absence even started')
   assert.match(r.state().lastRead?.why ?? '', /5 guests seen before are missing at once/)
+  assert.deepEqual(r.state().massVanish?.names, ['g102', 'g103', 'g104', 'g105', 'g106'])
   const sent = r.published.filter(e => e.type === 'removed_guests.cannot_see')
-  assert.equal(sent.length, 1)
+  assert.equal(sent.length, 1, 'said once, and kept')
   assert.match(sent[0].title, /HyperProx can't see 5 guests it saw before/)
   assert.match(sent[0].lines.join(' '), /token's permissions/)
+  assert.match(sent[0].lines.join(' '), /g102, g103, g104, g105, g106/)
   await r.s.tick()
   assert.equal(r.published.filter(e => e.type === 'removed_guests.cannot_see' && e.resolved).length, 1, 'cleared when they are seen again')
   // Over a fifth, even under four: two of five is not a removal either; one of five still is a normal absence.
@@ -447,6 +450,33 @@ test('mass disappearance: many guests missing at once does not count, and says s
   assert.equal(s.lastRead?.ok, false)
   s = step(s, { read: ok(10 * MIN, five.slice(1)), candidates: [] })
   assert.equal(s.lastRead?.ok, true); assert.equal(s.absent['100'].reads, 1)
+})
+
+test('mass disappearance: a real bulk delete of five guests is still detected, the usual way, with no alert', async () => {
+  const many = [100, 101, 102, 103, 104, 105, 106].map(v => guest(v, `g${v}`))
+  const few = many.slice(0, 2)
+  const w = world()
+  w.jobs = []
+  const r = svc(w, [ok(0, many), ...passes(4, few, 5 * MIN)], [], 'missing')
+  await tickN(r, 2)
+  assert.deepEqual(Object.keys(r.state().removed), [], 'not on the first read: still three reads over ten minutes')
+  assert.deepEqual(Object.keys(r.state().absent).sort(), ['102', '103', '104', '105', '106'])
+  await tickN(r, 3)
+  assert.deepEqual(Object.keys(r.state().removed).sort(), ['102', '103', '104', '105', '106'])
+  assert.ok(!r.published.some(e => e.type === 'removed_guests.cannot_see'))
+  // Mixed: one proven gone, four Proxmox will not answer for. The four keep the read a "cannot see" one and the
+  // alert names only them; the proven one is still counted the usual way.
+  const mixed = svc(world(), [ok(0, many), ...passes(4, few, 5 * MIN)], [], 'missing')
+  ;(mixed.s as any).d.probeConfig = async (vmid: number) => (vmid >= 103 ? 'unknown' : 'missing')
+  ;(mixed.s as any).d.holdings.pve.backupJobs = async () => []
+  await tickN(mixed, 5)
+  assert.match(mixed.state().massVanish ? mixed.state().massVanish!.names.join(',') : '', /^g103,g104,g105,g106$/)
+  assert.ok(mixed.state().absent['102'] || mixed.state().removed['102'], 'the proven one is counted the usual way')
+  assert.ok(!mixed.state().removed['103'] && !mixed.state().absent['103'], 'one Proxmox will not answer for is not')
+  const sent = mixed.published.filter(e => e.type === 'removed_guests.cannot_see')
+  assert.equal(sent.length, 1)
+  assert.match(sent[0].lines.join(' '), /g103, g104, g105, g106/)
+  assert.ok(!sent[0].lines.join(' ').includes('g102'))
 })
 
 test('addresses: matched only against a scan taken after the removal and the newest guest; a configured address of a current guest never; host keys never', async () => {

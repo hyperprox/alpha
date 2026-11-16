@@ -59,19 +59,23 @@ export interface DetectorState {
   removed: Record<string, RemovedGuest>
   lastRead: { at: number; ok: boolean; why: string | null } | null
   /** The last read had too many seen guests missing at once (see MASS_COUNT): how many, and since when. */
-  massVanish?: { count: number; since: number } | null
+  massVanish?: { count: number; since: number; names: string[] } | null
 }
 
 export const EMPTY_STATE: DetectorState = { seen: {}, absent: {}, removed: {}, lastRead: null, massVanish: null }
 
-/** How many guests seen before are missing from this read, and whether that is too many to be removals. */
-export function vanished(s: DetectorState, read: ClusterRead): { count: number; mass: boolean } {
-  if (!read.ok) return { count: 0, mass: false }
+/**
+ * The guests seen before that are newly missing from this read (not already being counted as absent), less those
+ * whose config Proxmox has proven gone on every node (`proven`), and whether that many is too many to be removals.
+ */
+export function vanished(s: DetectorState, read: ClusterRead, proven: Set<number> = new Set()): { count: number; mass: boolean; ids: number[] } {
+  if (!read.ok) return { count: 0, mass: false, ids: [] }
   const here = new Set(read.guests.map(g => g.vmid))
   const seen = Object.values(s.seen)
-  const count = seen.filter(g => !here.has(g.vmid)).length
+  const ids = seen.filter(g => !here.has(g.vmid) && !s.absent[String(g.vmid)] && !proven.has(g.vmid)).map(g => g.vmid)
+  const count = ids.length
   // One guest gone is never "mass", however small the cluster: the share rule needs at least two at once.
-  return { count, mass: count > MASS_COUNT || (count >= 2 && count / seen.length > MASS_SHARE) }
+  return { count, mass: count > MASS_COUNT || (count >= 2 && count / seen.length > MASS_SHARE), ids }
 }
 
 /** One look at the cluster. `ok: false` is a read that failed: it is recorded and decides nothing. */
@@ -92,6 +96,11 @@ export interface StepInput {
   busy?: Set<number>
   /** When Proxmox's own task log says the guest was destroyed (null when not in the log). */
   destroyedAt?: (vmid: number) => number | null
+  /**
+   * Guests that vanished in a mass read whose config Proxmox answered "does not exist" on every node: really gone,
+   * so they leave the mass test and are counted absent the usual way (still three reads over ten minutes).
+   */
+  proven?: Set<number>
 }
 
 const uniq = (a: string[]) => [...new Set(a.filter(Boolean))].slice(0, 16)
@@ -102,8 +111,9 @@ export function readCounts(r: ClusterRead): boolean {
 }
 
 /** The guests that would be absent on this read (needed before step(), to know whether to read the task log). */
-export function absentCandidates(s: DetectorState, read: ClusterRead, candidates: Candidate[]): number[] {
-  if (!readCounts(read) || !read.ok || vanished(s, read).mass) return []
+export function absentCandidates(s: DetectorState, read: ClusterRead, candidates: Candidate[], proven: Set<number> = new Set()): number[] {
+  if (!readCounts(read) || !read.ok) return []
+  if (vanished(s, read, proven).mass) return [...proven].filter(v => !s.removed[String(v)])
   const here = new Set(read.guests.map(g => g.vmid))
   const ids = new Set<number>([...Object.values(s.seen).map(g => g.vmid), ...candidates.map(c => c.vmid)])
   return [...ids].filter(v => !here.has(v) && !s.removed[String(v)])
@@ -119,11 +129,14 @@ export function step(prev: DetectorState, input: StepInput): DetectorState {
     s.lastRead = { at: r.at, ok: false, why: r.nodes.length ? `not every node is online (${down.join(', ')})` : 'no node was listed' }
     return s
   }
-  const v = vanished(s, r)
+  const proven = input.proven ?? new Set<number>()
+  const v = vanished(s, r, proven)
   if (v.mass) {
-    // Nothing is learned from it: no absence advances and nothing seen is replaced by a smaller picture.
+    // Nothing is learned about the guests HyperProx cannot account for: no absence of theirs advances, and nothing
+    // seen is replaced by a smaller picture. Only those proven gone are counted, the usual way.
     s.lastRead = { at: r.at, ok: false, why: `${v.count} guests seen before are missing at once` }
-    s.massVanish = { count: v.count, since: s.massVanish?.since ?? r.at }
+    s.massVanish = { count: v.count, since: s.massVanish?.since ?? r.at, names: v.ids.map(id => s.seen[String(id)]?.name ?? String(id)).slice(0, 20) }
+    for (const vmid of proven) if (s.seen[String(vmid)] && !s.removed[String(vmid)]) countAbsent(s, vmid, r.at, input, undefined)
     return s
   }
   s.massVanish = null
@@ -152,27 +165,31 @@ export function step(prev: DetectorState, input: StepInput): DetectorState {
 
   const watched = new Set<number>([...Object.values(s.seen).map(g => g.vmid), ...byId.keys()])
   for (const vmid of watched) {
-    const k = String(vmid)
-    if (here.has(vmid) || s.removed[k]) continue
-    if (input.busy?.has(vmid)) { delete s.absent[k]; continue }
-    const a = s.absent[k] ?? { since: r.at, reads: 0 }
-    a.reads += 1
-    s.absent[k] = a
-    if (a.reads < MIN_READS || r.at - a.since < MIN_SPAN_MS) continue
-    const seen = s.seen[k]
-    const c = byId.get(vmid)
-    const task = input.destroyedAt?.(vmid) ?? null
-    s.removed[k] = {
-      vmid, type: seen?.type ?? c?.type ?? null, name: seen?.name ?? c?.name ?? null, node: seen?.node ?? null,
-      removedAt: task ?? seen?.lastSeen ?? null, dateFrom: task ? 'task' : seen ? 'last-seen' : 'noticed', noticedAt: r.at,
-      addresses: uniq([...(seen?.addresses ?? []), ...(c?.addresses ?? [])]), reused: null,
-    }
-    delete s.absent[k]
-    delete s.seen[k]
+    if (here.has(vmid) || s.removed[String(vmid)]) continue
+    countAbsent(s, vmid, r.at, input, byId.get(vmid))
   }
   // Nothing watches these any more (a record removed, a guest never seen): no count is kept for them.
   for (const k of Object.keys(s.absent)) if (!watched.has(Number(k))) delete s.absent[k]
   return s
+}
+
+/** One more read with this guest missing: its count goes up, and at MIN_READS over MIN_SPAN_MS it is removed. */
+function countAbsent(s: DetectorState, vmid: number, at: number, input: StepInput, c: Candidate | undefined): void {
+  const k = String(vmid)
+  if (input.busy?.has(vmid)) { delete s.absent[k]; return }
+  const a = s.absent[k] ?? { since: at, reads: 0 }
+  a.reads += 1
+  s.absent[k] = a
+  if (a.reads < MIN_READS || at - a.since < MIN_SPAN_MS) return
+  const seen = s.seen[k]
+  const task = input.destroyedAt?.(vmid) ?? null
+  s.removed[k] = {
+    vmid, type: seen?.type ?? c?.type ?? null, name: seen?.name ?? c?.name ?? null, node: seen?.node ?? null,
+    removedAt: task ?? seen?.lastSeen ?? null, dateFrom: task ? 'task' : seen ? 'last-seen' : 'noticed', noticedAt: at,
+    addresses: uniq([...(seen?.addresses ?? []), ...(c?.addresses ?? [])]), reused: null,
+  }
+  delete s.absent[k]
+  delete s.seen[k]
 }
 
 /** HyperProx destroyed this guest itself and read it back gone: it is removed now, with no wait. */

@@ -112,7 +112,20 @@ export class RemovedGuestsService {
     // A record that cannot be read is no candidate this time; the guests already watched still are.
     const candidates = await this.d.candidates().catch(() => [] as Candidate[])
     const cur = await this.state()
-    const missing = absentCandidates(cur, read, candidates)
+    // Many guests gone at once: each one's config is asked for on every node. Those Proxmox says do not exist are
+    // really gone and are counted the usual way; those it will not answer for (403, errors) stay "cannot see".
+    const proven = new Set<number>()
+    if (read.ok && readCounts(read)) {
+      const v = vanished(cur, read)
+      if (v.mass) {
+        const nodes = read.nodes.map(n => n.name)
+        for (const vmid of v.ids) {
+          const probe = await this.d.probeConfig(vmid, cur.seen[String(vmid)]?.type ?? null, nodes).catch((): ConfigProbe => 'unknown')
+          if (probe === 'missing') proven.add(vmid)
+        }
+      }
+    }
+    const missing = absentCandidates(cur, read, candidates, proven)
     let busy = new Set<number>()
     let destroyedAt: ((v: number) => number | null) | undefined
     if (missing.length) {
@@ -129,7 +142,7 @@ export class RemovedGuestsService {
         busy = new Set(missing)
       }
     }
-    const next = await this.mutate(s => Object.assign(s, step(s, { read, candidates, addresses: this.d.scanAddresses(), busy, destroyedAt })))
+    const next = await this.mutate(s => Object.assign(s, step(s, { read, candidates, addresses: this.d.scanAddresses(), busy, destroyedAt, proven })))
     // A guest decided removed on this read is confirmed by asking for its config directly: only "does not exist" on
     // every node keeps it removed (a token that may not read it answers 403, which proves nothing).
     const fresh = Object.keys(next.removed).filter(k => !cur.removed[k])
@@ -174,10 +187,10 @@ export class RemovedGuestsService {
   private async alertMassVanish(): Promise<void> {
     const s = await this.state()
     if (s.massVanish && !s.massAlerted) {
-      await this.d.publish(massAlert(s.massVanish.count))
+      await this.d.publish(massAlert(s.massVanish.count, s.massVanish.names ?? []))
       await this.mutate(x => { x.massAlerted = this.now() })
     } else if (!s.massVanish && s.massAlerted && s.lastRead?.ok) {
-      await this.d.publish({ ...massAlert(0), resolved: true })
+      await this.d.publish({ ...massAlert(0, []), resolved: true })
       await this.mutate(x => { x.massAlerted = null })
     }
   }
@@ -237,8 +250,10 @@ export class RemovedGuestsService {
     if (!found) throw new RemovedGuestsRefusal('not_removed', `HyperProx has not found guest ${vmid} removed, so it cleans nothing up for it.`, 404)
     // The person's Clean up (the notice, the alert's link) checks the cluster again first; HyperProx's own delete
     // has just read the guest back gone.
+    // A fresh scan first, then the check: the last thing read before acting is the cluster itself.
+    if (!opts.confirmed && choice.freshScan !== false && this.d.holdings.refreshScan) await this.d.holdings.refreshScan().catch(() => undefined)
     const g = opts.confirmed ? found : await this.confirmGone(found)
-    const r = await cleanUp(g, choice, by, this.d.holdings)
+    const r = await cleanUp(g, { ...choice, freshScan: false }, by, this.d.holdings)
     const left = (await holdingsFor(g, this.d.holdings)).holdings.length
     if (!left) await this.alertBackupJobs().catch(() => undefined)
     return { ...r, left }
@@ -288,16 +303,18 @@ export async function probeGuestConfig(get: (path: string) => Promise<unknown>, 
   return 'missing'
 }
 
-export function massAlert(count: number): NotifyEventInput {
+export function massAlert(count: number, names: string[]): NotifyEventInput {
+  const list = names.length ? `: ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` and ${names.length - 10} more` : ''}` : ''
   return {
     type: 'removed_guests.cannot_see', severity: 'warning',
     title: `HyperProx can't see ${count || 'some'} guests it saw before`,
     lines: [
-      'They are missing from the cluster list all at once, which is more often HyperProx seeing less than guests being removed.',
-      'Check its Proxmox token\'s permissions (it needs to see every guest). Until it sees them again, HyperProx treats none of them as removed and cleans nothing up.',
+      `They left the cluster list at the same time, and Proxmox would not say they are gone${list}.`,
+      'Check its Proxmox token\'s permissions (it needs to see every guest, VM.Audit on them). Until it can, HyperProx treats none of these as removed and cleans nothing up for them.',
     ],
     link: '/settings?tab=proxmox', linkLabel: 'Proxmox settings', where: 'Settings page',
     fingerprint: 'removed_guests.cannot_see',
+    ...(names.length ? { plain: names.slice(0, 10) } : {}),
   }
 }
 
