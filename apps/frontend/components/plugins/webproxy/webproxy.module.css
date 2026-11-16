@@ -1,0 +1,94 @@
+/* =============================================================================
+   HyperProx — NGINX, Caddy and Envoy plug-in pages
+
+   Theme tokens only (light and dark both come from globals.css): --hx-accent is
+   the teal, --hx-panel / --hx-deep the navy surfaces. State is never colour
+   alone: every dot and bar also says it in words. Motion stops under
+   prefers-reduced-motion. One column on a phone, no sideways scroll.
+   ============================================================================= */
+
+.muted { color: var(--text-muted); font-size: .85rem; }
+.allClear { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--good); font: 600 .9rem var(--font-body); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.footer { margin: 0; color: var(--text-muted); font: 500 .72rem var(--font-mono); letter-spacing: .04em; }
+.linkBtn { background: none; border: 0; padding: 0; color: var(--hx-accent); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; min-height: 32px; }
+
+/* ── problems and their fixes ── */
+.problems { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.problem { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: start; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--crit) 45%, var(--border)); background: color-mix(in srgb, var(--crit) 6%, var(--surface)); }
+.problem[data-sev="warning"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); }
+.problem b { color: var(--text-bright); }
+.problem p { margin: 2px 0 6px; color: var(--text-soft); font-size: .85rem; overflow-wrap: anywhere; }
+.sev { font: 700 .66rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; color: var(--crit); border: 1px solid currentColor; }
+.problem[data-sev="warning"] .sev { color: var(--warn); }
+.fixBtn, .actBtn { min-height: 36px; padding: 0 14px; border-radius: 8px; cursor: pointer; font: 600 .82rem var(--font-body); letter-spacing: .02em;
+  border: 1px solid var(--hx-accent); background: color-mix(in srgb, var(--hx-accent) 14%, transparent); color: var(--text-bright);
+  box-shadow: 0 0 14px -8px var(--hx-accent); }
+.actBtn { border-color: var(--border); background: transparent; color: var(--text-soft); box-shadow: none; }
+.actBtn[data-danger="true"] { border-color: color-mix(in srgb, var(--warn) 60%, var(--border)); color: var(--warn-2); }
+.fixBtn:focus-visible, .actBtn:focus-visible, .linkBtn:focus-visible { outline: 2px solid var(--hx-accent); outline-offset: 2px; }
+
+/* ── the route map: names → wire → targets ── */
+.map { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.route { --glow-c: var(--hx-accent); display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem minmax(0, 1fr); gap: 8px; align-items: center;
+  padding: 10px 12px; border-radius: 11px; border: 1px solid color-mix(in srgb, var(--glow-c) 28%, var(--border));
+  background: linear-gradient(160deg, var(--hx-panel), var(--hx-deep));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--glow-c) 8%, transparent) inset, 0 0 22px -14px color-mix(in srgb, var(--glow-c) var(--glow), transparent); }
+.route[data-mine="true"] { border-color: color-mix(in srgb, var(--hx-accent) 60%, var(--border)); }
+.names { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.name { display: flex; align-items: center; gap: 5px; font: 600 .9rem var(--font-body); color: var(--text-bright); overflow-wrap: anywhere; }
+.names small { font: 500 .66rem var(--font-mono); color: var(--text-muted); letter-spacing: .06em; }
+.lock { font-style: normal; font-size: .75rem; }
+.wire { position: relative; display: grid; place-items: center; height: 26px; }
+.wire i { position: absolute; left: 0; right: 0; top: 50%; height: 2px; transform: translateY(-50%);
+  background: repeating-linear-gradient(90deg, var(--hx-accent) 0 6px, transparent 6px 12px); background-size: 24px 2px;
+  animation: flow 1.2s linear infinite; opacity: .8; }
+.wire span { position: relative; padding: 1px 6px; border-radius: 4px; background: var(--hx-deep); border: 1px solid color-mix(in srgb, var(--hx-accent) 40%, var(--border));
+  font: 600 .6rem var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--hx-accent); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+@keyframes flow { to { background-position: 24px 0; } }
+.targets { display: flex; flex-direction: column; gap: 4px; list-style: none; margin: 0; padding: 0; min-width: 0; }
+.targets li { display: flex; align-items: center; gap: 6px; font: 500 .78rem var(--font-mono); color: var(--text); overflow-wrap: anywhere; }
+.targets li i { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--text-dimmer); }
+.targets li[data-state="ok"] i { background: var(--good); box-shadow: 0 0 8px color-mix(in srgb, var(--good) var(--glow), transparent); }
+.targets li[data-state="warn"] i { background: var(--warn); box-shadow: 0 0 8px color-mix(in srgb, var(--warn) var(--glow), transparent); }
+.targets li[data-state="bad"] i { background: var(--crit); box-shadow: 0 0 8px color-mix(in srgb, var(--crit) var(--glow), transparent); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+
+/* ── upstream cards ── */
+.upGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); gap: 10px; margin-top: 10px; }
+.upCard { --c: var(--good); display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--c) 40%, var(--border)); background: color-mix(in srgb, var(--c) 6%, var(--surface)); }
+.upCard[data-state="warn"] { --c: var(--warn); }
+.upCard[data-state="bad"] { --c: var(--crit); }
+.upCard[data-state="off"] { --c: var(--text-dimmer); }
+.upCard b { font: 600 .85rem var(--font-mono); color: var(--text-bright); overflow-wrap: anywhere; }
+.upCard span { font: 600 .72rem var(--font-body); color: var(--c); text-transform: uppercase; letter-spacing: .08em; }
+.upCard small { font: 500 .7rem var(--font-mono); color: var(--text-muted); }
+
+/* ── traffic ── */
+.gauges { display: flex; flex-direction: column; gap: 14px; }
+.barsBox h3 { margin: 0 0 6px; font: 700 .8rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--text-soft); }
+
+/* ── certificates ── */
+.certs { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.certs li { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.certName { display: flex; flex-direction: column; min-width: 0; font: 600 .85rem var(--font-body); color: var(--text-bright); overflow-wrap: anywhere; }
+.certName small { font: 500 .66rem var(--font-mono); color: var(--text-muted); }
+.certs em { font: 600 .72rem var(--font-mono); font-style: normal; color: var(--good); white-space: nowrap; }
+.certs li[data-tone="warn"] em { color: var(--warn-2); }
+.certs li[data-tone="bad"] em { color: var(--crit); }
+
+/* ── found, not connected ── */
+.found { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.found li { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); }
+.found b { color: var(--text-bright); }
+.found small { font: 500 .7rem var(--font-mono); color: var(--text-muted); }
+
+@media (max-width: 560px) {
+  .route { grid-template-columns: 1fr; }
+  .wire { height: 18px; }
+  .certs li { grid-template-columns: 1fr auto; }
+  .certs li > div[role="progressbar"] { grid-column: 1 / -1; grid-row: 2; }
+}
+@media (prefers-reduced-motion: reduce) { .wire i, .targets li[data-state="bad"] i { animation: none; } }

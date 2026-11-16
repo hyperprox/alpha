@@ -16,7 +16,7 @@
 // =============================================================================
 
 import { PluginNotConfigured } from '../lib/plugin-host'
-import type { Plugin, PluginContext, PluginTileData } from '../lib/plugin-host'
+import type { Plugin, PluginContext, PluginDetail, PluginTileData } from '../lib/plugin-host'
 
 type Row = { label: string; value: string; tone: 'good' | 'warn' | 'bad'; problems: number; ok: boolean }
 
@@ -31,6 +31,16 @@ export function tileOf(name: string, rows: Row[]): PluginTileData {
   }
 }
 
+/** The plain view (the AI page and anything without the visual page): one figure and one row per proxy. */
+export function detailOf(name: string, rows: Row[]): PluginDetail {
+  if (!rows.length) tileOf(name, rows)
+  return {
+    stats: rows.map(r => ({ label: r.label, value: r.tone === 'good' ? 'healthy' : r.tone === 'warn' ? 'needs a look' : 'needs a fix', hint: r.value, tone: r.tone })),
+    tables: [{ title: 'Proxies', empty: `No ${name} connected yet.`, columns: [{ key: 'name', label: 'Name' }, { key: 'state', label: 'State' }, { key: 'problems', label: 'Problems', align: 'right' }],
+      rows: rows.map(r => ({ name: r.label, state: r.value, problems: r.problems })) }],
+  }
+}
+
 function webProxyPlugin(id: 'nginx' | 'caddy' | 'envoy', name: string, icon: string, description: string): Plugin {
   return {
     manifest: { id, name, description, kind: 'device', icon, baseUrlSetting: 'url', coreTransport: true, auth: { kind: 'none' }, settings: [] },
@@ -38,6 +48,7 @@ function webProxyPlugin(id: 'nginx' | 'caddy' | 'envoy', name: string, icon: str
     // Loaded when asked, so the plug-in list does not pull in the executor at import time.
     async isConfigured() { return (await (await import('../lib/webproxy')).webProxyService().instances(id)).length > 0 },
     async load(ctx: PluginContext): Promise<PluginTileData> { return tileOf(name, await ctx.get('/readings')) },
+    async detail(ctx: PluginContext): Promise<PluginDetail> { return detailOf(name, await ctx.get('/readings')) },
     async summary(ctx: PluginContext) {
       const rows: Row[] = await ctx.get('/readings')
       return { title: name, lines: (Array.isArray(rows) ? rows : []).map(r => `${r.label}: ${r.value}${r.problems ? ` (${r.problems} problem${r.problems === 1 ? '' : 's'})` : ''}`) }
