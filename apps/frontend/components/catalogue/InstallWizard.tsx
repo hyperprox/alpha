@@ -16,6 +16,7 @@ import { ArrPicker, type ArrNames, type ArrVpn } from './ArrPicker'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 import { PbsLocation } from './PbsLocation'
+import { PublishBlock, type PublishChoice } from './PublishBlock'
 import { NodeHardware, TranscodePicker, isTcRecipe, type TcKind } from './TranscodePicker'
 import { ModalFrame } from '@/components/layout/ModalFrame'
 import { ConfirmOverride, NamingCallout, confirmNeeded, useProposal, type NamingSettingsView, type Proposal } from './NamingProposal'
@@ -32,6 +33,8 @@ export interface WizardRecipe {
   options?: RecipeOption[]
   /** 'transcode' for Unmanic and Tdarr (their own picker, hardware per node, library). */
   stack?: string | null
+  /** A DNS blocker: the result page says how to point the network at it. */
+  pointNetwork?: boolean
 }
 
 export interface RecipeOption {
@@ -160,6 +163,8 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
   const [ip, setIp] = useState('')
   const [gateway, setGateway] = useState('')
   const [dns, setDns] = useState('')
+  // A DNS blocker's web page may get a public name and a certificate: null is "my network only", undefined is "turned on, not checked yet".
+  const [publish, setPublish] = useState<PublishChoice | null | undefined>(null)
   const [identity, setIdentity] = useState<Identity | null>(null)
   const [checking, setChecking] = useState(false)
   const [pinging, setPinging] = useState(false)
@@ -292,6 +297,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
     if (step === 2) return Boolean(selected?.verdict.eligible && storage)
     if (step === 3) {
       if (typeof vmid !== 'number' || !hostname || !bridge) return false
+      if (recipe.pointNetwork && publish === undefined) return false
       if (identity?.vmid && !identity.vmid.free) return false
       if (mode === 'static' && (!ip || (identity?.ip?.problems.length ?? 0) > 0)) return false
       if (unknowns.length && !addressAck) return false
@@ -309,6 +315,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
       ...(mode === 'static' && ackedKeys?.length ? { addressAck: ackedKeys } : {}),
       ...(vlan !== '' ? { vlan } : {}),
       ...(overrideNeed ? { namingConfirm } : {}),
+      ...(recipe.pointNetwork && publish ? { publish } : {}),
       ...(options.length ? { options: opts } : {}),
       // The VPN login goes to the vault at the preview, never into the plan; names only when some are given.
       ...(isTc ? { options: tcOpts } : {}),
@@ -663,6 +670,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
                 <input type="number" min={1} max={4094} value={vlan} onChange={e => setVlan(e.target.value === '' ? '' : Number(e.target.value))}
                   style={{ ...INPUT, maxWidth: 160 }} inputMode="numeric" />
               </Field>
+              {recipe.pointNetwork && <PublishBlock appName={recipe.name} onChange={setPublish} />}
               {mode === 'dhcp' && !overrideNeed && (
                 <Notice kind="warn">DHCP: the address comes from whichever DHCP server answers, and a bridge can carry more than one network. A fixed address keeps the guest where you expect it.</Notice>
               )}
@@ -736,6 +744,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
                       ['Privileges', isArr || isTc ? 'unprivileged, nesting and keyctl' : 'unprivileged, nesting only'], ['Starts at boot', 'yes'],
                       ...(isArr ? arrReview(preview.plan.options as unknown as Record<string, string> | undefined, recipe.options ?? []) : []),
                       ...(isTc ? tcReview(recipe.id as TcKind, preview.plan.options as unknown as Record<string, string> | undefined) : []),
+                      ...(preview.plan.publish ? [['Public name', (() => { const p = preview.plan.publish as any; return `${p.domain}: DNS record ${p.record.type} ${p.record.name} in ${p.zone}, a proxy host on ${p.instanceName} and a certificate` })()] as [string, any]] : recipe.pointNetwork ? [['Reachable from', 'your network only (no public name)'] as [string, any]] : []),
                       ...options.map(o => {
                         const v = (preview.plan.options as unknown as Record<string, string> | undefined)?.[o.key] ?? ''
                         return [o.label, o.kind === 'boolean' ? (v === '1' ? 'yes' : 'no') : (v || '—')] as [string, any]

@@ -42,6 +42,7 @@ const lazy = {
   nextcloud: async () => (await import('../nextcloud')).nextcloudService(),
   haproxy: async () => (await import('../haproxy')).haproxyService(),
   webproxy: async () => (await import('../webproxy')).webProxyService(),
+  dns: async (kind: 'pihole' | 'adguard') => (await import('../dns-blocker')).dnsBlockerService(kind),
   plugins: async () => (await import('../../plugins')).PLUGINS,
 }
 
@@ -75,6 +76,8 @@ function adapters(): AutoConnectAdapter[] {
       }, pick: async (key, choice, ctx) => (await lazy.haproxy()).autoPick(key, choice, ctx) },
     // NGINX, Caddy and Envoy: one service, an adapter per plug-in. Each guest is found once, so there is no choice to pick.
     ...(['nginx', 'caddy', 'envoy'] as const).map(kind => ({ plugin: kind, reconcile: async (ctx: AdapterContext) => (await lazy.webproxy()).autoConnect(kind, ctx) })),
+    { plugin: 'pihole', reconcile: async ctx => (await lazy.dns('pihole')).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.dns('pihole')).autoPick(key, choice, ctx) },
+    { plugin: 'adguard', reconcile: async ctx => (await lazy.dns('adguard')).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.dns('adguard')).autoPick(key, choice, ctx) },
     settingsAdapter('unmanic', settingsDeps),
     settingsAdapter('arrstack', settingsDeps),
     settingsAdapter('plex', settingsDeps),

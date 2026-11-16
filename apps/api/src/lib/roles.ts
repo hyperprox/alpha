@@ -166,6 +166,13 @@ const HA_CONTROL_RECONFIRM = /^\/api\/plugins\/home-assistant\/instances(\/(?!pr
 // login) are admin and re-confirmed, which keeps API tokens off them too.
 const QNAP_ACT = /^\/api\/plugins\/qnap\/instances\/[^/]+\/actions$/
 const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
+// DNS blockers, Pi-hole and AdGuard Home (lib/dns-blocker/routes.ts). Pausing blocking, turning it back on and updating the
+// lists are operator; restarting, allowing a domain, switching the upstream servers, the guest DNS setting and every change
+// to a blocker (it stores a login) are admin and re-confirmed, which keeps API tokens off them too.
+const DNS_ACT = /^\/api\/plugins\/(pihole|adguard)\/instances\/[^/]+\/actions$/
+// The guests a blocker could be tied to (routes: GET .../guests) map the cluster: admin, though a read.
+const DNS_ADMIN_READ = /^\/api\/plugins\/(pihole|adguard)\/guests$/
+const DNS_RECONFIRM = /^\/api\/plugins\/(pihole|adguard)\/instances(\/[^/]+(\/secure-actions)?)?$/
 // ASUS routers (routes/asus.ts). Reads are viewer (trimmed by the route below operator). Every write is admin, the
 // default for a POST/PUT/DELETE: finding a router on the LAN, every change to a router (it stores an admin login)
 // and rebooting one. All but the search and the certificate read are also re-confirmed, which keeps API tokens off
@@ -385,6 +392,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (SETUP_CHECKLIST.test(p)) return 'admin'
   if (ASUS_DIAGNOSTICS.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && NEXTCLOUD_ADMIN_READ.test(p)) return 'admin'
+  if ((m === 'GET' || m === 'HEAD') && DNS_ADMIN_READ.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
   if (PLACEMENT.test(p)) return (m === 'GET' || m === 'HEAD') && PLACEMENT_READ.test(p) ? 'viewer' : 'admin'
   if (SELF_UPDATE.test(p)) return (m === 'GET' || m === 'HEAD') && p === SELF_UPDATE_SUMMARY ? 'viewer' : 'admin'
@@ -418,6 +426,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (m === 'POST' && POWER.test(p)) return 'operator'
   if (m === 'POST' && HA_CONTROL_ACT.test(p)) return 'operator'
   if (m === 'POST' && QNAP_ACT.test(p)) return 'operator'
+  if (m === 'POST' && DNS_ACT.test(p)) return 'operator'
   if (m === 'POST' && PLEX_CLEAROUT_ACT.test(p)) return 'operator'
   for (const [tm, re] of TERMINAL_OPERATOR) if (m === tm && re.test(p)) return 'operator'
 
@@ -455,6 +464,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m === 'PUT' && p === PLACEMENT_AUTO) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && DNS_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && ASUS_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && PBS_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && PBS_MANAGE_RECONFIRM.test(p)) return true

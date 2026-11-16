@@ -1,0 +1,4 @@
+{
+ "1.1.1.1:53": "OK",
+ "192.0.2.1:53": "couldn't communicate with upstream: exchanging with 192.0.2.1:53 over udp: read udp 192.0.2.244:34306->192.0.2.1:53: i/o timeout"
+}

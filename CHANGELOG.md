@@ -21,6 +21,24 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — Pi-hole and AdGuard Home
+
+### New
+- **Install Pi-hole or AdGuard Home from the Catalogue.** Each blocks ads and trackers for every device on your network, and each is installed finished: the admin password is made for you and kept in the vault, the block lists are loaded, and DNS answers only on the container's own address. Nothing else on your network is changed. The result page tells you how to point your network at it (your router's DHCP DNS setting).
+  - Technical: the `pihole` recipe runs the official image `pihole/pihole:2026.10.1` pinned by tag and digest (password as a Compose secret via `WEBPASSWORD_FILE`, ports published on the container's LAN address only, upstreams set through its API so they stay changeable); the `adguard-home` recipe runs the `v0.107.79` release tarball checked against the project's SHA-256 as a systemd service, with its first run on loopback only. New Catalogue category `network` and recipe field `pointNetwork`.
+- **Give the blocker's web page a name and a certificate, or leave it on your network only.** The install wizard offers the same DNS record, proxy host and certificate the Websites wizard makes, checked first and shown exactly before anything is created. DNS itself is never published.
+  - Technical: the wizard's publish plan is now allowed for the `network` category as well as `web` (`previewInstall` in `lib/catalogue-installer.ts`); the new `PublishBlock` step reuses `/api/sites/address` and `/api/sites/address/options`. Auto-connect always uses the container's own address, never the public name.
+- **A Pi-hole plug-in and an AdGuard Home plug-in.** Each shows the queries so far and the share blocked, a 24-hour chart, the domains blocked most, the devices that ask most, whether its upstream DNS servers answer and how fast, how old the block lists are, and whether blocking is on. They connect by themselves to every blocker HyperProx finds, with the password from the vault.
+  - Technical: `lib/dns-blocker` (one reading shape for both products, `plugins/dns-blocker.ts`, routes under `/api/plugins/pihole` and `/api/plugins/adguard`), auto-connect adapters `pihole` and `adguard`, and service-scan probes for both. A password-only vault login kind (`password`) was added for Pi-hole.
+- **Every problem the blocker pages show has a fix button.** Turn blocking back on, pause it for 5, 30 or 60 minutes, update the block lists now, switch the upstream DNS servers when one stops answering (to the ones that still answer, or to Cloudflare, Quad9 or Google), allow a domain you trust, or restart the blocker. Each one says what it will do first, and HyperProx reads the blocker again afterwards and says it worked only when the blocker agrees.
+  - Technical: operator for pause, resume and list updates (`POST .../actions`); admin with the master password for restart, allow, switch upstream and guest DNS (`POST .../secure-actions`; API tokens are refused); allowing a domain needs the typed phrase. Every attempt, refused or not, writes an audit row with no secret in it.
+- **Per-device numbers can be hidden.** The blocker page has a setting that stops HyperProx from even asking for which device made which query, and viewers never see them.
+- **Use a blocker for the guests HyperProx installs.** One button puts the blocker first in the DNS list HyperProx gives new guests (Settings, Naming), with the old servers behind it. Guests that already exist, and every other machine on your network, are not touched, and one click undoes it.
+  - Technical: reads and saves the Catalogue naming settings (`dns`, at most three servers) and keeps the previous list on the instance for the undo.
+
+### Improved
+- The plug-in wish list no longer asks for Pi-hole and AdGuard Home: they are real plug-ins now.
+
 ## 2026-11-16 — NGINX, Caddy and Envoy
 
 ### New

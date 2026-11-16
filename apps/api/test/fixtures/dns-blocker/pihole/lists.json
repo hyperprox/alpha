@@ -1,0 +1,22 @@
+{
+ "lists": [
+  {
+   "address": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+   "comment": "Migrated from /etc/pihole/adlists.list",
+   "groups": [
+    0
+   ],
+   "enabled": true,
+   "id": 1,
+   "date_added": 1794800587,
+   "date_modified": 1794800587,
+   "type": "block",
+   "date_updated": 1794800587,
+   "number": 76105,
+   "invalid_domains": 1,
+   "abp_entries": 0,
+   "status": 2
+  }
+ ],
+ "took": 0.0001366138458251953
+}

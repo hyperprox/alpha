@@ -1,0 +1,19 @@
+{
+ "domains": [
+  {
+   "domain": "doubleclick.net",
+   "count": 4
+  },
+  {
+   "domain": "ads.google.com",
+   "count": 2
+  },
+  {
+   "domain": "pagead2.googlesyndication.com",
+   "count": 1
+  }
+ ],
+ "total_queries": 82,
+ "blocked_queries": 7,
+ "took": 2.7894973754882812e-05
+}

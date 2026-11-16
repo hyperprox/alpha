@@ -37,6 +37,7 @@ import { PLUGINS }                from './plugins'
 import { loadLocalPlugins, registerLocalPlugins } from './lib/local-plugins'
 import { haControlRoutes }      from './routes/ha-control'
 import { qnapRoutes }           from './routes/qnap'
+import { dnsBlockerRoutes }     from './lib/dns-blocker/routes'
 import { asusRoutes }           from './routes/asus'
 import { plexClearoutRoutes }   from './routes/plex-clearout'
 import { arrUpcomingRoutes }    from './routes/arr-upcoming'
@@ -194,6 +195,8 @@ async function main() {
   await server.register(pluginRoutes,          { prefix: '/api/plugins' })
   await server.register(haControlRoutes,       { prefix: '/api/plugins/home-assistant' })
   await server.register(qnapRoutes,            { prefix: '/api/plugins/qnap' })
+  await server.register(dnsBlockerRoutes('pihole'),  { prefix: '/api/plugins/pihole' })
+  await server.register(dnsBlockerRoutes('adguard'), { prefix: '/api/plugins/adguard' })
   await server.register(asusRoutes,            { prefix: '/api/plugins/asus' })
   await server.register(plexClearoutRoutes,    { prefix: '/api/plugins/plex' })
   await server.register(arrUpcomingRoutes,     { prefix: '/api/plugins/arrstack' })

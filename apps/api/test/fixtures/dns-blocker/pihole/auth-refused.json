@@ -1,0 +1,10 @@
+{
+ "session": {
+  "valid": false,
+  "totp": false,
+  "sid": null,
+  "validity": -1,
+  "message": "password incorrect"
+ },
+ "took": 0.1979045867919922
+}

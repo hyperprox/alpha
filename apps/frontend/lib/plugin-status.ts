@@ -52,9 +52,9 @@ export interface AutoConnectSummary {
 }
 
 /** Plug-ins whose installs auto-connect finds and connects by itself. */
-export const AUTO_CONNECT_PLUGINS = ['homepage', 'nextcloud', 'unmanic', 'arrstack', 'plex', 'haproxy', 'nginx', 'caddy', 'envoy']
+export const AUTO_CONNECT_PLUGINS = ['homepage', 'nextcloud', 'unmanic', 'arrstack', 'plex', 'haproxy', 'nginx', 'caddy', 'envoy', 'pihole', 'adguard']
 /** Plug-ins with nothing to type: they connect what HyperProx finds, or wait. */
-const NO_FORM = ['homepage', 'nextcloud', 'haproxy', 'nginx', 'caddy', 'envoy']
+const NO_FORM = ['homepage', 'nextcloud', 'haproxy', 'nginx', 'caddy', 'envoy', 'pihole', 'adguard']
 
 /**
  * The card's state line for a plug-in that is not set up but that auto-connect is handling, or null to show the

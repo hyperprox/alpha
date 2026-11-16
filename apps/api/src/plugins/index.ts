@@ -22,6 +22,7 @@ import { unmanicPlugin }  from './unmanic'
 import { homepagePlugin } from './homepage'
 import { haproxyPlugin }  from './haproxy'
 import { nginxPlugin, caddyPlugin, envoyPlugin } from './web-proxies'
+import { piholePlugin, adguardPlugin } from './dns-blocker'
 
 export const PLUGINS: Plugin[] = [
   arrstackPlugin,
@@ -39,6 +40,8 @@ export const PLUGINS: Plugin[] = [
   nginxPlugin,
   caddyPlugin,
   envoyPlugin,
+  piholePlugin,
+  adguardPlugin,
 ]
 
 export function findPlugin(id: string): Plugin | undefined {

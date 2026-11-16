@@ -86,6 +86,13 @@ const PROBES = [
   // from the Catalogue answers only HyperProx's addresses there; the HAProxy plug-in connects what this finds.
   { key: 'haproxy', label: 'HAProxy', port: 8405, path: '/metrics', scheme: 'http', recipeId: 'haproxy', pluginId: 'haproxy', setting: null, page: '/plugins/haproxy', needs: [], multiple: true,
     match: (s, b) => s === 200 && /^haproxy_process_/m.test(b) },
+  // Pi-hole v6's sign-in information answers without a login: its DNS flag, its HTTPS port and FTL's "took" timing, which
+  // no other app sends. The Pi-hole plug-in keeps its own list (no address setting): a finding points at its page.
+  { key: 'pihole', label: 'Pi-hole', port: 80, path: '/api/info/login', scheme: 'http', recipeId: 'pihole', pluginId: 'pihole', setting: null, page: '/plugins/pihole', needs: ['its password'], multiple: true,
+    match: (s, b) => { if (s !== 200) return false; try { const j = JSON.parse(b); return typeof j.dns === 'boolean' && typeof j.https_port === 'number' && typeof j.took === 'number' } catch { return false } } },
+  // AdGuard Home's login page names no product in its title: its green Safari pin icon and its own login script are its own.
+  { key: 'adguard', label: 'AdGuard Home', port: 80, path: '/login.html', scheme: 'http', recipeId: 'adguard-home', pluginId: 'adguard', setting: null, page: '/plugins/adguard', needs: ['its login'], multiple: true,
+    match: (s, b) => s === 200 && /rel="mask-icon" href="assets\/safari-pinned-tab\.svg" color="#67B279"[\s\S]*src="login\.[0-9a-f]+\.js"/.test(b) },
   { key: 'tdarr', label: 'Tdarr', port: 8265, path: '/', scheme: 'http', recipeId: 'tdarr', pluginId: null, setting: null, needs: [], multiple: false,
     match: (s, b) => s === 200 && title('Tdarr').test(b) },
 ]

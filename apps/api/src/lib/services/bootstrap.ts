@@ -68,6 +68,7 @@ import { autoConnect, onUnlock, rememberDismissed, setAutoConnectExclusionSource
 import { homepageService, homepageInventoryChanged, setHomepageDismissedPort, setHomepageExclusionSource } from '../homepage'
 import { nextcloudService, registerNextcloudComposeOwner, setNextcloudDismissedPort } from '../nextcloud'
 import { setHaproxyDismissedPort } from '../haproxy'
+import { setDnsBlockerDismissedPort } from '../dns-blocker'
 import { onInstallCompleted } from '../catalogue-installer'
 import { setWebProxyDismissedPort, setWebProxyExclusionSource } from '../webproxy'
 import { WEB_PROXY_KINDS } from '../webproxy/probes'
@@ -154,6 +155,7 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
   setNextcloudDismissedPort((key, label, by) => dismissed('nextcloud', key, label, by))
   setHaproxyDismissedPort((key, label, by) => dismissed('haproxy', key, label, by))
   setWebProxyDismissedPort((kind, key, label, by) => dismissed(kind, key, label, by))
+  setDnsBlockerDismissedPort((kind, key, label, by) => dismissed(kind, key, label, by))
 
   // 4. Updates: built, its read-only sources installed; started when the server is ready (below).
   steps.push('updates')
