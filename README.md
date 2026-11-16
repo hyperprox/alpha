@@ -1901,16 +1901,27 @@ Lidarr address in the plug-in's settings, which says to leave it blank if you do
   shifted by your time zone. **Missing, searching** gains a Music column of monitored albums already out with no
   files. The cover is fetched by HyperProx with the stored key, like the TV posters.
 
-**Give up after X tries.** Under **Missing, searching** on the Upcoming tab. Sonarr, Radarr and Lidarr keep no
+**Weekly search and give up.** Under **Missing, searching** on the Upcoming tab, for TV, films and music separately.
+
+- **Weekly search.** On the day and hour you pick (Monday at 08:00 unless you change it, in the server's time zone),
+  HyperProx asks Sonarr, Radarr or Lidarr to search for everything that is still missing, with the app's own "search
+  all missing" command. It is off until you turn it on, never runs while HyperProx is locked, runs at most once a
+  week (if HyperProx was down at the time, it runs once when it is back that week), is written to the audit log, and
+  the panel shows the last one: "Last weekly search: Sunday 08:00 — 68 films searched (completed)". If you already run
+  another backfill job, that is fine: every search counts, whoever started it. Searching for everything at once sends
+  many requests to your indexers, so pick a quiet hour.
+
+Sonarr, Radarr and Lidarr keep no
 count of how often they have looked for something, so HyperProx counts for them: every few hours it reads each
 missing item's last search time, and each time that moves on while the item still has no file is one try (a
 search while it is downloading does not count). It also reads each app's history, so it can say why an item
 keeps failing: grabbed but the download failed, grabbed but never finished, downloaded but could not be
 imported, or nothing usable found.
 
-- **The rule**, for TV, films and music separately: give up after a number of tries (14 unless you change it), once
-  the item is at least so many days old (30), counted from when it aired or was released, or from when HyperProx first
-  saw it missing. Then either **stop searching** (the item is unmonitored and everything is kept) or, for films and
+- **The rule**, for TV, films and music separately: "give up after N weeks of weekly searches with nothing found",
+  with N anything from 1 to 104 (8 unless you change it). Something is given up only when it has been missing at least
+  N weeks (since it aired or was released) **and** has been searched at least N times, so nothing new is dropped early.
+  The try count stays visible on every item. Then either **stop searching** (the item is unmonitored and everything is kept) or, for films and
   albums only, **remove from library**: the film or album leaves Radarr or Lidarr with no file deleted (there are none,
   and HyperProx checks again first), and an import-list exclusion stops your lists adding it back. It is off until you
   turn it on.
