@@ -40,6 +40,7 @@ export function setAutoConnectExclusionSource(fn: (() => Promise<string[]>) | nu
 const lazy = {
   homepage: async () => (await import('../homepage')).homepageService(),
   nextcloud: async () => (await import('../nextcloud')).nextcloudService(),
+  fwdproxy: async () => (await import('../fwdproxy')).fwdProxyService(),
   plugins: async () => (await import('../../plugins')).PLUGINS,
 }
 
@@ -62,6 +63,8 @@ function adapters(): AutoConnectAdapter[] {
   return [
     { plugin: 'homepage', reconcile: async ctx => (await lazy.homepage()).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.homepage()).autoPick(key, choice, ctx) },
     { plugin: 'nextcloud', reconcile: async ctx => (await lazy.nextcloud()).autoConnect(ctx), pick: async (key, choice, ctx) => (await lazy.nextcloud()).autoPick(key, choice, ctx) },
+    // 3proxy: a finished Catalogue install, its helper confirmed read-only, connected (lib/fwdproxy).
+    { plugin: '3proxy', reconcile: async ctx => (await lazy.fwdproxy()).autoConnect(ctx) },
     settingsAdapter('unmanic', settingsDeps),
     settingsAdapter('arrstack', settingsDeps),
     settingsAdapter('plex', settingsDeps),

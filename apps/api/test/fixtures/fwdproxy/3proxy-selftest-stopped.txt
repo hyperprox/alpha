@@ -1,0 +1,1 @@
+check	running	fail	3proxy is not running, so nothing else could be checked.

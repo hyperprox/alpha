@@ -1,0 +1,28 @@
+meta	kind	3proxy
+meta	now	1794845804
+meta	active	active
+meta	listen	10.20.30.37
+meta	minutes	60
+cfg	allow	10.20.30.0/24
+cfg	lan	0
+cfg	perclient	1
+user	alice
+meta	version	0.9.9.2
+cfg	http	1
+cfg	socks	1
+now	conns_http	0
+now	conns_socks	0
+min	29914096	20	42172
+tot	requests	20
+tot	bytes	42172
+tot	denied	13
+tot	errors	0
+deny	1	8
+deny	4	4
+deny	7	1
+svc	SOCKS	8	19702
+svc	PROXY	12	22470
+who	user	alice	6	39492
+who	user	axb	1	2680
+who	client	10.20.30.55	5	21514
+who	client	10.20.30.37	2	20658

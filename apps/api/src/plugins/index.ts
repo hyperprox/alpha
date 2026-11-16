@@ -20,6 +20,7 @@ import { qnapPlugin }     from './qnap'
 import { pbsPlugin }      from './pbs'
 import { unmanicPlugin }  from './unmanic'
 import { homepagePlugin } from './homepage'
+import { threeProxyPlugin } from './threeproxy'
 
 export const PLUGINS: Plugin[] = [
   arrstackPlugin,
@@ -33,6 +34,7 @@ export const PLUGINS: Plugin[] = [
   pbsPlugin,
   nextcloudPlugin,
   homepagePlugin,
+  threeProxyPlugin,
 ]
 
 export function findPlugin(id: string): Plugin | undefined {

@@ -209,6 +209,14 @@ const HOMEPAGE = /^\/api\/plugins\/homepage\/(installs|instances)(\/|$)/
 // re-confirmed; every write and fix those plug-ins have keeps its own rule above.
 const AUTO_CONNECT = /^\/api\/auto-connect(\/|$)/
 const HOMEPAGE_RECONFIRM = /^\/api\/plugins\/homepage\/instances\/[^/]+\/(widgets|secrets|proxmox-token|wire-env|purge-key-backups)$/
+// 3proxy (routes/fwdproxy.ts): admin for every method, reads included (a reading names users and, unless turned off,
+// client addresses). The generic plug-in detail (routes/plugins.ts /:id/detail) is admin too, like its page; its gallery
+// card (/data) stays a viewer read, as it carries totals only. Adding, removing or resetting a user (a credential) and
+// the settings (who may use it, whether it reaches your LAN, per-user figures) are also re-confirmed. Reload, the
+// self-check and disconnect are admin only.
+const FWDPROXY = /^\/api\/plugins\/3proxy\/proxies(\/|$)/
+const FWDPROXY_ADMIN_READ = /^\/api\/plugins\/3proxy\/detail$/
+const FWDPROXY_RECONFIRM = /^\/api\/plugins\/3proxy\/proxies\/[^/]+\/(users(\/[^/]+(\/reset)?)?|settings)$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -367,6 +375,8 @@ export function requiredRole(method: string, path: string): Role | null {
   if (LOCAL.test(p)) return 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
   if (HOMEPAGE.test(p)) return 'admin'
+  if (FWDPROXY.test(p)) return 'admin'
+  if ((m === 'GET' || m === 'HEAD') && FWDPROXY_ADMIN_READ.test(p)) return 'admin'
   if (AUTO_CONNECT.test(p)) return 'admin'
   if (CATALOGUE_DETECTED.test(p)) return 'admin'
   if (PLEX_SIGNIN.test(p)) return 'admin'
@@ -450,6 +460,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m !== 'GET' && m !== 'HEAD' && PBS_MANAGE_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && NEXTCLOUD_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HOMEPAGE_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && FWDPROXY_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   if (m === 'POST' && PLEX_SIGNIN_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
