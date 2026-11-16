@@ -2071,13 +2071,16 @@ page, which also undoes what HyperProx set up there.
 **Removed guests.** When a container or VM is removed from Proxmox, HyperProx notices and says so on the
 dashboard, the Plug-ins page and the page of each plug-in that was connected to it: which guest, when it was
 removed, and what HyperProx still keeps for it. A guest counts as removed only when every node is online and
-none lists it on three reads over at least ten minutes, and never while it is being migrated or restored,
-so a slow or failed read never starts a clean-up. **Clean up** (admins, master password) then removes, in
-one go:
+none lists it on three reads over at least ten minutes, Proxmox answers that its config does not exist, and
+never while it is being migrated or restored, so a slow or failed read never starts a clean-up. If several
+guests vanish at once, HyperProx treats none of them as removed and sends one alert asking you to check its
+Proxmox token's permissions. **Clean up** (admins, master password) reads the cluster again first and stops if
+it cannot confirm the guest is gone; if another guest has taken its ID, only the old guest's own records go.
+It then removes, in one go:
 
 - HyperProx's own records: a connected Homepage or Nextcloud, the Catalogue install record and the login it
-  made, the Sites entry, plug-in addresses and keys that pointed at it, the Terminal's saved address and its
-  pinned SSH key, its Remote access and WireGuard entries, a scheduled balancing move, and what auto-connect
+  made, the Sites entry, plug-in addresses and keys that pointed at it (only when a fresh scan shows no guest
+  uses that address now), the Terminal's saved address, its Remote access and WireGuard entries, a scheduled balancing move, and what auto-connect
   remembered about it. Their vault items go with them.
 - The cluster's config, shown line by line first: its HA entry, and its ID in each backup job (Proxmox
   otherwise reports the whole job as failed on every node). Only that ID leaves each job; a job that would
