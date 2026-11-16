@@ -18,7 +18,7 @@
 // =============================================================================
 
 import { withFileLock } from './traefik'
-import { slugFor, hostPort } from '../spec'
+import { slugFor, hostPort, checkHostname, checkForwardHost } from '../spec'
 import type { GuestExec } from '../transport'
 import { shq } from '../../shell'
 import { parseNginxDump } from '../../webproxy/nginx-conf'
@@ -68,6 +68,22 @@ export function renderFile(hosts: Kept[]): string {
     ...hosts.map(h => serverBlock(h) + '\n')].join('\n')
 }
 
+/**
+ * One host from the file, checked again the way a new host is (names, address, port, scheme), or null. The file
+ * sits in a container that root there can edit, and a host written back goes into NGINX syntax: anything that would
+ * not pass as a new host is dropped, never written again.
+ */
+function keptOf(k: any): Kept | null {
+  try {
+    if (typeof k?.id !== 'string' || !/^hpx-[a-z0-9-]{1,60}$/.test(k.id) || !Array.isArray(k.domains) || !k.domains.length || k.domains.length > 20) return null
+    const domains = k.domains.map(checkHostname)
+    const port = Number(k.forwardPort)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null
+    if (k.forwardScheme !== 'http' && k.forwardScheme !== 'https') return null
+    return { id: k.id, domains, forwardScheme: k.forwardScheme, forwardHost: checkForwardHost(k.forwardHost), forwardPort: port, enabled: k.enabled !== false, websockets: k.websockets !== false }
+  } catch { return null }
+}
+
 /** The hosts kept in a file HyperProx wrote. A file without the header is refused, never read as HyperProx's. */
 export function parseFile(text: string | null, file: string): Kept[] {
   if (text === null || !text.trim()) return []
@@ -75,10 +91,8 @@ export function parseFile(text: string | null, file: string): Kept[] {
   const out: Kept[] = []
   for (const line of text.split('\n')) {
     if (!line.startsWith(META)) continue
-    try {
-      const k = JSON.parse(line.slice(META.length))
-      if (typeof k?.id === 'string' && Array.isArray(k.domains)) out.push({ ...k, websockets: k.websockets !== false })
-    } catch { /* a damaged line: that host is not HyperProx's any more */ }
+    try { const k = keptOf(JSON.parse(line.slice(META.length))); if (k) out.push(k) }
+    catch { /* a damaged line: that host is not HyperProx's any more */ }
   }
   return out
 }
@@ -142,10 +156,12 @@ export class NginxProvider implements ProxyProvider {
       if (!active) ok = false
     } catch (e: any) { ok = false; checks.push({ name: 'service', ok: false, detail: e.message }) }
     try {
-      const { file, dumpOk } = await this.read()
+      const { file, dump, dumpOk } = await this.read()
+      const loaded = dumpOk && parseNginxDump(dump).files.includes(this.cfg.file)
+      if (dumpOk && !loaded) { ok = false; checks.push({ name: 'loaded', ok: false, detail: `NGINX does not load ${this.cfg.file}; hosts written there would never be served` }) }
       checks.push({ name: 'config', ok: dumpOk, detail: dumpOk ? 'nginx -t accepts the configuration' : 'nginx -t refuses the configuration as it is now; HyperProx cannot change it until that is fixed' })
       if (!dumpOk) ok = false
-      if (file === null) checks.push({ name: 'file', ok: true, detail: `${this.cfg.file} does not exist yet; HyperProx creates it on the first host` })
+      if (file === null) checks.push({ name: 'file', ok: false, detail: `${this.cfg.file} does not exist. The Catalogue's NGINX has it from the install; elsewhere, create it with HyperProx's header line as its only content` })
       else if (!file.startsWith(NGINX_HEADER)) { ok = false; checks.push({ name: 'file', ok: false, detail: `${this.cfg.file} exists but was not written by HyperProx; it will not be overwritten` }) }
       else checks.push({ name: 'file', ok: true, detail: `${this.cfg.file} is HyperProx's` })
     } catch (e: any) { ok = false; checks.push({ name: 'config', ok: false, detail: e.message }) }
@@ -181,9 +197,16 @@ export class NginxProvider implements ProxyProvider {
     return out
   }
 
+  /** NGINX must load the file (it is in `nginx -T`), or a host written there would never be served. */
+  private loaded(dump: string, dumpOk: boolean): void {
+    if (!dumpOk) throw new ProxyRefusal('nginx -t refuses NGINX\'s configuration as it is now, so HyperProx changes nothing until that is fixed.')
+    if (!parseNginxDump(dump).files.includes(this.cfg.file)) throw new ProxyRefusal(`NGINX does not load ${this.cfg.file}, so a host written there would never be served. Point the instance at a file NGINX includes in its http block.`)
+  }
+
   private async mutate<T>(fn: (hosts: Kept[]) => T): Promise<T> {
     return this.locked(async () => {
-      const { file } = await this.read()
+      const { file, dump, dumpOk } = await this.read()
+      this.loaded(dump, dumpOk)
       const hosts = parseFile(file, this.cfg.file)
       const out = fn(hosts)
       await this.write(renderFile(hosts))

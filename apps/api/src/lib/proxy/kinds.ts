@@ -158,7 +158,12 @@ export function buildProvider(inst: ProxyInstance, secrets: Record<string, strin
     case 'nginx': {
       if (inst.mode !== 'managed' || !inst.managed) throw new ProxyRefusal(`${inst.name}: NGINX is driven through its container, so it must be a Managed instance.`, 400)
       if (!deps.guestExec) throw new ProxyRefusal(`${inst.name}: reaching the container is not available here.`, 400)
-      return new NginxProvider({ file: need('file', s.file, 'the server file'), exec: deps.guestExec(inst.managed.node, inst.managed.vmid), lockKey: inst.id })
+      const file = need('file', s.file, 'the server file')
+      // Only a .conf file under /etc/nginx: the file is written as root in the container.
+      if (!/^\/etc\/nginx\/[A-Za-z0-9._/-]+\.conf$/.test(file) || file.split('/').some(x => x === '..' || x === '.')) {
+        throw new ProxyRefusal(`${inst.name}: the server file must be a .conf file under /etc/nginx.`, 400)
+      }
+      return new NginxProvider({ file, exec: deps.guestExec(inst.managed.node, inst.managed.vmid), lockKey: inst.id })
     }
     case 'pangolin':
       return new PangolinProvider({ url: inst.url, apiKey: need('api_key', secrets.api_key, 'the API key'),
