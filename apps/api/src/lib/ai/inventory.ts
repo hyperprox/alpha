@@ -12,6 +12,7 @@
 
 import type { ClusterSummary } from './ask-sources'
 import { appFromName } from '../homepage/catalog'
+import { clockAt } from './when'
 
 /** What HyperProx already knows about each guest, by VMID. */
 export interface AppHints {
@@ -27,28 +28,33 @@ export interface AppHints {
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+// Each pattern is the whole question (after politeness and a trailing "?"), so a longer question that only starts
+// the same way is not this: "what do I have to do to install X", "what is running on port 8080", "what do we run for
+// backups" are not inventory questions.
+const PLACE = String.raw`(cluster|server|servers|proxmox|pve|homelab|home\s*lab|lab|nodes?)`
+const GUESTS = String.raw`(guests|apps|applications|containers|cts|lxcs|vms|virtual\s+machines|services|machines)`
+const NOW = String.raw`(\s+(right\s+now|now|at\s+the\s+moment|currently))?`
+const WHERE = String.raw`(\s+(on|in)\s+(my|the|our|this)\s+${PLACE})?`
 const INVENTORY = [
-  /\bwhat'?s\s+(on|in|running\s+on)\s+(my|the|our|this)\s+(cluster|server|servers|proxmox|pve|homelab|home\s*lab|lab|nodes?)\b/,
-  /\bwhat\s+is\s+(on|in|running\s+on)\s+(my|the|our|this)\s+(cluster|server|servers|proxmox|pve|homelab|home\s*lab|lab|nodes?)\b/,
-  /\bwhat\s+(is|are|'?s)\s+running\s*(\?|$|\bright now\b|\bat the moment\b|\bon\b)/,
-  /\bwhat'?s\s+running\s*(\?|$|\bright now\b|\bat the moment\b|\bon\b)/,
-  /\bwhat\s+(do|have)\s+(i|we)\s+(got|have|run|running)\b/,
-  /\bwhat\s+do\s+(i|we)\s+have\b/,
-  /\b(list|show)(\s+me)?\s+(all\s+)?(of\s+)?(my|the|our)?\s*(guests|apps|applications|containers|cts|lxcs|vms|virtual\s+machines|services|machines)\b/,
-  /\bwhat\s+(guests|apps|applications|containers|vms|services|machines)\s+(do\s+(i|we)\s+have|are\s+(there|running|on)|run|have\s+i\s+got)\b/,
-  /\b(which|what)\s+(guests|containers|vms|apps|services)\s+(are\s+)?(running|stopped)\b/,
-]
+  String.raw`what('?s|\s+is)\s+(on|in|running\s+on)\s+(my|the|our|this)\s+${PLACE}${NOW}`,
+  String.raw`what('?s|\s+is|\s+are)\s+running${NOW}${WHERE}`,
+  String.raw`what\s+(do|have)\s+(i|we)\s+(got|have|running)${WHERE}`,
+  String.raw`what\s+do\s+(i|we)\s+(have|run)${WHERE}`,
+  String.raw`(list|show)(\s+me)?(\s+all)?(\s+of)?(\s+(my|the|our))?\s+${GUESTS}(\s+(on|in)\s+[\w.-]+(\s+(cluster|server|node))?)?`,
+  String.raw`what\s+${GUESTS}\s+(do\s+(i|we)\s+have|are\s+there|are\s+running|have\s+(i|we)\s+got|(do|are)\s+(i|we)\s+run(ning)?)${WHERE}`,
+  String.raw`(which|what)\s+${GUESTS}\s+(are\s+)?(running|stopped)${NOW}${WHERE}`,
+].map(r => new RegExp(`^${r}$`))
+const LEAD = /^((hey|hi|ok|okay|so|and|please|can\s+you|could\s+you|tell\s+me)\b[\s,]*)+/
 
 /**
  * True for "what's on my cluster", "what's running", "what do I have", "list my guests/apps/containers/VMs" and the
  * same about a named cluster or node ("what's on node2"; `names`: cluster and node names). Not for a question about
- * one guest ("is plex running?") or a count ("how many containers"), which have their own exact answers.
+ * one guest ("is plex running?"), a count ("how many containers"), or a longer question that only starts the same way.
  */
 export function isInventoryQuestion(prompt: string, names: string[] = []): boolean {
-  const p = prompt.toLowerCase().replace(/\s+/g, ' ').trim()
-  if (/\bhow many\b|\bnumber of\b/.test(p)) return false
+  const p = prompt.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[?.!\s]+$/, '').replace(LEAD, '').trim()
   if (INVENTORY.some(r => r.test(p))) return true
-  return names.filter(n => n && n.trim()).some(n => new RegExp(`\\bwhat'?s\\s+(on|running\\s+on)\\s+(the\\s+)?${esc(n.trim().toLowerCase())}(\\s+(cluster|server|node))?\\s*\\??$`).test(p))
+  return names.filter(n => n && n.trim()).some(n => new RegExp(`^what('?s|\\s+is)\\s+(on|running\\s+on)\\s+(the\\s+)?${esc(n.trim().toLowerCase())}(\\s+(cluster|server|node))?$`).test(p))
 }
 
 type Guest = ClusterSummary['guests'][number]
@@ -60,7 +66,9 @@ const NOISE_TAGS = /^(hyperprox[-\w]*|pinned|ha|managed|template|test)$/
 const MAX_PER_NODE = 15
 const MAX_GROUPED = 15
 
-function whatItIs(g: Guest, h: AppHints | null): string[] {
+function whatItIs(g: Guest, h: AppHints | null, full = true): string[] {
+  // Below admin: name, type, node, state and HA only, as on the Guests page; what runs inside is the admin pages'.
+  if (!full) return []
   const found = [...new Set(h?.apps[g.vmid] ?? [])]
   if (found.length) return found.slice(0, 3)
   const byName = appFromName(g.name)
@@ -69,35 +77,38 @@ function whatItIs(g: Guest, h: AppHints | null): string[] {
   return tags.length ? [`tagged ${tags.slice(0, 3).join(', ')}`] : []
 }
 
-function guestLine(g: Guest, h: AppHints | null, haSids: Set<string>, o: { where?: boolean } = {}): string {
+function guestLine(g: Guest, h: AppHints | null, haSids: Set<string>, o: { where?: boolean; full?: boolean } = {}): string {
   const ha = haSids.has(`${g.type === 'lxc' ? 'ct' : 'vm'}:${g.vmid}`)
-  const parts = [...whatItIs(g, h)]
-  const addr = h?.addresses[g.vmid]
+  const parts = [...whatItIs(g, h, o.full !== false)]
+  // A guest tagged to be left alone now has no address shown, even if the kept inventory is older than the tag.
+  const addr = o.full !== false && !(g.tags ?? []).includes('hyperprox-ignore') ? h?.addresses[g.vmid] : undefined
   if (addr) parts.push(addr)
   if (ha) parts.push('HA')
   return `- ${g.name || `guest ${g.vmid}`} (${kind(g.type)} ${g.vmid}${o.where ? `, ${g.node}` : ''})${parts.length ? `: ${parts.join(', ')}` : ''}`
 }
 
-const clock = (ms: number) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
 
 /**
  * The inventory answer. `prompt` narrows it: a node named in it (only that node), "containers" or "VMs" (only that
  * type), "apps" (only guests with an app found). `name`: the cluster's name for the first line.
  */
-export function inventoryText(s: ClusterSummary, h: AppHints | null, o: { prompt?: string; name?: string; now?: number } = {}): string {
+export function inventoryText(s: ClusterSummary, h: AppHints | null, o: { prompt?: string; name?: string; now?: number; detail?: 'basic' | 'full' } = {}): string {
+  const full = o.detail !== 'basic'
+  if (!full) h = null
   if (s.partial.includes('resources')) return 'I could not read the guest list from the cluster just now, so I cannot list what is on it. Try again in a moment.'
   const p = (o.prompt ?? '').toLowerCase()
   const now = o.now ?? Date.now()
   const node = s.nodes.find(n => new RegExp(`(^|[^a-z0-9-])${esc(n.node.toLowerCase())}($|[^a-z0-9-])`).test(p))?.node ?? null
   const wantCt = /\b(containers?|cts?|lxcs?)\b/.test(p), wantVm = /\b(vms?|virtual machines?)\b/.test(p)
   const type: 'lxc' | 'qemu' | null = wantCt && !wantVm ? 'lxc' : wantVm && !wantCt ? 'qemu' : null
-  const appsOnly = /\b(apps?|applications?|services?)\b/.test(p) && !type
+  const askedApps = /\b(apps?|applications?|services?)\b/.test(p) && !type
+  const appsOnly = askedApps && full
   const haSids = new Set(s.ha?.sids ?? [])
   const byName = (a: { name: string; vmid: number }, b: { name: string; vmid: number }) => (a.name || '').localeCompare(b.name || '') || a.vmid - b.vmid
 
   let guests = s.guests.filter(g => (!node || g.node === node) && (!type || g.type === type))
   const templates = (s.templates ?? []).filter(t => (!node || t.node === node) && (!type || t.type === type))
-  if (appsOnly) guests = guests.filter(g => whatItIs(g, h).some(w => !w.startsWith('tagged ')))
+  if (appsOnly) guests = guests.filter(g => whatItIs(g, h, full).some(w => !w.startsWith('tagged ')))
   const running = guests.filter(g => g.running), stopped = guests.filter(g => !g.running)
 
   const what = type ? (type === 'lxc' ? 'container' : 'VM') : appsOnly ? 'guest with an app' : 'guest'
@@ -119,7 +130,7 @@ export function inventoryText(s: ClusterSummary, h: AppHints | null, o: { prompt
     if (!n.online) { out.push('', `${n.node}: offline`); continue }
     if (!here.length) continue
     out.push('', `${n.node} (${here.length} running):`)
-    for (const g of here.slice(0, MAX_PER_NODE)) out.push(guestLine(g, h, haSids))
+    for (const g of here.slice(0, MAX_PER_NODE)) out.push(guestLine(g, h, haSids, { full }))
     if (here.length > MAX_PER_NODE) {
       const rest = here.slice(MAX_PER_NODE)
       out.push(`- and ${rest.length} more: ${rest.slice(0, 10).map(g => g.name || g.vmid).join(', ')}${rest.length > 10 ? ', …' : ''}`)
@@ -127,13 +138,13 @@ export function inventoryText(s: ClusterSummary, h: AppHints | null, o: { prompt
   }
   // Guests on a node that is not in the node list (a node removed mid-read) are still said.
   const orphans = running.filter(g => !nodes.some(n => n.node === g.node))
-  if (orphans.length) { out.push('', 'Elsewhere:'); for (const g of orphans.sort(byName).slice(0, MAX_PER_NODE)) out.push(guestLine(g, h, haSids, { where: true })) }
+  if (orphans.length) { out.push('', 'Elsewhere:'); for (const g of orphans.sort(byName).slice(0, MAX_PER_NODE)) out.push(guestLine(g, h, haSids, { where: true, full })) }
 
   if (stopped.length) {
     const offline = new Set(s.nodes.filter(n => !n.online).map(n => n.node))
     const list = stopped.slice().sort(byName)
     const shown = list.slice(0, MAX_GROUPED).map(g => {
-      const w = whatItIs(g, h)
+      const w = whatItIs(g, h, full)
       return `${g.name || `guest ${g.vmid}`} (${kind(g.type)} ${g.vmid}, ${g.node}${offline.has(g.node) ? ', node offline' : ''}${w.length ? `; ${w[0]}` : ''})`
     })
     out.push('', `Stopped (${stopped.length}): ${shown.join(', ')}${list.length > MAX_GROUPED ? `, and ${list.length - MAX_GROUPED} more` : ''}.`)
@@ -143,8 +154,9 @@ export function inventoryText(s: ClusterSummary, h: AppHints | null, o: { prompt
     out.push(`Templates (${templates.length}): ${list.slice(0, MAX_GROUPED).map(t => `${t.name || t.vmid} (${t.node})`).join(', ')}${list.length > MAX_GROUPED ? `, and ${list.length - MAX_GROUPED} more` : ''}.`)
   }
   const notes: string[] = []
+  if (askedApps && !full) notes.push('What runs in each guest is shown to admins only.')
   if (h?.note) notes.push(h.note)
-  if (h?.asOf && now - h.asOf > 5 * 60_000) notes.push(`What each guest runs is as of ${clock(h.asOf)}.`)
+  if (h?.asOf && now - h.asOf > 5 * 60_000) notes.push(`What each guest runs is as of ${clockAt(h.asOf, now)}.`)
   if (notes.length) out.push('', notes.join(' '))
   return out.join('\n')
 }

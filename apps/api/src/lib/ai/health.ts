@@ -12,7 +12,7 @@
 import type { ClusterPanel } from '../clusters/overview'
 
 /** One Ceph health check: its code, Ceph's own one-line summary, and whether the person has accepted it. */
-export interface CephCheck { code: string; message: string; known: boolean }
+export interface CephCheck { code: string; message: string; known: boolean; severity?: string }
 
 /** What health needs from the cluster summary (lib/ai/ask-sources.ts ClusterSummary). */
 export interface HealthFacts {
@@ -44,7 +44,9 @@ export function cephChecksOf(status: any, accepted: string[]): CephCheck[] {
   return Object.entries(checks).map(([code, c]: [string, any]) => ({
     code,
     message: String(c?.summary?.message ?? code).replace(/\s+/g, ' ').trim().slice(0, 120),
-    known: accepted.includes(code) || c?.muted === true || mutes.has(code),
+    severity: String(c?.severity ?? ''),
+    // Only a warning can be accepted: an error is never a known one, whatever the policy or a mute says.
+    known: String(c?.severity ?? '') === 'HEALTH_WARN' && (accepted.includes(code) || c?.muted === true || mutes.has(code)),
   }))
 }
 
@@ -67,7 +69,7 @@ export function clusterHealth(s: HealthFacts | null, panel?: ClusterPanel | null
     const checks = s.cephChecks ?? []
     const open = checks.filter(c => !c.known)
     if (s.ceph === 'HEALTH_OK') ceph = 'Ceph healthy'
-    else if (checks.length && !open.length) {
+    else if (s.ceph === 'HEALTH_WARN' && checks.length && !open.length) {
       ceph = 'Ceph has a known warning'
       cephKnownOnly = true
       known.push(...checks.map(c => c.message))

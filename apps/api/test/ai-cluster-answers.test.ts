@@ -6,11 +6,14 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { answerQuestion, loadWithin, clearReadingCache, type AskSource, type SourceSummary } from "../src/lib/ai/ask"
+import { forgetReadings } from "../src/lib/ai/reading-cache"
+import { clockAt } from "../src/lib/ai/when"
+import { qnapSummary } from "../src/lib/ai/home-sources"
 import { isInventoryQuestion, inventoryText, type AppHints } from "../src/lib/ai/inventory"
-import { appHints } from "../src/lib/ai/inventory-hints"
+import { appHints, hintsForRole } from "../src/lib/ai/inventory-hints"
 import { rollCallText, headlineNeedsAttention } from "../src/lib/ai/rollcall"
 import { clusterHealth, cephChecksOf } from "../src/lib/ai/health"
-import { clusterSummary, gatherBackups, backupSummary, gatherClusterSummary, selectionOfLog, selectionOfJob, cadenceOf, type ClusterSummary } from "../src/lib/ai/ask-sources"
+import { clusterSummary, gatherBackups, backupSummary, gatherClusterSummary, selectionOfLog, selectionOfJob, cadenceOf, scheduleMinutes, type ClusterSummary } from "../src/lib/ai/ask-sources"
 import { statusSummary } from "../src/lib/ai/cluster-sources"
 import { startLoop } from "../src/lib/ai/loop"
 import { nextcloudPlugin } from "../src/plugins/nextcloud"
@@ -110,12 +113,12 @@ test("inventory: an answer never waits on the app detectors: late hints are left
   const cluster: AskSource = { id: "cluster", title: "Cluster", blurb: "", aliases: /cluster/, budgetMs: 1500,
     load: async () => clusterSummary(summary()), hints: () => new Promise(() => {}) }
   const t0 = Date.now()
-  const out = (await answerQuestion("What's on my cluster?", { sources: [cluster], call: never, fallback: "x" }))!
+  const out = (await answerQuestion("What's on my cluster?", { sources: [cluster], call: never, fallback: "x", inventoryDetail: "full" }))!
   assert.ok(Date.now() - t0 < 1400, `took ${Date.now() - t0} ms`)
   assert.match(out, /^On your cluster: 5 guests/); assert.match(out, /still being looked up/)
 })
 
-test("inventory hints: the kept inventory is used at once and rebuilt in the background when stale; viewers get no addresses", async () => {
+test("inventory hints: the kept inventory is used at once and rebuilt in the background when stale; below admin nothing is read", async () => {
   const inv = {
     guests: [{ vmid: 101, name: "media", node: "node1", type: "lxc", status: "running", tags: [], addresses: ["192.0.2.11"], machineId: "lxc-101" },
       { vmid: 102, name: "sonarr", node: "node1", type: "lxc", status: "running", tags: ["hyperprox-ignore"], addresses: ["192.0.2.12"], machineId: "lxc-102" },
@@ -127,14 +130,22 @@ test("inventory hints: the kept inventory is used at once and rebuilt in the bac
   let builds = 0
   const base = { build: async () => { builds++; return inv }, freshMs: 60_000, budgetMs: 100, now: () => 1_000_000,
     sites: async () => [{ name: "Blog", kindName: "WordPress", vmid: 104 }] }
-  const h = await appHints({ ...base, peek: () => ({ inv, at: 1_000_000 - 120_000 }), showAddresses: true })
+  const h = (await hintsForRole("admin", { ...base, peek: () => ({ inv, at: 1_000_000 - 120_000 }) }))!
   assert.deepEqual(h.apps, { 101: ["Plex"], 102: ["Sonarr"], 104: ["WordPress website Blog"] })
   // Ignored and excluded guests show no address.
   assert.deepEqual(h.addresses, { 101: "192.0.2.11" })
   assert.equal(h.asOf, 1_000_000 - 120_000); assert.equal(builds, 1)   // stale: one background rebuild
-  const viewer = await appHints({ ...base, peek: () => ({ inv, at: 1_000_000 }), showAddresses: false })
-  assert.deepEqual(viewer.addresses, {}); assert.equal(builds, 1)     // fresh: no rebuild
-  const never = await appHints({ ...base, peek: () => null, build: () => new Promise(() => {}), showAddresses: true })
+  await appHints({ ...base, peek: () => ({ inv, at: 1_000_000 }) })
+  assert.equal(builds, 1)                                              // fresh: no rebuild
+  // A viewer or an operator: no detector, website list or address is read at all, and the answer has none of them.
+  let touched = 0
+  const spy = { ...base, peek: () => { touched++; return { inv, at: 1_000_000 } }, build: async () => { touched++; return inv }, sites: async () => { touched++; return [] } }
+  for (const role of ["viewer", "operator"] as const) assert.equal(await hintsForRole(role, spy), null)
+  assert.equal(touched, 0)
+  const seen = inventoryText(summary(), null, { prompt: "list my apps", detail: "basic" })
+  assert.doesNotMatch(seen, /Plex|Sonarr|WordPress|Blog|192\.0\.2|tagged/)
+  assert.match(seen, /- sonarr \(container 102\): HA\n/); assert.match(seen, /shown to admins only/)
+  const never = await appHints({ ...base, peek: () => null, build: () => new Promise(() => {}) })
   assert.deepEqual(never.apps, { 104: ["WordPress website Blog"] }); assert.match(never.note!, /still being looked up/)
 })
 
@@ -329,9 +340,131 @@ test("backups: without the job list, the most recent run alone, as before", asyn
 })
 
 test("backups: selections and schedules", () => {
-  assert.equal(selectionOfLog("INFO: starting new backup job: vzdump 201 101 --storage x --mode snapshot"), "ids:101,201")
-  assert.equal(selectionOfLog("INFO: starting new backup job: vzdump --all 1 --exclude 105,104 --storage x"), "all|104,105")
-  assert.equal(selectionOfLog("INFO: starting new backup job: vzdump --pool media --storage x"), "pool:media")
-  assert.equal(selectionOfJob({ vmid: "101,201" }), "ids:101,201"); assert.equal(selectionOfJob({ all: 1, exclude: "105,104" }), "all|104,105")
+  assert.equal(selectionOfLog("INFO: starting new backup job: vzdump 201 101 --storage x --mode snapshot"), "ids:101,201|storage=x|mode=snapshot")
+  assert.equal(selectionOfLog("INFO: starting new backup job: vzdump --all 1 --exclude 105,104 --storage x --mode stop"), "all:104,105|storage=x|mode=stop")
+  assert.equal(selectionOfLog("INFO: starting new backup job: vzdump --pool media --storage x"), "pool:media|storage=x|mode=snapshot")
+  assert.equal(selectionOfJob({ vmid: "101,201", storage: "x" }), "ids:101,201|storage=x|mode=snapshot")
+  assert.equal(selectionOfJob({ all: 1, exclude: "105,104", storage: "x", mode: "stop" }), "all:104,105|storage=x|mode=stop")
+  assert.deepEqual(["02:00", "sun 01:00", "mon..fri 3:30", "monthly"].map(scheduleMinutes), [120, 60, 210, null])
   assert.deepEqual(["02:00", "sun 01:00", "mon..fri 03:00", "monthly"].map(cadenceOf), ["daily", "weekly", "other", "other"])
+})
+
+// ---------------------------------------------------------------------------
+//  Review round: matching runs to jobs
+// ---------------------------------------------------------------------------
+
+const T0 = 1767218400   // 2025-12-31 22:00 UTC
+const task = (node: string, k: string, start: number, id = "") => ({ type: "vzdump", upid: `UPID:${node}:${k}:1:1:vzdump:${id}:root@pam:`, starttime: start, endtime: start + 300, status: "OK" })
+const jobLog = (args: string, ids: string[], at: string) => [
+  // The lock preamble: the job line is not the first line.
+  "INFO: trying to get global lock - waiting...", "INFO: got global lock",
+  `INFO: starting new backup job: vzdump ${args}`, `INFO: Backup started at ${at}`,
+  ...ids.flatMap(i => [`INFO: Starting Backup of VM ${i} (lxc)`, `INFO: Finished Backup of VM ${i} (00:01:00)`]), `INFO: Backup finished at ${at}`,
+]
+const world = (jobs: any[], tasks: any[], logs: Record<string, string[]>) => (async (p: string) => {
+  if (p === "/nodes") return [{ node: "alpha" }]
+  if (p === "/cluster/backup") return jobs
+  if (/^\/nodes\/alpha\/tasks\?/.test(p)) return tasks
+  const l = /^\/nodes\/[^/]+\/tasks\/([^/]+)\/log(\?.*)?$/.exec(p)
+  if (l) { const all = logs[decodeURIComponent(l[1])].map((t, n) => ({ n: n + 1, t })); const lim = /limit=(\d+)/.exec(l[2] ?? "")?.[1]; return lim && lim !== "0" ? all.slice(0, Number(lim)) : all }
+  throw new Error("unexpected " + p)
+}) as never
+
+test("backups: two \"all guests\" jobs to different storage are told apart by storage; to the same one by time of day", async () => {
+  const jobs = [{ id: "a", type: "vzdump", schedule: "22:00", all: 1, storage: "fast" }, { id: "b", type: "vzdump", schedule: "22:00", all: 1, storage: "offsite" }]
+  const tasks = [task("alpha", "f", T0), task("alpha", "o", T0 + 60)]
+  const logs = { [tasks[0].upid]: jobLog("--all 1 --storage fast --mode snapshot", ["101"], "2025-12-31 22:00:05"),
+    [tasks[1].upid]: jobLog("--all 1 --storage offsite --mode snapshot", ["101", "102"], "2025-12-31 22:01:00") }
+  const r = await gatherBackups(world(jobs, tasks, logs), NOW)
+  // Both started in the same few minutes: one run each, not one run of three guests.
+  assert.equal(r.jobs.length, 2); assert.deepEqual(r.jobs.map(j => j.guests.length).sort(), [1, 2])
+
+  const same = [{ id: "n", type: "vzdump", schedule: "22:00", all: 1, storage: "s" }, { id: "m", type: "vzdump", schedule: "03:00", all: 1, storage: "s" }]
+  const t2 = [task("alpha", "night", T0), task("alpha", "morning", T0 - 19 * 3600)]
+  const l2 = { [t2[0].upid]: jobLog("--all 1 --storage s", ["101"], "2025-12-31 22:00:05"), [t2[1].upid]: jobLog("--all 1 --storage s", ["101", "102"], "2025-12-31 03:00:05") }
+  const r2 = await gatherBackups(world(same, t2, l2), NOW)
+  assert.deepEqual(r2.jobs.map(j => [j.schedule, j.guests.length]), [["22:00", 1], ["03:00", 2]])
+})
+
+test("backups: the job line is found after the lock preamble, and a manual backup in the same minutes is not the job", async () => {
+  const jobs = [{ id: "d", type: "vzdump", schedule: "22:00", vmid: "101,102", storage: "s" }]
+  const tasks = [task("alpha", "job", T0), task("alpha", "manual", T0 + 120, "103")]
+  const logs = { [tasks[0].upid]: jobLog("101 102 --storage s --mode snapshot", ["101", "102"], "2025-12-31 22:00:05"),
+    [tasks[1].upid]: jobLog("103 --storage local --mode snapshot --remove 0", ["103"], "2025-12-31 22:02:00") }
+  const r = await gatherBackups(world(jobs, tasks, logs), NOW)
+  assert.equal(r.jobs.length, 1); assert.deepEqual(r.jobs[0].guests.map(g => g.vmid), ["101", "102"]); assert.equal(r.jobs[0].schedule, "22:00")
+})
+
+// ---------------------------------------------------------------------------
+//  Review round: health, roll-call, matcher, caches
+// ---------------------------------------------------------------------------
+
+test("health: an error is never a known warning, and a Ceph alert then stays a problem", () => {
+  const err = { health: { status: "HEALTH_ERR", checks: { POOL_NO_REDUNDANCY: { severity: "HEALTH_WARN", summary: { message: "1 pool(s) have no replicas configured" } }, OSD_FULL: { severity: "HEALTH_ERR", summary: { message: "1 full osd(s)" } } } } }
+  const checks = cephChecksOf(err, ["POOL_NO_REDUNDANCY", "OSD_FULL"])
+  assert.deepEqual(checks.map(c => c.known), [true, false])   // accepted, but an error is never known
+  const s = summary({ ceph: "HEALTH_ERR", cephChecks: checks.map(c => ({ ...c, known: true })) })   // even if marked known
+  const h = clusterHealth(s)
+  assert.equal(h.cephKnownOnly, false); assert.match(h.problems.join(), /Ceph/)
+  const out = rollCallText([
+    { s: src("cluster", "Cluster", { headline: "" }), sum: clusterSummary(s), state: "ok" },
+    { s: src("alerts", "Alerts", { headline: "" }), sum: { headline: "Alerts: 1 firing.", lines: [], data: { prometheus: true, rows: [{ name: "CephHealthError", title: "Ceph health error", state: "firing", muted: false }] } }, state: "ok" },
+  ])
+  assert.match(out, /- Alerts: 1 alert firing: Ceph health error\./)
+})
+
+test("roll-call: an area with unread parts needs attention; headline words; the heading when something was locked", () => {
+  const out = rollCallText([
+    { s: src("dns", "DNS", { headline: "" }), sum: { headline: "DNS: 2 zones.", lines: [], unread: ["the records of example.org"] }, state: "ok" },
+    { s: src("certs", "Certificates", { headline: "" }), sum: { headline: "x", lines: [], locked: true }, state: "ok" },
+  ])
+  assert.match(out, /^Needs attention:\n- DNS: 2 zones; could not read the records of example\.org\./)
+  for (const h of ["Nextcloud: cloud: could not be read since 14:05", "Nextcloud: cloud: 3 warnings", "Unmanic: workers degraded", "Arr: 2 downloads stalled"]) assert.ok(headlineNeedsAttention(h), h)
+  assert.ok(!headlineNeedsAttention("Nextcloud: cloud: 0 errors, 0 warnings, 2 notes"))
+  const locked = rollCallText([{ s: src("dns", "DNS", { headline: "" }), sum: { headline: "DNS: 2 zones.", lines: [] }, state: "ok" },
+    { s: src("certs", "Certificates", { headline: "" }), sum: { headline: "x", lines: [], locked: true }, state: "ok" }])
+  assert.match(locked, /^Nothing needs attention in what I could read\./)
+})
+
+test("inventory intent: longer questions that only start the same way are not inventory", () => {
+  for (const p of ["what do I have to do to install Gitea", "What is running on port 8080?", "what do we run for backups", "what's running slow",
+    "show me my containers' logs", "what do I have to back up"]) assert.ok(!isInventoryQuestion(p), p)
+  for (const p of ["Can you list my containers?", "please show me all my VMs", "what do we run", "what is running on my server right now"]) assert.ok(isInventoryQuestion(p), p)
+})
+
+test("inventory: a guest tagged to be left alone has no address, even from an older inventory", () => {
+  const s = summary({ guests: [{ vmid: 101, node: "node1", type: "lxc", name: "media", running: true, tags: ["hyperprox-ignore"] }] })
+  assert.doesNotMatch(inventoryText(s, hints, { detail: "full" }), /192\.0\.2\.11/)
+})
+
+test("slow source: two questions at once read it once; a lock or a removed cluster forgets kept readings", async () => {
+  let reads = 0
+  const nas: AskSource = { id: "qnap", title: "QNAP NAS", blurb: "", aliases: /nas/, scope: "home", budgetMs: 50,
+    load: () => { reads++; return slow(120, { headline: "QNAP: fine.", lines: ["x"] }) } }
+  const [a, b] = await Promise.all([loadWithin(nas, { cacheKey: "admin" }), loadWithin(nas, { cacheKey: "admin" })])
+  assert.equal(reads, 1); assert.equal(a.state, "pending"); assert.equal(b.state, "pending")
+  await new Promise(r => setTimeout(r, 150))
+  assert.equal((await loadWithin(nas, { cacheKey: "admin" })).state, "cached")
+  forgetReadings({ scope: "other" })
+  await new Promise(r => setTimeout(r, 150))
+  assert.equal((await loadWithin(nas, { cacheKey: "admin" })).state, "cached")   // another cluster's removal: kept
+  await new Promise(r => setTimeout(r, 150))
+  forgetReadings({ scope: "home" })
+  assert.equal((await loadWithin(nas, { cacheKey: "admin" })).state, "pending")
+  await new Promise(r => setTimeout(r, 150))
+  forgetReadings()                                                                // the vault locked
+  assert.equal((await loadWithin(nas, { cacheKey: "admin" })).state, "pending")
+  await new Promise(r => setTimeout(r, 150))
+})
+
+test("kept readings: a NAS or Nextcloud whose newest read failed says since when and why, and needs attention", async () => {
+  const today = new Date(); today.setHours(9, 30, 0, 0)
+  const sum = qnapSummary([{ id: "1", name: "nas1", beside: null, diskTempWarnC: null, reading: null, error: "nas1 did not answer.", failedSince: today.getTime() }].map(e => ({ ...e })) as never, "admin")
+  assert.match(sum.lines[0], /could not be read/)
+  const at = Date.now() - 20 * 60_000
+  const r = await nextcloudPlugin.summary!({ get: async () => [{ id: "1", name: "cloud", version: "30.0.1", update: null, counts: { error: 0, warning: 0, info: 1 }, error: "cloud did not answer.", at, failedSince: Date.now() - 60_000 }] } as never)
+  assert.match(r.lines[0], /^cloud: could not be read since \d\d:\d\d \(cloud did not answer\); last reading \(as of \d\d:\d\d\): Nextcloud 30\.0\.1/)
+  assert.ok(headlineNeedsAttention(`Nextcloud: ${r.lines[0]}`))
+  // Not today: the date as well.
+  assert.match(clockAt(Date.UTC(2020, 0, 2, 12, 0), Date.UTC(2026, 0, 2, 12, 0)), /^2020-01-0[12] \d\d:\d\d$/)
 })

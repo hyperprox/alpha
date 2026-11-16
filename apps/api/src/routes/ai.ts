@@ -23,7 +23,7 @@ import { currentContext, type RequestContext } from '../lib/auth'
 import { startLoop, type Extraction, type IntentResult, type LoopDeps } from '../lib/ai/loop'
 import { matchIntent, NO_TASK_ANSWER, confidentDeploy } from '../lib/ai/intent'
 import { answerQuestion, type AskSource } from '../lib/ai/ask'
-import { appHints } from '../lib/ai/inventory-hints'
+import { hintsForRole } from '../lib/ai/inventory-hints'
 import { isInventoryQuestion } from '../lib/ai/inventory'
 import { peekInventory, homeInventory, INVENTORY_FRESH_MS } from '../lib/homepage'
 import { loadPolicy, policyForCluster } from '../lib/updates/policy'
@@ -47,7 +47,11 @@ import { perClusterSources, homeOnlySource, answerAcross, boundTo, type ClusterS
 import { parseAction, prepareAction, applyAction, type ActionPlan, type PrepareDeps, type ApplyDeps } from '../lib/ai/actions'
 import type { ModelCall }     from '../lib/ai/extract'
 import { runPluginSummary }   from '../lib/plugin-host'
-import { isUnlocked }         from '../lib/vault/state'
+import { isUnlocked, onLock } from '../lib/vault/state'
+import { forgetReadings } from '../lib/ai/reading-cache'
+
+// Readings kept for slow areas were read while unlocked: none outlives a lock.
+onLock(() => forgetReadings())
 import { productionCertsService } from '../lib/certs/service'
 import { extractFields }      from '../lib/ai/extract'
 import { getTemplate }        from '../lib/ai/templates'
@@ -178,10 +182,16 @@ async function nasEntries(o: { cachedFirst?: boolean } = {}): Promise<NasEntry[]
   const svc = qnapService()
   const list = await svc.instances.list()
   return Promise.all(list.map(async m => {
+    const base = { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC }
+    // A NAS HyperProx holds back from (a refused login) is said as such, never shown as if it were fine.
+    const held = o.cachedFirst ? svc.blockedReason(m.id) : null
+    if (held) return { ...base, reading: null, error: held }
     const hit = o.cachedFirst ? svc.peek(m.id) : null
     if (hit) {
       if (svc.stale(m.id)) void svc.reading(m.id).catch(() => {})
-      return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: hit.reading, error: null, at: hit.at }
+      const failed = svc.lastFailure(m.id)
+      if (failed && failed.at > hit.at) return { ...base, reading: hit.reading, at: hit.at, failedSince: failed.at, error: plainReason(failed.error, m.name) }
+      return { ...base, reading: hit.reading, error: null, at: hit.at }
     }
     try { return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: await svc.reading(m.id), error: null } }
     catch (e: any) { return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: null, error: plainReason(e, m.name) } }
@@ -426,10 +436,10 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
       certs,
       accepted: () => acceptedWarnings(c),
       // What each guest is, for "what's on my cluster": what HyperProx already found, never a new scan.
-      appHints: () => appHints({
+      // Admins only: below admin the inventory reads no detector, website list or address (hintsForRole).
+      appHints: () => hintsForRole(role, {
         peek: peekInventory, build: homeInventory, freshMs: INVENTORY_FRESH_MS, budgetMs: 2500, now: Date.now,
         sites: async () => (await siteLites()).map(x => ({ name: x.name, kindName: x.kindName, vmid: x.vmid })),
-        showAddresses: !!role && hasRole(role, 'operator'),
       }),
     }), runInCluster),
     ...boundTo(HOME_ID, attached, runInCluster),
@@ -701,6 +711,7 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
             call: deps.askCall(chosen, model), fallback: NO_TASK_ANSWER, clusters,
             services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]),
             cacheKey: sess?.role ?? 'none', used: t => { used = t },
+            inventoryDetail: sess?.role && hasRole(sess.role, 'admin') ? 'full' : 'basic',
           })
           return said(message, { clusters: targets.clusters, ...(used.length ? { sources: used } : {}) })
         }
@@ -719,7 +730,8 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
           intent: p => deps.intent(p, chosen, model),
           ask: p => answerQuestion(p, { sources: deps.sources(facts, (fastify as any).prisma), call: deps.askCall(chosen, model), fallback: NO_TASK_ANSWER,
             services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]),
-            cacheKey: sess?.role ?? 'none', clusterName: current.name, used: t => { used = t } }),
+            cacheKey: sess?.role ?? 'none', clusterName: current.name, used: t => { used = t },
+            inventoryDetail: sess?.role && hasRole(sess.role, 'admin') ? 'full' : 'basic' }),
           extract: (t, text, f, opts) => deps.extract(t, text, f, { ...opts, provider: chosen, model }),
         }
         let s

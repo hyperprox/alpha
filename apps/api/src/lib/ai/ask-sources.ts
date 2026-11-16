@@ -226,26 +226,44 @@ export function parseBackupLog(node: string, lines: string[], finished: boolean,
 }
 
 /**
- * Which guests a run or a job selects, as one comparable key: "all" (with what it excludes), a pool, or the ids.
- * A run says it in the first line of its log ("starting new backup job: vzdump 101 102 --storage ..."); a job in
- * its /cluster/backup entry.
+ * Which job a run or a job is, as one comparable key: the guests it selects ("all" with what it excludes, a pool, or
+ * the ids), where it writes (storage) and how (mode). A run says it in the "starting new backup job: vzdump ..." line
+ * near the top of its log (after any lock-waiting lines); a job in its /cluster/backup entry.
  */
+function selectionKey(sel: string, storage: string | null, mode: string | null): string {
+  return `${sel}|storage=${storage ?? ''}|mode=${mode ?? 'snapshot'}`
+}
+
 export function selectionOfLog(line: string): string | null {
   const m = /starting new backup job: vzdump\s*(.*)$/.exec(line)
   if (!m) return null
   const args = m[1]
   const opt = (k: string) => new RegExp(`--${k}\\s+'?([^\\s']+)'?`).exec(args)?.[1] ?? null
-  if (opt('all') === '1') return `all|${(opt('exclude') ?? '').split(/[,\s]+/).filter(Boolean).sort().join(',')}`
-  if (opt('pool')) return `pool:${opt('pool')}`
-  const ids = (/^([\d\s]+)/.exec(args)?.[1] ?? '').split(/\s+/).filter(Boolean)
-  return ids.length ? `ids:${[...new Set(ids)].sort().join(',')}` : null
+  let sel: string | null
+  if (opt('all') === '1') sel = `all:${(opt('exclude') ?? '').split(/[,\s]+/).filter(Boolean).sort().join(',')}`
+  else if (opt('pool')) sel = `pool:${opt('pool')}`
+  else {
+    const ids = (/^([\d\s]+)/.exec(args)?.[1] ?? '').split(/\s+/).filter(Boolean)
+    sel = ids.length ? `ids:${[...new Set(ids)].sort().join(',')}` : null
+  }
+  return sel ? selectionKey(sel, opt('storage'), opt('mode')) : null
 }
 
 export function selectionOfJob(j: any): string | null {
-  if (Number(j?.all) === 1) return `all|${String(j.exclude ?? '').split(/[,\s]+/).filter(Boolean).sort().join(',')}`
-  if (j?.pool) return `pool:${j.pool}`
-  const ids = String(j?.vmid ?? '').split(/[,\s]+/).filter(Boolean)
-  return ids.length ? `ids:${[...new Set(ids)].sort().join(',')}` : null
+  let sel: string | null
+  if (Number(j?.all) === 1) sel = `all:${String(j.exclude ?? '').split(/[,\s]+/).filter(Boolean).sort().join(',')}`
+  else if (j?.pool) sel = `pool:${j.pool}`
+  else {
+    const ids = String(j?.vmid ?? '').split(/[,\s]+/).filter(Boolean)
+    sel = ids.length ? `ids:${[...new Set(ids)].sort().join(',')}` : null
+  }
+  return sel ? selectionKey(sel, j?.storage ? String(j.storage) : null, j?.mode ? String(j.mode) : null) : null
+}
+
+/** Minutes past midnight a schedule fires at ("sun 01:00" -> 60); null when it has no single time. */
+export function scheduleMinutes(schedule: string | null): number | null {
+  const m = /(?:^|\s)(\d{1,2}):(\d{2})$/.exec(String(schedule ?? '').trim())
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null
 }
 
 export function cadenceOf(schedule: string | null): Cadence | null {
@@ -282,42 +300,70 @@ export async function gatherBackups(fetchStrict: Fetch, now = Date.now()): Promi
     return r
   }
 
-  // Tasks that start within a few minutes of each other are one run.
-  const runs: Array<typeof tasks> = []
+  // Tasks that start within a few minutes of each other, for the same job, are one run.
+  const windows: Array<typeof tasks> = []
   for (const t of tasks) {
-    const cur = runs[runs.length - 1]
+    const cur = windows[windows.length - 1]
     if (cur && Number(cur[0].starttime) - Number(t.starttime) <= RUN_WINDOW_S) cur.push(t)
-    else runs.push([t])
+    else windows.push([t])
   }
 
-  const head = async (t: any): Promise<string | null> => {
+  /** A task's job key and local start (minutes past midnight), from the top of its log. */
+  const head = async (t: any): Promise<{ key: string | null; tod: number | null }> => {
+    let key: string | null = null, tod: number | null = null
     try {
-      const l = await fetchStrict<any[]>(`/nodes/${enc(String(t.node))}/tasks/${enc(String(t.upid))}/log?start=0&limit=3`)
-      for (const x of l ?? []) { const k = selectionOfLog(String(x?.t ?? '')); if (k) return k }
+      const l = await fetchStrict<any[]>(`/nodes/${enc(String(t.node))}/tasks/${enc(String(t.upid))}/log?start=0&limit=10`)
+      for (const x of l ?? []) {
+        const line = String(x?.t ?? '')
+        key ??= selectionOfLog(line)
+        const st = /Backup started at \d{4}-\d\d-\d\d (\d\d):(\d\d)/.exec(line)
+        if (st && tod === null) tod = Number(st[1]) * 60 + Number(st[2])
+      }
     } catch { /* this task's log cannot be read: another task of the run may say it */ }
-    return null
+    return { key, tod }
   }
 
   const wanted = (jobList ?? []).filter(j => (j?.type ?? 'vzdump') === 'vzdump' && Number(j?.enabled ?? 1) !== 0)
     .map(j => ({ key: selectionOfJob(j), schedule: j.schedule ? String(j.schedule) : null }))
   const picked: Array<{ run: typeof tasks; schedule: string | null }> = []
   const left = new Map<string, Array<{ schedule: string | null }>>()
-  if (!jobList || !wanted.length) picked.push({ run: runs[0], schedule: null })
+  if (!jobList || !wanted.length) picked.push({ run: windows[0], schedule: null })
   else {
     for (const w of wanted) if (w.key) left.set(w.key, [...(left.get(w.key) ?? []), { schedule: w.schedule }])
-    for (let i = 0; i < Math.min(runs.length, MAX_RUNS_EXAMINED) && left.size; i += 3) {
-      const batch = runs.slice(i, Math.min(i + 3, MAX_RUNS_EXAMINED))
-      const keys = await Promise.all(batch.map(async run => { for (const t of run) { const k = await head(t); if (k) return k } return null }))
-      batch.forEach((run, n) => {
-        const k = keys[n]
-        const owners = k ? left.get(k) : undefined
-        if (!k || !owners?.length) return   // a manual backup, or a job already matched to a newer run
-        picked.push({ run, schedule: owners.shift()!.schedule })
-        if (!owners.length) left.delete(k)
+    for (const win of windows.slice(0, MAX_RUNS_EXAMINED)) {
+      if (!left.size) break
+      // Two jobs can start in the same few minutes: the window splits by job key.
+      const heads = await Promise.all(win.map(head))
+      const known = [...new Set(heads.map(h => h.key).filter((k): k is string => !!k))]
+      const runs = new Map<string, { run: typeof tasks; tod: number | null }>()
+      win.forEach((t, n) => {
+        // A task whose log said nothing belongs to the window's one job, when there is just one.
+        const k = heads[n].key ?? (known.length === 1 ? known[0] : null)
+        if (!k) return
+        const r = runs.get(k) ?? { run: [], tod: null }
+        r.run.push(t); r.tod ??= heads[n].tod
+        runs.set(k, r)
       })
+      for (const [k, r] of runs) {
+        const owners = left.get(k)
+        if (!owners?.length) continue   // a manual backup, or a job already matched to a newer run
+        // Two jobs with the same guests, storage and mode: the one whose time of day this run started at.
+        let pick = 0
+        if (owners.length > 1 && r.tod !== null) {
+          const dist = (o: { schedule: string | null }) => {
+            const m = scheduleMinutes(o.schedule)
+            if (m === null) return 1e9
+            const d = Math.abs(m - r.tod!)
+            return Math.min(d, 1440 - d)
+          }
+          pick = owners.reduce((best, o, i) => (dist(o) < dist(owners[best]) ? i : best), 0)
+        }
+        picked.push({ run: r.run, schedule: owners.splice(pick, 1)[0].schedule })
+        if (!owners.length) left.delete(k)
+      }
     }
     // Jobs the logs could not be matched to (none had a readable first line): the newest run stands in, unnamed.
-    if (!picked.length) picked.push({ run: runs[0], schedule: null })
+    if (!picked.length) picked.push({ run: windows[0], schedule: null })
   }
 
   let offset: number | null = null

@@ -14,6 +14,7 @@ import type { ClusterSummary } from './ask-sources'
 import type { ClusterPanel } from '../clusters/overview'
 import type { AlertRow } from './home-sources'
 import { clusterHealth, healthWords } from './health'
+import { asOfText } from './when'
 
 export interface LoadedSource {
   s: AskSource
@@ -23,7 +24,6 @@ export interface LoadedSource {
 }
 
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`
-const clock = (ms: number) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
 const stop = (s: string) => s.replace(/[.\s]+$/, '')
 
 /**
@@ -32,8 +32,8 @@ const stop = (s: string) => s.replace(/[.\s]+$/, '')
  */
 export function headlineNeedsAttention(headline: string): boolean {
   const h = headline.toLowerCase()
-  if (/\b(needs?|need) attention\b|\bhas a problem\b|\bnot answering\b|\bnot reachable\b|\bunreachable\b|\bover 90% full\b|\bcannot be read\b/.test(h)) return true
-  const re = /\b(\d+)\s+(errors?|failed|failing|unavailable|offline|down|critical|not answering)\b/g
+  if (/\b(needs?|need) attention\b|\bhas a problem\b|\bnot answering\b|\bnot reachable\b|\bunreachable\b|\bover 90% full\b|\bcannot be read\b|\bcould not be read\b|\bdegraded\b|\bstalled\b/.test(h)) return true
+  const re = /\b(\d+)\s+(errors?|warnings?|failed|failing|unavailable|offline|down|critical|not answering)\b/g
   let m: RegExpExecArray | null
   while ((m = re.exec(h))) if (Number(m[1]) > 0) return true
   return false
@@ -51,7 +51,7 @@ export function rollCallText(loaded: LoadedSource[], now = Date.now()): string {
   const attention: string[] = []
   const rest: string[] = []
   const locked: string[] = [], quiet: string[] = [], pending: string[] = [], failed: string[] = []
-  const asOf = (l: LoadedSource) => (l.sum.asOf && now - l.sum.asOf > 3 * 60_000 ? ` (as of ${clock(l.sum.asOf)})` : '')
+  const asOf = (l: LoadedSource) => asOfText(l.sum.asOf, now)
 
   // The cluster, once.
   if (summary && !summary.partial.includes('resources')) {
@@ -89,15 +89,19 @@ export function rollCallText(loaded: LoadedSource[], now = Date.now()): string {
       }
       problems = []
     }
-    const bad = problems ? problems.length > 0 : headlineNeedsAttention(sum.headline)
+    // Parts of an area that could not be read are a problem too, never a quiet gap.
+    const unread = sum.unread?.length ? sum.unread : null
+    const bad = (problems ? problems.length > 0 : headlineNeedsAttention(sum.headline)) || !!unread
     const line = `${stop(sum.headline)}${asOf(l)}.`
-    if (bad) attention.push(problems?.length ? `${stop(sum.headline)}: ${problems.map(stop).join('; ')}${asOf(l)}.` : line)
-    else rest.push(line)
+    if (!bad) { rest.push(line); continue }
+    if (problems?.length) attention.push(`${stop(sum.headline)}: ${problems.map(stop).join('; ')}${asOf(l)}.`)
+    else if (unread) attention.push(`${stop(sum.headline)}${asOf(l)}; could not read ${unread.join(', ')}.`)
+    else attention.push(line)
   }
 
   const out: string[] = []
   if (attention.length) out.push('Needs attention:', ...attention.map(a => `- ${a}`), '', 'Everything else:')
-  else out.push(failed.length || pending.length ? 'Nothing needs attention in what I could read.' : 'Nothing needs attention.', '')
+  else out.push(failed.length || pending.length || locked.length ? 'Nothing needs attention in what I could read.' : 'Nothing needs attention.', '')
   out.push(...[...new Set(rest)])
   if (quiet.length) out.push(`Connected, with nothing to report: ${quiet.join(', ')}.`)
   if (locked.length) out.push(`Locked (unlock HyperProx to read): ${locked.join(', ')}.`)

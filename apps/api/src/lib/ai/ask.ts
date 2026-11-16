@@ -19,6 +19,8 @@ import { stripAddresses } from '../redact-addresses'
 import { isInventoryQuestion, inventoryText, type AppHints } from './inventory'
 import { rollCallText, type LoadedSource } from './rollcall'
 import type { ClusterSummary } from './ask-sources'
+import { forgetReadings, keepReading, keptReading, readInFlight, readingKey, trackRead } from './reading-cache'
+import { asOfText, KEPT_MAX_AGE_MS } from './when'
 
 export interface SourceSummary {
   /** One line of top-level health, for overviews. */
@@ -64,8 +66,6 @@ const MAX_ANSWER = 2000
 const BUDGET_CHARS = 2000          // about 500 tokens
 /** A slow area never holds the whole answer up for longer than this. */
 export const DEFAULT_BUDGET_MS = 4000
-/** How long a reading kept for a slow area stays usable. */
-const CACHE_MAX_AGE_MS = 6 * 3600_000
 export const LOCKED_NOTE = 'HyperProx is locked, so this cannot be read. Unlock it and ask again.'
 
 // ---------------------------------------------------------------------------
@@ -73,14 +73,12 @@ export const LOCKED_NOTE = 'HyperProx is locked, so this cannot be read. Unlock 
 // ---------------------------------------------------------------------------
 
 /**
- * The last good reading of each source, by who asked (their role: summaries differ by role), the cluster it is
- * bound to, and the source. A source slower than its budget answers from here, labelled with its time, while its read
- * carries on in the background and refreshes it. Never a locked or failed reading.
+ * Kept readings (lib/ai/reading-cache.ts) are by who asked (their role: summaries differ by role), the cluster the
+ * source is bound to, and the source. A source slower than its budget answers from there, labelled with its time,
+ * while its read carries on in the background and refreshes it. Never a locked or failed reading. Cleared for
+ * tests, and when HyperProx locks.
  */
-const lastGood = new Map<string, { at: number; sum: SourceSummary }>()
-
-/** For tests. */
-export function clearReadingCache(): void { lastGood.clear() }
+export function clearReadingCache(): void { forgetReadings() }
 
 /** What the person is told when an area could not be read: HyperProx's own words or a plain one, never an address. */
 function reasonOf(e: unknown, title: string): string {
@@ -95,11 +93,14 @@ function reasonOf(e: unknown, title: string): string {
  */
 export async function loadWithin(s: AskSource, o: { cacheKey?: string; now?: () => number } = {}): Promise<LoadedSource> {
   const now = o.now ?? Date.now
-  const key = o.cacheKey !== undefined ? `${o.cacheKey}|${s.scope ?? ''}|${s.id}` : null
-  const read = (async () => s.load())().then(
-    sum => { if (key && !sum.locked && !(sum.unread?.length && !sum.lines.length)) lastGood.set(key, { at: now(), sum }); return { sum, error: null as unknown } },
-    error => ({ sum: null as SourceSummary | null, error }),
+  const key = o.cacheKey !== undefined ? readingKey(o.cacheKey, s.scope ?? '', s.id) : null
+  type Read = { sum: SourceSummary | null; error: unknown }
+  // A read of this area already under way for the same person and cluster is joined, not started again.
+  const start = (): Promise<Read> => (async () => s.load())().then(
+    sum => { if (key && !sum.locked && !(sum.unread?.length && !sum.lines.length)) keepReading(key, sum, now()); return { sum, error: null } },
+    error => ({ sum: null, error }),
   )
+  const read: Promise<Read> = key ? (readInFlight<Read>(key) ?? trackRead(key, start())) : start()
   let timer: NodeJS.Timeout | undefined
   const late = new Promise<'late'>(res => { timer = setTimeout(() => res('late'), s.budgetMs ?? DEFAULT_BUDGET_MS) })
   const got = await Promise.race([read, late])
@@ -110,8 +111,8 @@ export async function loadWithin(s: AskSource, o: { cacheKey?: string; now?: () 
     return { s, sum: { headline: `${s.title}: could not be read (${why}).`, lines: [], unread: [`${s.title} (${why})`] }, state: 'failed' }
   }
   // Slow, not failed: an earlier reading if there is one, and the read goes on to refresh it.
-  const hit = key ? lastGood.get(key) : undefined
-  if (hit && now() - hit.at < CACHE_MAX_AGE_MS) return { s, sum: { ...hit.sum, asOf: hit.sum.asOf ?? hit.at }, state: 'cached' }
+  const hit = key ? keptReading<SourceSummary>(key) : undefined
+  if (hit && now() - hit.at < KEPT_MAX_AGE_MS) return { s, sum: { ...hit.sum, asOf: hit.sum.asOf ?? hit.at }, state: 'cached' }
   return { s, sum: { headline: `${s.title}: still being read.`, lines: [], unread: [`${s.title} (still being read: it is slow to answer, ask again in a minute)`] }, state: 'pending' }
 }
 
@@ -222,6 +223,11 @@ export interface AnswerContext {
   inventory?: boolean
   /** The cluster's name, for the inventory's first line. */
   clusterName?: string
+  /**
+   * How much the inventory says, following the pages it comes from: 'full' (admins) adds what runs in each guest,
+   * websites and addresses; 'basic' (default) is name, type and ID, node, state and HA only, and reads nothing else.
+   */
+  inventoryDetail?: 'basic' | 'full'
   now?: () => number
 }
 
@@ -242,7 +248,8 @@ export async function answerQuestion(prompt: string, ctx: AnswerContext): Promis
   if (cluster && (ctx.inventory || isInventoryQuestion(prompt))) {
     const hintBudget = Math.max(500, (cluster.budgetMs ?? DEFAULT_BUDGET_MS) - 1000)
     let timer: NodeJS.Timeout | undefined
-    const hints = cluster.hints
+    const full = ctx.inventoryDetail === 'full'
+    const hints = full && cluster.hints
       ? Promise.race([cluster.hints().catch(() => null), new Promise<'late'>(r => { timer = setTimeout(() => r('late'), hintBudget) })]).finally(() => clearTimeout(timer))
       : Promise.resolve(null)
     const [l, h] = await Promise.all([load(cluster), hints])
@@ -254,7 +261,7 @@ export async function answerQuestion(prompt: string, ctx: AnswerContext): Promis
       ? { apps: {}, addresses: {}, asOf: null, note: 'What each guest runs is still being looked up; ask again in a minute for the apps and addresses.' }
       : h
     const old = l.state === 'cached' ? `\n\nThe cluster was slow to answer, so this is its last reading${asOfNote(l.sum, ctx.now) || ''}.` : ''
-    return inventoryText(data, hint, { prompt, name: ctx.clusterName, now: (ctx.now ?? Date.now)() }) + old
+    return inventoryText(data, hint, { prompt, name: ctx.clusterName, now: (ctx.now ?? Date.now)(), detail: full ? 'full' : 'basic' }) + old
   }
 
   // Not ours: a request to have something deployed goes to the planner.
@@ -292,9 +299,7 @@ export async function answerQuestion(prompt: string, ctx: AnswerContext): Promis
   }
 }
 
-/** " (as of 14:05)" for a reading older than a few minutes. */
+/** " (as of 14:05)" for a reading older than a few minutes; with its date when not today. */
 function asOfNote(sum: SourceSummary, now?: () => number): string {
-  if (!sum.asOf || (now ?? Date.now)() - sum.asOf < 3 * 60_000) return ''
-  const d = new Date(sum.asOf)
-  return ` (as of ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')})`
+  return asOfText(sum.asOf, (now ?? Date.now)())
 }

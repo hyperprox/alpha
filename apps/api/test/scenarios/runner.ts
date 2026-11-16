@@ -183,7 +183,9 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
           ...pluginSources({ plugins: [homeAssistantPlugin], unlocked: () => fake.unlocked,
             run: p => p.summary!({ get: async () => fake.haStates } as never) }),
         ]
-        return answerQuestion(prompt, { sources, call: askCall, fallback: "canned", services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]), now: () => 1767225600000 })
+        return answerQuestion(prompt, { sources, call: askCall, fallback: "canned", services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]), now: () => 1767225600000,
+          // The fake cluster is read as an admin, who sees what runs in each guest.
+          inventoryDetail: "full" })
       },
     } : {}),
   }

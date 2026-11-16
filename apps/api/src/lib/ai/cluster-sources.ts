@@ -273,6 +273,8 @@ export interface AcrossDeps {
   cacheKey?: string
   /** Told which areas each answer was read from. */
   used?(titles: string[]): void
+  /** The inventory's detail for who is asking (lib/ai/ask.ts AnswerContext). */
+  inventoryDetail?: 'basic' | 'full'
 }
 
 /**
@@ -287,7 +289,7 @@ export async function answerAcross(prompt: string, targets: ClusterRef[], d: Acr
   const used = new Set<string>()
   const parts = await Promise.all(targets.map(async c => {
     const sources = d.sourcesFor(c)
-    let a = await answerQuestion(q, { sources, call: d.call, fallback: d.fallback, services: d.services, cacheKey: d.cacheKey, inventory, clusterName: c.name,
+    let a = await answerQuestion(q, { sources, call: d.call, fallback: d.fallback, services: d.services, cacheKey: d.cacheKey, inventory, clusterName: c.name, inventoryDetail: d.inventoryDetail,
       used: t => t.forEach(x => used.add(x)) })
     if (a === null) {
       const status = sources.find(s => s.id === 'status')

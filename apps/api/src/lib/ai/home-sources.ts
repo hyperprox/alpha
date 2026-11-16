@@ -26,6 +26,7 @@ import { conditionsOf, type Condition } from '../qnap/alerts'
 import type { PromAlert, ForwarderState } from '../alerts/forwarder'
 import { wording, placeOf, toSeverity, duration } from '../alerts/forwarder'
 import type { SiteMetrics, SiteMetricsSource, MetricsRange } from './site-metrics'
+import { asOfText, clockAt } from './when'
 
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`
 const clean = (s: string) => stripAddresses(String(s ?? '')).replace(/\s+/g, ' ').trim()
@@ -52,6 +53,8 @@ export interface NasEntry {
   error: string | null
   /** When `reading` was taken (unix ms), when it is a kept one rather than read just now. */
   at?: number
+  /** The newest read failed at this time (unix ms), `error` says why, and `reading` is the one before it. */
+  failedSince?: number
 }
 
 export interface QnapSourceDeps {
@@ -60,7 +63,7 @@ export interface QnapSourceDeps {
   unlocked(): boolean
 }
 
-interface NasFacts { label: string; name: string; conditions: Condition[]; reading: QnapReading | null; error: string | null }
+interface NasFacts { label: string; name: string; conditions: Condition[]; reading: QnapReading | null; error: string | null; failedSince?: number; at?: number }
 
 /** What a viewer may see of a reading: no serials, host name, addresses or MACs (lib/qnap's viewerReading). */
 export function forViewer(r: QnapReading): QnapReading {
@@ -102,21 +105,31 @@ export function qnapSummary(list: NasEntry[], role: Role | undefined): SourceSum
   const facts: NasFacts[] = list.map(n => {
     const label = n.beside ? `${n.name} (beside ${n.beside})` : n.name
     const reading = n.reading ? (viewer ? forViewer(n.reading) : n.reading) : null
-    return { label, name: n.name, reading, error: n.error, conditions: reading ? conditionsOf({ name: label, diskTempWarnC: n.diskTempWarnC }, reading) : [] }
+    return { label, name: n.name, reading, error: n.error, failedSince: n.failedSince, at: n.at, conditions: reading ? conditionsOf({ name: label, diskTempWarnC: n.diskTempWarnC }, reading) : [] }
   })
   const lines: string[] = []
   const unread: string[] = []
   for (const f of facts) {
     if (!f.reading) { lines.push(clean(`${f.label}: could not be read (${f.error ?? 'no answer'}).`)); unread.push(f.label); continue }
+    if (f.failedSince) {
+      lines.push(clean(`${f.label}: could not be read since ${clockAt(f.failedSince)} (${String(f.error ?? 'no answer').replace(/[.\s]+$/, '')}); the last reading${asOfText(f.at, Date.now(), 0)} follows.`))
+      unread.push(`${f.label} (since ${clockAt(f.failedSince)})`)
+    }
     lines.push(...nasLines(f, viewer))
   }
   const read = facts.filter(f => f.reading)
   const problems = read.filter(f => f.conditions.length)
-  const headline = `QNAP: ${plural(list.length, 'NAS', 'NAS')}, ${problems.length ? `${problems.length} need${problems.length === 1 ? 's' : ''} attention` : read.length ? 'all healthy' : 'none could be read'}.`
+  const failing = facts.filter(f => f.reading && f.failedSince)
+  const headline = `QNAP: ${plural(list.length, 'NAS', 'NAS')}, ${problems.length ? `${problems.length} need${problems.length === 1 ? 's' : ''} attention` : read.length ? 'all healthy' : 'none could be read'}` +
+    (failing.length ? `; ${failing.map(f => `${f.label} could not be read since ${clockAt(f.failedSince!)}`).join(', ')}` : '') + '.'
   // A kept reading: the oldest one's time, so the answer can say "as of".
   const kept = list.filter(n => n.reading && n.at !== undefined).map(n => n.at!)
   return { headline, lines, unread: unread.length ? unread : undefined, data: { nas: facts }, ...(kept.length ? { asOf: Math.min(...kept) } : {}),
-    attention: problems.map(f => `${f.label}: ${f.conditions.map(c => c.title.replace(` on ${f.label}`, '')).join('; ')}`) }
+    attention: [
+      ...failing.map(f => clean(`${f.label}: could not be read since ${clockAt(f.failedSince!)} (${String(f.error ?? 'no answer').replace(/[.\s]+$/, '')})`)),
+      ...facts.filter(f => !f.reading).map(f => clean(`${f.label}: could not be read (${String(f.error ?? 'no answer').replace(/[.\s]+$/, '')})`)),
+      ...problems.map(f => `${f.label}: ${f.conditions.map(c => c.title.replace(` on ${f.label}`, '')).join('; ')}`),
+    ] }
 }
 
 export function qnapAnswer(prompt: string, s: SourceSummary): string | null {

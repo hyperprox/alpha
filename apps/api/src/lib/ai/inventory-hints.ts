@@ -7,14 +7,15 @@
 //  lists, and each guest's configured address) and the Websites list. The
 //  inventory is read from its cache at once, however old (the answer then says
 //  "as of"), and rebuilt in the background when stale; it is waited for only
-//  when it was never built, and then only up to a budget. A viewer is given no
-//  addresses, and a guest on Remote access's "never look inside" list (or tagged
-//  hyperprox-ignore) has none shown.
+//  when it was never built, and then only up to a budget. A guest on Remote access's "never look inside" list (or tagged
+//  hyperprox-ignore) has none shown. Admins only (hintsForRole): below admin the
+//  inventory is the Guests page's facts and nothing here is read.
 // =============================================================================
 
 import type { AppHints } from './inventory'
 import type { Inventory } from '../homepage/types'
 import { knownApp } from '../homepage/catalog'
+import { hasRole, type Role } from '../roles'
 
 export interface HintDeps {
   peek(): { inv: Inventory; at: number } | null
@@ -22,8 +23,6 @@ export interface HintDeps {
   /** How long a built inventory counts as fresh (ms). */
   freshMs: number
   sites(): Promise<Array<{ name: string; kindName: string; vmid: number }>>
-  /** The person may see addresses (operator and above). */
-  showAddresses: boolean
   /** How long to wait for an inventory that was never built (ms). */
   budgetMs: number
   now(): number
@@ -32,6 +31,14 @@ export interface HintDeps {
 const late = <T,>(p: Promise<T>, ms: number): Promise<T | 'late'> => {
   let t: NodeJS.Timeout | undefined
   return Promise.race([p, new Promise<'late'>(r => { t = setTimeout(() => r('late'), ms) })]).finally(() => { if (t) clearTimeout(t) })
+}
+
+/**
+ * The hints for who is asking: admins only, as the Catalogue's detection, the Websites list and guest addresses are
+ * admin pages. Below admin nothing is read at all (not read and then hidden).
+ */
+export async function hintsForRole(role: Role | undefined, d: HintDeps): Promise<AppHints | null> {
+  return role && hasRole(role, 'admin') ? appHints(d) : null
 }
 
 export async function appHints(d: HintDeps): Promise<AppHints> {
@@ -63,11 +70,9 @@ export async function appHints(d: HintDeps): Promise<AppHints> {
       if (vmid === undefined || vmid === null) continue
       add(Number(vmid), knownApp(s.key)?.name ?? (s.key === 'hyperprox' ? 'HyperProx' : s.key))
     }
-    if (d.showAddresses) {
-      for (const g of inv.guests) {
-        if (hidden.has(g.machineId) || g.tags.includes('hyperprox-ignore')) continue
-        if (g.addresses[0]) out.addresses[g.vmid] = g.addresses[0]
-      }
+    for (const g of inv.guests) {
+      if (hidden.has(g.machineId) || g.tags.includes('hyperprox-ignore')) continue
+      if (g.addresses[0]) out.addresses[g.vmid] = g.addresses[0]
     }
   }
   for (const s of await sitesP) add(Number(s.vmid), `${s.kindName} website ${s.name}`)
