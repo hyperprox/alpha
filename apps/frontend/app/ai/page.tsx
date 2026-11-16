@@ -9,6 +9,8 @@ import { BoxIcon, SplitIcon, GlobeIcon, HourglassIcon, LockIcon, GearIcon, BoltI
 import { CLUSTER_HEADER, apiJson } from '@/lib/api'
 import { Page, HudHeader, Panel, Tiles, styles } from '@/components/visual/kit'
 import { ClusterPicker, ClusterChip, ActionCard, type ActionCardData, type ClusterRef } from '@/components/ai/ClusterAssistant'
+import { SourcesUsed } from '@/components/ai/SourcesUsed'
+import { sourcesUsed } from '@/lib/ai-sources'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -461,7 +463,7 @@ export default function AIPage() {
   const [provDraft,   setProvDraft]   = useState<Record<string, Record<string, string>>>({})
   const [provBusy,    setProvBusy]    = useState<string | null>(null)
   const [provResult,  setProvResult]  = useState<Record<string, string>>({})
-  const [messages,    setMessages]    = useState<Array<{ role: 'user' | 'assistant'; content: string; clusters?: ClusterRef[]; choices?: Array<{ label: string; prompt: string; cluster: string }> }>>([])
+  const [messages,    setMessages]    = useState<Array<{ role: 'user' | 'assistant'; content: string; clusters?: ClusterRef[]; choices?: Array<{ label: string; prompt: string; cluster: string }>; sources?: string[] }>>([])
   // Which cluster the assistant answers about by default: ?cluster=<id>, else home. A question can still name another.
   const [clusterList, setClusterList] = useState<ClusterRef[]>([])
   const [clusterId,   setClusterId]   = useState('home')
@@ -662,7 +664,7 @@ export default function AIPage() {
       // Not every prompt is a deployment. Say what came back rather than
       // reporting a failure that did not happen.
       const about: ClusterRef[] | undefined = Array.isArray(data.clusters) ? data.clusters : data.cluster && data.cluster.kind === 'remote' ? [data.cluster] : undefined
-      setMessages(m => [...m, { role: 'assistant', content: data.message, clusters: about, choices: Array.isArray(data.choices) && data.choices.length ? data.choices : undefined }])
+      setMessages(m => [...m, { role: 'assistant', content: data.message, clusters: about, choices: Array.isArray(data.choices) && data.choices.length ? data.choices : undefined, sources: sourcesUsed(data.sources) ?? undefined }])
     } else {
       const err = data.error ?? 'Failed to generate plan'
       setPlanErr(err)
@@ -802,6 +804,7 @@ export default function AIPage() {
                         ))}
                       </div>
                     ) : null}
+                    {msg.sources?.length ? <SourcesUsed sources={msg.sources} /> : null}
                   </div>
                 ))}
                 {planning && (
