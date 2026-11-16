@@ -6,7 +6,7 @@
 //  sessions, request rate, errors, health checks and response times, read from
 //  its Runtime API socket. Load-balancing actions (drain, maintenance, ready,
 //  weight, health checks, add and remove servers, the balance algorithm) and
-//  "Load-balance this app" live on its own page; the logic is lib/haproxy, this
+//  "Proxy load balancing" live on its own page; the logic is lib/haproxy, this
 //  file is the gallery card, read through lib/haproxy's own transport.
 //
 //  Instances connect by themselves (lib/auto-connect): a Catalogue install, the
@@ -56,7 +56,7 @@ export const haproxyPlugin: Plugin = {
   manifest: {
     id: 'haproxy',
     name: 'HAProxy',
-    description: 'Each HAProxy load balancer, drawn as frontends, backends and servers with live state, weights, sessions, request rates, errors, health checks and response times. Drain, maintenance, weights, health checks, adding and removing servers and the balance algorithm in a click, and "Load-balance this app" for two or more guests running the same app.',
+    description: 'Each HAProxy load balancer, drawn as frontends, backends and servers with live state, weights, sessions, request rates, errors, health checks and response times. Drain, maintenance, weights, health checks, adding and removing servers and the balance algorithm in a click, and Proxy load balancing: spread traffic for one app across two or more guests (the Load balancing page, by contrast, moves guests between nodes).',
     kind: 'device',
     icon: '⚖️',
     baseUrlSetting: 'url',

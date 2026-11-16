@@ -24,7 +24,7 @@ import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import { AutoConnectPanel } from '@/components/plugins/AutoConnect'
 import { Sheet } from '@/components/plugins/home-assistant/HomeVisual'
 import {
-  STATE, SEVERITY_WORD, busiest, confirmText, layout, lbProblems, ms, serverActions, share, since, summary,
+  STATE, SEVERITY_WORD, busiest, confirmText, layout, lbBody, lbProblems, PROXY_LB_LINE, ms, serverActions, share, since, summary,
   type BackendView, type Instance, type LbForm, type PickGuest, type Problem, type Reading, type ServerView,
 } from './logic'
 import h from './haproxy.module.css'
@@ -121,7 +121,7 @@ export function TrafficMap({ r, onServer, onManage }: { r: Reading; onServer?: (
           <div className={h.trunk}>
             {f.requestRate > 0 && <span className={h.flow} aria-hidden />}
             {backends.length ? backends.map(b => <BackendCard key={b.name} b={b} max={max} onServer={onServer} onManage={onManage} />)
-              : <p className={h.empty}>No rules yet: HAProxy answers every visitor here with 503. Use “Load-balance an app”, or add a proxy host on the Proxy page.</p>}
+              : <p className={h.empty}>No rules yet: HAProxy answers every visitor here with 503. Use “Proxy load balancing”, or add a proxy host on the Proxy page.</p>}
           </div>
         </div>
       ))}
@@ -210,7 +210,7 @@ function LoadBalancer({ inst, algorithms, onRemoved }: { inst: Instance; algorit
             actions={
               <div className={h.toolbar}>
                 <button type="button" className={vs.btn} onClick={() => void load()}><Icon name="check" size={14} /> Refresh</button>
-                {inst.saves && <button type="button" className={`${vs.btn} ${vs.btnPri}`} onClick={() => setLb(true)}>Load-balance an app</button>}
+                {inst.saves && <button type="button" className={`${vs.btn} ${vs.btnPri}`} onClick={() => setLb(true)}>Proxy load balancing</button>}
                 <button type="button" className={vs.btn} onClick={() => void disconnect()}>Disconnect</button>
                 <small>live · every 10 s</small>
               </div>
@@ -416,7 +416,7 @@ function LoadBalanceModal({ inst, algorithms, onClose, onDone }: { inst: Instanc
   const go = async () => {
     if (!window.confirm(`Create the backend for ${f.name} across ${f.guests.length} guests${f.hostname ? ` for ${f.hostname}` : ''}? It is saved to HAProxy's configuration (checked with haproxy -c, then HAProxy reloads).`)) return
     setBusy(true); setErr(null)
-    const body = { ...f, guests: f.guests.map(k => { const [kind, vmid] = k.split('-'); return { kind, vmid: Number(vmid) } }), port: Number(f.port), hostname: f.hostname || undefined }
+    const body = lbBody(f)
     const r = await apiJson<{ data: { message: string; publishJob?: string; publishProblem?: string } }>(`${API}/instances/${inst.id}/load-balance`, 'POST', body)
     setBusy(false)
     if (!r.ok) { setErr(r.error ?? 'That did not work.'); return }
@@ -425,7 +425,7 @@ function LoadBalanceModal({ inst, algorithms, onClose, onDone }: { inst: Instanc
     else onDone(r.body!.data.message, !r.body!.data.publishProblem)
   }
   return (
-    <Modal title="Load-balance an app" onClose={onClose}>
+    <Modal title="Proxy load balancing" onClose={onClose}>
       {job ? (
         <div className="flex flex-col gap-2">
           <p className="text-sm" style={{ color: 'var(--good)' }}>HAProxy is balancing it. Publishing the name:</p>
@@ -435,6 +435,7 @@ function LoadBalanceModal({ inst, algorithms, onClose, onDone }: { inst: Instanc
         </div>
       ) : (
         <div className="flex flex-col gap-3">
+          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>{PROXY_LB_LINE}</p>
           <LoadBalanceForm f={f} set={p => setF(x => ({ ...x, ...p }))} guests={guests} zones={zones} proxies={proxies} algorithms={algorithms} />
           {problems.length > 0 && f.name && <small style={{ color: 'var(--warn-2)' }}>{problems[0]}</small>}
           {err && <Notice kind="error">{err}</Notice>}

@@ -23,7 +23,7 @@ import type { AdapterContext, Outcome } from '../auto-connect/core'
 import { RT, RuntimeRefusal, answerProblem, checkName, checkWeight, runtimeScript, splitAnswers, type AdminState } from './runtime'
 import { buildReading, cleanCheck, type Reading } from './model'
 import {
-  ALGORITHMS, checkAlgorithm, checkHostname, checkNewServer, createLoadBalance, persistAddServer, persistBalance, persistHealth,
+  ALGORITHMS, checkAlgorithm, type Algorithm, checkHostname, checkNewServer, createLoadBalance, persistAddServer, persistBalance, persistHealth,
   persistMaintenance, persistRemoveServer, persistWeight, CHECK_PATH_RE, type ConfigWriter, type NewServer,
 } from './dataplane'
 import { HaproxyInstanceStore, type HaproxyGuest, type HaproxyInstance } from './instances'
@@ -104,6 +104,57 @@ export const DETECT_SCRIPT = [
 export function parseDetect(output: string): { sockets: string[]; client: boolean } {
   const sockets = [...new Set([...output.matchAll(/^SOCKET=(\S+)$/gm)].map(m => m[1]))]
   return { sockets, client: /^CLIENT=/m.test(output) }
+}
+
+/** What "Load-balance this app" takes, checked: the rules the plug-in's button and the install's optional step share. */
+export interface LoadBalanceInput {
+  list: Record<string, unknown>[]; port: number; algorithm: Algorithm; hostname: string | undefined
+  checkPath: string; name: string; backend: string
+}
+
+export function parseLoadBalance(body: Record<string, unknown>): LoadBalanceInput {
+  const list = Array.isArray(body.guests) ? body.guests as Record<string, unknown>[] : []
+  if (list.length < 2) throw new HaproxyRefusal('bad_input', 'Pick at least two guests running the same app.')
+  if (list.length > 16) throw new HaproxyRefusal('bad_input', 'Up to 16 guests at a time.')
+  const port = Number(body.port)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HaproxyRefusal('bad_input', 'The port the app answers on is a number from 1 to 65535.')
+  let algorithm: Algorithm, hostname: string | undefined
+  try { algorithm = checkAlgorithm(body.algorithm ?? 'roundrobin'); hostname = checkHostname(body.hostname) ?? undefined } catch (e: any) { throw new HaproxyRefusal('bad_input', e.message) }
+  const checkPath = typeof body.checkPath === 'string' && body.checkPath ? body.checkPath : '/'
+  if (!CHECK_PATH_RE.test(checkPath)) throw new HaproxyRefusal('bad_input', 'The health check path starts with / and has no spaces or query.')
+  const name = String(body.name ?? '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+  if (!name) throw new HaproxyRefusal('bad_input', 'Give the app a short name, such as web.')
+  return { list, port, algorithm, hostname, checkPath, name, backend: `hpx_lb_${name.replace(/-/g, '_')}` }
+}
+
+/** A guest named by a pick ({ kind, vmid }), refused when it is not on the cluster or HyperProx must leave it alone. */
+export function findPickGuest(rows: GuestRow[], g: Record<string, unknown>): GuestRow {
+  const kind = g.kind === 'qemu' ? 'qemu' : 'lxc', vmid = Number(g.vmid)
+  const row = rows.find(r => r.kind === kind && r.vmid === vmid)
+  if (!row) throw new HaproxyRefusal('bad_input', `Guest ${vmid} was not found.`, 404)
+  if (row.excludedBy) throw new HaproxyRefusal('excluded', `${row.name} carries ${row.excludedBy}, so HyperProx leaves it alone.`, 409)
+  return row
+}
+
+/**
+ * The servers for proxy load balancing: every pick checked (on the cluster, not left alone, once, running, with an
+ * address). `self` is HAProxy's own guest when it is one of them (reached on its loopback). Shared by the plug-in's
+ * button and the install's optional step, so the two cannot disagree.
+ */
+export function pickLoadBalanceServers(list: Record<string, unknown>[], rows: GuestRow[], port: number, self?: { kind: string; vmid: number }): NewServer[] {
+  const servers: NewServer[] = []
+  const seen = new Set<string>()
+  for (const g of list) {
+    const row = findPickGuest(rows, g)
+    const k = `${row.kind}-${row.vmid}`
+    if (seen.has(k)) throw new HaproxyRefusal('bad_input', `${row.name} is picked twice.`)
+    seen.add(k)
+    if (!row.running) throw new HaproxyRefusal('bad_input', `${row.name} is not running.`)
+    const address = self && row.kind === self.kind && row.vmid === self.vmid ? '127.0.0.1' : row.addresses[0]
+    if (!address) throw new HaproxyRefusal('bad_input', `${row.name} has no address HyperProx can see.`)
+    servers.push(checkNewServer({ name: serverNameFor(row.name, row.vmid), address, port, weight: 100, check: true }))
+  }
+  return servers
 }
 
 export class HaproxyService {
@@ -264,11 +315,7 @@ export class HaproxyService {
   }
 
   private async pickGuest(g: Record<string, unknown>): Promise<GuestRow> {
-    const kind = g.kind === 'qemu' ? 'qemu' : 'lxc', vmid = Number(g.vmid)
-    const row = (await this.d.guests()).find(r => r.kind === kind && r.vmid === vmid)
-    if (!row) throw new HaproxyRefusal('bad_input', `Guest ${vmid} was not found.`, 404)
-    if (row.excludedBy) throw new HaproxyRefusal('excluded', `${row.name} carries ${row.excludedBy}, so HyperProx leaves it alone.`, 409)
-    return row
+    return findPickGuest(await this.d.guests(), g)
   }
 
   /** The guests the picker offers: running, not left alone, with an address. */
@@ -278,7 +325,7 @@ export class HaproxyService {
   }
 
   /**
-   * "Load-balance this app": 2 or more guests running the same app on the same port become one backend with HTTP
+   * Proxy load balancing ("Load-balance this app" in the code): 2 or more guests running the same app on the same port become one backend with HTTP
    * health checks, and a rule in the public frontend sends visitors to it (by host name, or everything else when no
    * name is given). `publish` (planned by the caller before anything changes) then publishes the host name through the
    * Proxy page and DNS, pointed at HAProxy, in the background.
@@ -286,30 +333,8 @@ export class HaproxyService {
   async loadBalance(id: string, body: Record<string, unknown>, actor: Actor, publish?: (ip: string) => Promise<{ jobId: string }>): Promise<ActionResult & { backend: string; publishJob?: string; publishProblem?: string }> {
     const i = await this.instance(id)
     const self = await this.guestOf(i)
-    const list = Array.isArray(body.guests) ? body.guests as Record<string, unknown>[] : []
-    if (list.length < 2) throw new HaproxyRefusal('bad_input', 'Pick at least two guests running the same app.')
-    if (list.length > 16) throw new HaproxyRefusal('bad_input', 'Up to 16 guests at a time.')
-    const port = Number(body.port)
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HaproxyRefusal('bad_input', 'The port the app answers on is a number from 1 to 65535.')
-    let algorithm, hostname
-    try { algorithm = checkAlgorithm(body.algorithm ?? 'roundrobin'); hostname = checkHostname(body.hostname) } catch (e: any) { throw new HaproxyRefusal('bad_input', e.message) }
-    const checkPath = typeof body.checkPath === 'string' && body.checkPath ? body.checkPath : '/'
-    if (!CHECK_PATH_RE.test(checkPath)) throw new HaproxyRefusal('bad_input', 'The health check path starts with / and has no spaces or query.')
-    const name = String(body.name ?? '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
-    if (!name) throw new HaproxyRefusal('bad_input', 'Give the app a short name, such as web.')
-    const backend = `hpx_lb_${name.replace(/-/g, '_')}`
-    const servers: NewServer[] = []
-    const seen = new Set<string>()
-    for (const g of list) {
-      const row = await this.pickGuest(g)
-      const k = `${row.kind}-${row.vmid}`
-      if (seen.has(k)) throw new HaproxyRefusal('bad_input', `${row.name} is picked twice.`)
-      seen.add(k)
-      if (!row.running) throw new HaproxyRefusal('bad_input', `${row.name} is not running.`)
-      const address = row.kind === self.kind && row.vmid === self.vmid ? '127.0.0.1' : row.addresses[0]
-      if (!address) throw new HaproxyRefusal('bad_input', `${row.name} has no address HyperProx can see.`)
-      servers.push(checkNewServer({ name: serverNameFor(row.name, row.vmid), address, port, weight: 100, check: true }))
-    }
+    const { list, port, algorithm, hostname, checkPath, backend } = parseLoadBalance(body)
+    const servers = pickLoadBalanceServers(list, await this.d.guests(), port, self)
     if (publish && !hostname) throw new HaproxyRefusal('bad_input', 'Publishing needs the host name visitors will use.')
     // Everything that can be refused is checked before anything is saved: a refusal after the save would hide it.
     const lbIp = self.addresses[0]

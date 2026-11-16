@@ -16,12 +16,11 @@
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { actorOf } from '../lib/http/request-actor'
 import { sendRefusal } from '../lib/failure'
-import { haproxyService, syncHaproxyTargets, PUBLISH_JOBS, newJobId, prunePublishJobs, type PublishJob } from '../lib/haproxy'
+import { haproxyService, syncHaproxyTargets, PUBLISH_JOBS } from '../lib/haproxy'
 import { HaproxyRefusal } from '../lib/haproxy/service'
 import { RuntimeRefusal } from '../lib/haproxy/runtime'
 import { ALGORITHMS } from '../lib/haproxy/dataplane'
-import { findRecipe } from '../lib/catalogue'
-import { HAPROXY_RECIPE_ID } from '../lib/haproxy/recipe'
+import { planLoadBalancePublish } from '../lib/haproxy/publish'
 
 function fail(reply: FastifyReply, e: any) {
   if (e instanceof HaproxyRefusal) return sendRefusal(reply, e.status, e.code, e.message)
@@ -63,37 +62,7 @@ export const haproxyRoutes: FastifyPluginAsync = async (fastify) => {
       const body = req.body ?? {}
       const actor = actorOf(req)
       let publish: ((ip: string) => Promise<{ jobId: string }>) | undefined
-      if (body.publish === true) {
-        const { planPublish, realPublishDeps, runPublish, cleanupPublish, PUBLISH_STEPS } = await import('../lib/sites')
-        const host = String(body.hostname ?? '').trim().toLowerCase()
-        const zone = String(body.zone ?? '').trim().toLowerCase()
-        if (!host || !zone || !(host === zone || host.endsWith(`.${zone}`))) return sendRefusal(reply, 400, 'bad_input', 'The public name must be in the domain you picked, such as app.example.com in example.com.')
-        const deps = realPublishDeps()
-        const planned = await planPublish({ zone, name: host === zone ? '@' : host.slice(0, -(zone.length + 1)), instanceId: String(body.proxyInstanceId ?? '') }, deps)
-        if (!planned.plan || planned.errors.length) return sendRefusal(reply, 400, 'publish_plan', planned.errors.join(' ') || 'The public name could not be planned.')
-        const plan = planned.plan
-        const recipe = findRecipe(HAPROXY_RECIPE_ID)!
-        // The public check asks for the app's own page through HAProxy, not HAProxy's "no server" page.
-        const lbRecipe = { ...recipe, port: 80, healthPath: '/', expectStatus: [200, 301, 302, 401, 403], healthBody: undefined }
-        publish = async ip => {
-          prunePublishJobs()
-          const job: PublishJob = { id: newJobId(), domain: plan.domain, status: 'running', owner: actor.email, startedAt: Date.now(), ledger: {},
-            steps: PUBLISH_STEPS.map(s => ({ id: s.id, label: s.label, status: 'pending' })) }
-          PUBLISH_JOBS.set(job.id, job)
-          const step = (id: string) => { const s = job.steps.find(x => x.id === id)!; for (const x of job.steps) if (x.status === 'running') x.status = 'done'; s.status = 'running'; return s }
-          void runPublish(plan, lbRecipe, ip, actor.email, job.ledger, { step, save: () => {} }, deps)
-            .then(url => { job.status = 'done'; job.url = url; job.finishedAt = Date.now(); for (const x of job.steps) if (x.status === 'running') x.status = 'done' })
-            .catch(async (e: any) => {
-              job.error = String(e?.message ?? e).slice(0, 400)
-              for (const x of job.steps) if (x.status === 'running') { x.status = 'failed'; x.detail = job.error }
-              // What this run made (proxy host, DNS record) is removed again, so a failed publish leaves nothing half-made.
-              // HAProxy's backend and rule stay: they were saved and work on their own.
-              job.cleanup = await cleanupPublish(job.ledger, actor.email, deps).catch((c: any) => [`Clean-up failed: ${String(c?.message ?? c).slice(0, 200)}`])
-              job.status = 'failed'; job.finishedAt = Date.now()
-            })
-          return { jobId: job.id }
-        }
-      }
+      if (body.publish === true) publish = await planLoadBalancePublish(body, actor)
       return { success: true, data: await svc().loadBalance(req.params.iid, body, actor, publish) }
     } catch (e) { return fail(reply, e) }
   })
