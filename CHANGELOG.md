@@ -21,6 +21,18 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — A locked-down forward proxy: 3proxy
+
+### New
+- **3proxy in the Catalogue: a forward proxy for the devices on your network, speaking HTTP and SOCKS5.** It is locked down from the start: every request needs a user and password, only the networks you pick may use it (your own network by default), it listens only on its own address on your network, and it cannot be used to reach your other services unless you allow that. It can never reach itself. HyperProx refuses to install it on a public address.
+  - Technical: recipe in `lib/fwdproxy/recipes.ts` (category `forward-proxy`, `setup: 'fwdproxy'`); the install script in `lib/fwdproxy/scripts.ts` pins 3proxy 0.9.9.2 (the project's .deb, checked by SHA-256). The in-guest helper `hpx-fwdproxy` generates the config from `/etc/hyperprox/fwdproxy.env` and the user list. Allowed networks are masked by their prefix and must lie inside 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16, checked in HyperProx and again in the container. HTTPS tunnels only to port 443; SOCKS never to port 25; at most 256 connections at once.
+- **The install proves the rules before it hands the proxy over.** It checks, from the proxy itself, that a request without a password is refused, a signed-in one works, a tunnel to another port is refused, and neither localhost nor your own network can be reached. A proxy that fails is not handed over.
+  - Technical: `lib/fwdproxy/setup.ts` replaces the generic web check with `hpx-fwdproxy selftest`.
+- **3proxy gets its own plug-in page, connected by itself after the install.** It shows how to set the proxy up on Windows, macOS, phones, Firefox and the command line, a shield with the rules in force and a "Prove it now" check, a live traffic trace, connections per protocol, what was refused and why, and who used it (which you can turn off; turning it off also empties the log written so far).
+  - Technical: plug-in `3proxy` (`plugins/threeproxy.ts`), service `lib/fwdproxy/service.ts`, routes `routes/fwdproxy.ts` under `/api/plugins/3proxy/proxies`, an auto-connect adapter, page `components/plugins/fwdproxy`. The card and Details carry totals and refusals only.
+- **Every problem on that page has a fix button: start it again, block your network again, or give a user a new password.** Users are added and removed there too; each password is made by HyperProx, kept in the vault and shown only through the vault. Adding, removing or resetting a user and changing who may use the proxy ask for your master password.
+  - Technical: every `/api/plugins/3proxy/proxies` route and the plug-in's `/detail` are admin; users and settings are re-confirmed (`lib/roles.ts`). Every action is audited first; a password goes to the vault before the guest and is taken back out if the guest refuses it, but kept (and flagged for a new password) if the guest timed out.
+
 ## 2026-11-16 — Internal tidy-up
 
 ### Improved
