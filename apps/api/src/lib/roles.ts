@@ -235,6 +235,11 @@ const HOMEPAGE_RECONFIRM = /^\/api\/plugins\/homepage\/instances\/[^/]+\/(widget
 const FWDPROXY = /^\/api\/plugins\/3proxy\/proxies(\/|$)/
 const FWDPROXY_ADMIN_READ = /^\/api\/plugins\/3proxy\/detail$/
 const FWDPROXY_RECONFIRM = /^\/api\/plugins\/3proxy\/proxies\/[^/]+\/(users(\/[^/]+(\/reset)?)?|settings)$/
+// The package cache (routes/aptcache.ts): admin for every method, reads included (a reading names the guests that use
+// it); its gallery card (/api/plugins/apt-cacher-ng/data) stays a viewer read. Who may use it, Updates' "Use the package
+// cache" and writing or removing the setting on every guest are also re-confirmed.
+const APTCACHE = /^\/api\/plugins\/apt-cacher-ng\/(caches|use|guests)(\/|$)/
+const APTCACHE_RECONFIRM = /^\/api\/plugins\/apt-cacher-ng\/(caches\/[^/]+\/settings|use|guests\/(repair|remove))$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -396,6 +401,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (HAPROXY.test(p)) return 'admin'
   if (FWDPROXY.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && FWDPROXY_ADMIN_READ.test(p)) return 'admin'
+  if (APTCACHE.test(p)) return 'admin'
   if (AUTO_CONNECT.test(p)) return 'admin'
   if (REMOVED_GUESTS.test(p)) return 'admin'
   if (CATALOGUE_DETECTED.test(p)) return 'admin'
@@ -484,6 +490,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m !== 'GET' && m !== 'HEAD' && NEXTCLOUD_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HOMEPAGE_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && FWDPROXY_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && APTCACHE_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   // Disconnecting a plug-in deletes its vault item (every key it had).
   if (m === 'DELETE' && PLUGIN_SETTINGS.test(p)) return true
