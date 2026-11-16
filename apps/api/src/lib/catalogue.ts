@@ -23,6 +23,7 @@ import { ARR_RECIPE } from './arr/recipe'
 import { TRANSCODE_RECIPES } from './transcode/recipes'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
+import type { ManagedKind } from './proxy/managed-recipes'
 import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
 import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
 
@@ -135,6 +136,13 @@ export interface CatalogueRecipe {
    * (lib/ghost/setup.ts: the owner, the title, an Admin API key and mail) runs before the generic check and publish.
    */
   setup?:      'pbs' | 'ghost'
+  /**
+   * A reverse proxy HyperProx can drive: once it answers, the install adds it to the Proxy page as a Managed instance
+   * of this kind (lib/proxy/managed-recipes.ts managedInstanceInput), so apps can be published through it from
+   * HyperProx. The script gets a fresh secret in HPX_PROXY_SECRET for an API login it sets up (the instance keeps it
+   * in the vault); a kind with no login ignores it.
+   */
+  registersProxy?: ManagedKind
   /** Checks across the recipe's options, after each one passed its own kind. */
   checkOptions?: (values: Record<string, string>) => string[]
 }

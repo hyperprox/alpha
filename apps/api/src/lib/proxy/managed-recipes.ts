@@ -1,13 +1,11 @@
 // =============================================================================
 //  HyperProx — Managed proxies: Catalogue recipes for Traefik, Caddy, HAProxy
 //
-//  Not wired in yet. The Catalogue (lib/catalogue.ts) is another package's;
-//  the integrator adds the hook:
-//    1. offer managedProxyRecipe(kind, secret) in the Catalogue's proxy
-//       category (a fresh `secret` per install, from managedSecret());
-//    2. after a successful install, register the instance with
-//       proxyService().createInstance(managedInstanceInput(...), actor).
-//  The compose files are the ones the live tests ran against.
+//  The hook: a Catalogue recipe with `registersProxy` set gets a fresh secret
+//  (managedSecret(), as HPX_PROXY_SECRET in its script) and, once it answers,
+//  is registered by the installer through lib/proxy registerManagedProxy,
+//  which calls proxyService().createInstance(managedInstanceInput(...)).
+//  The compose recipes below are the ones the live tests ran against.
 //
 //  Caddy's admin API has no login of its own, so the Managed container binds
 //  it to 127.0.0.1 (host networking: the container's own loopback) and
@@ -23,6 +21,11 @@ import type { CatalogueRecipe } from '../catalogue'
 import type { InstanceInput } from './service'
 
 export type ManagedKind = 'traefik' | 'caddy' | 'haproxy'
+
+/** What the Catalogue's installer hands registration once a proxy recipe answers on its own address. */
+export interface ManagedProxyRegistration {
+  kind: ManagedKind; recipeId: string; name: string; ip: string; node: string; vmid: number; secret: string; owner: string
+}
 
 export function managedSecret(): string { return randomBytes(18).toString('base64url') }
 
