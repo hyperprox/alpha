@@ -1216,7 +1216,7 @@ its own two accounts in it, and the K3s plug-in page shows it. There is nothing 
   pod logs and nothing else (never secrets or config maps; HyperProx checks it cannot read secrets before it keeps
   anything), and `hyperprox-operator`, used only for the actions you confirm. Kubernetes permissions cannot be narrowed
   to exactly those actions, so it has the rights they need (changing workloads and their size, deleting and evicting
-  pods, changing nodes), and two admission policies HyperProx adds to the cluster narrow it further: through that
+  pods, changing nodes), and three admission policies HyperProx adds to the cluster narrow it further: through that
   account a workload's pod template cannot change at all except its restart time (so what it runs and what it may do,
   privileges, host access, capabilities, service account, volumes, where it is scheduled, stay exactly as they are),
   and on a node nothing may change except whether it takes new pods. **Roll back**, which does change a template, is
@@ -3030,7 +3030,7 @@ audited. HyperProx changes the proxy only through its helper's fixed commands, w
 by itself. So is a K3s server HyperProx finds on your guests: the service scan sees a Kubernetes API answering on
 port 6443, HyperProx looks inside that guest once, read-only, for K3s's admin login, and connects it the same way
 (never a guest tagged `hyperprox-ignore` or on Remote access's "never look inside" list). Note that connecting means
-HyperProx creates its two service accounts and two admission policies in every K3s it finds this way; tag a guest
+HyperProx creates its two service accounts and three admission policies in every K3s it finds this way; tag a guest
 `hyperprox-ignore` if you do not want that. Only when it finds an API
 but no K3s login it can read (another Kubernetes, or a cluster outside your Proxmox) does the page ask: **Connect a
 cluster** takes that cluster's kubeconfig, and the join token if you want the Catalogue to add agents to it.
@@ -3055,7 +3055,7 @@ runs, is checked against the cluster at that moment (a button never acts on some
 the audit log, and is sent with the separate `hyperprox-operator` account, which the admission policies (see K3s in the Catalogue above) keep from
 changing what a workload runs or a node beyond cordoning; a roll back is sent with the admin login, after you confirm it. API tokens cannot act on a cluster.
 Below admin, the page leaves out addresses (nodes, ingresses, services) and the text of events and logs. Logs are for
-admins too, as they hold whatever an app printed. **Remove** (under Details) deletes HyperProx's two accounts and two
+admins too, as they hold whatever an app printed. **Remove** (under Details) deletes HyperProx's two accounts and three
 admission policies from the cluster and its logins from the vault; the cluster keeps running, and auto-connect does not add it
 back by itself.
 

@@ -388,7 +388,7 @@ export class K3sService {
       left = await removeAccounts(this.transport({ url: s.url, ca: l.ca, cert: l.cert, key: l.key, token: l.token }))
       if (left.length) throw new Error(`${left.length} of its objects could not be deleted`)
     } catch (e: any) {
-      if (!force) throw new K3sRefusal('revoke_failed', `HyperProx could not remove its accounts from ${m.name} (${plainK3s(e, 'the cluster')}). Try again when it answers, or remove anyway and delete the hyperprox-reader and hyperprox-operator service accounts (kube-system) and the hyperprox-operator-workloads and hyperprox-operator-nodes admission policies yourself.`, 409)
+      if (!force) throw new K3sRefusal('revoke_failed', `HyperProx could not remove its accounts from ${m.name} (${plainK3s(e, 'the cluster')}). Try again when it answers, or remove anyway and delete the hyperprox-reader and hyperprox-operator service accounts (kube-system) and the hyperprox-operator-workloads, -statefulsets and -nodes admission policies yourself.`, 409)
       if (!left.length) left = ['hyperprox-reader', 'hyperprox-operator']
     }
     await this.d.audit('k3s.cluster.removed', `k3s:${id}`, { ...auditBy(actor), name: m.name, force, left })

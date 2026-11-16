@@ -8,7 +8,7 @@
 //    hyperprox-reader     get/list/watch on what the K3s page shows, and pod
 //                         logs. Never secrets or config maps. Every read uses it.
 //    hyperprox-operator   the rights restart, scale, delete pod, cordon, uncordon
-//                         and drain need, narrowed by two admission policies
+//                         and drain need, narrowed by three admission policies
 //                         (below): a workload's pod template cannot change
 //                         except its restart time, a node nothing but cordoning.
 //                         A roll back uses the admin login, after a confirmation.
@@ -54,6 +54,7 @@ export const OPERATOR_RULES = [
 export const OPERATOR_USER = `system:serviceaccount:${NS}:${OPERATOR}`
 export const WORKLOAD_POLICY = 'hyperprox-operator-workloads'
 export const NODE_POLICY = 'hyperprox-operator-nodes'
+export const STATEFULSET_POLICY = 'hyperprox-operator-statefulsets'
 
 /** The one pod-template annotation a restart sets; nothing else in the template may change through the action account. */
 export const RESTARTED_AT = 'kubectl.kubernetes.io/restartedAt'
@@ -86,6 +87,21 @@ export function guardPolicies(): Array<{ path: string; body: Record<string, unkn
         { expression: 'object.spec.template.spec == oldObject.spec.template.spec', message: 'HyperProx\'s action account may restart or scale a workload, never change what its pods run or are allowed to do.' },
         { expression: 'variables.newL == variables.oldL', message: 'HyperProx\'s action account may not change a workload\'s pod labels.' },
         { expression: sameButRestart('variables.newA', 'variables.oldA'), message: 'HyperProx\'s action account may change only the restart time in a pod template\'s annotations.' },
+        // Who owns the workload and what must happen before it goes are not the action account's to change either.
+        { expression: `${same('metadata.ownerReferences', '[]')} && ${same('metadata.finalizers', '[]')}`, message: 'HyperProx\'s action account may not change a workload\'s owners or finalizers.' },
+      ],
+    },
+  }
+  // A StatefulSet's volume claims: whether they are deleted with it or on scale-down. Its own policy, because the
+  // field exists only on StatefulSets and each policy is type-checked against every kind it matches.
+  const statefulsets = {
+    apiVersion: 'admissionregistration.k8s.io/v1', kind: 'ValidatingAdmissionPolicy', metadata: { name: STATEFULSET_POLICY, labels },
+    spec: {
+      failurePolicy: 'Fail',
+      matchConstraints: { resourceRules: [{ apiGroups: ['apps'], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['statefulsets'] }] },
+      matchConditions: match,
+      validations: [
+        { expression: 'has(object.spec.persistentVolumeClaimRetentionPolicy) == has(oldObject.spec.persistentVolumeClaimRetentionPolicy) && (!has(object.spec.persistentVolumeClaimRetentionPolicy) || object.spec.persistentVolumeClaimRetentionPolicy == oldObject.spec.persistentVolumeClaimRetentionPolicy)', message: 'HyperProx\'s action account may not change what happens to a StatefulSet\'s volumes.' },
       ],
     },
   }
@@ -112,6 +128,8 @@ export function guardPolicies(): Array<{ path: string; body: Record<string, unkn
     { path: `${base}/validatingadmissionpolicybindings/${WORKLOAD_POLICY}`, body: binding(WORKLOAD_POLICY) },
     { path: `${base}/validatingadmissionpolicies/${NODE_POLICY}`, body: nodes },
     { path: `${base}/validatingadmissionpolicybindings/${NODE_POLICY}`, body: binding(NODE_POLICY) },
+    { path: `${base}/validatingadmissionpolicies/${STATEFULSET_POLICY}`, body: statefulsets },
+    { path: `${base}/validatingadmissionpolicybindings/${STATEFULSET_POLICY}`, body: binding(STATEFULSET_POLICY) },
   ]
 }
 

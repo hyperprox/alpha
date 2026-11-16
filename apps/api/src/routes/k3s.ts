@@ -19,7 +19,7 @@ import { k3sService } from '../lib/k3s'
 import { K3sRefusal, plainK3s, type Actor } from '../lib/k3s/service'
 import { K3sInputError, type K3sMeta } from '../lib/k3s/instances'
 import { KubeconfigError } from '../lib/k3s/kubeconfig'
-import type { FixAction, Reading } from '../lib/k3s/parse'
+import type { FixAction, ProblemPod, Reading } from '../lib/k3s/parse'
 import { actorOf } from '../lib/http/request-actor'
 import { sendRefusal } from '../lib/failure'
 
@@ -41,25 +41,33 @@ export function viewOf<T extends Partial<K3sMeta> & { url?: string }>(m: T, admi
   return rest as T
 }
 
-/** Addresses and image references taken out of a line a viewer reads (registry hosts, IPs, quoted image names). */
-export function scrubForViewer(text: string): string {
-  return text
-    .replace(/"[^"\s]*[./:@][^"\s]*"/g, '"[image]"')
-    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, '[address]')
-    .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?\/[^\s"]*/gi, '[image]')
+/**
+ * What a viewer reads for a pod in trouble: one fixed sentence per state, never the cluster's own text (which can
+ * name images, registries, addresses, URLs and credentials in any form). The reason (a Kubernetes word) is kept.
+ */
+export const VIEWER_SENTENCE: Record<ProblemPod['state'], string> = {
+  crashloop: 'The container keeps stopping and Kubernetes keeps restarting it.',
+  oom: 'The container ran out of memory and was restarted.',
+  image: 'The image cannot be pulled.',
+  pending: 'The pod is waiting for a node to run on.',
+  restarting: 'The container has restarted several times in the past hour.',
+  failed: 'The pod failed and will not be restarted.',
+  'not-ready': 'The pod is not ready.',
 }
+/** And for a node that is not ready, in place of its Ready condition's message. */
+export const VIEWER_NODE_NOT_READY = 'The node is not ready.'
 
 /**
  * What a viewer sees of a reading: the shape and the health, without the network map (node addresses, ingress hosts
- * and paths, service addresses), the pods' log lines, the events' text and the images (registries), and with addresses scrubbed from
- * the problem messages.
+ * and paths, service addresses), the pods' log lines, the events' text and the images (registries), and with a fixed
+ * sentence in place of every problem's and every not-ready node's own message.
  */
 export function readingFor(r: Reading, admin: boolean): Reading {
   if (admin) return r
   return {
     ...r,
-    nodes: r.nodes.map(n => ({ ...n, ip: null })),
-    problems: r.problems.map(({ lastLines: _l, ...p }) => ({ ...p, message: p.state === 'image' ? 'The image cannot be pulled.' : scrubForViewer(p.message) })),
+    nodes: r.nodes.map(n => ({ ...n, ip: null, reason: n.ready ? null : VIEWER_NODE_NOT_READY })),
+    problems: r.problems.map(({ lastLines: _l, ...p }) => ({ ...p, message: VIEWER_SENTENCE[p.state] })),
     workloads: r.workloads.map(w => ({ ...w, images: [] })),
     events: r.events.map(e => ({ ...e, message: '' })),
     services: r.services.map(x => ({ ...x, clusterIP: null, external: [] })),

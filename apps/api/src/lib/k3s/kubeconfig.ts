@@ -61,7 +61,9 @@ function everyKey(v: unknown, out: string[] = [], depth = 0, seen = { n: 0 }): s
  * (a "billion laughs") expands to billions of values from a few kilobytes. Base64, tokens and https addresses
  * contain neither character in that position.
  */
-const ANCHOR_OR_ALIAS = /(^|[\s:[{,?-])[&*][^\s,\]}]/m
+const ANCHOR_OR_ALIAS = /(^|[ \t\r\n:[{,?-])[&*][^ \t\r\n,\]}]/m
+/** A kubeconfig is ASCII: printable characters, tab, CR and LF. Anything else could hide YAML syntax from the checks. */
+const NOT_ASCII = /[^\x20-\x7e\t\r\n]/
 
 const FALSE_WORDS = /^(false|no|off|0|n)$/i
 const MERGE = 'That kubeconfig uses a YAML merge key (<<), which HyperProx does not accept. Use the K3s server\'s own k3s.yaml.'
@@ -71,7 +73,8 @@ export function parseKubeconfig(text: string): AdminLogin {
   if (typeof text !== 'string' || !text.trim()) throw new KubeconfigError('Paste the kubeconfig (the K3s server keeps it in /etc/rancher/k3s/k3s.yaml).')
   if (text.length > MAX) throw new KubeconfigError('That is too long for a kubeconfig.')
   // A merge key copies one entry into another: what is checked and what a client reads could differ.
-  if (/(^|[\s{,[-])<<\s*:/m.test(text)) throw new KubeconfigError(MERGE)
+  if (NOT_ASCII.test(text)) throw new KubeconfigError('That kubeconfig has characters a kubeconfig never contains (outside plain ASCII). Use the K3s server\'s own k3s.yaml.')
+  if (/(^|[ \t\r\n{,[-])<<[ \t]*:/m.test(text)) throw new KubeconfigError(MERGE)
   if (ANCHOR_OR_ALIAS.test(text)) throw new KubeconfigError('That kubeconfig uses YAML anchors or aliases (& or *), which a kubeconfig never needs and HyperProx does not accept. Use the K3s server\'s own k3s.yaml.')
   let doc: any
   try { doc = yaml.load(text, { schema: yaml.FAILSAFE_SCHEMA }) } catch { throw new KubeconfigError('That is not a kubeconfig: it does not read as YAML.') }

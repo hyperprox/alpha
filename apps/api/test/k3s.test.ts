@@ -15,7 +15,7 @@ import { K3sInstanceStore, parseIndex } from '../src/lib/k3s/instances'
 import { K3sService, K3sRefusal, classifyDrain, cleanTarget } from '../src/lib/k3s/service'
 import { K3sHttpError, type Call } from '../src/lib/k3s/transport'
 import { tileOf } from '../src/plugins/k3s'
-import { readingFor, viewOf, scrubForViewer } from '../src/routes/k3s'
+import { readingFor, viewOf, VIEWER_SENTENCE, VIEWER_NODE_NOT_READY } from '../src/routes/k3s'
 
 const FX = path.join(__dirname, 'fixtures/k3s')
 const raw = JSON.parse(fs.readFileSync(path.join(FX, 'cluster.json'), 'utf8'))
@@ -139,6 +139,11 @@ test('YAML anchors and aliases are refused before anything is walked: a billion-
   assert.ok(Date.now() - t < 1000, 'refused at once, not after expanding it')
   assert.throws(() => parseKubeconfig(KUBECONFIG.replace('users:\n- name: default\n  user:', 'users:\n- name: default\n  user: &u')), /anchors or aliases/)
   assert.throws(() => parseKubeconfig(KUBECONFIG.replace('    cluster: default\n', '    cluster: *c\n')), /anchors or aliases/)
+  // Hidden behind whitespace YAML does not count as whitespace, or any other non-ASCII character: refused outright.
+  for (const ch of ['\u00a0', '\u000b', '\u000c', '\u3000', '\u2028']) {
+    assert.throws(() => parseKubeconfig(KUBECONFIG.replace('users:\n- name: default\n  user:', `users:\n- name: default\n  user:${ch}&u`)), /outside plain ASCII/, JSON.stringify(ch))
+  }
+  assert.throws(() => parseKubeconfig(KUBECONFIG.replace('name: default\n', 'name: d\u00e9faut\n')), /outside plain ASCII/)
   // The real one, its base64 and its https address, never trip it.
   assert.ok(parseKubeconfig(KUBECONFIG).cert)
 })
@@ -193,14 +198,14 @@ test('HyperProx\'s read-only account never reads secrets or config maps; the act
   assert.ok(!op.some(x => x.verbs.some(v => ['create', 'update', '*'].includes(v)) && x.res !== 'pods/eviction'))
   assert.deepEqual(op.find(x => x.res === 'pods')!.verbs, ['get', 'list', 'delete'])
   const objs = accountObjects()
-  assert.equal(objs.length, 12)
-  assert.ok(objs.slice(0, 4).every(o => o.path.startsWith('/apis/admissionregistration.k8s.io/v1/')), 'the guard is made before any token exists')
+  assert.equal(objs.length, 14)
+  assert.ok(objs.slice(0, 6).every(o => o.path.startsWith('/apis/admissionregistration.k8s.io/v1/')), 'the guard is made before any token exists')
   assert.ok(objs.every(o => (o.body.metadata as any).labels['app.kubernetes.io/managed-by'] === 'hyperprox'))
 })
 
 test('the admission guard on the action account: what each policy refuses, in Kubernetes\' own shape', () => {
-  const [wp, wb, np, nb] = guardPolicies().map(o => o.body as any)
-  for (const p of [wp, np]) {
+  const [wp, wb, np, nb, sp, sb] = guardPolicies().map(o => o.body as any)
+  for (const p of [wp, np, sp]) {
     assert.equal(p.apiVersion, 'admissionregistration.k8s.io/v1')
     assert.equal(p.kind, 'ValidatingAdmissionPolicy')
     assert.equal(p.spec.failurePolicy, 'Fail')
@@ -216,7 +221,12 @@ test('the admission guard on the action account: what each policy refuses, in Ku
   assert.equal(ex[1], 'variables.newL == variables.oldL')
   assert.match(ex[2], /k == 'kubectl\.kubernetes\.io\/restartedAt' \|\| \(k in variables\.oldA && variables\.oldA\[k\] == variables\.newA\[k\]\)/)
   assert.match(ex[2], /variables\.oldA\.all\(k, k == 'kubectl\.kubernetes\.io\/restartedAt' \|\| k in variables\.newA\)/, 'an annotation cannot be removed either')
-  assert.equal(wp.spec.validations.length, 3)
+  assert.equal(ex[3], "(has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []) == (has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []) && (has(object.metadata.finalizers) ? object.metadata.finalizers : []) == (has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : [])")
+  assert.equal(wp.spec.validations.length, 4)
+  // A StatefulSet's volume claim retention, in a policy of its own (the field exists on StatefulSets only).
+  assert.deepEqual(sp.spec.matchConstraints.resourceRules, [{ apiGroups: ['apps'], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['statefulsets'] }])
+  assert.match(sp.spec.validations[0].expression, /^has\(object\.spec\.persistentVolumeClaimRetentionPolicy\) == has\(oldObject\.spec\.persistentVolumeClaimRetentionPolicy\) && /)
+  assert.deepEqual([sb.kind, sb.spec], ['ValidatingAdmissionPolicyBinding', { policyName: 'hyperprox-operator-statefulsets', validationActions: ['Deny'] }])
   assert.deepEqual(np.spec.matchConstraints.resourceRules, [{ apiGroups: [''], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['nodes'] }])
   assert.ok(!np.spec.validations[0].expression.includes('unschedulable'), 'the one field it may change is not compared')
   for (const f of ['metadata.labels', 'metadata.annotations', 'spec.taints', 'spec.providerID']) assert.ok(np.spec.validations[0].expression.includes(`has(object.${f})`), f)
@@ -303,7 +313,7 @@ test('connecting makes both accounts with the admin login and keeps only tokens,
   const audits: string[] = []
   const svc = new K3sService({ store, transport: fc.transport, audit: async a => { audits.push(a) }, wait: async () => {}, now: () => NOW })
   const m = await svc.connect({ kubeconfig: KUBECONFIG, address: 'https://10.0.0.40:6443', nodeToken: 'K10made-up::server:abcdefabcdef', name: 'lab', guest: { kind: 'lxc', vmid: 240 }, via: 'catalogue' }, admin)
-  assert.equal(fc.writes.length, 12)
+  assert.equal(fc.writes.length, 14)
   assert.ok(fc.writes.every(w => w.who === 'admin' && w.method === 'PATCH' && w.contentType === 'application/apply-patch+yaml'))
   assert.deepEqual(audits, ['k3s.cluster.connect'])
   assert.deepEqual([...mem.keys()].sort(), [
@@ -407,9 +417,10 @@ test('a reading carries the failing pods\' last lines for admins only; viewers l
   assert.ok(v.events.every(e => e.message === ''))
   assert.ok(!JSON.stringify(v).includes('10.0.0.40'), 'no address reaches a viewer')
   assert.ok(v.workloads.every(w => w.images.length === 0))
-  assert.equal(v.problems.find(p => p.state === 'image')!.message, 'The image cannot be pulled.')
+  // Every problem's message is the fixed sentence for its state; the reason (a Kubernetes word) stays.
+  for (const p of v.problems) assert.equal(p.message, VIEWER_SENTENCE[p.state])
+  assert.deepEqual(v.problems.map(p => p.reason), r.problems.map(p => p.reason))
   assert.ok(!/docker\.io|nginx:9/.test(JSON.stringify(v)), 'no registry or image name reaches a viewer')
-  assert.equal(scrubForViewer('Readiness probe failed: Get "http://10.42.0.9:8080/ready": refused from 10.0.0.40:6443'), 'Readiness probe failed: Get "[image]": refused from [address]')
   assert.ok(readingFor(r, true).problems.some(p => p.lastLines))
   assert.equal('url' in viewOf({ id: 'k1', url: 'https://10.0.0.40:6443' }, false), false)
   const tile = tileOf([{ id: m.id, name: 'lab', reading: r, error: null }])
@@ -427,14 +438,38 @@ test('remove deletes HyperProx\'s accounts with the kept admin login, then the v
   assert.deepEqual(fc.writes.map(w => w.who === 'audit' ? w.method : w.method).filter(x => x.startsWith('k3s.')), ['k3s.cluster.remove', 'k3s.cluster.removed'])
   assert.equal(fc.writes[0].method, 'k3s.cluster.remove', 'recorded before anything is deleted')
   const deletes = fc.writes.filter(w => w.method === 'DELETE')
-  assert.equal(deletes.length, 12)
+  assert.equal(deletes.length, 14)
   fc.writes.splice(0, 1); fc.writes.pop()
-  assert.ok(fc.writes.slice(-4).every(w => w.path.includes('admissionregistration')), 'the guard goes last, after every token')
+  assert.ok(fc.writes.slice(-6).every(w => w.path.includes('admissionregistration')), 'the guard goes last, after every token')
   assert.ok(fc.writes.every(w => w.who === 'admin' && w.method === 'DELETE'))
   assert.equal([...mem.keys()].filter(k => k.includes(m.id)).length, 0)
   assert.deepEqual(dismissed, ['lxc-240'])
   const left = await removeAccounts({ call: async () => { throw new K3sHttpError(404, 'NotFound', '') } })
   assert.deepEqual(left, [], 'already gone counts as removed')
+})
+
+test('a viewer never reads the cluster\'s own words: IPv6, host:port, bare host names, URLs and credentials all stay out', () => {
+  const nasty = [
+    'dial tcp [fd00:10:42::9]:8080: connect: connection refused', 'peer 2001:db8::5 unreachable',
+    'Get "http://[fe80::1%eth0]:10250/healthz": context deadline exceeded', 'registry.internal:5000 refused',
+    'pull from registry.internal failed', 'see https://git.example.org', 'https://deploy:hunter2@registry.example.net/app',
+    'node-a.lan said no', 'ftp://user:pw@10.1.2.3',
+  ]
+  const now = Date.parse('2026-11-16T03:42:40Z')
+  const base = readingOf({ ...raw, latest: null, missing: [] }, now)
+  const r = {
+    ...base,
+    problems: (Object.keys(VIEWER_SENTENCE) as Array<keyof typeof VIEWER_SENTENCE>).map((state, i) => ({
+      namespace: 'demo', name: `p${i}`, node: 'k3s-a', state, reason: 'Whatever', message: nasty[i % nasty.length] + ' ' + nasty[(i + 3) % nasty.length],
+      container: 'app', restarts: 1, since: null, owner: null, lastLines: [nasty[i % nasty.length]], fixes: [],
+    })),
+    nodes: base.nodes.map(n => ({ ...n, ready: false, reason: nasty.join(' | ') })),
+  }
+  const v = JSON.stringify(readingFor(r, false))
+  for (const bit of ['fd00', '2001:db8', 'fe80', 'registry.internal', 'git.example.org', 'hunter2', 'deploy:', 'example.net', 'node-a.lan', 'user:pw', '10.1.2.3', '5000', '10250', '8080'])
+    assert.ok(!v.includes(bit), bit)
+  assert.ok(readingFor(r, false).nodes.every(n => n.reason === VIEWER_NODE_NOT_READY))
+  assert.ok(readingFor(r, true).nodes.every(n => n.reason!.includes('fd00')), 'admins still read the real text')
 })
 
 test('rename is admin, recorded before it is saved', async () => {
