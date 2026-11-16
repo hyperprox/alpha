@@ -146,7 +146,7 @@ export function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatu
       <section className={vs.panel} aria-label="GPU">
         <div className="flex items-center justify-between mb-2">
           <CardTitle title="GPU" accent={accent}/>
-          <span className="text-xs font-mono text-gray-500 truncate ml-2" style={{ maxWidth:200 }} title={gpu.name}>
+          <span className="text-xs font-mono text-gray-500 ml-2 text-right min-w-0" title={gpu.name}>
             {shortGpuLabel(gpu.name)}{home && <> · <b style={{ color:'var(--text-bright)' }} data-gpu-node={home.node}>{whereLine(home.node)}</b></>}
           </span>
         </div>

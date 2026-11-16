@@ -26,6 +26,8 @@ know or do before they install. Newest entry at the top.
 ### Fixed
 - **Open on your home cluster now takes you to its dials.** On the dashboard and the Command center, Open on the home cluster went back to the dashboard and seemed to do nothing. It now opens the dashboard with More detail unfolded and in view: the cluster dials, the GPU dials and the connected services.
   - Technical: `openHref` in `components/clusters/CommandCenter.tsx` links the home cluster to `/dashboard?more=1`; `app/dashboard/page.tsx` opens `details#more` and scrolls to it once the first numbers arrive.
+- **Two layout fixes in More detail.** Nginx Proxy Manager's figures in Connected Services now sit on their own line under its name instead of running into it in a narrow column, and the GPU card's heading shows the whole node name instead of cutting it off.
+  - Technical: the service row wraps (`flex-wrap`, figures `w-full order-last`, five columns); the GPU heading no longer truncates at 200 px.
 
 ## 2026-11-16 — K3s (Kubernetes) in the Catalogue, with its own plug-in
 

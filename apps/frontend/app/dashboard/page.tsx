@@ -907,14 +907,14 @@ function ServicesPanel({ services }: { services: SlowData['services'] }) {
           const pill  = SERVICE_PILL[st]
           const sub   = up ? info?.url : st === 'checking' ? undefined : info?.message
           return (
-          <div key={key} className="flex items-center gap-3 p-3 rounded" style={{background:'var(--ground-deep)',border:`1px solid ${up?alpha(accent, 13):'var(--border-dim)'}`}}>
+          <div key={key} className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3 rounded" style={{background:'var(--ground-deep)',border:`1px solid ${up?alpha(accent, 13):'var(--border-dim)'}`}}>
             <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background:up?accent:'var(--text-dimmer)',boxShadow:up?`0 0 5px ${accent}`:'none'}}/>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-semibold" style={{color:up?'var(--text-bright)':'var(--text-soft)'}}>{name}</div>
               {sub&&<div className="text-xs font-mono text-gray-500 truncate" title={sub}>{sub}</div>}
             </div>
             {up&&details.length>0&&(
-              <div className="grid grid-cols-3 gap-1 flex-shrink-0">
+              <div className="grid grid-cols-5 gap-1 w-full order-last pl-5">
                 {details.map(d=>(
                   <div key={d.label} className="text-center">
                     <div className="text-xs font-mono font-bold" style={{color:d.color}}>{d.value}</div>
