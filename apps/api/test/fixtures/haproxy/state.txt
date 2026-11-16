@@ -1,0 +1,5 @@
+1
+# be_id be_name srv_id srv_name srv_addr srv_op_state srv_admin_state srv_uweight srv_iweight srv_time_since_last_change srv_check_status srv_check_result srv_check_health srv_check_state srv_agent_state bk_f_forced_id srv_f_forced_id srv_fqdn srv_port srvrecord srv_use_ssl srv_check_port srv_check_addr srv_agent_addr srv_agent_port
+5 hpx_lb_web 1 web1 192.0.2.11 2 0 100 100 6 15 3 4 6 0 0 0 - 8080 - 0 0 - - 0
+5 hpx_lb_web 2 web2 192.0.2.12 2 0 100 100 31 15 3 4 6 0 0 0 - 8080 - 0 0 - - 0
+
