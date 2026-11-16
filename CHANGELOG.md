@@ -21,6 +21,18 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — NGINX, Caddy and Envoy
+
+### New
+- Install NGINX, Caddy or Envoy from the Catalogue: a pinned version from each project's own source, with its admin page reachable only from inside its container.
+  - Technical: recipes in `lib/webproxy/recipes.ts` (NGINX 1.31.8 mainline from nginx.org, Caddy 2.11.7 from its apt repository, Envoy 1.40.2 release binary with its SHA-256); repository keys checked by fingerprint; Caddy and Envoy found by their `Server` header, NGINX by its health answer.
+- An NGINX or Caddy you install from the Catalogue appears on the Proxy page by itself, ready to publish apps through.
+  - Technical: `registersProxy` on a recipe; the installer generates `HPX_PROXY_SECRET` and calls `registerManagedProxy` (`lib/proxy`). The managed transport now runs through the remote executor.
+- The Proxy page can drive NGINX: HyperProx keeps its hosts in a file of its own and checks every change with nginx -t before NGINX reloads.
+  - Technical: `lib/proxy/providers/nginx.ts`, managed only; a refused change is put back as it was.
+- New NGINX, Caddy and Envoy plug-ins: routes, upstreams and their reach, certificates, traffic and errors, with a fix button on every problem they can fix.
+  - Technical: `lib/webproxy` (one service, auto-connect adapters for all three), routes under `/api/plugins/{nginx,caddy,envoy}`; actions are admin, confirmed, offered only by a fresh reading, and audited.
+
 ## 2026-11-16 — Internal tidy-up
 
 ### Improved
