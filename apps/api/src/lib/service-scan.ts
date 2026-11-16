@@ -65,6 +65,8 @@ export class ServiceScanCache {
   private found: ScanResult | null = null
   private running: Promise<ScanResult> | null = null
   constructor(private src: () => ScanSource, private get: ProbeGetter = realProbeGet, private now: () => number = Date.now) {}
+  /** The last scan's answer as it is, however old, or null: never starts a scan. */
+  peek(): ScanResult | null { return this.found }
   async result(refresh = false): Promise<ScanResult> {
     if (this.found && !refresh && this.now() - this.found.builtAt < SCAN_TTL_MS) return this.found
     if (this.running) return this.running

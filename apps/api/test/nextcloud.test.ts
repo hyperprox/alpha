@@ -987,3 +987,19 @@ test('minor 8: an app password that cannot be revoked is recorded and alerted; o
   await s2.svc.autoConnect(acx())
   assert.equal(g2.calls.filter(c => c.includes('user:auth-tokens:add')).length, adds, 'never retried by itself')
 })
+
+test('removed guest: forgetting an instance drops it and its saved logins, runs nothing in the gone guest, and keeps no dismissal', async () => {
+  const dismissed: string[] = []
+  const g = makerGuest()
+  const s = service(g, { sightings: async () => SEEN, dismissed: async k => { dismissed.push(k) } })
+  await s.svc.autoConnect(acx())
+  const [m] = await s.svc.instances.list()
+  assert.ok([...s.io.data.keys()].some(k => k.startsWith(`plugin/nextcloud.${m.id}/`)))
+  const calls = g.calls.length
+  assert.match(await s.svc.forgetRemoved(m.id, 'admin@example.com'), /Nextcloud forgot/)
+  assert.equal((await s.svc.instances.list()).length, 0)
+  assert.ok(![...s.io.data.keys()].some(k => k.startsWith(`plugin/nextcloud.${m.id}`)), 'its vault items are gone')
+  assert.equal(g.calls.length, calls, 'nothing is run in a guest that no longer exists')
+  assert.deepEqual(dismissed, [])
+  assert.ok(s.audits.some(a => a.action === 'nextcloud.instance.forget_removed'))
+})
