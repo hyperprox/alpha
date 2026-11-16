@@ -132,6 +132,7 @@ export function bearerApiToken(headers: Record<string, any>): string | null {
  *   /ws, /ws/*         live status, update progress and terminal sockets
  *   /api/plugins/arrstack/queue/actions   Arr queue removal, blocklist, search, retry and prioritise
  *   /api/placement moves, running a balancing plan, saving automatic balancing (it can turn on applying)
+ *   /api/plugins/{nginx|caddy|envoy}/instances   connect (POST), actions (POST …/actions/:a), disconnect (DELETE)
  * Requests that need a re-confirmation (lib/roles.ts needsReconfirm) are refused
  * by the gate as reconfirm_required: a token has no master password.
  */
@@ -152,6 +153,8 @@ export function tokenForbidden(method: string, path: string): boolean {
   if (/^\/api\/plugins\/arrstack\/queue\/actions$/.test(p)) return true
   // Nextcloud actions (fixes, updates, mail, 2FA): a signed-in admin's act, never a token's.
   if (/^\/api\/plugins\/nextcloud\/instances\/[^/]+\/((actions|secure-actions)\/[^/]+|jobs\/[^/]+\/stop-watching)$/.test(p)) return true
+  // NGINX, Caddy and Envoy: connecting one, every action on it, and disconnecting it are a signed-in admin's act.
+  if ((m === 'POST' || m === 'DELETE') && /^\/api\/plugins\/(nginx|caddy|envoy)\/instances(\/[^/]+(\/actions\/[^/]+)?)?$/.test(p)) return true
   // Installing a new HyperProx, or changing how it updates itself, is a person's act (routes/self-update.ts).
   if (p === '/api/self-update/install' || p === '/api/self-update/settings') return true
   return false

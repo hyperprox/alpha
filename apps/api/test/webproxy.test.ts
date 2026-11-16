@@ -13,7 +13,8 @@ import { tileOf } from '../src/plugins/web-proxies'
 import { PLUGINS } from '../src/plugins'
 import { requiredRole } from '../src/lib/roles'
 import { DETECT } from '../src/lib/catalogue-detect'
-import { findRecipe } from '../src/lib/catalogue'
+import { findRecipe, healthProblem } from '../src/lib/catalogue'
+import { tokenForbidden } from '../src/lib/api-tokens'
 import { installScript } from '../src/lib/install-script'
 import type { Machine } from '../src/lib/remote/types'
 
@@ -231,6 +232,67 @@ test('roles: reads are for any signed-in person; connecting, every action and di
   }
 })
 
+test('routes: an API token cannot connect, act or disconnect; a fresh read and the found list are an admin’s', async () => {
+  const { setWebProxyService } = await import('../src/lib/webproxy')
+  const { webProxyRoutes } = await import('../src/routes/webproxy')
+  const w = world()
+  await w.svc.autoConnect('nginx', w.ctx() as any)
+  const [i] = await w.svc.instances('nginx')
+  setWebProxyService(w.svc)
+  try {
+    const as = (who: { role: string; token?: string }) => {
+      const a = Fastify()
+      a.addHook('onRequest', async req => { (req as any).session = { role: who.role, email: 'admin@example.invalid' }; if (who.token) (req as any).apiToken = { name: who.token } })
+      return a.register(webProxyRoutes('nginx'), { prefix: '/n' }).then(() => a)
+    }
+    const token = await as({ role: 'admin', token: 'nightly' })
+    for (const [method, url, payload] of [['POST', '/n/instances', { machineId: 'lxc-9101' }], ['POST', `/n/instances/${i.id}/actions/reload`, { confirm: true }], ['DELETE', `/n/instances/${i.id}`, undefined]] as const) {
+      const r = await token.inject({ method, url, payload: payload as any })
+      assert.equal(r.statusCode, 403, `${method} ${url}`)
+      assert.equal(r.json().code, 'token_forbidden')
+      assert.match(r.json().error, /An API token cannot connect, act on or disconnect a proxy/)
+    }
+    assert.equal(w.audits.filter(a => a[0] === 'webproxy.nginx.reload').length, 0, 'nothing ran')
+    assert.equal(w.rows.size, 1, 'nothing was disconnected')
+    // Reads stay open to a token, as every read is.
+    assert.equal((await token.inject({ url: '/n/instances' })).statusCode, 200)
+    // A viewer's ?fresh=1 is served from the last reading: no script runs in the guest for it.
+    const viewer = await as({ role: 'viewer' })
+    await w.svc.reading(i.id)
+    const before = w.scripts.length
+    assert.equal((await viewer.inject({ url: `/n/instances/${i.id}?fresh=1` })).statusCode, 200)
+    assert.equal(w.scripts.length, before)
+    const admin = await as({ role: 'admin' })
+    await admin.inject({ url: `/n/instances/${i.id}?fresh=1` })
+    assert.equal(w.scripts.length, before + 1)
+    // What was found but not connected is an admin's list (names and container ids of guests).
+    const found = world({ sightings: [{ kind: 'nginx', vmid: 9101, via: 'catalogue' }] })
+    setWebProxyService(found.svc)
+    assert.equal((await viewer.inject({ url: '/n/instances' })).json().data.found.length, 0)
+    assert.equal((await admin.inject({ url: '/n/instances' })).json().data.found.length, 1)
+  } finally { setWebProxyService(null) }
+})
+
+test('tokenForbidden refuses connecting, actions and disconnecting on the three plug-ins, and nothing else of theirs', () => {
+  for (const k of ['nginx', 'caddy', 'envoy']) {
+    assert.equal(tokenForbidden('POST', `/api/plugins/${k}/instances`), true)
+    assert.equal(tokenForbidden('POST', `/api/plugins/${k}/instances/0b0c0d0e-0000-4000-8000-000000000000/actions/reload`), true)
+    assert.equal(tokenForbidden('DELETE', `/api/plugins/${k}/instances/0b0c0d0e-0000-4000-8000-000000000000`), true)
+    assert.equal(tokenForbidden('GET', `/api/plugins/${k}/instances`), false)
+    assert.equal(tokenForbidden('GET', `/api/plugins/${k}/data`), false)
+  }
+})
+
+test('readings taken at the same moment share one look inside the guest', async () => {
+  const e = world({ sightings: [{ kind: 'envoy', vmid: 9101, via: 'detect' }] })
+  await e.svc.autoConnect('envoy', e.ctx() as any)
+  const [i] = await e.svc.instances('envoy')
+  const before = e.scripts.length
+  const [a, b, c] = await Promise.all([e.svc.reading(i.id, true), e.svc.reading(i.id, true), e.svc.reading(i.id)])
+  assert.equal(e.scripts.length, before + 1)
+  assert.ok(a === b && b === c)
+})
+
 test('routes: an unconfirmed action is refused in words; another kind’s proxy is not found under this one', async () => {
   const { setWebProxyService } = await import('../src/lib/webproxy')
   const { webProxyRoutes } = await import('../src/routes/webproxy')
@@ -260,7 +322,7 @@ test('recipes: pinned versions from the projects’ own sources, keys and downlo
     [['nginx', 'proxy', false, 'nginx'], ['caddy', 'proxy', false, 'caddy'], ['envoy', 'proxy', false, null]])
   assert.match(NGINX_SCRIPT, /apt-get install -y -qq "nginx=1\.31\.8-1~trixie"/)
   assert.match(NGINX_SCRIPT, /https:\/\/nginx\.org\/packages\/mainline\/debian trixie nginx/)
-  assert.match(NGINX_SCRIPT, /hpx_key https:\/\/nginx\.org\/keys\/nginx_signing\.key 573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62/)
+  assert.match(NGINX_SCRIPT, /hpx_key https:\/\/nginx\.org\/keys\/nginx_signing\.key 573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62 /)
   assert.match(NGINX_SCRIPT, /listen 127\.0\.0\.1:8081;/)
   assert.match(CADDY_SCRIPT, /apt-get install -y -qq "caddy=2\.11\.7"/)
   assert.match(CADDY_SCRIPT, /hpx_key https:\/\/dl\.cloudsmith\.io\/public\/caddy\/stable\/gpg\.key 65760C51EDEA2017CEA2CA15155B6D79CA56EA34/)
@@ -282,6 +344,23 @@ test('recipes: pinned versions from the projects’ own sources, keys and downlo
     const s = installScript(findRecipe(r.id)!, 'debian', r.registersProxy ? { HPX_PROXY_SECRET: 'x'.repeat(20) } : {})
     assert.equal(s.split('\n')[0], 'set -e')
   }
+})
+
+test('each recipe’s health check passes on the answer its real install gave, and fails on a wrong one', () => {
+  // Recorded from the test installs: NGINX and Caddy answer "ok"; Envoy's health-check filter answers 200 with no body.
+  const real: Record<string, { status: number; body: string }> = { nginx: { status: 200, body: 'ok\n' }, caddy: { status: 200, body: 'ok\n' }, envoy: { status: 200, body: '' } }
+  for (const r of WEB_PROXY_RECIPES) {
+    assert.equal(healthProblem(r, real[r.id].status, real[r.id].body), null, r.id)
+    assert.notEqual(healthProblem(r, 503, ''), null, `${r.id}: a drained or broken proxy is not serving`)
+    assert.notEqual(healthProblem(r, null), null)
+  }
+  assert.notEqual(healthProblem(findRecipe('nginx')!, 200, '<html>Welcome</html>'), null, 'another page at that path is not the Catalogue’s NGINX')
+})
+
+test('the repository key check refuses a key file with a key nobody listed', () => {
+  assert.match(NGINX_SCRIPT, /hpx_key https:\/\/nginx\.org\/keys\/nginx_signing\.key 573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62 \S+ 8540A6F1[0-9A-F]+ 573BFD6B[0-9A-F]+ 9E9BE90E[0-9A-F]+$/m)
+  assert.match(CADDY_SCRIPT, /holds a key HyperProx does not know/)
+  assert.match(ENVOY_SCRIPT, /CapabilityBoundingSet=CAP_NET_BIND_SERVICE\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes/)
 })
 
 test('detection: Caddy and Envoy by their Server header, NGINX only by the health answer the Catalogue’s NGINX gives', () => {

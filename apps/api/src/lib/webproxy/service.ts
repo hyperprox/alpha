@@ -255,6 +255,8 @@ export function actionResult(kind: WebProxyKind, action: string, out: string): {
 
 export class WebProxyService {
   private cache = new Map<string, { at: number; r: Reading }>()
+  /** A reading being taken now, per proxy: a second caller waits for it instead of running the script again. */
+  private inflight = new Map<string, Promise<Reading>>()
   private busy = new Set<string>()
   /** Guests whose look found no proxy of that kind: not looked in again for an hour. */
   private missing = new Map<string, number>()
@@ -347,6 +349,15 @@ export class WebProxyService {
     const i = await this.instance(id)
     const hit = this.cache.get(id)
     if (!fresh && hit && this.d.now() - hit.at < READ_TTL_MS) return hit.r
+    const running = this.inflight.get(id)
+    if (running) return running
+    const p = this.read(i).finally(() => { if (this.inflight.get(id) === p) this.inflight.delete(id) })
+    this.inflight.set(id, p)
+    return p
+  }
+
+  private async read(i: WebProxyInstance): Promise<Reading> {
+    const id = i.id
     const base = { id: i.id, kind: i.kind, name: i.name, vmid: i.vmid, node: i.node, at: this.d.now() }
     let r: Reading
     try {

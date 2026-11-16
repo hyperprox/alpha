@@ -31,8 +31,12 @@ export const ENVOY_VERSION = '1.40.2'
 
 /** nginx.org's signing key, as nginx.org lists it (nginx.org/en/linux_packages.html). */
 export const NGINX_KEY_FPR = '573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62'
+/** Every fingerprint nginx.org's key file holds (its three signing keys). Any other key in the file refuses the install. */
+export const NGINX_KEY_ALLOW = ['8540A6F18833A80E9C1653A42FD21310B49F6B46', NGINX_KEY_FPR, '9E9BE90EACBCDE69FE9B204CBCDCD8A38D88A2B3']
 /** Caddy's Cloudsmith repository key. */
 export const CADDY_KEY_FPR = '65760C51EDEA2017CEA2CA15155B6D79CA56EA34'
+/** Every fingerprint Caddy's key file holds (the key and its subkeys). */
+export const CADDY_KEY_ALLOW = [CADDY_KEY_FPR, '15136FB52CCAE0C37FD951B45884A18B779C85D1', 'D59FC5219C50B989D95FCE4E531A6B20FA058A70', '2F5C3BE9886ACD2913299EFBABA1F9B8875A6661']
 /** The SHA-256 Envoy's release lists for each binary. */
 export const ENVOY_SHA256: Record<'amd64' | 'arm64', string> = {
   amd64: '1d64506e25c1844f146162ddb2ece7010fa4e784faddb40a079021491f1f03cc',
@@ -45,15 +49,25 @@ export const ENVOY_ADMIN = 'http://127.0.0.1:9901'
 /** The path each proxy's own health answer lives on (the installer's check, and a load balancer's). */
 export const HEALTH_PATH = '/hpx-healthz'
 
-/** The repository key, checked by fingerprint before apt trusts it. `$1` is the key URL, `$2` the fingerprint, `$3` the keyring. */
+/**
+ * The repository key, checked by fingerprint before apt trusts it. `$1` is the key URL, `$2` the fingerprint that must
+ * be there, `$3` the keyring, the rest every fingerprint the file may hold: a key file with any other key in it (an
+ * added key would be trusted for the whole repository) is refused.
+ */
 const KEY_CHECK = String.raw`hpx_key() {
-  curl -fsSL "$1" -o /tmp/hpx-repo.key
-  if ! gpg --show-keys --with-colons /tmp/hpx-repo.key | awk -F: '/^fpr/{print $10}' | grep -qx "$2"; then
-    echo "The repository key at $1 is not the one HyperProx expects ($2). Nothing was installed."
+  url=$1; want=$2; ring=$3; shift 3
+  curl -fsSL "$url" -o /tmp/hpx-repo.key
+  fprs=$(gpg --show-keys --with-colons /tmp/hpx-repo.key 2>/dev/null | awk -F: '/^fpr/{print $10}')
+  if ! printf '%s
+' "$fprs" | grep -qx "$want"; then
+    echo "The repository key at $url is not the one HyperProx expects ($want). Nothing was installed."
     exit 1
   fi
-  gpg --dearmor < /tmp/hpx-repo.key > "$3"
-  chmod 0644 "$3"
+  for f in $fprs; do
+    case " $* " in *" $f "*) ;; *) echo "The key file at $url holds a key HyperProx does not know ($f). Nothing was installed."; exit 1 ;; esac
+  done
+  gpg --dearmor < /tmp/hpx-repo.key > "$ring"
+  chmod 0644 "$ring"
   rm -f /tmp/hpx-repo.key
 }`
 
@@ -68,7 +82,7 @@ export const NGINX_SCRIPT = String.raw`umask 022
 apt-get update -qq
 apt-get install -y -qq curl gnupg ca-certificates debian-archive-keyring openssl
 ` + KEY_CHECK + String.raw`
-hpx_key https://nginx.org/keys/nginx_signing.key ${NGINX_KEY_FPR} /usr/share/keyrings/nginx-archive-keyring.gpg
+hpx_key https://nginx.org/keys/nginx_signing.key ${NGINX_KEY_FPR} /usr/share/keyrings/nginx-archive-keyring.gpg ${NGINX_KEY_ALLOW.join(' ')}
 echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/debian trixie nginx" > /etc/apt/sources.list.d/nginx.list
 # nginx.org's packages win over Debian's, so an upgrade stays on nginx.org's mainline.
 printf 'Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n' > /etc/apt/preferences.d/99nginx
@@ -109,7 +123,7 @@ export const CADDY_SCRIPT = String.raw`umask 022
 apt-get update -qq
 apt-get install -y -qq curl gnupg ca-certificates debian-archive-keyring openssl
 ` + KEY_CHECK + String.raw`
-hpx_key https://dl.cloudsmith.io/public/caddy/stable/gpg.key ${CADDY_KEY_FPR} /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+hpx_key https://dl.cloudsmith.io/public/caddy/stable/gpg.key ${CADDY_KEY_FPR} /usr/share/keyrings/caddy-stable-archive-keyring.gpg ${CADDY_KEY_ALLOW.join(' ')}
 echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy-stable.list
 apt-get update -qq
 apt-get install -y -qq "caddy=${CADDY_VERSION}"
@@ -217,6 +231,12 @@ ExecStart=/usr/local/bin/envoy -c /etc/envoy/envoy.yaml --log-level warn
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536
+# Envoy only reads its files and binds its ports: everything else is taken away.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -229,7 +249,7 @@ echo "Envoy $(/usr/local/bin/envoy --version | grep -o 'version: [^ ]*' | cut -d
 
 const base = {
   category: 'proxy' as const, needsDocker: false, firstRun: { kind: 'none' as const }, wizard: false,
-  healthPath: HEALTH_PATH, expectStatus: [200], healthBody: { contains: ['ok'] },
+  healthPath: HEALTH_PATH, expectStatus: [200],
 }
 
 export const WEB_PROXY_RECIPES: CatalogueRecipe[] = [
@@ -243,6 +263,8 @@ export const WEB_PROXY_RECIPES: CatalogueRecipe[] = [
     defaults: { cores: 1, memoryMb: 512, diskGb: 4, swapMb: 512 },
     minimum: { cores: 1, memoryMb: 256, diskGb: 2 },
     registersProxy: 'nginx',
+    // Its default site answers the health path with "ok" (an error page could still be a 200).
+    healthBody: { contains: ['ok'] },
     notes: [
       `NGINX ${NGINX_VERSION} mainline from nginx.org’s own Debian repository, on Debian 13. Takes port 80 on this container.`,
       `HyperProx writes ${NGINX_HOSTS_FILE} for the hosts you publish from the Proxy page; every change is checked with nginx -t before NGINX reloads. Your own sites go in other files there.`,
@@ -260,6 +282,8 @@ export const WEB_PROXY_RECIPES: CatalogueRecipe[] = [
     defaults: { cores: 1, memoryMb: 512, diskGb: 4, swapMb: 512 },
     minimum: { cores: 1, memoryMb: 256, diskGb: 2 },
     registersProxy: 'caddy',
+    // Its default site answers the health path with "ok" (an error page could still be a 200).
+    healthBody: { contains: ['ok'] },
     notes: [
       `Caddy ${CADDY_VERSION} from Caddy’s own Debian repository, on Debian 13. Takes ports 80 and 443 on this container.`,
       'Its admin API listens on 127.0.0.1:2019 inside the container only; HyperProx reaches it through the container. It is never exposed.',
@@ -270,6 +294,7 @@ export const WEB_PROXY_RECIPES: CatalogueRecipe[] = [
   {
     ...base,
     id: 'envoy',
+    // Envoy's health-check filter answers 200 with an empty body (503 when drained): the status is the answer.
     detect: DETECT['envoy'],
     name: 'Envoy',
     summary: 'An edge and service proxy. Its plug-in shows clusters and their health, listeners and request and error rates, and can drain it or reload its configuration.',
