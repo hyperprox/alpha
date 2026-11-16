@@ -32,6 +32,7 @@ import { HaproxyService, type GuestRow } from './service'
 import { tileNumbers, type Reading } from './model'
 import { HAPROXY_RECIPE_ID, METRICS_PORT } from './recipe'
 import { writeHaproxyTargets } from './targets'
+import type { PublishLedger } from '../sites'
 
 const homeFetch: Pick<ProxmoxClient, 'fetchStrict'> = {
   fetchStrict: <T>(path: string, method?: string, body?: string, timeoutMs?: number) => homePve().fetchStrict<T>(path, method, body, timeoutMs),
@@ -58,7 +59,8 @@ export async function guestRows(): Promise<GuestRow[]> {
   return out
 }
 
-export { ownScrapers } from './recipe'
+import { ownScrapers } from './recipe'
+export { ownScrapers }
 
 type DismissedPort = (key: string, label: string, by: string) => Promise<void>
 let dismissedPort: DismissedPort | null = null
@@ -120,6 +122,7 @@ export async function syncHaproxyTargets(svc = haproxyService()): Promise<boolea
     const ip = rows.find(r => r.kind === i.guest.kind && r.vmid === i.guest.vmid)?.addresses[0]
     return ip ? [{ id: i.id, name: i.name, target: `${ip}:${METRICS_PORT}` }] : []
   })
+  await keepScrapersCurrent(svc, { force: true }).catch(() => ({}))
   const changed = writeHaproxyTargets(entries)
   if (changed) {
     const { prometheusBase } = await import('../service-health')
@@ -128,15 +131,51 @@ export async function syncHaproxyTargets(svc = haproxyService()): Promise<boolea
   return changed
 }
 
+/**
+ * Keep every Catalogue HAProxy's metrics allow-list on HyperProx's own addresses. `force` (a targets sync) writes
+ * whatever the last list was; otherwise only a change of HyperProx's addresses since the last pass does anything.
+ * The guest script itself changes nothing when the list is already right.
+ */
+let appliedScrapers: string | null = null
+export async function keepScrapersCurrent(svc = haproxyService(), o: { force?: boolean; addresses?: string[]; log?: (m: string) => void } = {}): Promise<Record<string, string>> {
+  const addrs = o.addresses ?? ownScrapers()
+  const sig = addrs.join(',')
+  if (!o.force && sig === appliedScrapers) return {}
+  const out: Record<string, string> = {}
+  let allOk = true
+  for (const i of (await svc.store.list()).filter(x => x.via === 'catalogue')) {
+    try { out[i.id] = await svc.refreshScrapers(i.id, addrs) } catch (e: any) { allOk = false; out[i.id] = `failed: ${String(e?.message ?? e).slice(0, 200)}`; o.log?.(`[haproxy] ${i.name}: ${out[i.id]}`) }
+  }
+  if (allOk) appliedScrapers = sig
+  return out
+}
+/** For tests. */
+export function resetAppliedScrapers(): void { appliedScrapers = null }
+
 export interface TileRow { id: string; name: string; numbers: ReturnType<typeof tileNumbers> | null; configOk: boolean | null; error: string | null }
 
-export async function allTiles(svc = haproxyService()): Promise<TileRow[]> {
+/**
+ * The gallery card is a viewer's read, and each reading runs a script in the guest: one reading per HAProxy per
+ * 20 seconds at most, however many people (or tabs, or the plug-in switcher) ask; asks in the meantime share it.
+ */
+export const TILE_CACHE_MS = 20_000
+const tileCache = new Map<string, { at: number; row: Promise<TileRow> }>()
+export function resetTileCache(): void { tileCache.clear() }
+
+export async function allTiles(svc = haproxyService(), now: () => number = Date.now): Promise<TileRow[]> {
   const list = await svc.store.list()
-  return Promise.all(list.map(async i => {
-    try {
-      const r: Reading = await svc.reading(i.id)
-      return { id: i.id, name: i.name, numbers: tileNumbers(r), configOk: r.config.ok, error: null }
-    } catch (e: any) { return { id: i.id, name: i.name, numbers: null, configOk: null, error: String(e?.message ?? 'Could not be read.').slice(0, 300) } }
+  for (const id of tileCache.keys()) if (!list.some(i => i.id === id)) tileCache.delete(id)
+  return Promise.all(list.map(i => {
+    const hit = tileCache.get(i.id)
+    if (hit && now() - hit.at < TILE_CACHE_MS) return hit.row
+    const row = (async (): Promise<TileRow> => {
+      try {
+        const r: Reading = await svc.reading(i.id)
+        return { id: i.id, name: i.name, numbers: tileNumbers(r), configOk: r.config.ok, error: null }
+      } catch (e: any) { return { id: i.id, name: i.name, numbers: null, configOk: null, error: String(e?.message ?? 'Could not be read.').slice(0, 300) } }
+    })()
+    tileCache.set(i.id, { at: now(), row })
+    return row
   }))
 }
 
@@ -151,6 +190,21 @@ export function installHaproxyPluginTransport(): void {
 installHaproxyPluginTransport()
 
 /** A background publish's progress, for the page to show (lib/sites runPublish steps). */
-export interface PublishJob { id: string; domain: string; status: 'running' | 'done' | 'failed'; steps: Array<{ id: string; label: string; status: string; detail?: string }>; error?: string; url?: string; owner: string }
+export interface PublishJob {
+  id: string; domain: string; status: 'running' | 'done' | 'failed'; steps: Array<{ id: string; label: string; status: string; detail?: string }>
+  error?: string; url?: string; owner: string; startedAt: number; finishedAt?: number
+  /** What the run made so far (lib/sites PublishLedger); a failed run's clean-up removes exactly these. */
+  ledger: PublishLedger
+  /** What the clean-up after a failure did, one sentence each. */
+  cleanup?: string[]
+}
 export const PUBLISH_JOBS = new Map<string, PublishJob>()
+const PUBLISH_KEEP_MS = 60 * 60_000
+const PUBLISH_MAX = 50
+/** Drops finished publishes older than an hour, and the oldest finished ones past 50; a running one is never dropped. */
+export function prunePublishJobs(now = Date.now(), jobs = PUBLISH_JOBS): void {
+  for (const [id, j] of jobs) if (j.finishedAt && now - j.finishedAt > PUBLISH_KEEP_MS) jobs.delete(id)
+  const done = [...jobs.values()].filter(j => j.status !== 'running').sort((a, b) => a.startedAt - b.startedAt)
+  while (jobs.size > PUBLISH_MAX && done.length) jobs.delete(done.shift()!.id)
+}
 export const newJobId = () => randomUUID()

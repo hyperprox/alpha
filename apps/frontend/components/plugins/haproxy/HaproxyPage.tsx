@@ -228,7 +228,7 @@ function LoadBalancer({ inst, algorithms, onRemoved }: { inst: Instance; algorit
       )}
       {sel && <ServerSheet b={sel.b} s={sel.s} saves={inst.saves} busy={busy} onClose={() => setSel(null)} act={act} />}
       {manage && <BackendSheet b={manage} saves={inst.saves} algorithms={algorithms} busy={busy} onClose={() => setManage(null)} act={act} />}
-      {lb && <LoadBalanceModal inst={inst} algorithms={algorithms} onClose={() => setLb(false)} onDone={m => { setLb(false); setNote({ text: m, ok: true, scope: 'saved' }); void load() }} />}
+      {lb && <LoadBalanceModal inst={inst} algorithms={algorithms} onClose={() => setLb(false)} onDone={(m, ok = true) => { setLb(false); setNote({ text: m, ok, scope: 'saved' }); void load() }} />}
     </div>
   )
 }
@@ -394,14 +394,14 @@ export function LoadBalanceForm({ f, set, guests, zones, proxies, algorithms }: 
   )
 }
 
-function LoadBalanceModal({ inst, algorithms, onClose, onDone }: { inst: Instance; algorithms: Record<string, string>; onClose: () => void; onDone: (m: string) => void }) {
+function LoadBalanceModal({ inst, algorithms, onClose, onDone }: { inst: Instance; algorithms: Record<string, string>; onClose: () => void; onDone: (m: string, ok?: boolean) => void }) {
   const guests = useGuests()
   const [f, setF] = useState<LbForm>({ name: '', guests: [], port: '', hostname: '', algorithm: 'roundrobin', checkPath: '/', publish: false, zone: '', proxyInstanceId: '' })
   const [zones, setZones] = useState<string[]>([])
   const [proxies, setProxies] = useState<Array<{ id: string; name: string }>>([])
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [job, setJob] = useState<{ id: string; steps: Array<{ id: string; label: string; status: string; detail?: string }>; status: string; error?: string } | null>(null)
+  const [job, setJob] = useState<{ id: string; steps: Array<{ id: string; label: string; status: string; detail?: string }>; status: string; error?: string; cleanup?: string[] } | null>(null)
   useEffect(() => {
     if (!f.publish) return
     void apiJson<{ data: Array<{ domain: string }> }>('/api/dns/domains').then(r => setZones(r.ok ? (r.body!.data ?? []).map(d => d.domain) : []))
@@ -417,11 +417,12 @@ function LoadBalanceModal({ inst, algorithms, onClose, onDone }: { inst: Instanc
     if (!window.confirm(`Create the backend for ${f.name} across ${f.guests.length} guests${f.hostname ? ` for ${f.hostname}` : ''}? It is saved to HAProxy's configuration (checked with haproxy -c, then HAProxy reloads).`)) return
     setBusy(true); setErr(null)
     const body = { ...f, guests: f.guests.map(k => { const [kind, vmid] = k.split('-'); return { kind, vmid: Number(vmid) } }), port: Number(f.port), hostname: f.hostname || undefined }
-    const r = await apiJson<{ data: { message: string; publishJob?: string } }>(`${API}/instances/${inst.id}/load-balance`, 'POST', body)
+    const r = await apiJson<{ data: { message: string; publishJob?: string; publishProblem?: string } }>(`${API}/instances/${inst.id}/load-balance`, 'POST', body)
     setBusy(false)
     if (!r.ok) { setErr(r.error ?? 'That did not work.'); return }
     if (r.body!.data.publishJob) setJob({ id: r.body!.data.publishJob, steps: [], status: 'running' })
-    else onDone(r.body!.data.message)
+    // Saved either way; a publish that could not start is said beside it, in the warning colour.
+    else onDone(r.body!.data.message, !r.body!.data.publishProblem)
   }
   return (
     <Modal title="Load-balance an app" onClose={onClose}>
@@ -429,7 +430,7 @@ function LoadBalanceModal({ inst, algorithms, onClose, onDone }: { inst: Instanc
         <div className="flex flex-col gap-2">
           <p className="text-sm" style={{ color: 'var(--good)' }}>HAProxy is balancing it. Publishing the name:</p>
           <ul className="text-sm" style={{ color: 'var(--text-soft)' }}>{job.steps.map(s => <li key={s.id}>{s.status === 'done' ? '✓' : s.status === 'failed' ? '✗' : s.status === 'running' ? '…' : '·'} {s.label}{s.detail ? `: ${s.detail}` : ''}</li>)}</ul>
-          {job.status === 'failed' && <Notice kind="error">{job.error}</Notice>}
+          {job.status === 'failed' && <Notice kind="error">{job.error}{job.cleanup?.length ? ` ${job.cleanup.join(' ')}` : ''} HAProxy keeps balancing the app on its own address.</Notice>}
           {job.status !== 'running' && <div className="flex justify-end"><PrimaryButton type="button" onClick={() => onDone(job.status === 'done' ? 'Balanced and published.' : 'Balanced; publishing the name did not finish (see above).')}>Close</PrimaryButton></div>}
         </div>
       ) : (

@@ -16,7 +16,7 @@
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { actorOf } from '../lib/http/request-actor'
 import { sendRefusal } from '../lib/failure'
-import { haproxyService, syncHaproxyTargets, PUBLISH_JOBS, newJobId, type PublishJob } from '../lib/haproxy'
+import { haproxyService, syncHaproxyTargets, PUBLISH_JOBS, newJobId, prunePublishJobs, type PublishJob } from '../lib/haproxy'
 import { HaproxyRefusal } from '../lib/haproxy/service'
 import { RuntimeRefusal } from '../lib/haproxy/runtime'
 import { ALGORITHMS } from '../lib/haproxy/dataplane'
@@ -64,7 +64,7 @@ export const haproxyRoutes: FastifyPluginAsync = async (fastify) => {
       const actor = actorOf(req)
       let publish: ((ip: string) => Promise<{ jobId: string }>) | undefined
       if (body.publish === true) {
-        const { planPublish, realPublishDeps, runPublish, PUBLISH_STEPS } = await import('../lib/sites')
+        const { planPublish, realPublishDeps, runPublish, cleanupPublish, PUBLISH_STEPS } = await import('../lib/sites')
         const host = String(body.hostname ?? '').trim().toLowerCase()
         const zone = String(body.zone ?? '').trim().toLowerCase()
         if (!host || !zone || !(host === zone || host.endsWith(`.${zone}`))) return sendRefusal(reply, 400, 'bad_input', 'The public name must be in the domain you picked, such as app.example.com in example.com.')
@@ -76,13 +76,21 @@ export const haproxyRoutes: FastifyPluginAsync = async (fastify) => {
         // The public check asks for the app's own page through HAProxy, not HAProxy's "no server" page.
         const lbRecipe = { ...recipe, port: 80, healthPath: '/', expectStatus: [200, 301, 302, 401, 403], healthBody: undefined }
         publish = async ip => {
-          const job: PublishJob = { id: newJobId(), domain: plan.domain, status: 'running', owner: actor.email,
+          prunePublishJobs()
+          const job: PublishJob = { id: newJobId(), domain: plan.domain, status: 'running', owner: actor.email, startedAt: Date.now(), ledger: {},
             steps: PUBLISH_STEPS.map(s => ({ id: s.id, label: s.label, status: 'pending' })) }
           PUBLISH_JOBS.set(job.id, job)
           const step = (id: string) => { const s = job.steps.find(x => x.id === id)!; for (const x of job.steps) if (x.status === 'running') x.status = 'done'; s.status = 'running'; return s }
-          void runPublish(plan, lbRecipe, ip, actor.email, {}, { step, save: () => {} }, deps)
-            .then(url => { job.status = 'done'; job.url = url; for (const x of job.steps) if (x.status === 'running') x.status = 'done' })
-            .catch((e: any) => { job.status = 'failed'; job.error = String(e?.message ?? e).slice(0, 400); for (const x of job.steps) if (x.status === 'running') { x.status = 'failed'; x.detail = job.error } })
+          void runPublish(plan, lbRecipe, ip, actor.email, job.ledger, { step, save: () => {} }, deps)
+            .then(url => { job.status = 'done'; job.url = url; job.finishedAt = Date.now(); for (const x of job.steps) if (x.status === 'running') x.status = 'done' })
+            .catch(async (e: any) => {
+              job.error = String(e?.message ?? e).slice(0, 400)
+              for (const x of job.steps) if (x.status === 'running') { x.status = 'failed'; x.detail = job.error }
+              // What this run made (proxy host, DNS record) is removed again, so a failed publish leaves nothing half-made.
+              // HAProxy's backend and rule stay: they were saved and work on their own.
+              job.cleanup = await cleanupPublish(job.ledger, actor.email, deps).catch((c: any) => [`Clean-up failed: ${String(c?.message ?? c).slice(0, 200)}`])
+              job.status = 'failed'; job.finishedAt = Date.now()
+            })
           return { jobId: job.id }
         }
       }
