@@ -24,15 +24,13 @@ import { NcInstanceStore } from './instances'
 import { NextcloudService, type GuestRow, type ServiceDeps } from './service'
 import { ocsClient } from './ocs'
 import { prismaJobStore } from './jobs'
-import { sharedServiceScan } from '../service-scan'
-import { wizardStore } from '../catalogue-store'
-import { installStillOwns } from '../auto-connect/core'
 import { publish } from '../notify'
 import type { GuestRef, NcMeta } from './types'
 import { registerComposeOwner } from '../compose-owners'
 import { machineId } from '../guest-id'
 import { listGuests } from '../pve/guests'
 import { runningBackups } from '../pve/tasks'
+import { sightingsOf } from '../catalogue/sightings'
 
 /**
  * The guests, each marked `ignored` when HyperProx must leave it alone. `excluded`: Remote access's list, or null when
@@ -71,20 +69,14 @@ export async function snapshotNote(g: GuestRef): Promise<string | null> {
  * address, and the Catalogue's finished Nextcloud installs. Auto-connect detects in each (read-only) before adding it.
  */
 export async function sightings(): Promise<Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null; ip?: string | null }>> {
-  const out: Array<{ guest: GuestRef; url: string | null; via: string; admin?: string | null; ip?: string | null }> = []
-  const scan = await sharedServiceScan().result(false)
-  for (const f of scan.findings) if (f.key === 'nextcloud' && f.guest) out.push({ guest: { kind: f.guest.type, vmid: Number(f.guest.vmid) }, url: f.address, via: 'scan', ip: f.host })
-  const rows = await guestRows().catch(() => [] as GuestRow[])
-  for (const r of await wizardStore().list('job').catch(() => [])) {
-    const j: any = r.data
-    // A VMID reused by another guest since the install: not this Nextcloud any more.
-    if (j?.recipeId === 'nextcloud' && !installStillOwns(j, rows.find(g => g.kind === 'lxc' && g.vmid === Number(j.vmid)))) continue
-    // The Catalogue makes containers.
-    if (j?.recipeId === 'nextcloud' && j.status === 'completed' && Number(j.vmid) >= 100) out.push({ guest: { kind: 'lxc', vmid: Number(j.vmid) }, url: typeof j.url === 'string' ? j.url : null, via: 'catalogue', ip: typeof j.ip === 'string' ? j.ip.split('/')[0] : null,
-      // The admin the installer made (its name only; its password stays in the vault and is never used here).
-      admin: typeof j.adminCredential?.user === 'string' ? j.adminCredential.user : null })
-  }
-  return out
+  const { scan, catalogue } = await sightingsOf('nextcloud', 'nextcloud', {
+    guests: async () => (await guestRows().catch(() => [] as GuestRow[])).filter(g => g.kind === 'lxc'),
+    minVmid: 100,
+  })
+  return [
+    ...scan.map(s => ({ guest: { kind: s.guest.type, vmid: s.guest.vmid }, url: s.url, via: 'scan', ip: s.ip })),
+    ...catalogue.map(s => ({ guest: { kind: 'lxc' as const, vmid: s.guest.vmid }, url: s.url, via: 'catalogue', ip: s.ip, admin: s.admin })),
+  ]
 }
 
 /**

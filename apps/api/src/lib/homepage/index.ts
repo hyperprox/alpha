@@ -19,12 +19,12 @@ import { sharedServiceScan } from '../service-scan'
 import { configAddresses, liveAddresses } from '../wizard-placement'
 import { isProbeAddress } from '@hyperprox/hardware/service-probes'
 import { listSites } from '../sites'
-import { installStillOwns } from '../auto-connect/core'
 import { buildInventory, type InventorySources, type RawPlugin } from './inventory'
 import { HomepageService, type HomepageDeps, type HomepageInstance, type RecordStore } from './service'
 import type { Inventory } from './types'
 import { appLog } from '../log-once'
 import { listGuests } from '../pve/guests'
+import { sightingsOf } from '../catalogue/sightings'
 
 export { HomepageService, HomepageRefusal } from './service'
 export type { HomepageInstance, Actor, Plan, Problem } from './service'
@@ -135,12 +135,10 @@ async function inventory(refresh: boolean): Promise<Inventory> {
 async function sightings(): Promise<Array<{ vmid: number; url: string | null; via: 'catalogue' | 'scan' | 'marker' | 'proxy' }>> {
   const out: Array<{ vmid: number; url: string | null; via: 'catalogue' | 'scan' | 'marker' | 'proxy' }> = []
   const all = await listGuests(homePve(), { strict: false }).catch(() => [])
-  const jobs = (await wizardStore().list('job').catch(() => [])).map(r => r.data).filter((j: any) => j?.recipeId === 'homepage' && j.status === 'completed' && j.vmid)
-  // A VMID reused by another guest since the install is not this Homepage any more.
-  for (const j of jobs) if (installStillOwns(j, all.find(g => g.vmid === Number(j.vmid))?.raw)) out.push({ vmid: Number(j.vmid), url: j.url ?? null, via: 'catalogue' })
-  for (const f of (await sharedServiceScan().result(false).catch(() => ({ findings: [] as any[] }))).findings) {
-    if (f.key === 'homepage' && f.guest) out.push({ vmid: Number(f.guest.vmid), url: f.address, via: 'scan' })
-  }
+  // Catalogue installs (a guest reused since is not this Homepage), then the shared scan; a scan that fails sees nothing.
+  const seen = await sightingsOf('homepage', 'homepage', { guests: async () => all.map(g => g.raw), minVmid: 1, ignoreScanFailure: true })
+  for (const s of seen.catalogue) out.push({ vmid: s.guest.vmid, url: s.url, via: 'catalogue' })
+  for (const s of seen.scan) out.push({ vmid: s.guest.vmid, url: s.url, via: 'scan' })
   const det = await lazy.detected(false).catch(() => null)
   for (const r of det?.apps?.homepage ?? []) if (r.guest) out.push({ vmid: Number(r.guest.vmid), url: r.publicUrl ?? r.url ?? null, via: r.publicUrl ? 'proxy' : 'scan' })
   // A container the Catalogue made says so in its notes, even after its install record has been pruned.

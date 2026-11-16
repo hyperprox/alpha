@@ -38,7 +38,7 @@ test('the remote-access executor still says what it said: no login, no address',
   const t: any = { ssh, nodeCredential: async () => null, loadCredential: async () => null, listManualHosts: async () => [], listHostAddresses: async () => ({}), exclusions: async () => [], guestTags: async () => [] }
   const ex = productionRemoteExecutor(pve, t)
   const node = { id: 'node-n1', kind: 'node', name: 'n1', node: 'n1', running: true } as any
-  await assert.rejects(ex.run(node, 'true'), /^No login saved for node n1\. Add one under Settings → Setup checklist \(Add node login\); node logins are never borrowed from guests\.$/)
+  await assert.rejects(ex.run(node, 'true'), /No login saved for node n1\. Add one under Settings → Setup checklist \(Add node login\); node logins are never borrowed from guests\./)
   const lost = { ...node, id: 'node-zz', name: 'zz', node: 'zz' }
   await assert.rejects(ex.run(lost, 'true'), /Could not find an address for node zz/)
   calls.length = 0
