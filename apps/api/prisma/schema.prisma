@@ -740,3 +740,24 @@ model PluginJob {
   @@index([plugin, instanceId])
   @@index([state])
 }
+
+// --- Arr Stack: give up after X tries -------------------------------------------
+// Sonarr, Radarr and Lidarr keep no count of how often they searched for something: HyperProx counts for them
+// (lib/arr-giveup). One row per tracked missing item, the Track as JSON; settings and bookmarks by id.
+
+model ArrGiveUpItem {
+  key       String   @id
+  app       String
+  state     String
+  data      Json     @default("{}")
+  updatedAt DateTime @updatedAt
+
+  @@index([app, state])
+}
+
+model ArrGiveUpSetting {
+  id        String   @id
+  data      Json     @default("{}")
+  updatedBy String   @default("")
+  updatedAt DateTime @updatedAt
+}

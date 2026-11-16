@@ -49,6 +49,11 @@
 //                         skips while locked).
 //   12. placement         Load balancing's scheduler: one pass, then every
 //                         minute (a pass does nothing while locked).
+//   13. arr-give-up       The Arr Stack's "give up after X tries" timer
+//                         (lib/arr-giveup): reads the try counts every few
+//                         hours and acts once a day where it is switched on
+//                         (a tick does nothing while locked). Only with the
+//                         database, where the counts live.
 //
 //  On close, everything started here is stopped, in reverse.
 //
@@ -81,12 +86,13 @@ import { UpdatesRuntime, setUpdatesRuntime } from '../updates/runtime'
 import { broadcast } from '../updates/broadcast'
 import { jobLog, type LogLike } from '../log-once'
 import { removedGuests } from '../removed-guests'
+import { giveUpService, startGiveUpTimer } from '../arr-giveup/production'
 
 /** The steps, by name, in the order they run (the list above). */
 export type BootStep =
   | 'exclusions' | 'compose-owners' | 'dismissed' | 'updates' | 'install-hook'
   | 'nextcloud' | 'homepage' | 'auto-connect' | 'removed-guests'
-  | 'updates-recover' | 'updates-timers' | 'placement'
+  | 'updates-recover' | 'updates-timers' | 'placement' | 'arr-give-up'
 
 /**
  * What is built. Production leaves every field out; a test passes fakes (with the same start methods) to boot the
@@ -107,6 +113,8 @@ export interface BootstrapDeps {
   autoConnect?: { start(onUnlock: (cb: () => void) => void): () => void }
   placement?: { start(): Promise<() => void> }
   removedGuests?: { start(onUnlock: (cb: () => void) => void): () => void }
+  /** The Arr Stack give-up timer. Default: the real one, with the database; null: none. */
+  arrGiveUp?: { start(): () => void } | null
   /** Registers a callback for every unlock. Default: the vault's. */
   onUnlock?: (cb: () => void) => void
 }
@@ -194,7 +202,8 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
   steps.push('removed-guests')
   stops.push((deps.removedGuests ?? removedGuests(prisma, deps.log)).start(cb => unlock(() => cb())))
 
-  // 10–12. When the server is ready, as the routes did it: Updates' recovery, then its timers, then load balancing.
+  // 10–13. When the server is ready, as the routes did it: Updates' recovery, then its timers, then load balancing, then the
+  // Arr Stack's give-up timer.
   const u = updates
   app.addHook('onReady', async () => {
     steps.push('updates-recover')
@@ -204,6 +213,10 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
     steps.push('placement')
     const stopPlacement = await (deps.placement ?? placementService(prisma, deps.log)).start().catch(() => null)
     if (stopPlacement) stops.push(stopPlacement)
+    steps.push('arr-give-up')
+    const giveUp = deps.arrGiveUp !== undefined ? deps.arrGiveUp
+      : prisma ? { start: () => startGiveUpTimer(giveUpService(prisma, m => log(m, 'warn')), m => log(m, 'warn')) } : null
+    if (giveUp) stops.push(giveUp.start())
   })
 
   app.addHook('onClose', async () => {

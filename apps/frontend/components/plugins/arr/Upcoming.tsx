@@ -7,14 +7,18 @@
 //  Everything comes from the API (routes/arr-upcoming.ts), which groups by day
 //  in this browser's time zone and cross-references the download queue. Posters
 //  are HyperProx paths, fetched by the API with the stored key: no Sonarr or
-//  Radarr address or key is ever in this page. Read-only throughout.
+//  Radarr address or key is ever in this page. The schedule is read-only; under it, "give up after X tries"
+//  (GiveUp.tsx), and for an admin a "See what's available" button on each missing item.
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
-import { apiJson } from '@/lib/api'
+import { apiJson, atLeast } from '@/lib/api'
 import { Cols, Panel, Pill, styles as s } from '@/components/visual/kit'
 import { Poster } from '@/components/plugins/visual/views'
 import c from './upcoming.module.css'
+import { ArrGiveUp, ReleasesDialog } from './GiveUp'
+import { missingTarget, type App } from './giveup-view'
+import { useSession } from '@/lib/session'
 
 type Status = 'have' | 'downloading' | 'waiting' | 'upcoming'
 interface Item {
@@ -25,7 +29,7 @@ interface Item {
   when: string; status: Status; statusText: string; progress?: number; art: string | null
 }
 interface Group { key: string; label: string; items: Item[] }
-interface Missing { total: number; items: Array<{ id: string; title: string; detail: string; date: string | null }>; approximate?: boolean }
+interface Missing { total: number; items: Array<{ id: string; title: string; detail: string; date: string | null }>; approximate?: boolean; givenUp?: number }
 interface Data {
   at: number; tz: string; days: number
   services: { sonarr: { ok: boolean; error?: string }; radarr: { ok: boolean; error?: string }; lidarr?: { ok: boolean; error?: string } }
@@ -50,6 +54,9 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
   const [days, setDays] = useState<number>(14)
   const [data, setData] = useState<Data | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { role } = useSession()
+  const canAct = atLeast(role, 'admin')
+  const [look, setLook] = useState<{ target: string; app: App; title: string } | null>(null)
 
   useEffect(() => {
     setShow(remembered('hp.arr.up.show', ['both', 'tv', 'film', 'music'] as const, 'both'))
@@ -132,15 +139,21 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
           <Cols>
             {([['TV', data.missing.sonarr], ['Films', data.missing.radarr], ['Music', data.missing.lidarr ?? null]] as const).map(([label, m]) => m && (
               <div key={label} className={c.miss}>
-                <h3 className={c.missHead}>{label} <small>{m.approximate ? `${m.total}+` : m.total} overdue</small></h3>
+                <h3 className={c.missHead}>{label} <small>{m.approximate ? `${m.total}+` : m.total} missing{m.givenUp !== undefined ? ` / ${m.givenUp} given up` : ''}</small></h3>
                 {m.items.length === 0 ? <p className={s.empty}>Nothing overdue.</p> : (
                   <ul className={c.missList}>
-                    {m.items.map(r => (
-                      <li key={r.id}>
-                        <b>{r.title}</b>
-                        <span>{[r.detail, r.date].filter(Boolean).join(' · ')}</span>
-                      </li>
-                    ))}
+                    {m.items.map(r => {
+                      const target = missingTarget(r.id)
+                      return (
+                        <li key={r.id}>
+                          <b>{r.title}</b>
+                          <span>{[r.detail, r.date].filter(Boolean).join(' · ')}</span>
+                          {canAct && target && (
+                            <button type="button" className={c.link} onClick={() => setLook({ target, app: target.split(':')[0] as App, title: `${r.title} ${r.detail}` })}>See what&apos;s available</button>
+                          )}
+                        </li>
+                      )
+                    })}
                   </ul>
                 )}
                 {m.total > m.items.length && <p className={c.note}>Top {m.items.length} of {m.total}.</p>}
@@ -149,6 +162,9 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
           </Cols>
         </Panel>
       )}
+
+      <ArrGiveUp onChanged={() => void load()} />
+      {look && <ReleasesDialog target={look.target} app={look.app} title={look.title} onClose={() => setLook(null)} />}
     </>
   )
 }

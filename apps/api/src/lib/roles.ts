@@ -93,6 +93,9 @@ export function bypassesLock(path: string): boolean {
 // an import and moving a torrent to the top of qBittorrent's queue. Admin for every action (the default for a POST),
 // previews and the follow-up check included. No master password (nothing permanent is lost: library files are never
 // touched), and refused to API tokens by name (lib/api-tokens.ts tokenForbidden).
+// Arr Stack give-up (routes/arr-giveup.ts): the rules and the given-up list are a read (viewer). Every POST is admin
+// (the default): previews, saving a rule, try again, "See what's available" (it makes the arr search its indexers) and
+// downloading a release. Refused to API tokens by name too. No master password: no file is ever deleted.
 
 // Guest power actions. Both route families exist: /api/infra (infrastructure.ts)
 // and /api/proxmox (proxmox.ts).

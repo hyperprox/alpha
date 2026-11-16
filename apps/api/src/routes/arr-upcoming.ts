@@ -4,7 +4,8 @@
 //  Roles (lib/roles.ts): both are GETs, so viewer, like the Arr Stack page itself.
 //    GET /upcoming?days=7|14|30|60&tz=<IANA zone>
 //                  what Sonarr, Radarr and (when set up) Lidarr expect to grab soon, grouped by day in the caller's zone, plus the
-//                  "Missing, searching" strip. Read-only. One shared reading per range for 45 s.
+//                  "Missing, searching" strip, each with how many the "give up after X tries" rule has stopped
+//                  searching for (lib/arr-giveup). Read-only. One shared reading per range for 45 s.
 //    GET /art/:app/:id
 //                  one poster, fetched server-side with the stored key (lib/arr-upcoming/art.ts): two checked
 //                  parts in, a fixed upstream path out; at most 4 MB, cached, 120 cache misses a minute per person.
@@ -17,6 +18,7 @@ import { findPlugin } from '../plugins'
 import { pluginEndpointClient, type CoreEndpointClient } from '../lib/plugin-host'
 import { ArtCache, MissLimiter } from '../lib/plex-art'
 import { arrArtKey, arrArtUpstream } from '../lib/arr-upcoming/art'
+import { currentGiveUpService } from '../lib/arr-giveup/production'
 import {
   addDays, dayKey, filmItems, groupItems, lidarrMissing, musicItems, queueIndex, radarrMissing, sonarrMissing, tonightCount, tvItems, validZone,
   type MissingStrip, type UpcomingGroup, type UpcomingItem,
@@ -42,7 +44,11 @@ export interface UpcomingData {
 
 const msg = (e: any) => String(e?.message ?? e).slice(0, 160)
 
-export async function readUpcoming(deps: { sonarr: CoreEndpointClient | null; radarr: CoreEndpointClient | null; lidarr?: CoreEndpointClient | null; now: number; tz: string; days: number }): Promise<UpcomingData> {
+export async function readUpcoming(deps: {
+  sonarr: CoreEndpointClient | null; radarr: CoreEndpointClient | null; lidarr?: CoreEndpointClient | null; now: number; tz: string; days: number
+  /** Given-up counts per app (lib/arr-giveup); left out, the strips carry none. */
+  givenUp?: () => Promise<{ sonarr: number; radarr: number; lidarr: number }>
+}): Promise<UpcomingData> {
   const { now, tz, days } = deps
   const today = dayKey(now, tz)
   const end = addDays(today, days)
@@ -93,6 +99,9 @@ export async function readUpcoming(deps: { sonarr: CoreEndpointClient | null; ra
     })(),
   ])
 
+  const given = deps.givenUp ? await deps.givenUp().catch(() => null) : null
+  if (given) for (const k of ['sonarr', 'radarr', 'lidarr'] as const) { const m = missing[k]; if (m) m.givenUp = given[k] }
+
   return {
     at: now, tz, days, services: lidarrState ? { ...services, lidarr: lidarrState } : services, missing,
     groups: groupItems(items, now, tz),
@@ -107,6 +116,7 @@ export async function readUpcoming(deps: { sonarr: CoreEndpointClient | null; ra
 export function buildArrUpcomingRoutes(deps: {
   sonarr?: () => Promise<CoreEndpointClient | null>; radarr?: () => Promise<CoreEndpointClient | null>; lidarr?: () => Promise<CoreEndpointClient | null>
   cache?: ArtCache; limiter?: MissLimiter; now?: () => number; ttlMs?: number
+  givenUp?: () => Promise<{ sonarr: number; radarr: number; lidarr: number }>
 } = {}): FastifyPluginAsync {
   const sonarr = deps.sonarr ?? (() => arrClient('default'))
   const radarr = deps.radarr ?? (() => arrClient('radarr'))
@@ -115,6 +125,7 @@ export function buildArrUpcomingRoutes(deps: {
   const cache = deps.cache ?? new ArtCache()
   const limiter = deps.limiter ?? new MissLimiter()
   const ttl = deps.ttlMs ?? 45_000
+  const givenUp = deps.givenUp ?? (async () => { const s = currentGiveUpService(); if (!s) throw new Error('not ready'); return s.givenUpCounts() })
   // One reading per (zone, range), shared by everyone, so a few open pages cost Sonarr and Radarr one read a minute.
   const memo = new Map<string, { at: number; p: Promise<UpcomingData> }>()
 
@@ -124,7 +135,7 @@ export function buildArrUpcomingRoutes(deps: {
       const key = `${tz}|${days}`, t = now()
       let m = memo.get(key)
       if (!m || t - m.at > ttl) {
-        const p = (async () => readUpcoming({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), lidarr: await lidarr().catch(() => null), now: t, tz, days }))()
+        const p = (async () => readUpcoming({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), lidarr: await lidarr().catch(() => null), now: t, tz, days, givenUp }))()
         m = { at: t, p }
         memo.set(key, m)
         if (memo.size > 40) memo.delete(memo.keys().next().value as string)

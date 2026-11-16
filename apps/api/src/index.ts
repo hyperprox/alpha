@@ -42,6 +42,7 @@ import { asusRoutes }           from './routes/asus'
 import { plexClearoutRoutes }   from './routes/plex-clearout'
 import { arrUpcomingRoutes }    from './routes/arr-upcoming'
 import { arrQueueRoutes }       from './routes/arr-queue'
+import { arrGiveUpRoutes }      from './routes/arr-giveup'
 import { plexSigninRoutes }     from './routes/plex-signin'
 import { pbsRoutes }            from './routes/pbs'
 import { nextcloudRoutes }      from './routes/nextcloud'
@@ -202,6 +203,7 @@ async function main() {
   await server.register(plexClearoutRoutes,    { prefix: '/api/plugins/plex' })
   await server.register(arrUpcomingRoutes,     { prefix: '/api/plugins/arrstack' })
   await server.register(arrQueueRoutes,        { prefix: '/api/plugins/arrstack' })
+  await server.register(arrGiveUpRoutes,       { prefix: '/api/plugins/arrstack' })
   await server.register(plexSigninRoutes,      { prefix: '/api/plugins/plex/signin' })
   await server.register(pbsRoutes,             { prefix: '/api/plugins/pbs' })
   await server.register(nextcloudRoutes,       { prefix: '/api/plugins/nextcloud' })
