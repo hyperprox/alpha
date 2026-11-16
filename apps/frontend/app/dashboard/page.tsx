@@ -914,7 +914,7 @@ function ServicesPanel({ services }: { services: SlowData['services'] }) {
               {sub&&<div className="text-xs font-mono text-gray-500 truncate" title={sub}>{sub}</div>}
             </div>
             {up&&details.length>0&&(
-              <div className="grid grid-cols-5 gap-1 w-full order-last pl-5">
+              <div className="grid grid-cols-3 gap-x-2 gap-y-2 w-full order-last pl-5">
                 {details.map(d=>(
                   <div key={d.label} className="text-center">
                     <div className="text-xs font-mono font-bold" style={{color:d.color}}>{d.value}</div>
