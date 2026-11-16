@@ -2,6 +2,7 @@
 
 
 
+import { RemovedGuestsNotice } from '@/components/removed-guests/RemovedGuestsNotice'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { CommandCenterIfRemotes } from '@/components/clusters/CommandCenter'
 import Link from 'next/link'
@@ -879,6 +880,9 @@ export default function DashboardView() {
 
       {/* Every cluster side by side, once a remote server has been added (nothing shows with none). */}
       <CommandCenterIfRemotes/>
+
+      {/* Guests removed from Proxmox that HyperProx still holds records for (admins; nothing shows with none). */}
+      <RemovedGuestsNotice/>
 
       <Cols>
         <StoragePanel storage={fast.storage}/>

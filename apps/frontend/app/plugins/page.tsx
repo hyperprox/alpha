@@ -17,6 +17,8 @@ import { Page, HudHeader, Panel, styles } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { PlexSignIn } from '@/components/plugins/plex/SignIn'
 import { AutoConnectPanel } from '@/components/plugins/AutoConnect'
+import { RemovedGuestsNotice } from '@/components/removed-guests/RemovedGuestsNotice'
+import { DisconnectPlugin } from '@/components/plugins/DisconnectPlugin'
 import { LOCAL_PLUGINS } from '@local-plugins'
 
 interface PluginSetting {
@@ -161,10 +163,12 @@ function LidarrTest({ plugin }: { plugin: PluginCard }) {
   )
 }
 
-function SettingsDialog({ plugin, onSave, onClose, known, onSignedIn }: {
+function SettingsDialog({ plugin, onSave, onClose, known, onSignedIn, onDisconnect }: {
   plugin: PluginCard
   onSave: (values: Record<string, string>) => void
   onClose: () => void
+  /** Disconnect: forget every setting (null when it worked, else the error). */
+  onDisconnect?: () => Promise<string | null>
   /** Plex: an address Scan for services found, to preselect in Sign in with Plex. */
   known?: string | null
   /** Plex: Sign in with Plex saved the server. */
@@ -233,6 +237,7 @@ function SettingsDialog({ plugin, onSave, onClose, known, onSignedIn }: {
         </div>
 
         {plugin.id === 'arrstack' && <LidarrTest plugin={plugin} />}
+        {onDisconnect && <DisconnectPlugin plugin={plugin} onDisconnect={onDisconnect} />}
         <div className="flex justify-end gap-2 border-t px-6 py-4" style={{ borderColor: BORDER }}>
           <button type="button" onClick={onClose}
             className={styles.btn}>Cancel</button>
@@ -399,6 +404,17 @@ export default function PluginsPage() {
     readOne(p.id)
   }
 
+  // Disconnect (the plug-in's settings): the master password again when asked, then the list read afresh.
+  const disconnect = async (p: PluginCard): Promise<string | null> => {
+    const res = await fetch(`/api/plugins/${p.id}/settings`, { method: 'DELETE' }).then(r => r.json()).catch(() => null)
+    if (res?.code === 'reconfirm_required') { setReconfirm(() => () => { void disconnect(p).then(e => { if (e) setNotice(e) }) }); return null }
+    if (!res?.success) return res?.error ?? `${p.name} was not disconnected.`
+    setEditing(null)
+    setNotice(`${p.name} is disconnected: its settings and keys are gone, and HyperProx will not add it back by itself.`)
+    await load()
+    return null
+  }
+
   return (
     <Page>
       <HudHeader level={2} icon="plugin" eyebrow={loading ? 'loading…' : `${configuredCount} of ${plugins.length} configured`} label="Plug-ins overview"
@@ -426,6 +442,7 @@ export default function PluginsPage() {
         </div>
       )}
 
+        <RemovedGuestsNotice/>
         <div id="auto-connect"><AutoConnectPanel plugins={['unmanic', 'arrstack', 'plex', 'homepage', 'nextcloud']} onChanged={() => { void load(); void loadAuto() }} /></div>
 
         {findings && findings.length > 0 && (
@@ -587,7 +604,7 @@ export default function PluginsPage() {
         )}
 
       {editing && (
-        <SettingsDialog plugin={editing} onSave={v => void save(v)} onClose={() => setEditing(null)}
+        <SettingsDialog plugin={editing} onSave={v => void save(v)} onClose={() => setEditing(null)} onDisconnect={() => disconnect(editing)}
           known={findings?.find(f => f.pluginId === 'plex' && f.setting === 'plex_url')?.address ?? null}
           onSignedIn={async r => {
             setEditing(null)
