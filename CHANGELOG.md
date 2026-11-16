@@ -21,6 +21,22 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-16 — K3s (Kubernetes) in the Catalogue, with its own plug-in
+
+### New
+- **Install K3s from the Catalogue.** A lightweight Kubernetes server in its own container, pinned to a checked release, with its built-in ingress, load balancer, storage and metrics. It finishes connected: there is nothing to copy or paste.
+  - Technical: recipes `k3s` and `k3s-agent` (`lib/k3s/recipe.ts`), K3s v1.37.1+k3s1; the release binary (amd64/arm64) and the tagged `install.sh` are checked against pinned SHA-256 values, then `INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_VERSION=…`. Setup `k3s` in `lib/catalogue-installer.ts` runs `lib/k3s/catalogue.ts`: keyctl from the node (read back), the admin kubeconfig and node token read in the guest into the vault, then the plug-in connected.
+- **It stays an unprivileged container.** HyperProx does not use the privileged, AppArmor-off setup most guides use; it was tested working on Proxmox 9 with Debian 13 without it.
+  - Technical: `features: nesting=1,keyctl=1`, kubelet `KubeletInUserNamespace`, kube-proxy `conntrack-max-per-core=0`, flannel `host-gw`. No raw `lxc.*` lines, no `/dev/kmsg` bind.
+- **Add agents on other nodes.** The finished install offers another worker; the wizard fills in the server, takes the join token from the vault, and recommends a Proxmox node that does not run this cluster yet.
+  - Technical: `spreadWith` on a recipe makes placement count against nodes that already hold a guest of those recipes (`spreadNodes`, `PLACEMENT.spreadPenalty`); the agent preview refuses a server HyperProx does not look after or whose join token is not in the vault; the token reaches the guest only in the root-only script and `config.yaml` (`export -n`).
+- **A K3s plug-in.** Each cluster's nodes with CPU and memory, the pods in trouble with the reason and their last log lines, workloads with ready against desired, warning events, ingresses and services with their addresses, and whether a newer K3s is out.
+  - Technical: `plugins/k3s.ts` (core transport), `lib/k3s/` (parse, transport pinned to the cluster's own CA, service, instances), `routes/k3s.ts` under `/api/plugins/k3s`, page `components/plugins/k3s/`. Reads use the `hyperprox-reader` service account (no secrets or config maps; checked before the cluster is kept).
+- **Every problem it shows has a fix.** Roll back a bad image, restart or delete a crashing pod, scale, cordon, uncordon and drain a node (it shows first what moves, what stays and what would be lost), and read the logs. Admins only, with the master password, confirmed in words and written to the audit log.
+  - Technical: actions use a second account, `hyperprox-operator`, limited to patching workloads and their scale, deleting pods, evictions and patching nodes; each target is read again before the action; roles in `lib/roles.ts` (`K3S_ADMIN_READ`, `K3S_RECONFIRM`).
+- **K3s it finds connects by itself.** The service scan now recognises a Kubernetes API, and HyperProx connects a K3s server it finds on your guests. It asks for a kubeconfig only when it finds an API but no K3s login it may read.
+  - Technical: probe `k3s` (port 6443, a 401 `Status`) in `service-probes.js`; auto-connect adapter `k3s` reads `/etc/rancher/k3s/k3s.yaml` through the guarded executor, never in a guest that must be left alone; the Catalogue page opens a recipe's wizard from `?recipe=`.
+
 ## 2026-11-16 — Arr Stack: give up after X tries, and see what is available
 
 ### New
