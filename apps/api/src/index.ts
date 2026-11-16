@@ -47,6 +47,7 @@ import { plexSigninRoutes }     from './routes/plex-signin'
 import { pbsRoutes }            from './routes/pbs'
 import { nextcloudRoutes }      from './routes/nextcloud'
 import { haproxyRoutes }        from './routes/haproxy'
+import { k3sRoutes }            from './routes/k3s'
 import { homepageRoutes }       from './routes/homepage'
 import { webProxyRoutes }       from './routes/webproxy'
 import { fwdProxyRoutes }       from './routes/fwdproxy'
@@ -208,6 +209,7 @@ async function main() {
   await server.register(pbsRoutes,             { prefix: '/api/plugins/pbs' })
   await server.register(nextcloudRoutes,       { prefix: '/api/plugins/nextcloud' })
   await server.register(haproxyRoutes,         { prefix: '/api/plugins/haproxy' })
+  await server.register(k3sRoutes,             { prefix: '/api/plugins/k3s' })
   await server.register(homepageRoutes,        { prefix: '/api/plugins/homepage' })
   for (const kind of ['nginx', 'caddy', 'envoy'] as const) await server.register(webProxyRoutes(kind), { prefix: `/api/plugins/${kind}` })
   await server.register(fwdProxyRoutes,        { prefix: '/api/plugins/3proxy' })

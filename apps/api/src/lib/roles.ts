@@ -208,6 +208,12 @@ const PBS_MANAGE_RECONFIRM = /^\/api\/plugins\/pbs\/instances\/[^/]+\/manage(\/(
 // work, enforcing 2FA, mail) change much more: those are re-confirmed, which keeps API tokens out too, as is
 // "stop watching" a job (it lets a deploy restart HyperProx under work that may still be running).
 const NEXTCLOUD_ADMIN_READ = /^\/api\/plugins\/nextcloud\/(candidates|instances\/[^/]+\/(two-factor|jobs\/[^/]+))$/
+// K3s (routes/k3s.ts). The cluster list and a reading are viewer (trimmed below admin: no address, no log lines). Pod
+// logs are admin, though a read (they hold whatever an app printed); the drain preview is admin (the POST default) and only
+// reads. Connecting, renaming or removing a cluster stores or deletes its credentials, and every action changes the
+// cluster: those are re-confirmed, which keeps API tokens out too.
+const K3S_ADMIN_READ = /^\/api\/plugins\/k3s\/(waiting|clusters\/[^/]+\/logs)$/
+const K3S_RECONFIRM = /^\/api\/plugins\/k3s\/clusters(\/[^/]+(\/actions\/[^/]+)?)?$/
 const NEXTCLOUD_RECONFIRM = /^\/api\/plugins\/nextcloud\/instances(\/[^/]+(\/secure-actions\/[^/]+|\/jobs\/[^/]+\/stop-watching)?)?$/
 // Homepage (routes/homepage.ts): admin for every method, reads included (the preview maps every LAN address); its
 // gallery card (/api/plugins/homepage/data, the generic plug-in route) stays a viewer read. Turning
@@ -406,6 +412,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (ASUS_DIAGNOSTICS.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && NEXTCLOUD_ADMIN_READ.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && DNS_ADMIN_READ.test(p)) return 'admin'
+  if ((m === 'GET' || m === 'HEAD') && K3S_ADMIN_READ.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
   if (PLACEMENT.test(p)) return (m === 'GET' || m === 'HEAD') && PLACEMENT_READ.test(p) ? 'viewer' : 'admin'
   if (SELF_UPDATE.test(p)) return (m === 'GET' || m === 'HEAD') && p === SELF_UPDATE_SUMMARY ? 'viewer' : 'admin'
@@ -482,6 +489,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m !== 'GET' && m !== 'HEAD' && PBS_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && PBS_MANAGE_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && NEXTCLOUD_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && K3S_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HOMEPAGE_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && FWDPROXY_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
