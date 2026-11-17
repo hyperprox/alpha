@@ -129,7 +129,7 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   what they may do (people, roles, API tokens and their plug-in settings permission, a private notification channel),
   and to create network access keys, approve devices, open a site's admin login, or trust a node's SSH host keys
   (a Tailscale or NetBird one-time join key or sign-in link, approving a device into the network, a new WireGuard
-  device, a site's one-time WordPress admin sign-in, saving or confirming host keys on the Setup checklist, pinning a
+  device or a rotated device key (both return a private key), a site's one-time WordPress admin sign-in, saving or confirming host keys on the Setup checklist, pinning a
   node's key for HA maintenance, and Verify keys on a remote cluster). Replacing the host keys the installer read on a
   node needs the master password once more, entered in the last minute. A confirmation token is no substitute for any
   of these. The full list is `needsPassword` in `lib/roles.ts`.

@@ -1,5 +1,5 @@
 // What hands out a way in keeps the master password, not an in-page confirmation: Tailscale and NetBird join keys and
-// sign-in links, approving a device, a new WireGuard device (its config comes back), a site's one-time admin sign-in, and
+// sign-in links, approving a device, a new WireGuard device or a rotated key (its config comes back), a site's one-time admin sign-in, and
 // trusting nodes' SSH host keys. Through the real gate: the password is asked for, a confirmation token is no substitute,
 // API tokens are refused, and replacing the installer's host keys needs the password again within the last minute.
 import { test, before, after } from 'node:test'
@@ -40,6 +40,7 @@ const MOVED: string[] = [
   '/api/remote/devices/netbird/d1/approve',
   '/api/vpn/wg/servers/s1/devices',
   '/api/vpn/wg/router/devices',
+  '/api/vpn/wg/peers/p1/rotate',
   '/api/sites/s1/admin-login',
   '/api/setup-checklist/host-keys/anchor',
   '/api/setup-checklist/host-keys/confirm',

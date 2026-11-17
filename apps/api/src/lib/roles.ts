@@ -365,7 +365,8 @@ const VPN_PREVIEW = /^\/api\/vpn\/wg\/router\/peers\/preview$/
 // Showing a device's configuration (its private key): the master password, like any secret.
 const VPN_REVEAL = /^\/api\/vpn\/wg\/peers\/[^/]+\/reveal$/
 // What hands out a way in keeps the master password, not an in-page confirmation: a join key or sign-in link for
-// Tailscale or NetBird, approving a device into the network, a new WireGuard device (the answer carries its config),
+// Tailscale or NetBird, approving a device into the network, a new WireGuard device or a rotated key (the answer
+// carries its config),
 // a site's one-time WordPress admin sign-in, and trusting nodes' SSH host keys. needsPassword wins over needsConfirm, so
 // these stay listed in the rules above as well.
 const ACCESS_PASSWORD: Array<[string, RegExp]> = [
@@ -373,6 +374,8 @@ const ACCESS_PASSWORD: Array<[string, RegExp]> = [
   ['POST', /^\/api\/remote\/devices\/(tailscale|netbird)\/[^/]+\/approve$/],
   ['POST', /^\/api\/vpn\/wg\/servers\/[^/]+\/devices$/],
   ['POST', /^\/api\/vpn\/wg\/router\/devices$/],
+  // Rotating a device's key: the answer carries the new private key, like a reveal.
+  ['POST', /^\/api\/vpn\/wg\/peers\/[^/]+\/rotate$/],
   ['POST', /^\/api\/sites\/[^/]+\/admin-login$/],
   ['POST', /^\/api\/setup-checklist\/host-keys\/(anchor|confirm)$/],
   ['POST', /^\/api\/ha\/nodes\/[^/]+\/hostkey\/pin$/],
@@ -507,6 +510,7 @@ export function requiredRole(method: string, path: string): Role | null {
  *   POST   /api/remote/machines/:id/(tailscale|netbird)/login-url     a sign-in link that joins a machine
  *   POST   /api/remote/devices/(tailscale|netbird)/:id/approve        letting a device into the network
  *   POST   /api/vpn/wg/servers/:id/devices, /api/vpn/wg/router/devices   a new WireGuard device (its config is returned)
+ *   POST   /api/vpn/wg/peers/:id/rotate                               a device's new key (its private key is returned)
  *   POST   /api/sites/:id/admin-login                                 a one-time WordPress admin sign-in
  *   POST   /api/setup-checklist/host-keys/(anchor|confirm)            trusting nodes' SSH host keys (replacing the
  *                                                                     installer's also needs it within the last minute)
