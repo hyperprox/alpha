@@ -8,11 +8,11 @@
 //  you to sign in.
 // =============================================================================
 
-import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, errorText, failureText } from '@/lib/api'
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { HudHeader, Page, Panel, Pill, styles as ks, type PillTone, type StatChip } from '@/components/visual/kit'
 import ss from '../settings.module.css'
 
@@ -41,10 +41,13 @@ export default function SetupChecklistPage() {
   const [dns, setDns] = useState({ key: '', secret: '' })
   const [anchorOut, setAnchorOut] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
-  // Every change here is confirmed first (the shared dialog, lib/confirm-bus.ts), unless this page just asked itself.
-  async function send(method: string, url: string, body: unknown, _retry?: () => void, inPage = false): Promise<any | null> {
-    const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', ...(inPage ? IN_PAGE : {}) }, body: JSON.stringify(body ?? {}) })
+  // Every change here is confirmed first (the shared dialog, lib/confirm-bus.ts). Trusting host keys asks for the master
+  // password instead; the request is retried once it is entered.
+  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
+  async function send(method: string, url: string, body: unknown, retry: () => void): Promise<any | null> {
+    const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
     const j = await r.json().catch(() => ({ success: false, error: errorText(null, 'That did not work.', r.status) }))
+    if (r.status === 403 && j.code === 'reconfirm_required') { setReconfirm(() => retry); return null }
     return j
   }
 
@@ -108,10 +111,10 @@ export default function SetupChecklistPage() {
   async function saveAnchor(item: Item, replaceInstaller = false) {
     setBusy('anchor'); setError(null)
     try {
-      // The replacement was just confirmed in words below (window.confirm), so it is not asked a second time.
-      const j = await send('POST', '/api/setup-checklist/host-keys/anchor', { output: anchorOut, replaceInstaller }, undefined, replaceInstaller)
+      const j = await send('POST', '/api/setup-checklist/host-keys/anchor', { output: anchorOut, replaceInstaller }, () => saveAnchor(item, replaceInstaller))
       if (!j) return
-      // It would replace keys the installer read on the node itself: only on a second, explicit confirmation.
+      // It would replace keys the installer read on the node itself: only on a second, explicit confirmation, and the
+      // server asks for the master password once more (entered in the last minute).
       if (j.code === 'anchor_installer') {
         if (window.confirm(`${j.error}\n\nReplace them?`)) return saveAnchor(item, true)
         return
@@ -184,6 +187,7 @@ export default function SetupChecklistPage() {
         </div>
       )}
 
+      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
 
       {data && items.length > 0 && (
         <Panel title="Steps" sub="checked live on your nodes">

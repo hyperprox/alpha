@@ -3300,7 +3300,10 @@ not protected, are in [docs/security.md](docs/security.md).
   Send, a guest config's secret value, a WireGuard device's private key, deleting a vault item) and to change who can
   sign in or what they may do (inviting, confirming or removing a person, changing a role, creating or revoking an API
   token, letting a token save plug-in settings, or marking a notification channel private, since sign-in links
-  go there).
+  go there), and to create network access keys, approve devices, open a site's admin login, or trust a node's SSH host
+  keys (a Tailscale or NetBird one-time key or sign-in link, approving a device, a new WireGuard device, a site's
+  one-time WordPress sign-in, saving or confirming host keys on the Setup checklist, pinning a key for HA maintenance,
+  Verify keys on a remote cluster). Replacing the host keys the installer read asks for it once more.
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one

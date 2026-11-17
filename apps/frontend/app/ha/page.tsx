@@ -10,7 +10,6 @@
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
-import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { HaPanel } from '@/components/ha/HaPanel'
@@ -18,6 +17,7 @@ import { RuleEditor } from '@/components/ha/RuleEditor'
 import { RefusalNote, useHaChange, type Refusal } from '@/components/ha/PreviewDialog'
 import { Btn, Dialog, Note, Section, Tag } from '@/components/ha/ui'
 import { Page, HudHeader, styles } from '@/components/visual/kit'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import type { HaRule, Overview } from '@/components/ha/types'
 
 export default function HaPage() {
@@ -31,6 +31,8 @@ export default function HaPage() {
   const [showAllUnprotected, setShowAll] = useState(false)
   // Host-key pinning for maintenance mode: what the node presents, then pin exactly that key.
   const [pin, setPin] = useState<{ node: string; presented?: string; pinned?: string | null; words?: string; error?: string; busy?: boolean } | null>(null)
+  // Trusting a host key needs the master password (not an in-page confirmation): asked for, then the pin is retried.
+  const [pinReconfirm, setPinReconfirm] = useState(false)
   const [lastMaint, setLastMaint] = useState<{ node: string; enable: boolean } | null>(null)
   const checkKey = async (node: string) => {
     setPin({ node, busy: true })
@@ -40,7 +42,8 @@ export default function HaPage() {
   const pinKey = async () => {
     if (!pin?.presented) return
     setPin({ ...pin, busy: true, error: undefined })
-    const r = await apiJson(`/api/ha/nodes/${encodeURIComponent(pin.node)}/hostkey/pin`, 'POST', { fingerprint: pin.presented }, IN_PAGE)
+    const r = await apiJson(`/api/ha/nodes/${encodeURIComponent(pin.node)}/hostkey/pin`, 'POST', { fingerprint: pin.presented })
+    if (r.status === 403 && r.code === 'reconfirm_required') { setPin({ ...pin, busy: false }); setPinReconfirm(true); return }
     if (!r.ok) { setPin({ ...pin, busy: false, error: r.error }); return }
     setPin(null)
     if (lastMaint) void ask({ action: 'maintenance', ...lastMaint })
@@ -215,6 +218,7 @@ export default function HaPage() {
           </div>
         </Dialog>
       )}
+      {pinReconfirm && <ReconfirmModal onClose={() => setPinReconfirm(false)} onDone={() => { setPinReconfirm(false); void pinKey() }} />}
       {change.dialog}
     </Page>
   )

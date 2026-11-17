@@ -105,6 +105,10 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   asked for (nginx passes it on as `X-Forwarded-Host`, which the API believes only from loopback), or that has
   no `Origin` and a `Sec-Fetch-Site` other than `same-origin`. Scripts and the host CLI send neither header and
   are not affected. The API sends no CORS headers at all, so another site's page cannot read an answer.
+  Same-origin includes Grafana, which nginx serves under `/grafana/` on HyperProx's own origin: a script running in
+  Grafana (a cross-site scripting flaw in Grafana or a dashboard panel) counts as a script on HyperProx's origin and
+  passes these checks. That is one reason network access keys, device approval, a site's admin login and host-key
+  trust need the master password rather than an in-page confirmation, which such a script could press.
 - **Sign-in limits.** Sign-in, owner creation and re-confirmation allow 10 attempts a minute per client address,
   and an account allows 20 failed sign-ins (10 wrong master passwords at re-confirmation) in 15 minutes from
   any number of addresses. The API believes `X-Forwarded-For` only from nginx on the same machine, so the
@@ -122,8 +126,13 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   and nothing runs if it cannot be written.
 - **Master password.** Asked for again (valid for five minutes) only to reveal a stored secret (reveal, Send, deleting
   a vault item, a guest config's secret value, a WireGuard device's configuration) and to change who can sign in or
-  what they may do (people, roles, API tokens and their plug-in settings permission, a private notification channel).
-  The full list is `needsPassword` in `lib/roles.ts`.
+  what they may do (people, roles, API tokens and their plug-in settings permission, a private notification channel),
+  and to create network access keys, approve devices, open a site's admin login, or trust a node's SSH host keys
+  (a Tailscale or NetBird one-time join key or sign-in link, approving a device into the network, a new WireGuard
+  device, a site's one-time WordPress admin sign-in, saving or confirming host keys on the Setup checklist, pinning a
+  node's key for HA maintenance, and Verify keys on a remote cluster). Replacing the host keys the installer read on a
+  node needs the master password once more, entered in the last minute. A confirmation token is no substitute for any
+  of these. The full list is `needsPassword` in `lib/roles.ts`.
   Changing where a connection's secret is sent (its host, port or URL) also needs that secret entered again in
   the same save, so a moved address never inherits the old secret.
 - **Secrets page** (Settings, Secrets): names only. Owners and admins can reveal a value (with
@@ -378,7 +387,8 @@ Send it as `Authorization: Bearer hpx_...`. It is shown once; HyperProx stores o
 - **It can never** read or send secrets (`/api/secrets`), use the Deck terminal or its saved logins
   (`/api/terminal`), open a WebSocket (`/ws`, including terminals and live status) or a guest console, sign
   in, out or lock, or make, list or revoke tokens (HTTP 403 `token_forbidden`). Anything that asks for the
-  master password again (revealing a secret, changing roles) answers 403 `reconfirm_required`, and anything confirmed
+  master password again (revealing a secret, changing roles, network access keys, host-key trust) answers 403
+  `reconfirm_required`, and anything confirmed
   on the page (destroying a guest, a reboot, a plug-in action) answers 403 `token_forbidden`: a token has no master
   password and can never confirm.
 - **It never writes to the vault.** A token does not borrow a signed-in person's vault session, so anything that

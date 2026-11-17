@@ -91,6 +91,10 @@ test('rules: the master password only to reveal a secret or change who can sign 
     ['POST', '/api/users/invite'], ['PUT', '/api/users/u1/role'], ['DELETE', '/api/users/u1'], ['POST', '/api/users/u1/confirm'],
     ['POST', '/api/auth/tokens'], ['DELETE', '/api/auth/tokens/t1'], ['PUT', '/api/auth/tokens/t1/plugin-settings'],
     ['POST', '/api/roles'],
+    ['POST', '/api/remote/machines/m1/tailscale/manual-key'], ['POST', '/api/remote/machines/m1/netbird/login-url'],
+    ['POST', '/api/remote/devices/tailscale/d1/approve'], ['POST', '/api/vpn/wg/servers/s1/devices'], ['POST', '/api/vpn/wg/router/devices'],
+    ['POST', '/api/sites/s1/admin-login'], ['POST', '/api/setup-checklist/host-keys/anchor'], ['POST', '/api/setup-checklist/host-keys/confirm'],
+    ['POST', '/api/ha/nodes/n1/hostkey/pin'], ['POST', '/api/clusters/c0123456789/verify-keys'],
   ] as const) {
     assert.equal(needsPassword(m, p), true, `${m} ${p} keeps the master password`)
     assert.equal(needsConfirm(m, p), false, `${m} ${p} is not also a confirmation`)
@@ -105,7 +109,7 @@ test('rules: the master password only to reveal a secret or change who can sign 
     ['POST', '/api/catalogue/wizard/apply'], ['PUT', '/api/settings/dns/godaddy'], ['PUT', '/api/plugins/plex/settings'],
     ['POST', '/api/self-update/install'], ['POST', '/api/clusters/c0123456789/guests/n1/lxc/101/delete'],
     ['POST', REPAIR], ['POST', '/api/plugins/apt-cacher-ng/guests/remove'], ['PUT', '/api/plugins/apt-cacher-ng/use'],
-    ['POST', '/api/vpn/wg/peers/p1/rotate'], ['POST', '/api/remote/jobs'], ['POST', '/api/setup-checklist/host-keys/anchor'],
+    ['POST', '/api/vpn/wg/peers/p1/rotate'], ['POST', '/api/remote/jobs'], ['POST', '/api/setup-checklist/node-login/run'],
   ] as const) {
     assert.equal(needsConfirm(m, p), true, `${m} ${p} is confirmed on the page`)
     assert.equal(needsPassword(m, p), false, `${m} ${p} no longer asks for the master password`)

@@ -77,7 +77,6 @@ const RULES: Rule[] = [
   ['PUT', /^\/api\/placement\/auto$/, (_m, _p, b) => b?.apply === true
     ? 'Save automatic balancing and let it move guests by itself?' : 'Save the automatic balancing settings?'],
   ['POST', /^\/api\/ha\/plans\/[^/]+\/apply$/, () => 'Apply these HA changes? They are written to the whole cluster\'s HA configuration.'],
-  ['POST', /^\/api\/ha\/nodes\/([^/]+)\/hostkey\/pin$/, m => `Trust the host key ${m[1]} shows now?`],
   ['POST', /^\/api\/removed-guests\/(\d+)\/clean-up$/, m =>
     `Clean up after removed guest ${m[1]}? Its saved logins are deleted and it is taken out of backup jobs and HA.`],
   // ── Catalogue, sites ──
@@ -86,7 +85,6 @@ const RULES: Rule[] = [
   ['POST', /^\/api\/catalogue\/wizard\/jobs\/[^/]+\/finish-seerr$/, () => 'Finish setting up Seerr with these choices?'],
   ['PUT', /^\/api\/catalogue\/wizard\/naming$/, () => 'Save the naming and address settings? Every new guest follows them.'],
   ['POST', /^\/api\/sites\/[^/]+\/delete$/, () => 'Delete this website? Its DNS, proxy hosts and anything else you chose go with it.'],
-  ['POST', /^\/api\/sites\/[^/]+\/admin-login$/, () => 'Open a one-time WordPress admin sign-in for this site? The link works once, for 60 seconds.'],
   // ── Plug-ins ──
   ['POST', /^\/api\/plugins\/home-assistant\/instances\/[^/]+\/secure-actions$/, (_m, _p, b) =>
     `${str(b?.action, 30) ? `Send "${str(b.action, 30)}" to` : 'Control'} this security device in Home Assistant? It acts on the real device straight away.`],
@@ -117,14 +115,9 @@ const RULES: Rule[] = [
   ['PUT', /^\/api\/plugins\/apt-cacher-ng\/caches\/[^/]+\/settings$/, () => 'Save the package cache settings? They decide who may use it.'],
   [/^(PUT|DELETE)$/, /^\/api\/plugins\/([^/]+)\/settings$/, (m, _p, _b) => `Save the connection settings for ${pluginName(m[1])}?`],
   // ── Setup checklist ──
-  ['POST', /^\/api\/setup-checklist\/host-keys\/anchor$/, (_m, _p, b) => b?.replaceInstaller === true
-    ? 'Replace the host keys the installer read on these nodes? Do this only if the nodes were rebuilt on purpose; otherwise someone may be answering for them.'
-    : 'Save these host keys as the ones your nodes must show?'],
-  ['POST', /^\/api\/setup-checklist\/host-keys\/confirm$/, () => 'Trust this host key? You compared it on the machine itself.'],
   ['POST', /^\/api\/setup-checklist\/([^/]+)\/run$/, m => `Run "${m[1].replace(/[-_]/g, ' ')}" on your nodes? It runs as root.`],
   // ── Clusters, remote access, settings ──
   ['POST', /^\/api\/clusters\/[^/]+\/monitoring\/apply$/, () => 'Install or change monitoring on this cluster\'s nodes?'],
-  ['POST', /^\/api\/clusters\/[^/]+\/verify-keys$/, () => 'Verify and pin the host keys of this cluster\'s nodes?'],
   ['POST', /^\/api\/remote\/jobs$/, () => 'Start this remote access job? It installs or changes software on the machines you chose.'],
   ['PUT', /^\/api\/remote\/exclusions$/, () => 'Save which guests HyperProx must never look inside?'],
   ['PUT', /^\/api\/settings\/([^/]+)\/([^/]+)$/, m => `Save the ${m[1]} ${m[2]} settings?`],

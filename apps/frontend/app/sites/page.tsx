@@ -40,7 +40,7 @@ interface Site {
   /** Whether its container is still on the cluster ('gone': it was deleted outside HyperProx). */
   container?: 'present' | 'gone' | 'unknown'
 }
-type Pending = { kind: 'reveal'; site: Site } | null
+type Pending = { kind: 'reveal' | 'admin'; site: Site } | null
 
 const SITE_TABS = [
   { id: 'sites', label: 'Sites' }, { id: 'new', label: 'New website' }, { id: 'existing', label: 'Add existing' }, { id: 'metrics', label: 'Metrics' },
@@ -106,9 +106,11 @@ export default function SitesPage() {
     say(s.id, r.ok ? r.body!.data.output : r.error ?? 'The pull failed.')
   }
 
-  // The window opens on the click itself, so the browser does not block it; the sign-in is POSTed into it.
+  // The window opens on the click itself, so the browser does not block it; the sign-in is POSTed into it. The sign-in
+  // needs the master password: when it is asked for, the window closes and opens again once it is entered.
   const openAdmin = async (s: Site, win: Window | null = window.open('', '_blank')) => {
     const r = await apiJson<{ data: { postUrl: string; token: string } }>(`/api/sites/${s.id}/admin-login`, 'POST')
+    if (r.status === 403 && r.code === 'reconfirm_required') { win?.close(); setPending({ kind: 'admin', site: s }); return }
     if (!r.ok || !r.body) { win?.close(); say(s.id, r.error ?? 'The sign-in could not be made.'); return }
     if (!win) { say(s.id, 'The browser blocked the new window. Allow pop-ups for HyperProx and try again.'); return }
     const d = win.document
@@ -229,7 +231,7 @@ export default function SitesPage() {
       {pending && (
         <ReconfirmModal onClose={() => setPending(null)} onDone={() => {
           const p = pending; setPending(null)
-          void reveal(p.site)
+          void (p.kind === 'admin' ? openAdmin(p.site) : reveal(p.site))
         }} />
       )}
     </Page>

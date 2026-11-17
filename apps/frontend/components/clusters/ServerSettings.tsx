@@ -10,6 +10,7 @@ import { apiJson } from '@/lib/api'
 import { IN_PAGE } from '@/lib/confirm-bus'
 import { type ClusterInfo } from '@/lib/clusters'
 import { INPUT, LABEL, Notice, BusyNote, CopyButton } from '@/components/vault/ui'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -176,6 +177,8 @@ function NodesSection({ c, onChanged }: { c: ClusterInfo; onChanged: () => void 
   const [command, setCommand] = useState<string | null>(null)
   const [checked, setChecked] = useState<Array<{ node: string; state: string; how: string; login: string | null }> | null>(null)
   const [verifying, setVerifying] = useState(false)
+  // Trusting host keys needs the master password (not an in-page confirmation): asked for, then Verify keys runs again.
+  const [reconfirm, setReconfirm] = useState(false)
   // One action: verify every node's host key with evidence, and save the login (if given) where a key is verified.
   const verifyKeys = async () => {
     setVerifying(true); setErr(null)
@@ -183,6 +186,7 @@ function NodesSection({ c, onChanged }: { c: ClusterInfo; onChanged: () => void 
     const r = await apiJson<{ data: { nodes: Array<{ node: string; state: string; how: string; login: string | null }>; command: string | null } }>(`/api/clusters/${c.id}/verify-keys`, 'POST', { login, ...(record.trim() ? { record } : {}) })
     setVerifying(false)
     if (!r) return
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(true); return }
     if (r.ok) { setChecked((r as any).body.data.nodes); setCommand((r as any).body.data.command ?? null); setRecord(''); setOnce(o => ({ ...o, pw: '', key: '' })); void load() } else setErr((r as any).error ?? 'Could not verify')
   }
   const load = useCallback(async () => {
@@ -223,6 +227,7 @@ function NodesSection({ c, onChanged }: { c: ClusterInfo; onChanged: () => void 
           : 'The private-link address (Tailscale or WireGuard) a remote server reaches each of your nodes on, for files sent to this cluster. Node logins for the home cluster are in Settings, Setup checklist.'}
       </p>
       {err && <Notice kind="error">{err}</Notice>}
+      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void verifyKeys() }} />}
       {c.kind === 'remote' && (
         <div className="flex flex-col gap-2">
           <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(12rem,1fr))' }}>

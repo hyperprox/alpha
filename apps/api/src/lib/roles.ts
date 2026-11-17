@@ -364,6 +364,20 @@ const SELF_UPDATE_SUMMARY = '/api/self-update/summary'
 const VPN_PREVIEW = /^\/api\/vpn\/wg\/router\/peers\/preview$/
 // Showing a device's configuration (its private key): the master password, like any secret.
 const VPN_REVEAL = /^\/api\/vpn\/wg\/peers\/[^/]+\/reveal$/
+// What hands out a way in keeps the master password, not an in-page confirmation: a join key or sign-in link for
+// Tailscale or NetBird, approving a device into the network, a new WireGuard device (the answer carries its config),
+// a site's one-time WordPress admin sign-in, and trusting nodes' SSH host keys. needsPassword wins over needsConfirm, so
+// these stay listed in the rules above as well.
+const ACCESS_PASSWORD: Array<[string, RegExp]> = [
+  ['POST', /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/(manual-key|login-url)$/],
+  ['POST', /^\/api\/remote\/devices\/(tailscale|netbird)\/[^/]+\/approve$/],
+  ['POST', /^\/api\/vpn\/wg\/servers\/[^/]+\/devices$/],
+  ['POST', /^\/api\/vpn\/wg\/router\/devices$/],
+  ['POST', /^\/api\/sites\/[^/]+\/admin-login$/],
+  ['POST', /^\/api\/setup-checklist\/host-keys\/(anchor|confirm)$/],
+  ['POST', /^\/api\/ha\/nodes\/[^/]+\/hostkey\/pin$/],
+  ['POST', /^\/api\/clusters\/[^/]+\/verify-keys$/],
+]
 // Remote access job output names hosts, packages and addresses: admins only, like Updates.
 const REMOTE_JOBS = /^\/api\/remote\/(exclusions$|(v1\/)?jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$|v1\/machines\/[^/]+\/(tailscale|netbird)\/(install-preview|settings)$)/
 
@@ -477,9 +491,10 @@ export function requiredRole(method: string, path: string): Role | null {
 }
 
 /**
- * Requests that need the master password re-entered within the last 5 minutes (POST /api/auth/reconfirm). Only two
- * kinds of request: revealing a stored secret, and changing who can sign in or what they may do. Everything else that
- * deserves a deliberate step is confirmed on the page instead (needsConfirm, lib/confirm.ts).
+ * Requests that need the master password re-entered within the last 5 minutes (POST /api/auth/reconfirm): revealing a
+ * stored secret, changing who can sign in or what they may do, and handing out a way in (network access keys, device
+ * approval, a site's admin login, trusting a node's SSH host keys; ACCESS_PASSWORD). Everything else that deserves a
+ * deliberate step is confirmed on the page instead (needsConfirm, lib/confirm.ts).
  *   POST   /api/secrets/reveal                                   a vault item's value
  *   POST   /api/secrets/send                                     a value handed out as an expiring link
  *   POST   /api/secrets/delete                                   a vault item deleted (the vault itself)
@@ -488,6 +503,15 @@ export function requiredRole(method: string, path: string): Role | null {
  *   POST|PUT|DELETE /api/users/...                               invite, confirm, change a role, remove a person
  *   POST|PUT|DELETE /api/auth/tokens/...                         create or revoke an API token, or change what one may do
  *   anything but GET under /api/roles and /api/auth/roles        role management (reserved)
+ *   POST   /api/remote/machines/:id/(tailscale|netbird)/manual-key    a one-time join key
+ *   POST   /api/remote/machines/:id/(tailscale|netbird)/login-url     a sign-in link that joins a machine
+ *   POST   /api/remote/devices/(tailscale|netbird)/:id/approve        letting a device into the network
+ *   POST   /api/vpn/wg/servers/:id/devices, /api/vpn/wg/router/devices   a new WireGuard device (its config is returned)
+ *   POST   /api/sites/:id/admin-login                                 a one-time WordPress admin sign-in
+ *   POST   /api/setup-checklist/host-keys/(anchor|confirm)            trusting nodes' SSH host keys (replacing the
+ *                                                                     installer's also needs it within the last minute)
+ *   POST   /api/ha/nodes/:node/hostkey/pin                            trusting a node's SSH host key
+ *   POST   /api/clusters/:id/verify-keys                              trusting a cluster's SSH host keys
  */
 export function needsPassword(method: string, path: string): boolean {
   const m = method.toUpperCase()
@@ -498,6 +522,7 @@ export function needsPassword(method: string, path: string): boolean {
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   if ((m === 'POST' || m === 'DELETE' || m === 'PUT') && TOKENS.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && /^\/api\/users(\/|$)/.test(p)) return true
+  for (const [am, re] of ACCESS_PASSWORD) if (m === am && re.test(p)) return true
   return false
 }
 
