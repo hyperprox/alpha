@@ -5,7 +5,8 @@
 //
 //  What a person can do about a problem in the queue: find another copy, remove (optionally blocklisting),
 //  retry a blocked import, move a torrent to the top, swap a season's single episodes for a season pack, fix
-//  every stalled download at once, and clear the finished ones (everything already in the library) from the queue. Admins only: a viewer or operator sees no buttons at all, and the server refuses
+//  every stalled download at once, clear the finished ones (everything already in the library) from the queue, and
+//  "find a faster copy" (BetterCopy.tsx: a release search for what the download is for; the pick replaces it). Admins only: a viewer or operator sees no buttons at all, and the server refuses
 //  them anyway. Queue downloads only; library files are never touched.
 //
 //  Anything that removes something goes through a confirm step first. The page asks the server for a preview (the
@@ -17,6 +18,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import c from './queue.module.css'
+import { BetterDialog } from './BetterCopy'
+import { queueTarget } from './better-view'
 
 export type Instance = 'sonarr' | 'radarr' | 'lidarr'
 export interface ActReq {
@@ -212,7 +215,9 @@ const TORRENT_ID = /^d:(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$/
 
 export function DownloadActions({ instance, d }: { instance: Instance; d: ActDownload }) {
   const a = useAct()
+  const [faster, setFaster] = useState(false)
   if (!a?.canAct) return null
+  const swapTarget = queueTarget(instance, d.id)
   const k = `dl:${instance}:${d.id}`
   const busy = ['asking', 'running', 'confirm'].includes(a.flows[k]?.phase ?? '')
   // An incomplete pack or a preview clip: a new copy is the answer. There is deliberately no "import anyway".
@@ -238,8 +243,10 @@ export function DownloadActions({ instance, d }: { instance: Instance; d: ActDow
         {a.canPrioritise && d.protocol === 'torrent' && TORRENT_ID.test(d.id) && (
           <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Prioritise', reqs: [{ action: 'prioritise', instance, downloadId: d.id }], destructive: false })}>Move to top</button>
         )}
+        {swapTarget && <button type="button" className={c.actBtn} disabled={busy} onClick={() => setFaster(true)}>Find a faster copy</button>}
       </div>
       <ActionBox k={k} />
+      {faster && swapTarget && <BetterDialog target={swapTarget} app={instance} title={d.name} onClose={() => setFaster(false)} />}
     </>
   )
 }

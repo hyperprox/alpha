@@ -1,0 +1,47 @@
+/* =============================================================================
+   HyperProx — Arr Stack, "Find a better copy" and the VPN panel
+   Every colour is a theme variable (light and dark); everything wraps at phone
+   width, so there is no table and no horizontal scroll.
+   ============================================================================= */
+
+.bar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.bar > div { margin-bottom: 0; }
+.search { flex: 1 1 180px; min-width: 0; display: flex; }
+.search input { width: 100%; min-height: 38px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--hx-line-hi); background: var(--hx-deep); color: var(--text); font: 500 .9rem var(--font-mono); }
+.search input:focus-visible { outline: 2px solid var(--hx-accent); outline-offset: 1px; }
+
+.list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.found, .show { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; background: var(--hx-deep); border: 1px solid var(--hx-line); border-radius: 10px; padding: 6px 10px; min-width: 0; }
+.foundText { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 200px; }
+.foundText b { font: 700 .95rem/1.25 var(--font-display); color: var(--text-bright); letter-spacing: .02em; overflow-wrap: anywhere; }
+.foundText span { font: 500 .72rem var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; }
+.seasons { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { min-height: 34px; min-width: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--hx-line-hi); background: transparent; color: var(--text); font: 600 .78rem var(--font-display); letter-spacing: .06em; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.chip small { font: 500 .66rem var(--font-mono); color: var(--text-muted); }
+.chip[data-full="true"] { border-color: color-mix(in srgb, var(--hx-accent) 45%, transparent); }
+.chip:focus-visible { outline: 2px solid var(--hx-accent); outline-offset: 2px; }
+
+.have { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 6px 10px; border-left: 3px solid var(--hx-accent); background: var(--hx-deep); border-radius: 8px; }
+.have span { font: 600 .68rem var(--font-display); letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); }
+.have b { font: 500 .85rem var(--font-mono); color: var(--text-bright); overflow-wrap: anywhere; }
+
+/* ── VPN ─────────────────────────────────────────────────────────────────── */
+.vpn { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: center; }
+.vpnFacts { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.where { font: 700 1.15rem/1.2 var(--font-display); color: var(--text-bright); letter-spacing: .03em; overflow-wrap: anywhere; }
+.where small { display: block; font: 500 .72rem var(--font-mono); color: var(--text-muted); letter-spacing: .04em; }
+.ports { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px; }
+.port { background: var(--hx-deep); border: 1px solid var(--hx-line); border-radius: 10px; padding: 6px 10px; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.port span { font: 600 .64rem var(--font-display); letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); }
+.port b { font: 700 1.25rem/1.1 var(--font-display); color: var(--hx-accent); }
+.link { height: 2px; min-width: 28px; background: var(--hx-accent); box-shadow: 0 0 10px color-mix(in srgb, var(--hx-accent) var(--glow), transparent); }
+.ports[data-match="mismatch"] .link, .ports[data-match="no-port"] .link { background: repeating-linear-gradient(90deg, var(--warn) 0 6px, transparent 6px 10px); box-shadow: none; }
+.ports[data-match="mismatch"] .port b { color: var(--warn); }
+.ports[data-match="off"] .link, .ports[data-match="unknown"] .link { background: var(--hx-line-hi); box-shadow: none; }
+.speeds { display: flex; flex-wrap: wrap; gap: 4px 16px; font: 500 .78rem var(--font-mono); color: var(--text-soft); }
+.speeds b { color: var(--text-bright); font: 700 .95rem var(--font-display); }
+.problems { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.problem { border: 1px solid var(--warn); border-left-width: 3px; border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--hx-deep); }
+.problem p { margin: 0; color: var(--text); font-size: .88rem; line-height: 1.45; }
+
+@media (max-width: 480px) { .vpn { grid-template-columns: 1fr; justify-items: start; } .ports { grid-template-columns: 1fr; } .link { width: 2px; height: 14px; min-width: 0; justify-self: center; } }
