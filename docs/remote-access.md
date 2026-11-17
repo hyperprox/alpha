@@ -101,7 +101,7 @@ you so. You have two choices:
 ### Windows and macOS
 
 HyperProx does not install on these. The machine shows **Manual install**: use **One-time key…** to get a
-single-use key (after re-entering your master password) and the official download link, then sign the
+single-use key (after you confirm) and the official download link, then sign the
 app in with that key. From a terminal on macOS, pass it on stdin, never as an argument
 (`tailscale up --auth-key=file:/dev/stdin …` or `netbird up --setup-key-file /dev/stdin …`, paste, Ctrl-D).
 The key is shown once and not stored. A Tailscale key expires after 10 minutes; HyperProx revokes either
@@ -234,7 +234,7 @@ never by name. No job runs until that check has answered.
 ### Never look inside these guests
 
 On the VPN page, **Never look inside these guests** lists guests HyperProx must leave alone. Saving the
-list is admin-only and asks for your master password again. The list is kept in Postgres as guest ids
+list is admin-only and asks you to confirm. The list is kept in Postgres as guest ids
 only. Tagging a guest `hyperprox-ignore` in Proxmox does the same. An excluded guest is never checked,
 and no VPN action runs on it: no install, adopt, settings change, update, uninstall or WireGuard. It
 shows as **excluded**.
@@ -243,11 +243,11 @@ shows as **excluded**.
 
 Instead of a key, **Advanced… → Sign in with my account** starts the client without one. The client prints
 a sign-in link; HyperProx captures it from output it never logs, keeps it in memory only, shows it on the
-machine's panel to admins (after your master password, with a copy button), and sends it to your
+machine's panel to admins (after you confirm, with a copy button), and sends it to your
 notification channels **marked private** (Settings → Notifications). The link works once and expires after
 about ten minutes; after that, or after HyperProx restarts, it is gone and a **Check** gets a new one. The
 same happens when a key has expired and the client is waiting for a sign-in of its own. Marking a channel
-private needs your master password again.
+private asks for your master password again, since sign-in links then go there.
 
 Every `netbird up` (install, settings, routing, node locks) runs with its output captured rather than
 streamed: if NetBird asks for a sign-in instead of connecting, the link goes only through this flow and is
@@ -278,17 +278,17 @@ Other pages (the guest drill-down, list badges) use `/api/remote/v1`, typed as `
 | `GET /v1/status` | any role | `{ providers, machines: VpnMachineStatus[] }` |
 | `GET /v1/status/:machineId` | any role | one `VpnMachineStatus`, 404 when unknown |
 | `GET /v1/machines/:id/:provider/install-preview` | admin | what a one-click install would do |
-| `POST /v1/machines/:id/:provider/install` `{ confirm: true }` | admin, re-confirm | `202 { job }` |
-| `DELETE /v1/machines/:id/:provider` | admin, re-confirm | uninstall, `202 { job }` |
+| `POST /v1/machines/:id/:provider/install` `{ confirm: true }` | admin, confirm | `202 { job }` |
+| `DELETE /v1/machines/:id/:provider` | admin, confirm | uninstall, `202 { job }` |
 | `GET /v1/machines/:id/:provider/settings` | admin | `{ current }`, read back from the client |
 | `POST /v1/machines/:id/:provider/settings/preview` `{ prefs }` | admin | `{ current, desired, changes, refusal }` |
-| `POST /v1/machines/:id/:provider/settings` `{ prefs, confirm: true }` | admin, re-confirm | `202 { job }` |
+| `POST /v1/machines/:id/:provider/settings` `{ prefs, confirm: true }` | admin, confirm | `202 { job }` |
 | `GET /v1/jobs/:id` | admin | progress; poll until `status` is not `running` |
 
 `VpnMachineStatus.providers[p]` has `state`, `installed`, `ip`, `dnsName`, `version`, `lastSeen`,
 `expiresAt`, `expiryWarning` and `panel` (a link to the machine's panel on the VPN page) for every role;
 admins also get `loginPending`, `pending`, `tags`, `routes`, `exitNode` and `prefs`. A call that needs a
-fresh master password answers `403 { code: 'reconfirm_required' }`.
+confirmation answers `403 { code: 'confirm_required' }` with a single-use token the page sends back once you confirm.
 
 ## WireGuard
 
@@ -367,20 +367,20 @@ interface's listen port, the page shows the exact command for you to review and 
   | `onChanged` | `() => void?` | called when a job finishes, to refresh the host page's badges |
 
   It shows each provider's state, overlay IP, name, version, last seen and key expiry, and for admins a
-  one-click install with its preview, settings with a preview in words, and uninstall, asking for the
-  master password when the API wants it.
+  one-click install with its preview, settings with a preview in words, and uninstall, asking you to
+  confirm when the API wants it.
 
 ## Per-machine actions
 
 | Action | Who | Notes |
 |---|---|---|
 | See status | everyone | Below admin: connected or not, overlay IP, client version, last seen. No LAN or cluster addresses |
-| Check | admin (re-confirm on a node) | Runs the client's status command on the machine |
-| Update | admin (re-confirm on a node) | Upgrades only the client package (guarded on nodes) |
-| Routing… | admin, re-confirm | Subnet router and, on guests, exit node; see below |
-| Firewall… | admin, re-confirm | Nodes only: the rule above, previewed first |
-| Uninstall | admin, re-confirm | Removes the client, its state and repository, then deletes the device or peer by its recorded id |
-| Install, One-time key, Add /dev/net/tun | admin, re-confirm | |
+| Check | admin (confirm on a node) | Runs the client's status command on the machine |
+| Update | admin (confirm on a node) | Upgrades only the client package (guarded on nodes) |
+| Routing… | admin, confirm | Subnet router and, on guests, exit node; see below |
+| Firewall… | admin, confirm | Nodes only: the rule above, previewed first |
+| Uninstall | admin, confirm | Removes the client, its state and repository, then deletes the device or peer by its recorded id |
+| Install, One-time key, Add /dev/net/tun | admin, confirm | |
 
 Status states: **Connected**, **Offline** (known to the provider, not connected), **Missing** (HyperProx
 installed it but the provider no longer lists it), **Not installed**, **Manual install**. A device the

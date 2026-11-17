@@ -21,6 +21,18 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-17 — Confirmations instead of the master password
+
+### Before you update
+- **Actions now ask you to confirm instead of asking for your master password.** Reboots, updates, guest deletes and moves, plug-in actions (locks, alarms, garage doors, network gear, NAS power, backups and the rest), installs, and settings changes show what will happen in a sentence, with Confirm and Cancel. Your master password is now asked for only to reveal a stored secret and to change who can sign in. Scripts using API tokens are refused on these actions, as before.
+  - Technical: `lib/confirm.ts` (single-use, five-minute token bound to the session, method, path and query, `X-HyperProx-Cluster` and the body; `403 confirm_required` carries `confirm.token` and `confirm.summary`; the retry sends `X-HyperProx-Confirm`), `lib/confirm-text.ts` (the sentences), `lib/roles.ts` `needsConfirm` and `needsPassword` (`needsReconfirm` is now either), the gate's `preValidation` hook, `action.confirmed` audit rows with `confirmed: 'in page'` written before the action (fail closed, 503 `audit_unavailable`), API tokens `403 token_forbidden` on every confirmed route. Updates, self-update and the setup checklist use `requireConfirm`; the assistant's card is the confirmation and is never applied by an API token.
+
+### Improved
+- **One confirmation, everywhere.** Every page uses the same dialog, drawn above anything else and easy to use on a phone. Where a page already shows a preview with an Apply button, or asks you to type a name, that is the confirmation and nothing more is asked.
+  - Technical: `lib/confirm-bus.ts` and the fetch wrapper in `lib/api.ts` answer `confirm_required` once for every page; `IN_PAGE` marks a request the page has just confirmed itself; `components/vault/ConfirmDialog.tsx` and `ConfirmHost.tsx`. The per-page master-password prompts for these actions are gone; `ReconfirmModal` stays for revealing secrets, people and API tokens.
+- **Every confirmed action is in the audit log.** The row says it was confirmed on the page and is written before anything runs; if it cannot be written, nothing runs.
+- **The package cache's fleet actions are confirmed in the page too.** Repairing every guest's cache setting, removing it from all guests, and Updates' use of the cache show what will happen and ask you to confirm.
+
 ## 2026-11-16 — Opening the home cluster
 
 ### Fixed

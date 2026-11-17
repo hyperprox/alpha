@@ -109,10 +109,21 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   and an account allows 20 failed sign-ins (10 wrong master passwords at re-confirmation) in 15 minutes from
   any number of addresses. The API believes `X-Forwarded-For` only from nginx on the same machine, so the
   address is the browser's: one client running out of attempts does not lock anyone else out.
-- **Re-confirmation.** Revealing or Sending a secret, destroying a guest, changing roles, resetting Grafana's
-  admin password, saving or testing a connection under Settings (Proxmox, proxy, DNS, AI, remote access), and
-  every change on the Setup checklist (saving a node login, running an item on your nodes, shredding old
-  backups, opening or closing built-in graphics) ask for the master password again (valid for five minutes).
+- **Confirmations.** Destroying a guest, resetting Grafana's admin password, saving or testing a connection under
+  Settings (Proxmox, proxy, DNS, AI, remote access), every change on the Setup checklist (saving a node login,
+  running an item on your nodes, shredding old backups, opening or closing built-in graphics), and the other
+  important actions are confirmed on the page (`lib/confirm.ts`). The first request answers
+  `403 confirm_required` with what will happen and a token; the page shows it, and on Confirm sends the identical
+  request again with the token. The token is single use, lasts five minutes, and is bound to the signed-in session
+  and to the exact request (method, path and query, the cluster header and the body). The gate refuses cross-site
+  state-changing requests before any of this (Origin and Sec-Fetch-Site checks, SameSite cookie, no CORS), so another
+  site can neither get a token nor use one. API tokens are refused on these routes (`token_forbidden`) and never get
+  one. The confirmation is written to the audit log (`action.confirmed`, "confirmed in page") before the action runs,
+  and nothing runs if it cannot be written.
+- **Master password.** Asked for again (valid for five minutes) only to reveal a stored secret (reveal, Send, deleting
+  a vault item, a guest config's secret value, a WireGuard device's configuration) and to change who can sign in or
+  what they may do (people, roles, API tokens and their plug-in settings permission, a private notification channel).
+  The full list is `needsPassword` in `lib/roles.ts`.
   Changing where a connection's secret is sent (its host, port or URL) also needs that secret entered again in
   the same save, so a moved address never inherits the old secret.
 - **Secrets page** (Settings, Secrets): names only. Owners and admins can reveal a value (with
@@ -223,7 +234,7 @@ where the test passed.
     output is only as trustworthy as the session it came through. It prints public keys only, and they are
     compared for equality. Pasting keys different from an anchor already kept is audited
     (`host_key.anchor.replace`) and raises an alert; replacing what the installer read on the node itself is
-    refused unless you confirm it, and then asks for your master password once more.
+    refused unless you confirm the replacement, in a confirmation that says what it replaces.
   - *Cluster record, growth.* Once at least one node is trusted (confirmed by you, or verified from an
     anchor), more nodes are verified from the same record read through trusted nodes only: two trusted nodes
     that agree, or one plus proof that the new node holds the recorded key. A node verified in a check only
@@ -330,7 +341,7 @@ as described above.
 Intel or AMD graphics only the render group can use) or `none` (no built-in graphics, or NVIDIA only).
 `apply()` and `undo()` resolve to `{ status: done|already|skipped|failed, reason, state }`. Over HTTP, admin
 only: `GET /api/setup-checklist/igpu-access/:node`, and `POST .../:node/apply` and `POST .../:node/undo`
-(both ask for the master password again). It uses the node login from the vault, so while HyperProx is
+(both ask you to confirm). It uses the node login from the vault, so while HyperProx is
 locked it answers locked, and a node with no saved login answers 409.
 
 ## From the command line
@@ -367,8 +378,9 @@ Send it as `Authorization: Bearer hpx_...`. It is shown once; HyperProx stores o
 - **It can never** read or send secrets (`/api/secrets`), use the Deck terminal or its saved logins
   (`/api/terminal`), open a WebSocket (`/ws`, including terminals and live status) or a guest console, sign
   in, out or lock, or make, list or revoke tokens (HTTP 403 `token_forbidden`). Anything that asks for the
-  master password again (destroying a guest, revealing a secret, changing roles) answers 403
-  `reconfirm_required`: a token has no master password.
+  master password again (revealing a secret, changing roles) answers 403 `reconfirm_required`, and anything confirmed
+  on the page (destroying a guest, a reboot, a plug-in action) answers 403 `token_forbidden`: a token has no master
+  password and can never confirm.
 - **It never writes to the vault.** A token does not borrow a signed-in person's vault session, so anything that
   would store a credential, a setting or a host-key pin during a token request (or in work it starts) is refused
   with 403 `token_forbidden`. Reads, from the unlock cache, work as before.
@@ -393,7 +405,7 @@ HyperProx does it, with these rules:
   says then, so a device reclassified in Home Assistant a second ago is treated as it is now.
 - **Two tiers, security by default.** Everyday controls (`POST .../instances/<id>/actions`) need the operator
   role, or admin if the house is set that way. Security controls (`POST .../instances/<id>/secure-actions`)
-  need the admin role, the master password re-entered within 5 minutes, a confirm phrase naming the action
+  need the admin role, a confirmation on the page, a confirm phrase naming the action
   (with the value as checked and rounded), the device and the house, and the device's name typed by the
   person; the server compares both and its refusal never says what the phrase should have been. Each tier has
   exactly one route: the everyday route refuses a security device and the secure route refuses everything else.
@@ -408,14 +420,14 @@ HyperProx does it, with these rules:
     curtain, shade, shutter, awning and damper are everyday), scripts, scenes and buttons, every input boolean,
     and every switch except one whose device class is outlet.
   - A house's settings can promote devices and whole kinds freely. Moving a device to everyday is admin,
-    re-confirmed, and written to the audit log as its own row naming each entity; so is letting operators use
+    confirmed on the page, and written to the audit log as its own row naming each entity; so is letting operators use
     everyday controls where only admins could. HyperProx records each everyday device as Home Assistant
     describes it at that moment (entity id, kind, device class and name), from the house itself, never from the
     request. If any of those later change, the mark no longer applies, the device needs the confirm step again,
     and the Devices view says so; a later save does not renew it. Protected wins over everyday. The Devices view
     also warns when a protected or everyday id no longer exists (a renamed device).
 - **API tokens** can use everyday controls when the token's role allows it. They can never use a security
-  control: the secure route needs a re-confirmation, which a token cannot give, and the service refuses a
+  control: the secure route needs a confirmation on the page, which a token cannot give, and the service refuses a
   token there by name as well.
 - **Rate limit.** 30 everyday and 5 security actions a minute per signed-in session (or token), counted before
   any role or confirm check, so repeated tries at a lock (an operator's on the everyday route included) are
@@ -428,7 +440,7 @@ HyperProx does it, with these rules:
   address and token, so an action for one house cannot reach another or carry its token. On a remote
   server's page, only the houses linked to that server answer.
 - **Audit.** Every action, refused ones included (an unknown house, the wrong cluster, and the gate's own
-  refusals of a signed-in person or token for role or re-confirmation), writes a row: who, through a session or which API token, the
+  refusals of a signed-in person or token for role or confirmation), writes a row: who, through a session or which API token, the
   house, the entity, the action, the tier and the result (done, unconfirmed, failed or the refusal reason), and
   for a call that went through, the state before and after. Never the token. A gate refusal is recorded before
   the request body is read, so it names the house but not the entity. A security action can send the
@@ -460,9 +472,9 @@ HyperProx does it, with these rules:
   The catalogue's install wiring no longer passes stored secrets back when it sets a plug-in's address.
 - **Tokens.** Each house's long-lived token is a vault item (`hyperprox:plugin/home-assistant` for the first
   house, `hyperprox:plugin/home-assistant.<id>` for the others). It is never returned to the browser, never
-  logged, and kept out of error messages. Adding or changing a house is admin and asks for the master password.
+  logged, and kept out of error messages. Adding or changing a house is admin and asks you to confirm.
   The generic plug-in settings route (`PUT /api/plugins/<id>/settings`) no longer accepts Home Assistant's
-  address or token. For every plug-in it is now admin and re-confirmed (so API tokens cannot use it), and an
+  address or token. For every plug-in it is now admin and confirmed on the page (so API tokens cannot use it), and an
   address moved to another host or port must be given its credential again in the same save.
 - **What a token can do.** A Home Assistant long-lived token carries every right of the user that made it,
   whatever HyperProx limits itself to. Make a dedicated Home Assistant user with administrator off and use its
@@ -490,12 +502,12 @@ the rules below ([docs/remote-access.md](remote-access.md)).
   or in the guest. Job output passes through a stream redactor that holds back enough of each chunk to
   catch a key split across two, and removes the key, Tailscale and NetBird token shapes and, while a
   NetBird key is live, NetBird setup-key shapes. Provider errors carry a status and message, never a request.
-- **The one exception is the manual flow** for Windows and macOS: an admin who has just re-entered the
-  master password can be shown a single-use key once. It is recorded for revocation first, audited, sent
+- **The one exception is the manual flow** for Windows and macOS: an admin who has just confirmed it
+  on the page can be shown a single-use key once. It is recorded for revocation first, audited, sent
   with `Cache-Control: no-store`, not stored, and revoked after 30 minutes even across a restart.
-- **Re-confirmation** is required to install, change routing, uninstall, add `/dev/net/tun`, add the
+- **A confirmation on the page** is required to install, change routing, uninstall, add `/dev/net/tun`, add the
   firewall rule, make a manual key, and to check or update a client on a Proxmox node. API tokens cannot
-  re-confirm, so **no API token can open a tunnel into the cluster or run anything on a node**, at any role.
+  confirm, so **no API token can open a tunnel into the cluster or run anything on a node**, at any role.
 - **Status for roles below admin** is overlay state only: connected, overlay IP, client version, last seen.
   No LAN or cluster addresses, no routes. Job logs are admin-only.
 - **Proxmox nodes keep their DNS, routes and firewall.** No DNS, no accepted routes, no client firewall
@@ -513,7 +525,7 @@ the rules below ([docs/remote-access.md](remote-access.md)).
   overwrites and removes the copy. Provider devices are deleted only by the id recorded when the client reported itself,
   never by name.
 - **Every SSH path fails closed** when the host key has never been pinned: nodes, `pct exec`, the guest
-  agent, VMs and hand-added hosts. The refusal shows the fingerprint; an admin who has re-confirmed can pin
+  agent, VMs and hand-added hosts. The refusal shows the fingerprint; an admin who has confirmed on the page can pin
   exactly the key presented (it is read again and must match), in the store the Terminal uses. An existing
   different pin is never replaced from here.
 - **Guest config is changed only through the Proxmox API** (`devN: /dev/net/tun`, with the config digest),
@@ -521,7 +533,7 @@ the rules below ([docs/remote-access.md](remote-access.md)).
 - **Sign-in links** (when an owner signs a machine in with their own account, or a key expired) are
   sensitive: whoever opens one adds a machine to the network. HyperProx captures them from output it does
   not log, keeps them in memory only for about ten minutes, shows them only to admins after
-  re-confirmation (`Cache-Control: no-store`, audited without the link), and sends them only to
+  a confirmation (`Cache-Control: no-store`, audited without the link), and sends them only to
   notification channels marked **private**, as a sensitive link that is never written to the outbox. After
   it expires, or after a restart, the notification says the link has expired instead.
 - **Every read of a provider credential is audited** without its value (`remote.credential.read`, at most
@@ -531,7 +543,7 @@ the rules below ([docs/remote-access.md](remote-access.md)).
   (wg-quick loads it from its own file; no interface file HyperProx writes has a `PrivateKey` line). A
   phone or laptop client's keypair is made in the browser (or, as a fallback, on the server container, in
   output HyperProx never logs) and kept with its config as one vault item per peer, revealed again only
-  after re-confirmation, audited. A rotated key is kept seven days, marked rotated, then deleted. A server
+  after the master password is re-entered, audited. A rotated key is kept seven days, marked rotated, then deleted. A server
   key goes to the vault only if the owner opts in. Postgres holds public keys only.
 - **The MikroTik router** is written to only with a separate RouterOS login in the vault (group policies
   read, write, api, rest-api), never the admin login; without it the view is read-only. RouterOS cannot
@@ -549,7 +561,7 @@ the rules below ([docs/remote-access.md](remote-access.md)).
 ## Send files: what runs on your nodes
 
 Send files (the simple way) runs short, read-only commands on nodes over HyperProx's saved node logins, and
-writes only when you confirm setup with your master password.
+writes only when you confirm setup.
 
 - **Looking for libraries** (each time the dialog opens, at most three times a minute): on every online node
   of both servers it reads the mount table, free space, the node's own addresses, the Proxmox storage list
@@ -570,7 +582,7 @@ writes only when you confirm setup with your master password.
   addresses (at most 16; never public, loopback or link-local).
 - **Preview**: `find` in the picked items at home and under the same names in the library there (at most
   50,000 files per item).
-- **Setup** (re-confirmed; never for an API token; bound to the preview it was shown with): allows the home
+- **Setup** (confirmed on the page; never for an API token; bound to the preview it was shown with): allows the home
   libraries that hold the picked items and the one picked library, confirms an identity key you ticked, and
   installs one sending key for that library.
 - **After a copy**: `pct exec <id> -- curl` to that Plex's refresh address for the one copied folder; only the
