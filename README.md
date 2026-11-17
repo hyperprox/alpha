@@ -2137,7 +2137,7 @@ name, pick the film, album, a whole season or one episode, and HyperProx runs on
   the slow one is left alone. When the only objection to a release is that the slow download is still queued, you can
   choose **Grab anyway**; the swap is what clears that objection. Any other objection still refuses.
 - A search is limited to one per item every ten minutes (you see the last answer in between), and six a minute per
-  person. Every search and download is written to the audit log first; if the entry cannot be written, nothing runs.
+  person. A second click while a search is still running waits for that same search. Every search and download is written to the audit log first; if the entry cannot be written, nothing runs.
   API tokens cannot use it.
 
 **VPN panel.** When your Arr Stack was installed with the VPN option (Gluetun, with qBittorrent behind it), the Queue
@@ -2147,14 +2147,17 @@ shown to admins only; everyone else sees that it is hidden. Without Gluetun, the
 
 - **How it reads.** HyperProx runs a short read-only script inside the stack's container, the same way its other
   plug-ins reach a container. It finds the container by the qBittorrent address in the plug-in's settings, or the one
-  container the Catalogue installed the Arr Stack in. It reads Docker's view of both containers, the forwarded port from
+  container the Catalogue installed the Arr Stack in. If two running containers have that address, it does not guess:
+  the panel says so and no fix runs. It reads Docker's view of both containers, the forwarded port from
   Gluetun's own status file, and Gluetun's control server inside the container. Gluetun 3.41 still answers those reads
   without a key; if a later version asks for one, the panel falls back to the status file and Gluetun's health check.
   Your VPN login is never read: Gluetun's settings are filtered inside the container to the provider, VPN type, port
   forwarding and the region you chose.
 - **Problems, each with a fix** (admin, confirmed, written to the audit log first):
   - the forwarded port and qBittorrent's port differ: **Put the forwarded port into qBittorrent**, the same thing
-    Gluetun does by itself when it gets a new port;
+    Gluetun does by itself when it gets a new port. It goes to the qBittorrent inside the VPN's network, in the same
+    container the port came from. The qBittorrent address in the plug-in's settings is used only when it is that
+    container's own address; otherwise HyperProx says it cannot prove they are the same and leaves it alone;
   - the tunnel is down, no port has been handed out, or qBittorrent says it is firewalled: **Reconnect the tunnel**.
     HyperProx asks Gluetun to stop and start the tunnel, which keeps qBittorrent connected to it. If Gluetun refuses
     the request, HyperProx restarts the VPN container and then qBittorrent instead (qBittorrent shares the VPN's
@@ -2166,7 +2169,10 @@ shown to admins only; everyone else sees that it is hidden. Without Gluetun, the
 - **Switching region is not offered.** The region sits in the same settings file as your VPN login, and changing it
   means recreating both containers, so it is left to you.
 - **An alert** goes out through your notification channels when the tunnel has been down, or the port has been wrong,
-  for more than ten minutes, and one more when it is fixed. HyperProx checks every two minutes while it is unlocked.
+  for more than ten minutes, and one more when it is fixed. HyperProx checks every two minutes while it is unlocked,
+  and remembers what it has announced across a restart, so it neither repeats an alert nor forgets the all-clear.
+- Viewers see the panel without the public address, and a plain sentence instead of the details when it cannot be
+  read; admins see why.
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.
 

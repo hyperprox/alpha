@@ -229,7 +229,7 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
       : prisma ? { start: () => startGiveUpTimer(giveUpService(prisma, m => log(m, 'warn')), m => log(m, 'warn')) } : null
     if (giveUp) stops.push(giveUp.start())
     steps.push('arr-vpn')
-    const vpn = deps.arrVpn !== undefined ? deps.arrVpn : { start: () => startVpnWatch(arrVpnService(m => log(m, 'warn')), m => log(m, 'warn')) }
+    const vpn = deps.arrVpn !== undefined ? deps.arrVpn : { start: () => startVpnWatch(arrVpnService(m => log(m, 'warn'), prisma), m => log(m, 'warn')) }
     if (vpn) stops.push(vpn.start())
   })
 

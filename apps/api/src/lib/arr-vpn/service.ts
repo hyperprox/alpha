@@ -21,7 +21,7 @@
 import type { CoreEndpointClient } from '../plugin-host'
 import type { NotifyEventInput } from '../notify/types'
 import type { GuestRef } from '../guest-id'
-import { READ_SCRIPT, absent, alertStep, emptyAlertState, parseReading, vpnStatus, type AlertState, type FixName, type VpnStatus } from './parse'
+import { READ_SCRIPT, absent, alertStep, emptyAlertState, parseReading, port, vpnStatus, type AlertState, type FixName, type VpnStatus } from './parse'
 
 export class VpnRefusal extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); this.name = 'VpnRefusal' }
@@ -29,9 +29,18 @@ export class VpnRefusal extends Error {
 
 export interface ExecOut { code: number; output: string; timedOut: boolean }
 
+/**
+ * Where the stack runs. `qbitProven`: the plug-in's saved qBittorrent address is this container's own address, so its
+ * qBittorrent connection reaches the qBittorrent behind this Gluetun. Otherwise only the in-guest path is used.
+ */
+export interface Located { guest: GuestRef; name: string; qbitProven: boolean }
+
+/** The alert state, kept where a restart does not lose it. */
+export interface AlertStore { load(): Promise<AlertState | null>; save(s: AlertState): Promise<void> }
+
 export interface VpnDeps {
-  /** Which guest runs the Arr Stack. Null: HyperProx cannot tell. */
-  locate(): Promise<{ guest: GuestRef; name: string } | null>
+  /** Which guest runs the Arr Stack. Null: HyperProx cannot tell. Throws a VpnRefusal when it will not guess (two match). */
+  locate(): Promise<Located | null>
   /** Runs a script in that guest (the guest guard applies). */
   exec(g: GuestRef, script: string, timeoutMs: number): Promise<ExecOut>
   /** The plug-in's qBittorrent connection, when it has one. */
@@ -42,6 +51,8 @@ export interface VpnDeps {
   now(): number
   unlocked(): boolean
   log?(m: string): void
+  /** Default: memory only. */
+  alerts?: AlertStore
 }
 
 const CACHE_MS = 10_000
@@ -80,7 +91,7 @@ docker restart qbittorrent >/dev/null && echo '@@restarted' || echo '@@failed'
 
 /** Gluetun's own port-forwarding hook, run by hand: qBittorrent answers it from inside Gluetun's network. */
 export function setPortScript(p: number): string {
-  if (!Number.isInteger(p) || p < 1 || p > 65535) throw new Error('bad port')
+  if (port(p) !== p) throw new Error('bad port')
   return `docker exec gluetun wget -qO- -T 10 --post-data 'json={"listen_port":${p}}' http://127.0.0.1:8080/api/v2/app/setPreferences >/dev/null 2>&1 && echo '@@set' || echo '@@failed'\n`
 }
 
@@ -88,8 +99,9 @@ export interface ActResult { action: FixName; done: boolean; summary: string; no
 
 export class VpnService {
   private memo: { at: number; p: Promise<VpnStatus> } | null = null
-  private alerts: AlertState = emptyAlertState()
+  private alerts: AlertState | null = null
   private busy = false
+  private watching = false
 
   constructor(private d: VpnDeps) {}
 
@@ -106,14 +118,16 @@ export class VpnService {
 
   private async read(): Promise<VpnStatus> {
     const now = this.d.now()
-    const where = await this.d.locate().catch(() => null)
+    let where: Located | null
+    try { where = await this.d.locate() } catch (e) { return absent(now, e instanceof VpnRefusal ? e.message : `The Arr Stack's container could not be found: ${msg(e)}`) }
     if (!where) return absent(now, 'HyperProx could not tell which container runs your Arr Stack, so the VPN cannot be checked.')
     let out: ExecOut
     try { out = await this.d.exec(where.guest, READ_SCRIPT, 45_000) } catch (e) { return absent(now, `The Arr Stack's container could not be read: ${msg(e)}`) }
     const r = parseReading(out.output)
     if (!r.complete && r.docker && !out.output.includes('@@nogluetun')) return absent(now, out.timedOut ? 'Reading the VPN took too long.' : 'The VPN could not be read.', r.present)
-    // qBittorrent through the plug-in's own connection, when there is one; the in-guest reading otherwise.
-    const qb = r.present ? await this.d.qbit().catch(() => null) : null
+    // qBittorrent through the plug-in's own connection only when that is provably the one behind this Gluetun; the
+    // in-guest reading (from inside Gluetun's network) otherwise.
+    const qb = r.present && where.qbitProven ? await this.d.qbit().catch(() => null) : null
     const [prefs, transfer] = qb ? await Promise.all([qb.get('/api/v2/app/preferences', 10_000).catch(() => null), qb.get('/api/v2/transfer/info', 10_000).catch(() => null)]) : [null, null]
     return vpnStatus(r, this.d.now(), { guest: where.name, prefs, transfer })
   }
@@ -122,7 +136,7 @@ export class VpnService {
     if (this.busy) throw new VpnRefusal(409, 'busy', 'A VPN fix is already running. Wait for it to finish.')
     this.busy = true
     try {
-      const where = await this.d.locate().catch(() => null)
+      const where = await this.d.locate()
       if (!where) throw new VpnRefusal(409, 'no_guest', 'HyperProx could not tell which container runs your Arr Stack.')
       const before = await this.status(true)
       if (!before.present) throw new VpnRefusal(409, 'no_vpn', 'This Arr Stack has no VPN container.')
@@ -137,10 +151,14 @@ export class VpnService {
         if (p === null) throw new VpnRefusal(409, 'no_port', 'The VPN has not handed out a port yet, so there is nothing to put into qBittorrent. Try "Reconnect the tunnel".')
         if (before.listenPort === p) throw new VpnRefusal(409, 'already', `qBittorrent already listens on ${p}.`)
         await audit({ port: p, was: before.listenPort })
-        const qb = await this.d.qbit().catch(() => null)
-        let set = false
-        if (qb?.postForm) set = await qb.postForm('/api/v2/app/setPreferences', { json: JSON.stringify({ listen_port: p }) }, 15_000).then(() => true, () => false)
-        if (!set) set = /@@set/.test((await this.d.exec(where.guest, setPortScript(p), 30_000)).output)
+        // The qBittorrent that shares this Gluetun's network, in the guest that supplied the port: from inside that
+        // network first. The plug-in's saved connection only when it is provably the same qBittorrent.
+        let set = /@@set/.test((await this.d.exec(where.guest, setPortScript(p), 30_000)).output)
+        if (!set && where.qbitProven) {
+          const qb = await this.d.qbit().catch(() => null)
+          if (qb?.postForm) set = await qb.postForm('/api/v2/app/setPreferences', { json: JSON.stringify({ listen_port: p }) }, 15_000).then(() => true, () => false)
+        }
+        if (!set && !where.qbitProven) notes.push('qBittorrent did not answer from inside the VPN\'s network, and HyperProx cannot prove that the qBittorrent in the plug-in\'s settings is the one behind this VPN, so it did not use that one.')
         const after = await this.status(true)
         done = after.listenPort === p
         summary = done ? `qBittorrent now listens on ${p}, the port the VPN forwards.` : set ? `qBittorrent was told to listen on ${p}, but still reports ${after.listenPort ?? 'no port'}.` : 'qBittorrent did not accept the new port.'
@@ -176,11 +194,21 @@ export class VpnService {
 
   /** One look for the alert. Does nothing while locked (the node logins are in the vault). */
   async watchTick(): Promise<void> {
-    if (!this.d.unlocked()) return
+    // One look at a time: a slow look is never overlapped by the next tick.
+    if (this.watching || !this.d.unlocked()) return
+    this.watching = true
+    try { await this.look() } finally { this.watching = false }
+  }
+
+  private async look(): Promise<void> {
+    if (!this.alerts) this.alerts = (await this.d.alerts?.load().catch(() => null)) ?? emptyAlertState()
     const s = await this.status(true).catch(() => null)
     if (!s || !s.present || s.unavailable) return
     const { state, fire, clear } = alertStep(this.alerts, s.problems, this.d.now())
+    const changed = JSON.stringify(state) !== JSON.stringify(this.alerts)
     this.alerts = state
+    // Saved before anything is sent: a restart then neither repeats an alert nor loses its all-clear.
+    if (changed) await this.d.alerts?.save(state).catch(e => this.d.log?.(`[arr-vpn] the alert state could not be saved: ${msg(e)}`))
     for (const p of fire) {
       await this.d.publish({
         type: `arr.vpn.${p.code}`, severity: 'warning', fingerprint: `arr-vpn:${p.code}`,

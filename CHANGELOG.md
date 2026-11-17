@@ -38,7 +38,7 @@ know or do before they install. Newest entry at the top.
   - Technical: notification types `arr.vpn.down`, `arr.vpn.no-port`, `arr.vpn.mismatch` (fingerprinted, resolved on recovery); watch every 2 minutes from `lib/services/bootstrap.ts` step `arr-vpn`.
 
 ### Improved
-- **Clearer reason when something is already downloading.** See what's available used to call a release turned down for that reason "not better than what you already have"; it now says something as good is already downloading.
+- **Clearer reason when something is already downloading.** When Sonarr, Radarr or Lidarr turns a release down because a release in the queue already meets the cutoff, the reason now reads "Something as good is already downloading" instead of "Not better than what you already have". This shows in Find a better copy and in See what's available.
   - Technical: the release rows, queue read and grab checks moved to `lib/arr-release/` and are shared by the give-up service and the better-copy service.
 
 ## 2026-11-16 — Opening the home cluster

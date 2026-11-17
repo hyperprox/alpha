@@ -269,6 +269,19 @@ test('fails closed: no audit entry, no search and no grab', async () => {
   assert.equal((await two.svc.grab('radarr:7', a.rows[0].id, 'admin@example.com')).result, 'queued')
 })
 
+test('a second click for the same item while its search runs joins it: one search of the indexers', async () => {
+  const fa = radarr()
+  const { svc, audits } = rig({ radarr: fa.client })
+  const [a, b] = await Promise.all([svc.search('radarr:7', 'admin@example.com'), svc.search('radarr:7', 'admin@example.com')])
+  assert.equal(fa.searches(), 1); assert.equal(audits.filter(x => x.action === 'arrstack.better.search').length, 1)
+  assert.deepEqual(a.rows.map(r => r.id), b.rows.map(r => r.id))
+  assert.deepEqual([a.reused, b.reused].sort(), [false, true])
+  // A failed search is not kept: the next click asks again.
+  const bad = rig({ radarr: fakeArr(() => new Error('503 Service Unavailable')).client })
+  await assert.rejects(bad.svc.search('radarr:7', 'admin@example.com'))
+  await assert.rejects(bad.svc.search('radarr:7', 'admin@example.com'))
+})
+
 test('a download that left the queue cannot be searched from', async () => {
   const fa = radarr({ queue: [] })
   const { svc } = rig({ radarr: fa.client })
@@ -316,5 +329,25 @@ test('routes: a viewer can look things up but not search or grab; a token is ref
     assert.equal(s.statusCode, 200, s.body)
     const g = await post('grab', { target: 'radarr:7', releaseId: JSON.parse(s.body).data.rows[0].id, confirmed: true })
     assert.equal(g.statusCode, 200, g.body); assert.equal(JSON.parse(g.body).data.result, 'queued')
+  } finally { await a.close() }
+})
+
+test('routes: at most so many new searches a minute per person (each asks every indexer)', async () => {
+  const fa = radarr()
+  const { svc } = rig({ radarr: fa.client })
+  const a = Fastify({ logger: false })
+  await registerGate(a)
+  await a.register(authRoutes, { prefix: '/api/auth' })
+  await a.register(buildArrBetterRoutes({ service: () => svc, limiter: new MissLimiter(50), searchLimiter: new MissLimiter(2) }), { prefix: '/api/plugins/arrstack' })
+  await a.ready()
+  try {
+    const adm = await signIn(a, 'admin@example.com', 'admin master password')
+    const search = () => a.inject({ method: 'POST', url: '/api/plugins/arrstack/better/search', headers: { cookie: adm.cookie }, payload: { target: 'radarr:7' } })
+    assert.equal((await search()).statusCode, 200)
+    assert.equal((await search()).statusCode, 200)
+    const third = await search()
+    assert.equal(third.statusCode, 429); assert.equal(JSON.parse(third.body).code, 'rate_limited')
+    assert.match(JSON.parse(third.body).error, /Too many searches in a minute/)
+    assert.equal(fa.searches(), 1, 'the second was the reused answer; the third never reached Radarr')
   } finally { await a.close() }
 })

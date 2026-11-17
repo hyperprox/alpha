@@ -25,7 +25,9 @@ import { listGuests } from '../pve/guests'
 import { sightingsOf } from '../catalogue/sightings'
 import { ARR_RECIPE_ID } from '../arr/recipe'
 import type { Machine } from '../remote/types'
-import { VpnService } from './service'
+import { VpnRefusal, VpnService, type AlertStore, type Located } from './service'
+import { PrismaGiveUpStore } from '../arr-giveup/store'
+import type { AlertState } from './parse'
 
 const LOCATE_TTL_MS = 10 * 60_000
 
@@ -57,29 +59,59 @@ export function lxcAddresses(cfg: Record<string, unknown>): string[] {
   return out
 }
 
-let located: { at: number; v: { guest: GuestRef; name: string } | null } | null = null
+/** Guests whose own address is `host`. Pure. */
+export function matchingGuests<T>(rows: T[], addresses: (r: T) => string[], host: string): T[] {
+  return rows.filter(r => addresses(r).includes(host))
+}
 
-async function locate(): Promise<{ guest: GuestRef; name: string } | null> {
+let located: { at: number; v: Located | null; error?: string } | null = null
+
+async function locate(): Promise<Located | null> {
   const now = Date.now()
-  if (located && now - located.at < LOCATE_TTL_MS) return located.v
+  if (located && now - located.at < LOCATE_TTL_MS) {
+    if (located.error) throw new VpnRefusal(409, 'ambiguous', located.error)
+    return located.v
+  }
   const settings = await getSettings('arrstack').catch(() => ({} as Record<string, string>))
-  const host = hostOf(settings.qbit_url) ?? hostOf(settings.sonarr_url)
+  const qbitHost = hostOf(settings.qbit_url)
+  const host = qbitHost ?? hostOf(settings.sonarr_url)
   const rows = (await guestRows()).filter(r => r.type === 'lxc' && r.running && !r.ignored)
   let hit: Row | undefined
+  let byAddress = false
   if (host) {
+    const addr = new Map<number, string[]>()
     for (const r of rows) {
       const cfg = await homePve().fetchStrict<Record<string, unknown>>(`/nodes/${encodeURIComponent(r.node)}/lxc/${r.vmid}/config`).catch(() => null)
-      if (cfg && lxcAddresses(cfg).includes(host)) { hit = r; break }
+      addr.set(r.vmid, cfg ? lxcAddresses(cfg) : [])
     }
+    const hits = matchingGuests(rows, r => addr.get(r.vmid) ?? [], host)
+    if (hits.length > 1) {
+      // Never guess: the wrong container would get the fixes.
+      const error = `${hits.length} running containers have the address the Arr Stack plug-in uses (${hits.map(h => h.name).join(', ')}), so HyperProx will not guess which one runs it. Give one of them a different address.`
+      located = { at: now, v: null, error }
+      throw new VpnRefusal(409, 'ambiguous', error)
+    }
+    hit = hits[0]
+    byAddress = !!hit
   }
   if (!hit) {
     const { catalogue } = await sightingsOf(ARR_RECIPE_ID, 'sonarr', { guests: async () => rows, minVmid: 100, ignoreScanFailure: true }).catch(() => ({ catalogue: [] as any[] }))
     const ids = [...new Set(catalogue.map((s: any) => s.guest.vmid))]
     if (ids.length === 1) hit = rows.find(r => r.vmid === ids[0])
   }
-  const v = hit ? { guest: { type: hit.type, vmid: hit.vmid }, name: hit.name } : null
+  // Only a match on qBittorrent's own address proves the plug-in's qBittorrent connection is the one in this container.
+  const v = hit ? { guest: { type: hit.type, vmid: hit.vmid }, name: hit.name, qbitProven: byAddress && !!qbitHost } : null
   located = { at: now, v }
   return v
+}
+
+/** The alert state in the Arr Stack's own settings rows (the give-up store's key/value table). */
+function prismaAlertStore(prisma: unknown): AlertStore {
+  const store = new PrismaGiveUpStore(prisma as any)
+  return {
+    load: () => store.getSetting<AlertState>('vpn:alerts'),
+    save: s => store.setSetting('vpn:alerts', s, 'hyperprox'),
+  }
 }
 
 const homeFetch: Pick<ProxmoxClient, 'fetchStrict'> = {
@@ -88,7 +120,7 @@ const homeFetch: Pick<ProxmoxClient, 'fetchStrict'> = {
 
 let shared: VpnService | null = null
 
-export function arrVpnService(log?: (m: string) => void): VpnService {
+export function arrVpnService(log?: (m: string) => void, prisma?: unknown): VpnService {
   if (shared) return shared
   const executor = productionRemoteExecutor(homeFetch)
   shared = new VpnService({
@@ -111,6 +143,7 @@ export function arrVpnService(log?: (m: string) => void): VpnService {
     now: () => Date.now(),
     unlocked: () => isUnlocked(),
     log,
+    ...(prisma ? { alerts: prismaAlertStore(prisma) } : {}),
   })
   return shared
 }

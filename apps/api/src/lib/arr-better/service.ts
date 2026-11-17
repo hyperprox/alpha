@@ -95,6 +95,8 @@ export interface GrabAnswer { result: 'queued' | 'not-seen' | 'removed-executabl
 
 export class BetterCopyService {
   private searches = new Map<string, Search>()
+  /** Searches running now, by item: a second click for the same item joins the first instead of asking again. */
+  private pending = new Map<string, Promise<Search>>()
   private library = new Map<string, { at: number; rows: any[] }>()
   private grabber: ReleaseGrabber
 
@@ -195,25 +197,14 @@ export class BetterCopyService {
     let s = this.searches.get(t.key)
     let reused = true
     if (!s || now - s.at >= SEARCH_COOLDOWN_MS) {
-      reused = false
-      const c = await this.client(t.app)
-      let item: Item, swap: Swap | undefined
-      if (t.kind === 'download') {
-        const rows = await this.downloadRows(c, t.app, t.downloadId)
-        if (!rows) throw new BetterRefusal(404, 'gone', 'That download is no longer in the queue.')
-        item = itemOfDownload(t.app, rows)
-        swap = { downloadId: t.downloadId, name: stripPaths(String(rows[0]?.title ?? 'the download')).slice(0, 160) }
-      } else item = t
-      const info = await this.describe(c, item)
-      await this.audit('arrstack.better.search', { app: t.app, by, item: info.label, ...(swap ? { replacing: swap.name } : {}) })
-      const q = item.season !== undefined ? `seriesId=${item.seriesId}&seasonNumber=${item.season}` : `${ID_FIELD[t.app]}=${item.arrId}`
-      const raw = await c.get(`${API[t.app]}/release?${q}`, 180_000)
-      s = {
-        key: t.key, app: t.app, at: now, raw: Array.isArray(raw) ? raw : [], profile: info.profile, label: info.label, have: info.have,
-        wanted: new Set(info.ids), ...(item.season !== undefined ? { seriesId: item.seriesId, season: item.season } : {}), ...(swap ? { swap } : {}),
+      const running = this.pending.get(t.key)
+      if (running) s = await running
+      else {
+        reused = false
+        const p = this.fresh(t, by, now)
+        this.pending.set(t.key, p)
+        try { s = await p } finally { this.pending.delete(t.key) }
       }
-      this.searches.set(t.key, s)
-      for (const [k, v] of this.searches) if (now - v.at > GRAB_WINDOW_MS) this.searches.delete(k)
     }
     const v = betterView(s.raw, { app: s.app, profile: s.profile, swap: !!s.swap })
     return {
@@ -221,6 +212,29 @@ export class BetterCopyService {
       target: s.key, label: s.label, have: s.have, swap: s.swap ? { name: s.swap.name } : null,
       searchedAt: new Date(s.at).toISOString(), reused, nextSearchAt: new Date(s.at + SEARCH_COOLDOWN_MS).toISOString(),
     }
+  }
+
+  /** One new search for the item: resolved, described, audited first, then asked of the arr. */
+  private async fresh(t: BetterTarget, by: string, now: number): Promise<Search> {
+    const c = await this.client(t.app)
+    let item: Item, swap: Swap | undefined
+    if (t.kind === 'download') {
+      const rows = await this.downloadRows(c, t.app, t.downloadId)
+      if (!rows) throw new BetterRefusal(404, 'gone', 'That download is no longer in the queue.')
+      item = itemOfDownload(t.app, rows)
+      swap = { downloadId: t.downloadId, name: stripPaths(String(rows[0]?.title ?? 'the download')).slice(0, 160) }
+    } else item = t
+    const info = await this.describe(c, item)
+    await this.audit('arrstack.better.search', { app: t.app, by, item: info.label, ...(swap ? { replacing: swap.name } : {}) })
+    const q = item.season !== undefined ? `seriesId=${item.seriesId}&seasonNumber=${item.season}` : `${ID_FIELD[t.app]}=${item.arrId}`
+    const raw = await c.get(`${API[t.app]}/release?${q}`, 180_000)
+    const s: Search = {
+      key: t.key, app: t.app, at: now, raw: Array.isArray(raw) ? raw : [], profile: info.profile, label: info.label, have: info.have,
+      wanted: new Set(info.ids), ...(item.season !== undefined ? { seriesId: item.seriesId, season: item.season } : {}), ...(swap ? { swap } : {}),
+    }
+    this.searches.set(t.key, s)
+    for (const [k, v] of this.searches) if (now - v.at > GRAB_WINDOW_MS) this.searches.delete(k)
+    return s
   }
 
   /** A download's rows from a fresh read of the whole queue (lib/arr-queue/actions.ts resolveDownload checks them). */

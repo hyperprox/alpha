@@ -12,8 +12,8 @@ import { authRoutes } from '../src/routes/auth'
 import { requiredRole, needsReconfirm } from '../src/lib/roles'
 import { buildArrVpnRoutes } from '../src/routes/arr-vpn'
 import { ALERT_AFTER_MS, READ_SCRIPT, alertStep, emptyAlertState, forViewer, parseReading, vpnStatus } from '../src/lib/arr-vpn/parse'
-import { RECONNECT_SCRIPT, VpnService, setPortScript, type VpnDeps } from '../src/lib/arr-vpn/service'
-import { hostOf, lxcAddresses } from '../src/lib/arr-vpn/production'
+import { RECONNECT_SCRIPT, VpnRefusal, VpnService, setPortScript, type VpnDeps } from '../src/lib/arr-vpn/service'
+import { hostOf, lxcAddresses, matchingGuests } from '../src/lib/arr-vpn/production'
 import type { CoreEndpointClient } from '../src/lib/plugin-host'
 import { signIn } from './fakes/app'
 import { FakeBroker } from './fakes/fake-broker'
@@ -164,7 +164,7 @@ function rig(o: { reading?: () => string; qbit?: CoreEndpointClient | null } & P
   const { reading: firstReading, qbit: qbitClient, ...rest } = o
   let reading = firstReading ?? (() => printed())
   const svc = new VpnService({
-    locate: async () => ({ guest: { type: 'lxc', vmid: 9101 }, name: 'arr-stack' }),
+    locate: async () => ({ guest: { type: 'lxc', vmid: 9101 }, name: 'arr-stack', qbitProven: true }),
     exec: async (_g, script) => { scripts.push(script); return { code: 0, output: script === READ_SCRIPT ? reading() : script === RECONNECT_SCRIPT ? '@@via restart 401 none\n@@after running|healthy\n' : '@@restarted\n', timedOut: false } },
     qbit: async () => qbitClient ?? null,
     audit: async (action, details) => { audits.push({ action, details }) },
@@ -174,7 +174,7 @@ function rig(o: { reading?: () => string; qbit?: CoreEndpointClient | null } & P
   return { svc, scripts, audits, sent, setNow: (t: number) => { now = t }, setReading: (f: () => string) => { reading = f } }
 }
 
-test('put the forwarded port into qBittorrent: audited first, through the plug-in\'s connection, read back', async () => {
+test('put the forwarded port into qBittorrent: audited first, from inside the VPN\'s network first, then the plug-in\'s proven connection, read back', async () => {
   let listen = 6881
   const calls: any[] = []
   const qb: CoreEndpointClient = {
@@ -182,9 +182,10 @@ test('put the forwarded port into qBittorrent: audited first, through the plug-i
     postForm: async (p: string, f: Record<string, string>) => { calls.push({ p, f }); listen = JSON.parse(f.json).listen_port; return null },
     delete: async () => null, put: async () => null, image: async () => { throw new Error('no') }, trigger: async () => {},
   }
-  const { svc, audits } = rig({ qbit: qb })
+  const { svc, audits, scripts } = rig({ qbit: qb })
   const r = await svc.act('set-port', 'admin@example.com')
   assert.equal(r.done, true, r.summary); assert.match(r.summary, /now listens on 40123/)
+  assert.ok(scripts.includes(setPortScript(40123)), 'the qBittorrent behind this Gluetun is asked first')
   assert.deepEqual(calls, [{ p: '/api/v2/app/setPreferences', f: { json: '{"listen_port":40123}' } }])
   assert.deepEqual(audits.map(a => a.action), ['arrstack.vpn.fix', 'arrstack.vpn.fix.done'])
   assert.equal(audits[0].details.port, 40123); assert.equal(audits[0].details.was, 6881)
@@ -201,6 +202,71 @@ test('without the plug-in\'s qBittorrent connection the port goes in from inside
   assert.equal(setPortScript(40123).includes(`'json={"listen_port":40123}'`), true)
   assert.throws(() => setPortScript(70000)); assert.throws(() => setPortScript(Number.NaN))
   void scripts
+})
+
+test('ports: only 1024 to 65535 count; a lower one is never read as forwarded, nor sent', () => {
+  assert.throws(() => setPortScript(80)); assert.throws(() => setPortScript(1023)); assert.doesNotThrow(() => setPortScript(1024))
+  const low = vpnStatus(parseReading(printed({ port: '80', pf: '{"port":80}' })), NOW)
+  assert.equal(low.forwardedPort, null); assert.equal(low.portMatch, 'no-port')
+  assert.equal(vpnStatus(parseReading(printed({ listen: '"listen_port":0' })), NOW).listenPort, null)
+})
+
+test('the plug-in\'s qBittorrent is used only when proven to be the one behind this Gluetun', async () => {
+  const calls: string[] = []
+  const qb: CoreEndpointClient = {
+    get: async (p: string) => { calls.push(p); return p === '/api/v2/app/preferences' ? { listen_port: 40123 } : {} },
+    postForm: async (p: string) => { calls.push(p); return null },
+    delete: async () => null, put: async () => null, image: async () => { throw new Error('no') }, trigger: async () => {},
+  }
+  // Found through the Catalogue's record, not by qBittorrent's own address: the saved connection may be another one.
+  const { svc } = rig({ qbit: qb, reading: () => printed({ listen: '"listen_port":6881' }), locate: async () => ({ guest: { type: 'lxc', vmid: 9101 }, name: 'arr-stack', qbitProven: false }) })
+  const s = await svc.status()
+  assert.equal(s.listenPort, 6881, 'the in-guest reading, not the saved connection\'s 40123'); assert.equal(s.portMatch, 'mismatch')
+  const r = await svc.act('set-port', 'admin@example.com')
+  assert.equal(r.done, false)
+  assert.ok(r.notes.some(n => /cannot prove that the qBittorrent in the plug-in's settings is the one behind this VPN/.test(n)), r.notes.join(' | '))
+  assert.deepEqual(calls, [], 'the saved connection is never touched')
+})
+
+test('two running containers with the plug-in\'s address: no guess; the panel and every fix say so', async () => {
+  const rows = [{ vmid: 1, a: ['192.0.2.40'] }, { vmid: 2, a: ['192.0.2.40'] }, { vmid: 3, a: ['192.0.2.41'] }]
+  assert.deepEqual(matchingGuests(rows, r => r.a, '192.0.2.40').map(r => r.vmid), [1, 2])
+  const why = '2 running containers have the address the Arr Stack plug-in uses (a, b), so HyperProx will not guess which one runs it. Give one of them a different address.'
+  const { svc, scripts } = rig({ locate: async () => { throw new VpnRefusal(409, 'ambiguous', why) } })
+  assert.equal((await svc.status()).unavailable, why)
+  await assert.rejects(svc.act('reconnect', 'admin@example.com'), (e: any) => e.code === 'ambiguous')
+  assert.equal(scripts.length, 0)
+  assert.match(forViewer(await svc.status()).unavailable!, /could not be checked just now\. An admin can see why\./)
+})
+
+test('watch: a slow look is never overlapped by the next tick', async () => {
+  let release: () => void = () => {}
+  const gate = new Promise<void>(r => { release = r })
+  let reads = 0
+  const { svc } = rig()
+  const orig = (svc as any).d.exec
+  ;(svc as any).d.exec = async (g: any, s: string, t: number) => { if (s === READ_SCRIPT) { reads++; await gate } return orig(g, s, t) }
+  const one = svc.watchTick(), two = svc.watchTick()
+  release(); await Promise.all([one, two])
+  assert.equal(reads, 1)
+})
+
+test('watch: the alert state is kept across a restart, so it neither alerts again nor loses its all-clear', async () => {
+  let saved: any = null
+  const alerts = { load: async () => saved, save: async (s: any) => { saved = structuredClone(s) } }
+  let down = true
+  const first = rig({ reading: () => printed({ vpnstatus: down ? '{"status":"stopped"}' : '{"status":"running"}' }), alerts })
+  await first.svc.watchTick()
+  first.setNow(NOW + 11 * 60_000); await first.svc.watchTick()
+  assert.equal(first.sent.length, 1); assert.equal(saved.announced.down, true)
+  // A new process: still down, no second alert; then it recovers and the all-clear goes out.
+  const second = rig({ reading: () => printed({ vpnstatus: down ? '{"status":"stopped"}' : '{"status":"running"}' }), alerts })
+  second.setNow(NOW + 20 * 60_000); await second.svc.watchTick()
+  assert.equal(second.sent.length, 0)
+  down = false
+  second.setNow(NOW + 22 * 60_000); await second.svc.watchTick()
+  assert.equal(second.sent.length, 1); assert.equal(second.sent[0].resolved, true)
+  assert.deepEqual(saved, { since: {}, announced: {} })
 })
 
 test('fails closed: no audit entry, no fix', async () => {

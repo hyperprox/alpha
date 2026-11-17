@@ -125,7 +125,8 @@ export interface VpnStatus {
   readAt: string
 }
 
-const port = (v: unknown): number | null => { const n = Number(String(v ?? '').trim()); return Number.isInteger(n) && n > 0 && n < 65536 ? n : null }
+/** A port a torrent client may listen on: 1024 to 65535 (below that is never a forwarded port). */
+export const port = (v: unknown): number | null => { const n = Number(String(v ?? '').trim()); return Number.isInteger(n) && n >= 1024 && n <= 65535 ? n : null }
 const num = (v: unknown): number | null => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null }
 const ip = (v: unknown): string | null => { const s = String(v ?? '').trim(); return /^(\d{1,3}(\.\d{1,3}){3}|[0-9a-fA-F:]{2,39})$/.test(s) ? s : null }
 const words = (v: unknown, max = 60) => String(v ?? '').replace(/[^\p{L}\p{N} ,.'()-]/gu, '').trim().slice(0, max)
@@ -189,9 +190,12 @@ export function vpnStatus(r: VpnReading, now: number, o: { guest?: string; prefs
   return s
 }
 
-/** What a viewer sees: everything but the tunnel's public address. */
+/** What a viewer sees: everything but the tunnel's public address, and a plain sentence instead of the details of a failed read. */
 export function forViewer(s: VpnStatus): VpnStatus {
-  return { ...s, publicIp: null, ...(s.publicIp ? { publicIpHidden: true } : {}) }
+  return {
+    ...s, publicIp: null, ...(s.publicIp ? { publicIpHidden: true } : {}),
+    ...(s.unavailable ? { unavailable: 'The VPN could not be checked just now. An admin can see why.' } : {}),
+  }
 }
 
 // ── the alert: a problem that lasts more than ten minutes, said once, and its all-clear ─────────────────────────
