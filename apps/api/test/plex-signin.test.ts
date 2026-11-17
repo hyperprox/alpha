@@ -19,6 +19,7 @@ import { MemoryApiTokenStore, setApiTokenStore, createApiToken } from '../src/li
 import { requiredRole, needsReconfirm } from '../src/lib/roles'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const ACCOUNT = 'ACCOUNT-TOKEN-must-never-be-kept'
 const SERVER = 'SERVER-TOKEN-for-the-den'
@@ -164,7 +165,7 @@ before(async () => {
     schedule: () => undefined, // the test drives tick() itself
     expire: () => undefined,   // and the clock: sweep() drops what is past its time
   })
-  app = Fastify({ logger: { level: 'info', stream: { write: (l: string) => { logs.push(l) } } } })
+  app = confirmAfterReconfirm(Fastify({ logger: { level: 'info', stream: { write: (l: string) => { logs.push(l) } } } }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildPlexSigninRoutes({ signin, known: async () => null }), { prefix: '/api/plugins/plex/signin' })
@@ -190,9 +191,9 @@ test('guards: an operator is refused, an admin must re-confirm, an API token is 
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const r2 = await app.inject({ method: 'POST', url: BASE, headers: { cookie }, payload: {} })
   assert.equal(r2.statusCode, 403)
-  assert.equal(r2.json().code, 'reconfirm_required')
+  assert.equal(r2.json().code, 'confirm_required')
   const r3 = await app.inject({ method: 'POST', url: `${BASE}/whatever/connect`, headers: { cookie }, payload: {} })
-  assert.equal(r3.json().code, 'reconfirm_required')
+  assert.equal(r3.json().code, 'confirm_required')
 
   // A token: refused by the gate (it cannot re-confirm) or by the route by name, never served.
   const t = (await createApiToken({ name: 'auto', role: 'admin' }, 'test', tokens)).token

@@ -21,6 +21,7 @@ import type { CoreEndpointClient } from '../src/lib/plugin-host'
 import { MissLimiter } from '../src/lib/plex-art'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const NOW = Date.UTC(2026, 5, 15)
 const DAY = 86_400_000
@@ -286,7 +287,7 @@ before(async () => {
   setAuditSink({ async write() {} })
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildPlexClearoutRoutes({ service: () => w0.clearout, library: () => w0.lib }), { prefix: '/api/plugins/plex' })
@@ -322,7 +323,7 @@ test('library routes: viewers browse; operators preview; removing needs the mast
   const op = (await signIn(app, 'op@example.com', 'operator master password')).cookie
   const p = (await app.inject({ method: 'POST', url: `${L}/preview`, headers: { cookie: op }, payload: { kind: 'episodes', ratingKey: '77', episodes: ['701'] } })).json().data
   const first = await app.inject({ method: 'POST', url: `${L}/remove`, headers: { cookie: op }, payload: { previewId: p.id } })
-  assert.equal(first.json().code, 'reconfirm_required')
+  assert.equal(first.json().code, 'confirm_required')
   assert.equal(w0.calls.some(c => c.includes('DELETE')), false)
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie: op }, payload: { password: 'operator master password' } })
   const notMine = await app.inject({ method: 'POST', url: `${L}/remove`, headers: { cookie: op }, payload: { previewId: pv.json().data.id } })
@@ -478,7 +479,7 @@ test('opening shows is limited per person; Sonarr’s series list is read once f
   const w = world()
   await w.lib.show('77'); await w.lib.show('77')
   assert.equal(w.calls.filter(c => c === 'sonarr GET /api/v3/series').length, 2, 'once for the library reading, once for the shows (cached)')
-  const a = Fastify({ logger: false })
+  const a = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(a)
   await a.register(authRoutes, { prefix: '/api/auth' })
   await a.register(buildPlexClearoutRoutes({ service: () => w.clearout, library: () => w.lib, showLimiter: new MissLimiter(1) }), { prefix: '/api/plugins/plex' })

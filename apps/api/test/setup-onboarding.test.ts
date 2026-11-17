@@ -26,6 +26,7 @@ import { syncTargets, readTargets } from '../src/lib/targets'
 import { clearHeldSecrets, heldSummary, handoffFlagPath, acceptHandoff } from '../src/lib/setup-handoff'
 import { pciGpus } from '../src/lib/wizard-placement'
 import type { ChecklistDeps } from '../src/lib/setup-checklist'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { fakeNode, loadFixtures } = require('../../../packages/hardware/test/harness')
@@ -106,7 +107,7 @@ process.env.HPX_CHECKLIST_SETTLE_MS = '0'
 
 let app: FastifyInstance
 async function build() {
-  app = Fastify({ logger: { level: 'info', stream: logStream } as any })
+  app = confirmAfterReconfirm(Fastify({ logger: { level: 'info', stream: logStream } as any }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildSetupChecklistRoutes(checklistDeps), { prefix: '/api/setup-checklist' })
@@ -278,7 +279,7 @@ test('changes on the checklist ask for the master password again', async () => {
   for (const [m, u] of [['POST', '/api/setup-checklist/node-health/run'], ['PUT', '/api/setup-checklist/node-login'], ['POST', '/api/setup-checklist/igpu-access/node-b/apply']]) {
     const r = await call(m, u, cookie, {})
     assert.equal(r.statusCode, 403, `${m} ${u}`)
-    assert.equal(r.json().code, 'reconfirm_required')
+    assert.equal(r.json().code, 'confirm_required')
   }
   assert.equal((await call('GET', '/api/setup-checklist', cookie)).statusCode, 200, 'reading does not')
 })

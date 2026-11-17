@@ -32,6 +32,7 @@ import {
   type NodeRunner, type JobRow,
 } from '../src/lib/clusters/files'
 import {
+import { confirmAfterReconfirm } from './fakes/confirm'
   parseFacts, parsePlexSections, librariesOf, linkAddresses, friendlyName, factsScript, plexScanScript, scanLibraryAfterCopy, discoverSend, planReadiness,
   browseSend, searchSend, previewSend, sendNow, excludedContainers, previewWords, sizeWords, linkSpeed, DEFAULT_SPEED, setSendDeps, forgetSendPlans, storagePaths, type SendDeps,
 } from '../src/lib/clusters/send-simple'
@@ -145,7 +146,7 @@ before(async () => {
   setJobStore(new MemoryJobStore())
   setApiTokenStore(tokens)
 
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(clusterRoutes, { prefix: '/api/clusters' })

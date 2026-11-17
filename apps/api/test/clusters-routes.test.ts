@@ -22,6 +22,7 @@ import { MemoryClusterStore } from '../src/lib/clusters/store'
 import { installClusterContext } from '../src/lib/clusters/context'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const haveOpenssl = spawnSync('openssl', ['version']).status === 0
 const SECRET = '12345678-aaaa-bbbb-cccc-1234567890ab'
@@ -56,7 +57,7 @@ before(async () => {
   setAuditSink({ write: async r => { audits.push(r) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
   setClusterStore(new MemoryClusterStore()); await loadClusters()
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   installClusterContext(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
@@ -86,7 +87,7 @@ test('add a server: re-confirmed, pinned, admin-checked, and the secret never co
   assert.match(fp, /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/)
   const body = { name: 'Remote server', address: '127.0.0.1', port, tokenId: 'hyperprox@pve!main', tokenSecret: SECRET, fingerprint: fp }
 
-  assert.equal((await call('POST', '/api/clusters', body)).json().code, 'reconfirm_required')
+  assert.equal((await call('POST', '/api/clusters', body)).json().code, 'confirm_required')
   await call('POST', '/api/auth/reconfirm', { password: 'owner master password' })
 
   const wrongFp = await add({ ...body, fingerprint: 'AB'.repeat(32) })

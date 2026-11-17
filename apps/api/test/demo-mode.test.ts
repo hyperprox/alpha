@@ -59,10 +59,10 @@ test('real mode: nothing src/index.ts loads reads HYPERPROX_DEMO or reaches src/
 
 test('demo mode: its import graph holds no database, vault, credential store, gate or remote client', () => {
   const g = importGraph(path.join(SRC, 'demo', 'main.ts'))
-  // One exception: the pure rules for which actions ask for the master password, so the demo asks where the
-  // real product does. It imports nothing at run time.
-  const outside = [...g.files].map(rel).filter(f => !f.startsWith('demo/'))
-  assert.deepEqual(outside, ['lib/roles.ts'], 'the demo imports nothing from the real app but the reconfirm rules')
+  // Two exceptions: the pure rules for which actions ask for the master password or a confirmation, and the words a
+  // confirmation shows, so the demo asks where the real product does. Neither imports anything at run time.
+  const outside = [...g.files].map(rel).filter(f => !f.startsWith('demo/')).sort()
+  assert.deepEqual(outside, ['lib/confirm-text.ts', 'lib/roles.ts'], 'the demo imports nothing from the real app but those rules')
   for (const f of g.files) assert.ok(!FORBIDDEN_FILES.some(r => r.test(rel(f))), rel(f))
   const bad = [...g.packages].filter(p => FORBIDDEN_PACKAGES.includes(p))
   assert.deepEqual(bad, [])
@@ -153,12 +153,13 @@ test('demo mode: every write, reveal, Send and action is refused in the API with
   try {
     for (const [method, url] of WRITES) {
       for (const body of [undefined, '{"value":"x"}']) {
-        // Without the demo's "password confirmed" cookie a change either asks for it (where the real product would) or is refused.
+        // Without the demo's "password confirmed" cookie and a confirmation, a change asks for one (where the real product
+        // would) or is refused.
         const first = await app.inject({ method: method as any, url, payload: body, headers: body ? { 'content-type': 'application/json' } : {} })
         assert.equal(first.statusCode, 403, `${method} ${url}`)
-        assert.ok(['demo', 'reconfirm_required'].includes(first.json().code), `${method} ${url}: ${first.json().code}`)
-        // With it, every change is refused with the demo message, marked for the frontend's note.
-        const res = await app.inject({ method: method as any, url, payload: body, headers: { cookie: 'hyperprox_demo_reconfirmed=1', ...(body ? { 'content-type': 'application/json' } : {}) } })
+        assert.ok(['demo', 'reconfirm_required', 'confirm_required'].includes(first.json().code), `${method} ${url}: ${first.json().code}`)
+        // With both, every change is refused with the demo message, marked for the frontend's note.
+        const res = await app.inject({ method: method as any, url, payload: body, headers: { cookie: 'hyperprox_demo_reconfirmed=1', 'x-hyperprox-confirm': 'demo-x', ...(body ? { 'content-type': 'application/json' } : {}) } })
         assert.equal(res.statusCode, 403, `${method} ${url}`)
         const j = res.json()
         assert.equal(j.code, 'demo'); assert.equal(j.ok, false); assert.equal(j.error, DEMO_MESSAGE)
@@ -199,7 +200,10 @@ test('demo mode: previews answer with invented plans so their dialogs can be see
       const res = await app.inject({ method: 'POST', url, payload: {} })
       assert.equal(res.statusCode, 200, url); assert.notEqual(res.json().code, 'demo', url)
     }
-    const cookie = { cookie: 'hyperprox_demo_reconfirmed=1' }
+    const cookie = { cookie: 'hyperprox_demo_reconfirmed=1', 'x-hyperprox-confirm': 'demo-x' }
+    const asked = await app.inject({ method: 'POST', url: '/api/ha/plans/demo-ha-plan/apply', payload: {} })
+    assert.equal(asked.json().code, 'confirm_required', 'the demo shows the confirmation where the real product would')
+    assert.match(asked.json().confirm.summary, /Apply these HA changes\?/)
     for (const url of ['/api/ha/plans/demo-ha-plan/apply', '/api/placement/guests/lxc/305/move', '/api/updates/jobs']) {
       const res = await app.inject({ method: 'POST', url, payload: {}, headers: cookie })
       assert.equal(res.statusCode, 403, url); assert.equal(res.json().code, 'demo', url)

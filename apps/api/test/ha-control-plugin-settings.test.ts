@@ -16,6 +16,7 @@ import { setCredentialTable } from '../src/lib/credentials'
 import { MemoryApiTokenStore, setApiTokenStore, createApiToken } from '../src/lib/api-tokens'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 test('finding 1: every plug-in settings save is admin and re-confirmed (which also keeps API tokens out)', () => {
   for (const id of ['home-assistant', 'plex', 'mikrotik', 'arrstack']) {
@@ -58,7 +59,7 @@ test('finding 1: through the gate, the route refuses Home Assistant\'s address a
   broker.items.set('hyperprox:plugin/home-assistant', { id: 'h1', name: 'hyperprox:plugin/home-assistant', fields: { url: 'http://ha.lan:8123', token: 'old-token' } } as any)
   const tokens = new MemoryApiTokenStore()
   setApiTokenStore(tokens)
-  const app = Fastify({ logger: false })
+  const app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(pluginRoutes, { prefix: '/api/plugins' })
@@ -67,9 +68,9 @@ test('finding 1: through the gate, the route refuses Home Assistant\'s address a
     const cookie = (await signIn(app, 'owner@example.com', 'owner master password')).cookie
     const put = (id: string, payload: unknown, headers: Record<string, string> = { cookie }) => app.inject({ method: 'PUT', url: `/api/plugins/${id}/settings`, headers, payload: payload as any })
 
-    assert.equal((await put('home-assistant', { url: 'http://attacker.lan:8123' })).json().code, 'reconfirm_required')
+    assert.equal((await put('home-assistant', { url: 'http://attacker.lan:8123' })).json().code, 'confirm_required')
     const tok = (await createApiToken({ name: 'automation', role: 'admin' }, 'test', tokens)).token
-    assert.equal((await put('home-assistant', { battery_warn: '10' }, { authorization: `Bearer ${tok}` })).json().code, 'reconfirm_required')
+    assert.equal((await put('home-assistant', { battery_warn: '10' }, { authorization: `Bearer ${tok}` })).json().code, 'token_forbidden')
 
     await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'owner master password' } })
     const ha = await put('home-assistant', { url: 'http://attacker.lan:8123' })

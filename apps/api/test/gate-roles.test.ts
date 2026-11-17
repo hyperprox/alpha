@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { FakeBroker } from './fakes/fake-broker'
 import { buildTestApp, resetLock, signIn } from './fakes/app'
 import { requiredRole, needsReconfirm, hasRole } from '../src/lib/roles'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 // ── The matrix as a pure function ────────────────────────────────────────────
 
@@ -70,7 +71,7 @@ broker.addUser('owner@example.com', 'owner master password', 'owner')
 broker.addUser('admin@example.com', 'admin master password', 'admin')
 broker.addUser('op@example.com', 'operator master password', 'operator')
 broker.addUser('viewer@example.com', 'viewer master password', 'viewer')
-const appP = buildTestApp(broker)
+const appP = buildTestApp(broker).then(confirmAfterReconfirm)
 beforeEach(resetLock)
 after(async () => { await resetLock(); await (await appP).close() })
 
@@ -100,7 +101,7 @@ test('admin: destroy needs re-confirmation, then works for 5 minutes', async () 
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const first = await app.inject({ method: 'DELETE', url: DESTROY, headers: { cookie } })
   assert.equal(first.statusCode, 403)
-  assert.equal(first.json().code, 'reconfirm_required')
+  assert.equal(first.json().code, 'confirm_required')
 
   const wrong = await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'nope' } })
   assert.equal(wrong.statusCode, 401)
@@ -121,7 +122,7 @@ test('re-confirmation is per session', async () => {
   const o = await signIn(app, 'owner@example.com', 'owner master password')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie: a.cookie }, payload: { password: 'admin master password' } })
   const d = await app.inject({ method: 'DELETE', url: DESTROY, headers: { cookie: o.cookie } })
-  assert.equal(d.json().code, 'reconfirm_required')
+  assert.equal(d.json().code, 'confirm_required')
 })
 
 test('secrets: viewer cannot list or reveal; admin lists, reveals and sends only after re-confirm; generate', async () => {

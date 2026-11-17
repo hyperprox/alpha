@@ -21,13 +21,14 @@ import type { ClusterPanel } from "../src/lib/clusters/overview"
 import type { ModelCall } from "../src/lib/ai/extract"
 import { setAuditSink } from "../src/lib/audit"
 import { GuestActionRefusal, destroy } from "../src/lib/clusters/guest-actions"
-import { reconfirmFor, applyAction } from "../src/lib/ai/actions"
+import { confirmFor, applyAction } from "../src/lib/ai/actions"
 import { boundTo } from "../src/lib/ai/cluster-sources"
 import { updateCluster } from "../src/lib/clusters/registry"
 import { previewCopy, startCopy, setCopyKick, kickCopies, setJobStore, MemoryJobStore } from "../src/lib/clusters/files"
 import { CertsService } from "../src/lib/certs/service"
 import { MemoryCertsStore } from "../src/lib/certs/store"
 import { defaultModules } from "../src/lib/certs/modules"
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const R = "c0123456789", R2 = "c0123456780"
 const HOME: ClusterRef = { id: HOME_ID, name: "Home cluster", kind: "home" }
@@ -183,7 +184,7 @@ function sourceDeps(world: World): ClusterSourceDeps {
   }
 }
 
-let unlocked = true, role: Role = "admin", reconfirmed = false
+let unlocked = true, role: Role = "admin", sid = "s1"
 let world: World
 const calls: Array<{ cluster: string; op: string; vmid: number; arg?: string }> = []
 const audits: Array<{ action: string; resource: string; details: Record<string, unknown> }> = []
@@ -203,12 +204,12 @@ async function app(remotes: ClusterRef[] = [REMOTE]) {
   for (const r of remotes) await store.upsert(row(r, "AA"))
   setClusterStore(store); await loadClusters()
   const pve = fakePve(world)
-  const f = Fastify()
+  const f = confirmAfterReconfirm(Fastify())
   installClusterContext(f)
   const sd = sourceDeps(world)
   f.register(buildAiRoutes({
     whoami: () => "admin@example.com",
-    session: () => ({ sid: "s1", role }),
+    session: () => ({ sid, role }),
     activeProvider: async () => "anthropic",
     listProviders: async () => [],
     saveModel: async () => {},
@@ -226,7 +227,7 @@ async function app(remotes: ClusterRef[] = [REMOTE]) {
       nodes: async () => ["node1"], now: () => new Date(Date.UTC(2026, 0, 2, 3, 4)),
     }),
     applyDeps: () => ({
-      row: clusterRow, unlocked: () => unlocked, reconfirmed: () => reconfirmed, connection: id => conns[id] ?? `k-${id}`,
+      row: clusterRow, unlocked: () => unlocked, connection: id => conns[id] ?? `k-${id}`,
       inCluster: (id, fn) => runInCluster(id, fn), pve: () => pve as any,
       ops: {
         power: async (_p, g, a) => { if (powerThrows) throw new GuestActionRefusal("plex is locked by a backup.", "state"); calls.push({ cluster: currentClusterId(), op: a, vmid: g.vmid }); return { ok: true, words: "read back" } },
@@ -247,7 +248,7 @@ async function app(remotes: ClusterRef[] = [REMOTE]) {
 }
 
 beforeEach(() => {
-  unlocked = true; role = "admin"; reconfirmed = false; world = makeWorld()
+  unlocked = true; role = "admin"; sid = "s1"; world = makeWorld()
   calls.length = 0; audits.length = 0; copyInput = null; monitoringApplied = null; conns = {}; stores = [{ storage: "local" }]; powerThrows = false
 })
 afterEach(() => setClusterStore(new MemoryClusterStore()))
@@ -328,7 +329,7 @@ test("act: restart plex on the remote is prepared for the remote and applied the
   assert.equal(r.conversational, false)
   assert.deepEqual(r.action.cluster, REMOTE)
   assert.equal(r.action.role, "operator")
-  assert.equal(r.action.needsReconfirm, false)
+  assert.equal(r.action.needsConfirm, false)
   assert.match(r.action.title, /^Restart plex on Remote server$/)
   assert.match(r.action.steps[0], /plex \(CT 201 on node1\) on Remote server \(remote\)/)
   const done = await a.apply({ planId: r.action.planId }, R)
@@ -378,16 +379,14 @@ test("act: the browser cannot name the target, and a changed guest or connection
   assert.deepEqual(calls, [])
 })
 
-test("act: delete needs the master password again and the name typed; the plan waits for both", async () => {
+test("act: delete is confirmed by its card and the name typed (no master password); never by an API token", async () => {
   const a = await app()
   const r = (await a.plan("delete media-vm on Remote server")).json()
-  assert.equal(r.action.needsReconfirm, true)
+  assert.equal(r.action.needsConfirm, true)
   assert.equal(r.action.typedName, "media-vm")
   assert.equal(r.action.role, "admin")
   const first = await a.apply({ planId: r.action.planId }, R)
-  assert.equal(first.statusCode, 403)
-  assert.equal(first.json().code, "reconfirm_required")
-  reconfirmed = true
+  assert.equal(first.statusCode, 428, "no master password: the typed name is what it waits for")
   const unnamed = await a.apply({ planId: r.action.planId, confirmName: "media" }, R)
   assert.equal(unnamed.statusCode, 428)
   const ok = await a.apply({ planId: r.action.planId, confirmName: "media-vm" }, R)
@@ -438,9 +437,7 @@ test("act: back up now, monitoring and a copy go through the same functions, bou
   assert.deepEqual(calls.at(-1), { cluster: R, op: "backup", vmid: 201, arg: "local" })
 
   const m = (await a.plan("install monitoring on the remote")).json()
-  assert.equal(m.action.needsReconfirm, true)
-  assert.equal((await a.apply({ planId: m.action.planId }, R)).json().code, "reconfirm_required")
-  reconfirmed = true
+  assert.equal(m.action.needsConfirm, true)
   assert.equal((await a.apply({ planId: m.action.planId }, R)).statusCode, 200)
   assert.equal(monitoringApplied, `mon-${R}@${R}`)
   assert.equal(audits.at(-1)!.action, "cluster.monitoring.apply")
@@ -497,7 +494,7 @@ const yaml = require("js-yaml") as { load(src: string): unknown }
 
 interface MultiScenario {
   id: string; prompt: string; open: "home" | "remote"; role?: Role; remotes?: number; found_by: string
-  expect: { kind: "answer" | "action"; action?: string; cluster?: string; needs_reconfirm?: boolean; typed_name?: string; role?: Role; includes?: string[]; excludes?: string[]; choices?: string[] }
+  expect: { kind: "answer" | "action"; action?: string; cluster?: string; needs_confirm?: boolean; typed_name?: string; role?: Role; includes?: string[]; excludes?: string[]; choices?: string[] }
 }
 
 const SCENARIO_DIR = join(__dirname, "scenarios", "multi-cluster")
@@ -513,7 +510,7 @@ for (const file of readdirSync(SCENARIO_DIR).filter(f => /\.ya?ml$/.test(f)).sor
       assert.equal(r.conversational, false, r.message)
       assert.equal(r.action.action, e.action)
       assert.equal(r.action.cluster.name, e.cluster)
-      if (e.needs_reconfirm !== undefined) assert.equal(r.action.needsReconfirm, e.needs_reconfirm)
+      if (e.needs_confirm !== undefined) assert.equal(r.action.needsConfirm, e.needs_confirm)
       if (e.role) assert.equal(r.action.role, e.role)
       if (e.typed_name !== undefined) assert.equal(r.action.typedName, e.typed_name)
     } else {
@@ -566,25 +563,23 @@ test("C2: an unnamed VM is confirmed by the name destroy() checks, and a wrong n
   const a = await app()
   const r = (await a.plan("delete 203 on Remote server")).json()
   assert.equal(r.action.typedName, "203")
-  reconfirmed = true
   assert.equal((await a.apply({ planId: r.action.planId, confirmName: "VM 203" }, R)).statusCode, 428)
   const ok = await a.apply({ planId: r.action.planId, confirmName: "203" }, R)
   assert.equal(ok.statusCode, 200, ok.body)
   assert.deepEqual(calls, [{ cluster: R, op: "delete", vmid: 203, arg: "203" }])
 })
 
-test("C3: a guest with a bad ID is never planned, and a plan holding one is refused; delete always re-confirms", async () => {
+test("C3: a guest with a bad ID is never planned, and a plan holding one is refused; delete is always confirmed", async () => {
   world[R].guests.push({ vmid: 100.5, node: "node1", type: "qemu", name: "evil", status: "stopped", digest: "x" })
   const a = await app()
   assert.match((await a.plan("delete evil on Remote server")).json().message, /could not find a guest called "evil"/)
   // Fails closed either way: a delete always asks, and any other action on a bad guest cannot even build its route.
-  assert.equal(reconfirmFor({ kind: "delete", clusterId: R, guest: { node: "node1", type: "qemu", vmid: 100.5, name: "evil" } }), true)
-  assert.throws(() => reconfirmFor({ kind: "reboot", clusterId: R, guest: { node: "node1", type: "qemu", vmid: 100.5, name: "evil" } }))
-  assert.equal(reconfirmFor({ kind: "delete", clusterId: R, guest: { node: "node1", type: "qemu", vmid: 202, name: "m" } }), true)
-  assert.equal(reconfirmFor({ kind: "monitoring-remove", clusterId: R }), true)
+  assert.equal(confirmFor({ kind: "delete", clusterId: R, guest: { node: "node1", type: "qemu", vmid: 100.5, name: "evil" } }), true)
+  assert.throws(() => confirmFor({ kind: "reboot", clusterId: R, guest: { node: "node1", type: "qemu", vmid: 100.5, name: "evil" } }))
+  assert.equal(confirmFor({ kind: "delete", clusterId: R, guest: { node: "node1", type: "qemu", vmid: 202, name: "m" } }), true)
+  assert.equal(confirmFor({ kind: "monitoring-remove", clusterId: R }), true)
   const id = plans.put("admin@example.com", { kind: "delete", owner: "admin@example.com", clusterId: R, clusterName: "Remote server", clusterKind: "remote",
     fingerprint: "AA", conn: `k-${R}`, guest: { node: "node1", type: "qemu", vmid: 100.5, name: "evil" }, digest: "x", confirmName: "evil" })
-  reconfirmed = true
   const bad = await a.apply({ planId: id, confirmName: "evil" }, R)
   assert.equal(bad.statusCode, 422)
   assert.deepEqual(calls, [])
@@ -615,8 +610,10 @@ test("C4: every refusal and error on apply writes an audit entry with ok:false a
   role = "admin"
   // re-confirm, then typed name
   p = (await a.plan("delete media-vm on the remote")).json().action.planId
-  assert.deepEqual(await codes(() => a.apply({ planId: p }, R)), [["cluster.guest.delete", false, "reconfirm_required", "assistant"]])
-  reconfirmed = true
+  sid = "token:t1"
+  assert.deepEqual(await codes(() => a.apply({ planId: p, confirmName: "media-vm" }, R)), [["cluster.guest.delete", false, "token_forbidden", "assistant"]])
+  sid = "s1"
+  p = (await a.plan("delete media-vm on the remote")).json().action.planId
   assert.deepEqual(await codes(() => a.apply({ planId: p, confirmName: "nope" }, R)), [["cluster.guest.delete", false, "confirm", "assistant"]])
   // an error thrown by the action itself
   p = (await a.plan("restart plex on the remote")).json().action.planId

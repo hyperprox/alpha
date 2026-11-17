@@ -27,6 +27,7 @@ import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { FakeCluster, node, guest, pkg, policyLoad, FAST } from './updates-fake'
 import { RemoteFake } from './updates-remote-fake'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const REMOTE = 'c0123456789'
 const H = { 'x-hyperprox-cluster': REMOTE }
@@ -87,7 +88,7 @@ before(async () => {
   const cs = new MemoryClusterStore()
   await cs.upsert({ id: REMOTE, name: 'Remote server', kind: 'remote', address: 'pve1.example', port: 8006, note: '', certFingerprint: 'AA', certConfirmedAt: null, certConfirmedBy: null, nodeAddresses: { pve1: '10.0.0.9' }, allowedRoots: [], monitoring: {}, plexUrl: null, createdBy: 'x' })
   setClusterStore(cs); await loadClusters()
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   installClusterContext(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
@@ -191,7 +192,7 @@ test('a chosen compose project on a remote: master password again, -p and every 
   await app.inject({ method: 'POST', url: '/api/updates/targets/discover', headers: { cookie, ...H } })
   const first = await app.inject({ method: 'POST', url: '/api/updates/jobs', headers: { cookie, ...H }, payload: { mode: 'run', select, approve: ['nosnap:101'] } })
   assert.equal(first.statusCode, 403)
-  assert.equal(first.json().code, 'reconfirm_required')
+  assert.equal(first.json().code, 'confirm_required')
   assert.equal((await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })).statusCode, 200)
 
   // After the tree was read, a third config file is added to the project: the run must use what is listed now.

@@ -24,6 +24,7 @@ import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { placementFixture, fakePve } from './fakes/placement-cluster'
 import { balanceSource } from '../src/lib/ai/placement-source'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const G = 1024 ** 3
 const broker = new FakeBroker()
@@ -121,7 +122,7 @@ before(async () => {
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
   svc = newService()
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildPlacementRoutes({ service: () => svc }), { prefix: '/api/placement' })
@@ -198,7 +199,7 @@ test('running a plan needs the master password; an API token never can', async (
   const expect = v.plan.steps.map((s: any) => ({ sid: s.sid, to: s.to }))
   const r = await app.inject({ method: 'POST', url: `${B}/plans`, headers: { cookie }, payload: { expect, goal: 'mem' } })
   assert.equal(r.statusCode, 403)
-  assert.equal(r.json().code, 'reconfirm_required')
+  assert.equal(r.json().code, 'confirm_required')
   const t = (await createApiToken({ name: 'auto', role: 'admin' }, 'test', tokens)).token
   const rt = await app.inject({ method: 'POST', url: `${B}/plans`, headers: { authorization: `Bearer ${t}` }, payload: { expect, goal: 'mem' } })
   assert.equal(rt.statusCode, 403)
@@ -469,7 +470,7 @@ test('auto settings: unknown fields and out-of-range limits are refused; saving 
   const cookie = await admin()
   const r = await app.inject({ method: 'PUT', url: `${B}/auto`, headers: { cookie }, payload: { enabled: true, apply: true } })
   assert.equal(r.statusCode, 403)
-  assert.equal(r.json().code, 'reconfirm_required')
+  assert.equal(r.json().code, 'confirm_required')
   const ok = await app.inject({ method: 'PUT', url: `${B}/auto`, headers: { cookie: await reconfirmed() }, payload: { enabled: true, apply: true } })
   assert.equal(ok.statusCode, 200, ok.body)
   assert.equal(ok.json().data.settings.apply, true)

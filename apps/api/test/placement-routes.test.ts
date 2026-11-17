@@ -20,6 +20,7 @@ import { MemoryPlacementStore, DEFAULT_SETTINGS, stricterSettings } from '../src
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { placementFixture, fakePve } from './fakes/placement-cluster'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const broker = new FakeBroker()
 broker.addUser('admin@example.com', 'admin master password', 'admin')
@@ -79,7 +80,7 @@ before(async () => {
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
   svc = newService()
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildPlacementRoutes({ service: () => svc }), { prefix: '/api/placement' })
@@ -137,7 +138,7 @@ test('an admin must re-enter the master password; an API token never can', async
   const cookie = await admin()
   const r = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { cookie }, payload: { target: 'node2' } })
   assert.equal(r.statusCode, 403)
-  assert.equal(r.json().code, 'reconfirm_required')
+  assert.equal(r.json().code, 'confirm_required')
   const t = (await createApiToken({ name: 'auto', role: 'admin' }, 'test', tokens)).token
   const rt = await app.inject({ method: 'POST', url: `${B}/guests/lxc/107/move`, headers: { authorization: `Bearer ${t}` }, payload: { target: 'node2' } })
   assert.equal(rt.statusCode, 403)
@@ -413,7 +414,7 @@ test('settings: the master password is needed to save; checked field by field, u
   const plain = await admin()
   const no = await app.inject({ method: 'PUT', url: `${B}/settings`, headers: { cookie: plain }, payload: { bwlimitKiB: 30720 } })
   assert.equal(no.statusCode, 403)
-  assert.equal(no.json().code, 'reconfirm_required')
+  assert.equal(no.json().code, 'confirm_required')
   const cookie = await reconfirmed()
   const bad = await app.inject({ method: 'PUT', url: `${B}/settings`, headers: { cookie }, payload: { cpuAbove: 5, nonsense: 1 } })
   assert.equal(bad.statusCode, 400)

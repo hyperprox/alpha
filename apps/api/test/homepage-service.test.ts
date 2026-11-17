@@ -373,7 +373,7 @@ test('turning a widget off, and disconnecting, take its key off the guest; old k
   const bak = probs.find(x => x.id === 'key_backups')!
   assert.ok(bak && bak.fix!.id === 'purge_key_backups' && bak.fix!.confirm, 'old copies with keys are pointed out, with a confirm')
   assert.equal(bak.fix!.secure, true)
-  await assert.rejects(() => t.svc.fix(i.id, 'purge_key_backups', me), /master password/, 'not through the plain fix route')
+  await assert.rejects(() => t.svc.fix(i.id, 'purge_key_backups', me), /its own button/, 'not through the plain fix route')
   await assert.rejects(() => t.svc.purgeKeyBackups(i.id, { email: 'bot', token: 'ci' }), (e: any) => e.code === 'token_forbidden')
   assert.match((await t.svc.purgeKeyBackups(i.id, me)).message, /Deleted 1 old copy/)
   assert.equal(needsReconfirm('POST', '/api/plugins/homepage/instances/x/purge-key-backups'), true)
@@ -421,7 +421,7 @@ test('wiring the key file: re-confirmed (its own route), homepage.env only, neve
   await assert.rejects(() => t.svc.exportKeys(i.id, me), (e: any) => e.code === 'env_not_wired')
   const probs = await t.svc.problems(i.id)
   assert.ok(probs.some(p => p.id === 'env_not_wired' && p.fix?.id === 'wire_env' && p.fix.secure))
-  await assert.rejects(() => t.svc.fix(i.id, 'wire_env', me), /master password/, 'not through the plain fix route')
+  await assert.rejects(() => t.svc.fix(i.id, 'wire_env', me), /its own button/, 'not through the plain fix route')
   await assert.rejects(() => t.svc.wireEnv(i.id, { email: 'bot', token: 'ci' }), (e: any) => e.code === 'token_forbidden')
   const r = await t.svc.wireEnv(i.id, me)
   assert.match(r.message, /reads homepage\.env/)
@@ -630,7 +630,7 @@ test('problems and fixes: invalid YAML is found and can be started fresh with a 
   assert.match((await t.svc.fix(i.id, 'start', me)).message, /starting/)
   assert.match(t.calls(), /^restart app-homepage-1$/m)
   await assert.rejects(() => t.svc.fix(i.id, 'rm -rf', me), (e: any) => e.code === 'bad_input')
-  await assert.rejects(() => t.svc.fix(i.id, 'export_keys', me), /master password/)
+  await assert.rejects(() => t.svc.fix(i.id, 'export_keys', me), /its own button/)
   assert.deepEqual(t.audits.filter(a => a.action === 'homepage.fix').map(a => a.details.fix), ['reset_services', 'start'])
 })
 
@@ -647,7 +647,7 @@ test('settings: subnets checked, lists bounded, the tagged guest refused', async
   try { await assert.rejects(() => t.svc.preview(i.id, me), (e: any) => e.code === 'excluded') } finally { machine.tags = [] }
 })
 
-test('roles: every Homepage route is admin; widgets, keys, key-file wiring and the token also need the master password', () => {
+test('roles: every Homepage route is admin; widgets, keys, key-file wiring and the token are also confirmed on the page', () => {
   const B = '/api/plugins/homepage'
   for (const [m, p] of [['GET', `${B}/installs`], ['GET', `${B}/instances/x/preview`], ['POST', `${B}/instances/x/apply`], ['GET', `${B}/instances/x/problems`], ['PUT', `${B}/instances/x/settings`], ['POST', `${B}/instances`], ['POST', `${B}/instances/x/wire-env`]]) {
     assert.equal(requiredRole(m, p), 'admin', `${m} ${p}`)

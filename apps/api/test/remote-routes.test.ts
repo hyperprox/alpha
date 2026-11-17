@@ -17,6 +17,7 @@ import type { RemoteExecutor } from '../src/lib/remote/executor'
 import type { RemoteProvider } from '../src/lib/remote/types'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const broker = new FakeBroker()
 broker.addUser('admin@example.com', 'admin master password', 'admin')
@@ -60,7 +61,7 @@ before(async () => {
   setBroker(broker)
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildRemoteRoutes({ service: svc, sweep: false }), { prefix: '/api/remote' })
@@ -145,7 +146,7 @@ test('admin: install needs a re-confirmation, then runs as a job readable by adm
   const body = { provider: 'tailscale', machineIds: ['lxc-101'] }
   const first = await app.inject({ method: 'POST', url: '/api/remote/jobs', headers: { cookie }, payload: body })
   assert.equal(first.statusCode, 403)
-  assert.equal(first.json().code, 'reconfirm_required')
+  assert.equal(first.json().code, 'confirm_required')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
   const res = await app.inject({ method: 'POST', url: '/api/remote/jobs', headers: { cookie }, payload: body })
   assert.equal(res.statusCode, 202, res.body)
@@ -204,7 +205,7 @@ test('admin: the overview keeps addresses; the firewall rule needs a preview, th
   assert.equal(pv.statusCode, 200, pv.body)
   assert.equal(pv.json().rule.dport, '22,8006')
   const noRc = await app.inject({ method: 'POST', url: '/api/remote/machines/node-pve-a/tailscale/firewall', headers: { cookie }, payload: { confirm: true } })
-  assert.equal(noRc.json().code, 'reconfirm_required')
+  assert.equal(noRc.json().code, 'confirm_required')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
   const noConfirm = await app.inject({ method: 'POST', url: '/api/remote/machines/node-pve-a/tailscale/firewall', headers: { cookie }, payload: {} })
   assert.equal(noConfirm.statusCode, 400)
@@ -219,7 +220,7 @@ test('admin: a host key is previewed, then pinned only after re-confirmation and
   assert.equal(pv.statusCode, 200, pv.body)
   assert.equal(pv.json().fingerprint, FP)
   const noRc = await app.inject({ method: 'POST', url: '/api/remote/machines/lxc-101/host-key', headers: { cookie }, payload: { fingerprint: FP } })
-  assert.equal(noRc.json().code, 'reconfirm_required')
+  assert.equal(noRc.json().code, 'confirm_required')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
   const wrong = await app.inject({ method: 'POST', url: '/api/remote/machines/lxc-101/host-key', headers: { cookie }, payload: { fingerprint: 'SHA256:' + 'B'.repeat(43) } })
   assert.equal(wrong.statusCode, 400)
@@ -245,7 +246,7 @@ test('the /v1 status API: every role, filtered below admin; install needs a prev
   assert.equal(pv.statusCode, 200, pv.body)
   assert.equal(pv.json().profile, 'guest')
   const noRc = await app.inject({ method: 'POST', url: '/api/remote/v1/machines/lxc-101/tailscale/install', headers: { cookie }, payload: { confirm: true } })
-  assert.equal(noRc.json().code, 'reconfirm_required')
+  assert.equal(noRc.json().code, 'confirm_required')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
   assert.equal((await app.inject({ method: 'POST', url: '/api/remote/v1/machines/lxc-101/tailscale/install', headers: { cookie }, payload: {} })).statusCode, 400)
   const ok = await app.inject({ method: 'POST', url: '/api/remote/v1/machines/lxc-101/tailscale/install', headers: { cookie }, payload: { confirm: true } })

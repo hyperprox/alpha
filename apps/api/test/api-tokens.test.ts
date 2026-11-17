@@ -20,7 +20,7 @@ broker.addUser(OWNER, OWNER_PW, 'owner')
 broker.addUser(ADMIN, ADMIN_PW, 'admin')
 broker.addUser(VIEWER, VIEWER_PW, 'viewer')
 broker.items.set('hyperprox:dns/godaddy', { id: 'g1', name: 'hyperprox:dns/godaddy', fields: { api_key: 'key-1', api_secret: 'secret-1' } })
-const appP = buildTestApp(broker)
+const appP = buildTestApp(broker).then(confirmAfterReconfirm)
 
 let store: MemoryApiTokenStore
 beforeEach(async () => {
@@ -144,7 +144,7 @@ test('reconfirm route (guest destroy): 403 reconfirm_required for an admin token
   const t = await token('admin')
   const res = await app.inject({ method: 'DELETE', url: '/api/proxmox/nodes/n1/lxc/100', headers: bearer(t) })
   assert.equal(res.statusCode, 403)
-  assert.equal(res.json().code, 'reconfirm_required')
+  assert.equal(res.json().code, 'token_forbidden')
 })
 
 test('secrets, terminal, websockets and auth actions: 403 token_forbidden', async () => {
@@ -343,6 +343,7 @@ test('lock still voids everything: a token used after a lock gets 423', async ()
 // ── The catalogue's vault check is the write check, made before anything exists ──────────────
 import { vaultWritable } from '../src/lib/credentials'
 import { startInstall, previewInstall } from '../src/lib/catalogue-installer'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 test('an env-admin install from a token with nobody signed in fails before any container exists', async () => {
   await unlockAs()

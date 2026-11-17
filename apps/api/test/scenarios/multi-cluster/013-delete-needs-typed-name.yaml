@@ -5,7 +5,7 @@ expect:
   kind: action
   action: delete
   cluster: Remote server
-  needs_reconfirm: true
+  needs_confirm: true
   typed_name: media-vm
   role: admin
   includes: ["Type its name to confirm"]

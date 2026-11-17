@@ -60,7 +60,7 @@ before(async () => {
   setAuditSink({ write: async () => {} })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
   setClusterStore(new MemoryClusterStore()); await loadClusters()
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   installClusterContext(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
@@ -156,7 +156,7 @@ test('2: PATCH takes only name and note; address and node addresses go through t
   assert.equal((await call('PATCH', `/api/clusters/${REMOTE}`, { nodeAddresses: { pve: '203.0.113.5' } })).statusCode, 422)
   assert.equal((await call('PATCH', `/api/clusters/${REMOTE}`, { name: 'Renamed' })).statusCode, 200, 'a rename stays free')
   assert.ok(needsReconfirm('POST', `/api/clusters/${REMOTE}/connection`))
-  assert.equal((await call('POST', `/api/clusters/${REMOTE}/connection`, { nodeAddresses: { pve: '203.0.113.5' } })).json().code, 'reconfirm_required')
+  assert.equal((await call('POST', `/api/clusters/${REMOTE}/connection`, { nodeAddresses: { pve: '203.0.113.5' } })).json().code, 'confirm_required')
   await call('POST', '/api/auth/reconfirm', { password: 'owner master password' })
   const r = await call('POST', `/api/clusters/${REMOTE}/connection`, { nodeAddresses: { pve: '203.0.113.5' } })
   assert.equal(r.statusCode, 200, r.body)
@@ -390,6 +390,7 @@ test('13: low ports other than the Proxmox ones are refused; failures read the s
 // ── 14: a failing job table is logged once, not every ten seconds ───────────
 
 import { CopyRunner as Runner, setJobStore as setJobs, MemoryJobStore as MemJobs } from '../src/lib/clusters/files'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 test('14: the copy runner logs the same failure once', async () => {
   const logs: string[] = []
