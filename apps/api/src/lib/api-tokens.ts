@@ -134,8 +134,10 @@ export function bearerApiToken(headers: Record<string, any>): string | null {
  *   /api/plugins/arrstack/better/*, /vpn/*   Arr better-copy searches and downloads, VPN fixes (any non-GET)
  *   /api/placement moves, running a balancing plan, saving automatic balancing (it can turn on applying)
  *   /api/plugins/{nginx|caddy|envoy}/instances   connect (POST), actions (POST …/actions/:a), disconnect (DELETE)
- * Requests that need a re-confirmation (lib/roles.ts needsReconfirm) are refused
- * by the gate as reconfirm_required: a token has no master password.
+ * Requests that need the master password (lib/roles.ts needsPassword) are refused
+ * by the gate as reconfirm_required, and requests that are confirmed on the page
+ * (needsConfirm) as token_forbidden: a token has no master password and can never
+ * confirm.
  */
 export function tokenForbidden(method: string, path: string): boolean {
   const m = method.toUpperCase()
