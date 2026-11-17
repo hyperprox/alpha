@@ -96,6 +96,9 @@ export function bypassesLock(path: string): boolean {
 // Arr Stack give-up (routes/arr-giveup.ts): the rules and the given-up list are a read (viewer). Every POST is admin
 // (the default): previews, saving a rule, try again, "See what's available" (it makes the arr search its indexers) and
 // downloading a release. Refused to API tokens by name too. No master password: no file is ever deleted.
+// Arr Stack "Find a better copy" (routes/arr-better.ts): finding an item in the library is a read (viewer); a release
+// search and a download (or a swap of a slow download) are admin (the default for a POST). Refused to API tokens by name.
+// No master password: no library file is ever deleted.
 
 // Guest power actions. Both route families exist: /api/infra (infrastructure.ts)
 // and /api/proxmox (proxmox.ts).

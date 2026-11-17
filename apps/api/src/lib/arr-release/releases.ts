@@ -117,6 +117,10 @@ export function codecOf(title: string): string {
   return ''
 }
 
+/** The arr's objection that something for the item is already downloading, in its Sonarr, Radarr and Lidarr wordings. */
+export const IN_QUEUE = /release in queue|already in (?:the )?queue|another release is queued|queued release/i
+export const QUEUED_TEXT = 'Something as good is already downloading'
+
 /** One of the arr's rejection strings in plain English. Unknown ones are passed through as written. */
 export function plainRejection(raw: string): string {
   const s = String(raw ?? '').trim()
@@ -131,6 +135,7 @@ export function plainRejection(raw: string): string {
   if (/language/i.test(s) && /not wanted|unwanted|wanted/i.test(s)) return 'Wrong language'
   if (/hardcode(d)? subs/i.test(s)) return 'Has burned-in subtitles'
   if (/blocklist/i.test(s)) return 'You blocklisted this release before'
+  if (IN_QUEUE.test(s)) return QUEUED_TEXT
   if (/already meets cutoff|not an upgrade|existing file/i.test(s)) return 'Not better than what you already have'
   if (/older than|maximum age|retention/i.test(s)) return 'Too old for your usenet retention'
   if (/delay/i.test(s)) return 'Held back by a delay profile'

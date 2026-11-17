@@ -1,0 +1,411 @@
+[
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1801,
+  "age": 40,
+  "size": 4000000000,
+  "indexerId": 1,
+  "title": "Paper Lanterns 2011 1080p BluRay x265-GRPA",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 1,
+  "seeders": 42,
+  "leechers": 4,
+  "protocol": "torrent",
+  "guid": "https://indexer.example.invalid/details/9001",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 18,
+    "name": "WEBDL-2160p",
+    "source": "webdl",
+    "resolution": 2160,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 2101,
+  "age": 40,
+  "size": 4000000000,
+  "indexerId": 1,
+  "title": "Paper Lanterns 2011 2160p WEB-DL HEVC-GRPB",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 2,
+  "seeders": 2,
+  "leechers": 4,
+  "protocol": "torrent",
+  "guid": "https://indexer.example.invalid/details/9002",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 3,
+    "name": "WEBDL-1080p",
+    "source": "webdl",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1601,
+  "age": 40,
+  "size": 4000000000,
+  "indexerId": 1,
+  "title": "Paper Lanterns 2011 1080p WEB-DL H264-GRPC",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Release in queue already meets cutoff: WEBDL-1080p"
+  ],
+  "releaseWeight": 3,
+  "seeders": 120,
+  "leechers": 4,
+  "protocol": "torrent",
+  "guid": "https://indexer.example.invalid/details/9003",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 6,
+    "name": "Bluray-720p",
+    "source": "bluray",
+    "resolution": 720,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1201,
+  "age": 40,
+  "size": 4000000000,
+  "indexerId": 1,
+  "title": "Paper Lanterns 2011 720p BluRay x264-GRPD",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Existing file on disk meets cutoff: Bluray-1080p"
+  ],
+  "releaseWeight": 4,
+  "seeders": 15,
+  "leechers": 4,
+  "protocol": "torrent",
+  "guid": "https://indexer.example.invalid/details/9004",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1801,
+  "age": 40,
+  "size": 700000000,
+  "indexerId": 1,
+  "title": "Paper Lanterns 2011 1080p BluRay x264-TINY",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Bluray-1080p is smaller than minimum allowed 3.2 GB",
+   "Release in queue already meets cutoff: WEBDL-1080p"
+  ],
+  "releaseWeight": 5,
+  "seeders": 9,
+  "leechers": 4,
+  "protocol": "torrent",
+  "guid": "https://indexer.example.invalid/details/9005",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 3,
+    "name": "WEBDL-1080p",
+    "source": "webdl",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1601,
+  "age": 40,
+  "size": 4000000000,
+  "indexerId": 1,
+  "title": "Paper Lanterns 2011 1080p AV1-GRPE",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 6,
+  "seeders": 60,
+  "leechers": 4,
+  "protocol": "torrent",
+  "guid": "https://indexer.example.invalid/details/9006",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 7,
+    "name": "Bluray-1080p",
+    "source": "bluray",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1801,
+  "age": 40,
+  "size": 4000000000,
+  "indexerId": 1,
+  "title": "Paper Lanterns 2011 3D HSBS 1080p BluRay x264-GRPF",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 7,
+  "seeders": 30,
+  "leechers": 4,
+  "protocol": "torrent",
+  "guid": "https://indexer.example.invalid/details/9007",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 3,
+    "name": "WEBDL-1080p",
+    "source": "webdl",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1601,
+  "age": 40,
+  "size": 4000000000,
+  "indexerId": 1,
+  "title": "Paper Lanterns 2011 1080p WEB-DL x264.exe",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 8,
+  "seeders": 80,
+  "leechers": 4,
+  "protocol": "torrent",
+  "guid": "https://indexer.example.invalid/details/9008",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 9,
+    "name": "HDTV-1080p",
+    "source": "television",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1401,
+  "age": 40,
+  "size": 4000000000,
+  "indexerId": 1,
+  "title": "Paper Lanterns 2011 1080p HDTV x264-DEAD",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": true,
+  "temporarilyRejected": false,
+  "rejected": false,
+  "rejections": [],
+  "releaseWeight": 9,
+  "seeders": 0,
+  "leechers": 4,
+  "protocol": "torrent",
+  "guid": "https://indexer.example.invalid/details/9009",
+  "indexer": "Indexer A (Prowlarr)",
+  "mappedMovieId": 7
+ },
+ {
+  "quality": {
+   "quality": {
+    "id": 3,
+    "name": "WEBDL-1080p",
+    "source": "webdl",
+    "resolution": 1080,
+    "modifier": "none"
+   },
+   "revision": {
+    "version": 1,
+    "real": 0,
+    "isRepack": false
+   }
+  },
+  "customFormats": [],
+  "customFormatScore": 0,
+  "qualityWeight": 1601,
+  "age": 40,
+  "size": 4000000000,
+  "indexerId": 2,
+  "title": "Paper Lanterns 2011 1080p WEB-DL DDP5 1 H 264-USE",
+  "languages": [
+   {
+    "id": 1,
+    "name": "English"
+   }
+  ],
+  "approved": false,
+  "temporarilyRejected": false,
+  "rejected": true,
+  "rejections": [
+   "Release in queue is of equal or higher preference: WEBDL-1080p"
+  ],
+  "releaseWeight": 10,
+  "seeders": null,
+  "leechers": null,
+  "protocol": "usenet",
+  "guid": "https://indexer.example.invalid/details/9010",
+  "indexer": "Indexer B (Prowlarr)",
+  "mappedMovieId": 7
+ }
+]
