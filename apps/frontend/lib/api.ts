@@ -5,11 +5,14 @@
 //  refusals are handled once, at the bottom: window.fetch is wrapped.
 //    423  HyperProx is locked (auto-lock, `lock now`, or a restart)  -> /login?locked=1
 //    401  no valid session                                            -> /login
+//    403  confirm_required: the action is confirmed on the page, then sent again (lib/confirm-bus.ts)
 //  /api/auth/* is exempt: a wrong password there is a 401 the sign-in form must
 //  show, not a reason to bounce the user back to the page they are already on.
 //  The response is still handed back to the caller, so nothing downstream
 //  changes shape.
 // =============================================================================
+
+import { askConfirm, cancelledResponse, confirmAsked, CONFIRM_HEADER, IN_PAGE_HEADER } from './confirm-bus'
 
 export type Role = 'owner' | 'admin' | 'operator' | 'viewer'
 
@@ -91,7 +94,24 @@ export function installAuthInterceptor(): void {
       if (!headers.has(CLUSTER_HEADER)) headers.set(CLUSTER_HEADER, cluster)
       init = { ...(init ?? {}), headers }
     }
-    const res = await original(input, init)
+    // A page that already confirmed this action itself says so with IN_PAGE; that marker never leaves the browser.
+    let inPage = false
+    if (init?.headers) {
+      const headers = new Headers(init.headers)
+      if (headers.has(IN_PAGE_HEADER)) { inPage = true; headers.delete(IN_PAGE_HEADER); init = { ...init, headers } }
+    }
+    let res = await original(input, init)
+    // An action the API wants confirmed: show what will happen (unless the page just did), then send it again with the
+    // single-use token. The body is resent as it was (a string, a FormData, nothing), so it matches the confirmation.
+    if (res.status === 403 && path && path.startsWith('/api/') && !path.startsWith('/api/auth/') && !(input instanceof Request)) {
+      const asked = confirmAsked(res.status, await res.clone().json().catch(() => null))
+      if (asked) {
+        if (!inPage && !(await askConfirm({ summary: asked.summary }))) return cancelledResponse()
+        const headers = new Headers(init?.headers)
+        headers.set(CONFIRM_HEADER, asked.token)
+        res = await original(input, { ...(init ?? {}), headers })
+      }
+    }
     // The demo API marks every refused change; one listener (components/demo) shows the "install it" note.
     if (res.headers.get(DEMO_REFUSED_HEADER) === '1') window.dispatchEvent(new CustomEvent(DEMO_REFUSED_EVENT))
     if (path && path.startsWith('/api/') && !path.startsWith('/api/auth/')) {

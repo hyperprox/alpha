@@ -10,12 +10,12 @@
 //
 //  With `previewId` (a plan the AI assistant made through the same preview
 //  route's code), the wizard opens on that held plan at Review, with every
-//  earlier step filled in from it; Install still asks for the master password.
+//  earlier step filled in from it; Install is confirmed on its review step.
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { ModalFrame } from '@/components/layout/ModalFrame'
 import { ConfirmOverride, NamingCallout, confirmNeeded, useProposal, type NamingSettingsView, type Proposal } from '@/components/catalogue/NamingProposal'
 import { FlowPipeline, Pill, Tiles, styles } from '@/components/visual/kit'
@@ -126,7 +126,6 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
   const [problems, setProblems] = useState<string[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [reconfirm, setReconfirm] = useState<null | 'apply' | 'cleanup'>(null)
   const [job, setJob] = useState<Job | null>(null)
   const [cleanupNote, setCleanupNote] = useState('')
 
@@ -247,9 +246,8 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
   const apply = async () => {
     if (!preview) return
     setBusy(true); setError('')
-    const r = await apiJson<{ data: { jobId: string; steps: Job['steps'] } }>('/api/catalogue/wizard/apply', 'POST', { previewId: preview.previewId })
+    const r = await apiJson<{ data: { jobId: string; steps: Job['steps'] } }>('/api/catalogue/wizard/apply', 'POST', { previewId: preview.previewId }, IN_PAGE)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm('apply'); return }
     if (!r.ok) { setError(r.error ?? 'The install could not be started.'); setProblems((r.body as any)?.problems ?? []); setPreview(null); return }
     setJob({ jobId: r.body!.data.jobId, status: 'running', steps: r.body!.data.steps })
     setStep(5)
@@ -271,7 +269,6 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
     setBusy(true)
     const r = await apiJson<{ data: { detail: string } }>(`/api/catalogue/wizard/jobs/${job.jobId}/cleanup`, 'POST')
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm('cleanup'); return }
     setCleanupNote(r.ok ? r.body!.data.detail : r.error ?? 'Clean-up failed.')
     if (r.ok) setJob({ ...job, removed: true })
   }
@@ -305,7 +302,6 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
   return (
     <ModalFrame label="New website" escape={false}
       frameClassName={styles.card} frameStyle={{ padding: 0 }}
-      after={reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const w = reconfirm; setReconfirm(null); void (w === 'apply' ? apply() : cleanup()) }} />}
       header={<>
         <div className="flex items-start justify-between gap-3 border-b px-4 sm:px-6 py-4" style={{ borderColor: 'var(--border-soft)' }}>
           <div className="min-w-0">
@@ -542,7 +538,7 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
                   </div>
                   <Good items={preview.checks} />
                   {preview.warnings.length > 0 && <p className={styles.callout}>{preview.warnings.join(' ')}</p>}
-                  <p style={{ fontSize: 13, color: 'var(--text-dim)' }}>Install asks for your master password, checks the cluster and the name again, then runs.</p>
+                  <p style={{ fontSize: 13, color: 'var(--text-dim)' }}>Install checks the cluster and the name again, then runs.</p>
                 </>
               )}
             </div>

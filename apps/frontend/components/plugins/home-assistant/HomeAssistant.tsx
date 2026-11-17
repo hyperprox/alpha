@@ -9,15 +9,15 @@
 //
 //  Security devices (locks, alarms, sirens, garage/gate/door covers, anything
 //  marked protected) carry a lock icon and always go through a confirm step that
-//  names the device and the house, plus the master password (admin only).
+//  names the device and the house, admin only.
 //  An instance linked to a remote cluster is amber everywhere, home is teal.
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { useClusters } from '@/lib/clusters'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Icon, styles as vs } from '@/components/visual/kit'
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -122,7 +122,7 @@ function DeviceCard({ d, inst, canNormal, canSecurity, ask, busy, note }: {
         </span>
       </div>
       {d.unavailable ? <small style={{ color: 'var(--text-dimmer)' }}>Unavailable in Home Assistant.</small> : !allowed ? (
-        <small style={{ color: 'var(--text-dimmer)' }}>{security ? 'Security device: admins only, with the master password.' : `Controls need the ${inst.policy.normalRole} role.`}</small>
+        <small style={{ color: 'var(--text-dimmer)' }}>{security ? 'Security device: admins only, with its name typed.' : `Controls need the ${inst.policy.normalRole} role.`}</small>
       ) : (
         <div className="flex flex-wrap gap-2 items-center">
           {d.controls.map(c => c.kind === 'button' ? (
@@ -184,7 +184,6 @@ export function DevicesView({ inst }: { inst: Instance }) {
   const [sheet, setSheet] = useState<null | { id: string; kind: 'light' | 'controls' }>(null)
   const [confirm, setConfirm] = useState<null | { phrase: string; name: string; run: (typed: string) => void }>(null)
   const [typed, setTyped] = useState('')
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const inFlight = useRef(false)
 
   const load = useCallback(async () => {
@@ -211,7 +210,7 @@ export function DevicesView({ inst }: { inst: Instance }) {
     const before = d.state
     if (OPTIMISTIC[c.action]) patch(d.entityId, OPTIMISTIC[c.action])
     const r = await apiJson<{ data: { changed: boolean; message: string; after: { state: string } | null } }>(
-      `${API}/instances/${inst.id}/${secure ? 'secure-actions' : 'actions'}`, 'POST', { entityId: d.entityId, action: c.action, value, confirm: phrase, typed: typedName })
+      `${API}/instances/${inst.id}/${secure ? 'secure-actions' : 'actions'}`, 'POST', { entityId: d.entityId, action: c.action, value, confirm: phrase, typed: typedName }, secure ? IN_PAGE : undefined)
     setBusy(null)
     if (r.ok) {
       const res = r.body!.data
@@ -223,7 +222,6 @@ export function DevicesView({ inst }: { inst: Instance }) {
       return true
     }
     patch(d.entityId, before)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void send(d, c, value, phrase, typedName)); return false }
     const note = { text: `${d.name}: ${r.error ?? 'That did not work.'}`, ok: false }
     setNotes(n => ({ ...n, [d.entityId]: note }))
     setLast(note)
@@ -245,7 +243,7 @@ export function DevicesView({ inst }: { inst: Instance }) {
   const canNormal = atLeast(role, inst.policy.normalRole)
   const canSecurity = atLeast(role, 'admin')
   const allowedFor = (d: Device) => d.tier === 'security' ? canSecurity : canNormal
-  const whyNot = (d: Device) => d.tier === 'security' ? 'Security device: admins only, with the master password.' : `Controls need the ${inst.policy.normalRole} role.`
+  const whyNot = (d: Device) => d.tier === 'security' ? 'Security device: admins only, with its name typed.' : `Controls need the ${inst.policy.normalRole} role.`
 
   const all = useMemo(() => (data?.areas ?? []).flatMap(a => a.devices.map(d => ({ d, area: a.name }))), [data])
   const areas = useMemo(() => {
@@ -391,7 +389,6 @@ export function DevicesView({ inst }: { inst: Instance }) {
           </div>
         </Modal>
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
 }
@@ -431,7 +428,7 @@ function HealthView({ inst }: { inst: Instance }) {
   )
 }
 
-// ── Settings: add, edit, remove (admin, re-confirmed) ────────────────────────
+// ── Settings: add, edit, remove (admin, confirmed) ────────────────────────
 
 const ADVICE = 'Home Assistant long-lived tokens carry everything their user can do. Make a dedicated, non-admin user for HyperProx in Home Assistant (Settings → People → Add person, "Allow person to login", administrator off), sign in as it, then Profile → Security → Long-lived access tokens. The token is kept in the vault and never shown again.'
 
@@ -445,7 +442,6 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
   })
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const set = (k: keyof typeof f, v: any) => setF(x => ({ ...x, [k]: v }))
   const [probe, setProbe] = useState<null | { fingerprint: string; subject: string; validTo: string }>(null)
   const readCert = async () => {
@@ -468,7 +464,6 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
     if (f.token || !inst) body.token = f.token
     const r = await apiJson(inst ? `${API}/instances/${inst.id}` : `${API}/instances`, inst ? 'PUT' : 'POST', body)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void save()); return }
     if (!r.ok) { setErr(r.error ?? 'Could not save'); return }
     set('token', '')
     onSaved()
@@ -476,8 +471,7 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
 
   const remove = async () => {
     if (!inst || !window.confirm(`Remove ${inst.name} from HyperProx? Its token is deleted from the vault. Home Assistant itself is not touched.`)) return
-    const r = await apiJson(`${API}/instances/${inst.id}`, 'DELETE')
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
+    const r = await apiJson(`${API}/instances/${inst.id}`, 'DELETE', undefined, IN_PAGE)
     if (!r.ok) { setErr(r.error ?? 'Could not remove'); return }
     onSaved()
   }
@@ -520,7 +514,7 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
       <fieldset className="flex flex-col gap-2 rounded-md border p-3" style={{ borderColor: 'var(--border-strong)' }}>
         <legend className="px-1 text-sm font-semibold" style={{ color: 'var(--text)' }}>Safety</legend>
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Locks, alarm panels, sirens and garage, gate and door covers are always security devices: admins only, with the master password, a confirm
+          Locks, alarm panels, sirens and garage, gate and door covers are always security devices: admins only, with a confirm
           step and the device&apos;s name typed. So are, until you say otherwise, covers other than blinds, curtains, shades, shutters, awnings and dampers;
           scenes, scripts and buttons; and switches and toggles, except plug sockets (outlets, including plugs Home Assistant&apos;s device list names as
           plugs, outlets or strips), switches named as a light or lamp, and every TP-Link switch. Switches and buttons of routers, access points and
@@ -549,7 +543,6 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
         {onCancel && <GhostButton type="button" onClick={onCancel}>Cancel</GhostButton>}
         <PrimaryButton type="button" disabled={busy || !f.name || !f.url || (!inst && !f.token)} onClick={() => void save()}>{busy ? 'Saving…' : 'Save'}</PrimaryButton>
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>
   )
 }

@@ -1,11 +1,11 @@
 'use client'
 
 // Every HA change: ask the server for a preview, show it in words, and apply only that preview's id.
-// Applying asks for the master password when the server says so (403 reconfirm_required).
+// The preview is the confirmation: Apply sends it with the API's confirmation step (lib/confirm-bus.ts).
 
 import { useCallback, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Btn, Bullets, Dialog, Label, Note } from './ui'
 import type { HaApplyResult, HaPlan, RuleProblem } from './types'
 
@@ -21,7 +21,6 @@ export function useHaChange(onDone?: (r: HaApplyResult) => void) {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<HaApplyResult | null>(null)
   const [error, setError] = useState('')
-  const [reconfirm, setReconfirm] = useState(false)
   const [refusal, setRefusal] = useState<Refusal | null>(null)
 
   const last = useRef<Record<string, unknown> | null>(null)
@@ -42,9 +41,8 @@ export function useHaChange(onDone?: (r: HaApplyResult) => void) {
   const apply = useCallback(async () => {
     if (!plan) return
     setBusy(true); setError('')
-    const r = await apiJson<{ data: HaApplyResult }>(`/api/ha/plans/${encodeURIComponent(plan.id)}/apply`, 'POST', {})
+    const r = await apiJson<{ data: HaApplyResult }>(`/api/ha/plans/${encodeURIComponent(plan.id)}/apply`, 'POST', {}, IN_PAGE)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(true); return }
     if (!r.ok) { setError(r.error ?? 'Not applied.'); return }
     setResult(r.body!.data)
     onDone?.(r.body!.data)
@@ -55,7 +53,6 @@ export function useHaChange(onDone?: (r: HaApplyResult) => void) {
   const dialog = (
     <>
       {plan && <PlanDialog plan={plan} busy={busy} error={error} result={result} onApply={apply} onClose={close} />}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void apply() }} />}
     </>
   )
   /** Preview the last change again with a confirmation the server asked for. */

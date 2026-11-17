@@ -10,14 +10,14 @@
 //  or proxy host is ticked with its name typed out; so is anything HyperProx
 //  has no record of making, and a container needs its hostname typed. The
 //  vault item follows the container's checkbox. The delete itself needs
-//  the master password; after it, each item says what happened, and if any
+//  the confirmation; after it, each item says what happened, and if any
 //  did not go, "Preview again" retries only what is left.
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
 import { INPUT, Modal } from '@/components/vault/ui'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { styles } from '@/components/visual/kit'
 
 interface Item {
@@ -70,9 +70,8 @@ export function DeleteSiteDialog({ siteId, onClose, onDone }: { siteId: string; 
     setBusy(true); setErr('')
     const r = await apiJson<{ data: { results: Result[]; recordRemoved: boolean } }>(`/api/sites/${encodeURIComponent(siteId)}/delete`, 'POST', {
       previewId: p.id, items: chosen.map(i => i.key), confirm: Object.fromEntries(chosen.filter(i => i.typed).map(i => [i.key, typed[i.key] ?? ''])),
-    })
+    }, IN_PAGE)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setConfirm(true); return }
     // 207: some items did not go. The body still carries every item's result.
     if (r.body?.data?.results) { setResults(r.body.data.results); setRemoved(r.body.data.recordRemoved); return }
     setErr(r.error ?? 'The delete could not be run.')
@@ -143,7 +142,6 @@ export function DeleteSiteDialog({ siteId, onClose, onDone }: { siteId: string; 
           </>
         )}
       </div>
-      {confirm && <ReconfirmModal onClose={() => setConfirm(false)} onDone={() => { setConfirm(false); void run() }} />}
     </Modal>
   )
 }

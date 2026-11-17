@@ -7,9 +7,9 @@ import { styles } from '@/components/visual/kit'
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { type ClusterInfo } from '@/lib/clusters'
 import { INPUT, LABEL, Notice, BusyNote, CopyButton } from '@/components/vault/ui'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -24,22 +24,10 @@ const Btn = (p: React.ButtonHTMLAttributes<HTMLButtonElement> & { solid?: boolea
   return <button {...rest} className={`${styles.btn} ${solid ? styles.btnPri : styles.btnGhost}`} />
 }
 
-/** Run a call that may need the master password: the modal opens and the call is retried after. */
-function useReconfirm() {
-  const [pending, setPending] = useState<null | (() => void)>(null)
-  const run = useCallback(async <T,>(fn: () => Promise<{ ok: boolean; status: number; code?: string } & T>, retry: () => void) => {
-    const r = await fn()
-    if (r.status === 403 && r.code === 'reconfirm_required') { setPending(() => retry); return null }
-    return r
-  }, [])
-  const modal = pending ? <ReconfirmModal onClose={() => setPending(null)} onDone={() => { const f = pending; setPending(null); f() }} /> : null
-  return { run, modal }
-}
 
 export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: () => void }) {
   const router = useRouter()
   const remote = c.kind === 'remote'
-  const { run, modal } = useReconfirm()
   const [name, setName] = useState(c.name)
   const [note, setNote] = useState(c.note)
   const [address, setAddress] = useState(c.address)
@@ -52,7 +40,7 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
   // go to the re-confirmed connection route.
   const save = async (patch: Record<string, unknown>, done: string, connection = false) => {
     setMsg(null)
-    const r = await run(() => apiJson<{ data: ClusterInfo; certNeedsConfirming?: boolean }>(connection ? `/api/clusters/${c.id}/connection` : `/api/clusters/${c.id}`, connection ? 'POST' : 'PATCH', patch), () => void save(patch, done, connection))
+    const r = await apiJson<{ data: ClusterInfo; certNeedsConfirming?: boolean }>(connection ? `/api/clusters/${c.id}/connection` : `/api/clusters/${c.id}`, connection ? 'POST' : 'PATCH', patch)
     if (!r) return
     if (!r.ok) { setMsg({ kind: 'error', text: (r as any).error ?? 'Not saved' }); return }
     setMsg({ kind: 'info', text: (r as any).body?.certNeedsConfirming ? `${done} The address changed, so confirm its certificate below before HyperProx sends it anything.` : done })
@@ -61,7 +49,6 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
 
   return (
     <div className="flex flex-col gap-4">
-      {modal}
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       <Section title="Name and address">
         <div><label style={LABEL}>Name</label><input style={INPUT} value={name} maxLength={60} onChange={e => setName(e.target.value)} /></div>
@@ -75,10 +62,10 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
         <div><Btn onClick={async () => { await save({ name, note }, 'Saved.'); if (remote && (address !== c.address || Number(port) !== c.port)) await save({ address, port: Number(port) }, 'Address saved.', true) }}>Save</Btn></div>
       </Section>
 
-      {remote && <CertificateSection c={c} onChanged={onChanged} run={run} />}
-      {remote && <TokenSection c={c} run={run} />}
-      <NodesSection c={c} onChanged={onChanged} run={run} />
-      <PlexSection c={c} run={run} onChanged={onChanged} />
+      {remote && <CertificateSection c={c} onChanged={onChanged} />}
+      {remote && <TokenSection c={c} />}
+      <NodesSection c={c} onChanged={onChanged} />
+      <PlexSection c={c} onChanged={onChanged} />
 
       <Section title="Folders files may be copied into">
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>One folder per line, for example the media share. A copy to this cluster can only write inside these. System folders are refused.</p>
@@ -94,14 +81,12 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
         </Section>
       )}
 
-      {remote && <RemoveSection c={c} run={run} onRemoved={() => router.push('/clusters')} />}
+      {remote && <RemoveSection c={c} onRemoved={() => router.push('/clusters')} />}
     </div>
   )
 }
 
-type Run = <T>(fn: () => Promise<{ ok: boolean; status: number; code?: string } & T>, retry: () => void) => Promise<({ ok: boolean; status: number; code?: string } & T) | null>
-
-function CertificateSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => void; run: Run }) {
+function CertificateSection({ c, onChanged }: { c: ClusterInfo; onChanged: () => void }) {
   const [state, setState] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const [presented, setPresented] = useState<string | null>(null)
   const [why, setWhy] = useState<string | null>(null)
@@ -111,7 +96,7 @@ function CertificateSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: 
   // show the fingerprint to compare, with the reason.
   const verify = async () => {
     setBusy(true); setState(null)
-    const r = await run(() => apiJson<{ data: ClusterInfo }>(`/api/clusters/${c.id}/certificate`, 'POST', {}), () => void verify())
+    const r = await apiJson<{ data: ClusterInfo }>(`/api/clusters/${c.id}/certificate`, 'POST', {})
     setBusy(false)
     if (!r) return
     if (r.ok) { setState({ kind: 'info', text: 'Verified automatically. HyperProx accepts only this certificate from now on.' }); onChanged(); return }
@@ -129,7 +114,7 @@ function CertificateSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: 
     else { setState({ kind: 'error', text: r.error ?? 'Did not connect' }); if (r.code === 'cert_changed') setPresented((r.body as any)?.presented ?? null) }
   }
   const confirm = async () => {
-    const r = await run(() => apiJson(`/api/clusters/${c.id}/certificate`, 'POST', { fingerprint: presented }), () => void confirm())
+    const r = await apiJson(`/api/clusters/${c.id}/certificate`, 'POST', { fingerprint: presented })
     if (!r) return
     if (r.ok) { setState({ kind: 'info', text: 'Confirmed. HyperProx accepts only this certificate from now on.' }); setPresented(null); setMatches(false); onChanged() }
     else setState({ kind: 'error', text: (r as any).error ?? 'Not confirmed' })
@@ -156,12 +141,12 @@ function CertificateSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: 
   )
 }
 
-function TokenSection({ c, run }: { c: ClusterInfo; run: Run }) {
+function TokenSection({ c }: { c: ClusterInfo }) {
   const [tokenId, setTokenId] = useState(c.token?.id ?? 'hyperprox@pve!main')
   const [secret, setSecret] = useState('')
   const [state, setState] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const replace = async () => {
-    const r = await run(() => apiJson(`/api/clusters/${c.id}/token`, 'POST', { tokenId, tokenSecret: secret }), () => void replace())
+    const r = await apiJson(`/api/clusters/${c.id}/token`, 'POST', { tokenId, tokenSecret: secret })
     if (!r) return
     setState(r.ok ? { kind: 'info', text: 'The new token works and is in the vault.' } : { kind: 'error', text: (r as any).error ?? 'Not saved' })
     if (r.ok) setSecret('')
@@ -181,7 +166,7 @@ function TokenSection({ c, run }: { c: ClusterInfo; run: Run }) {
 
 interface NodeRow { node: string; status: string; address: string | null; login: boolean | null }
 
-function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => void; run: Run }) {
+function NodesSection({ c, onChanged }: { c: ClusterInfo; onChanged: () => void }) {
   const [rows, setRows] = useState<NodeRow[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [addrs, setAddrs] = useState<Record<string, string>>(c.nodeAddresses)
@@ -195,7 +180,7 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
   const verifyKeys = async () => {
     setVerifying(true); setErr(null)
     const login = once.pw || once.key.trim() ? { username: once.user, ...(once.key.trim() ? { privateKey: once.key } : { password: once.pw }) } : undefined
-    const r = await run(() => apiJson<{ data: { nodes: Array<{ node: string; state: string; how: string; login: string | null }>; command: string | null } }>(`/api/clusters/${c.id}/verify-keys`, 'POST', { login, ...(record.trim() ? { record } : {}) }), () => void verifyKeys())
+    const r = await apiJson<{ data: { nodes: Array<{ node: string; state: string; how: string; login: string | null }>; command: string | null } }>(`/api/clusters/${c.id}/verify-keys`, 'POST', { login, ...(record.trim() ? { record } : {}) })
     setVerifying(false)
     if (!r) return
     if (r.ok) { setChecked((r as any).body.data.nodes); setCommand((r as any).body.data.command ?? null); setRecord(''); setOnce(o => ({ ...o, pw: '', key: '' })); void load() } else setErr((r as any).error ?? 'Could not verify')
@@ -207,7 +192,7 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
   useEffect(() => { void load() }, [load])
 
   const saveAddrs = async () => {
-    const r = await run(() => apiJson<{ loginsCleared?: string[] }>(`/api/clusters/${c.id}/connection`, 'POST', { nodeAddresses: addrs }), () => void saveAddrs())
+    const r = await apiJson<{ loginsCleared?: string[] }>(`/api/clusters/${c.id}/connection`, 'POST', { nodeAddresses: addrs })
     if (!r) return
     const cleared = (r as any).body?.loginsCleared ?? []
     setErr(r.ok ? (cleared.length ? `Saved. ${cleared.join(', ')} changed address, so its saved login and host key were removed: press Verify keys (with the login) to set it up again.` : null) : (r as any).error ?? 'Not saved')
@@ -221,12 +206,12 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
   const saveLogin = async () => {
     if (!login) return
     const body = { username: login.user, fingerprint: login.fp, ...(login.key.trim() ? { privateKey: login.key } : { password: login.pw }) }
-    const r = await run(() => apiJson(`/api/clusters/${c.id}/nodes/${encodeURIComponent(login.node)}/login`, 'POST', body), () => void saveLogin())
+    const r = await apiJson(`/api/clusters/${c.id}/nodes/${encodeURIComponent(login.node)}/login`, 'POST', body)
     if (!r) return
     if (r.ok) { setLogin(null); void load() } else setLogin(l => l && ({ ...l, msg: (r as any).error ?? 'Not saved' }))
   }
   const removeLogin = async (node: string) => {
-    const r = await run(() => apiJson(`/api/clusters/${c.id}/nodes/${encodeURIComponent(node)}/login`, 'DELETE'), () => void removeLogin(node))
+    const r = await apiJson(`/api/clusters/${c.id}/nodes/${encodeURIComponent(node)}/login`, 'DELETE')
     if (r?.ok) void load()
   }
 
@@ -292,12 +277,12 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
   )
 }
 
-function PlexSection({ c, run, onChanged }: { c: ClusterInfo; run: Run; onChanged: () => void }) {
+function PlexSection({ c, onChanged }: { c: ClusterInfo; onChanged: () => void }) {
   const [url, setUrl] = useState(c.plexUrl ?? '')
   const [token, setToken] = useState('')
   const [state, setState] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const save = async () => {
-    const r = await run(() => apiJson(`/api/clusters/${c.id}/plex`, 'POST', { url: url.trim() || null, token: token.trim() || undefined }), () => void save())
+    const r = await apiJson(`/api/clusters/${c.id}/plex`, 'POST', { url: url.trim() || null, token: token.trim() || undefined })
     if (!r) return
     setState(r.ok ? { kind: 'info', text: (r as any).body?.data?.tokenDropped ? 'Saved. The address moved to another host, so the old token was deleted: give this Plex\'s token too.' : 'Saved. The token is in the vault.' } : { kind: 'error', text: (r as any).error ?? 'Not saved' })
     if (r.ok) { setToken(''); onChanged() }
@@ -315,13 +300,13 @@ function PlexSection({ c, run, onChanged }: { c: ClusterInfo; run: Run; onChange
   )
 }
 
-function RemoveSection({ c, run, onRemoved }: { c: ClusterInfo; run: Run; onRemoved: () => void }) {
+function RemoveSection({ c, onRemoved }: { c: ClusterInfo; onRemoved: () => void }) {
   const [typed, setTyped] = useState('')
   const [done, setDone] = useState<string[] | null>(null)
   const [manual, setManual] = useState<Array<{ where: string; command: string }>>([])
   const [err, setErr] = useState<string | null>(null)
   const remove = async () => {
-    const r = await run(() => apiJson<{ data: { cleanup: string[] } }>(`/api/clusters/${c.id}`, 'DELETE', { confirmName: typed }), () => void remove())
+    const r = await apiJson<{ data: { cleanup: string[] } }>(`/api/clusters/${c.id}`, 'DELETE', { confirmName: typed }, IN_PAGE)
     if (!r) return
     if (r.ok) { setDone((r as any).body?.data?.cleanup ?? []); setManual((r as any).body?.data?.sendingKeysManual ?? []) } else setErr((r as any).error ?? 'Not removed')
   }

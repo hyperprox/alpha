@@ -17,7 +17,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Icon, Panel, Pill, styles as vs } from '@/components/visual/kit'
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -147,7 +146,6 @@ function UpdatesPanel({ caches }: { caches: Instance[] }) {
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; ok: boolean; results?: Array<{ name: string; outcome: string }> } | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [confirm, setConfirm] = useState<null | { title: string; text: string; label: string; run: () => void }>(null)
 
   const load = useCallback(async () => {
@@ -157,7 +155,6 @@ function UpdatesPanel({ caches }: { caches: Instance[] }) {
   useEffect(() => { void load() }, [load, caches.length])
 
   const secure = (res: ApiResult, again: () => void) => {
-    if (res.status === 403 && res.code === 'reconfirm_required') { setReconfirm(() => again); return false }
     return true
   }
   const save = async (body: Record<string, unknown>): Promise<void> => {
@@ -178,7 +175,7 @@ function UpdatesPanel({ caches }: { caches: Instance[] }) {
   }
 
   return (
-    <Panel title="Use the package cache" sub="Updates · master password">
+    <Panel title="Use the package cache" sub="Updates · confirmed">
       {err && <Notice kind="error">{err}</Notice>}
       {!v && !err && <BusyNote>Reading…</BusyNote>}
       {v && <UseSwitch v={v} busy={busy === 'use'}
@@ -196,7 +193,6 @@ function UpdatesPanel({ caches }: { caches: Instance[] }) {
       {note?.results?.length ? <ul className={a.results} aria-label="Per guest">{note.results.map(r => <li key={r.name}><b>{r.name}</b>: {r.outcome}</li>)}</ul> : null}
       <p className={a.quiet}>A dead cache never stops an update: a guest that cannot reach it fetches directly. A sick one (full, or failing its check) is skipped once HyperProx notices. Only the Debian and Ubuntu archives go through it; HTTPS and other repositories are fetched directly.</p>
       {confirm && <ConfirmModal c={confirm} onClose={() => setConfirm(null)} />}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </Panel>
   )
 }
@@ -223,7 +219,6 @@ function InstanceView({ i, onChanged, onReading }: { i: Instance; onChanged: () 
   const [checks, setChecks] = useState<SelfCheck[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [confirm, setConfirm] = useState<null | { title: string; text: string; label: string; run: () => void }>(null)
   const [grow, setGrow] = useState<null | { gb: string; preview: boolean }>(null)
   const [nets, setNets] = useState('')
@@ -231,7 +226,6 @@ function InstanceView({ i, onChanged, onReading }: { i: Instance; onChanged: () 
 
   const say = (text: string, ok: boolean) => setNote({ text, ok })
   const secure = (res: ApiResult, again: () => void): boolean => {
-    if (res.status === 403 && res.code === 'reconfirm_required') { setReconfirm(() => again); return false }
     return true
   }
 
@@ -330,7 +324,7 @@ function InstanceView({ i, onChanged, onReading }: { i: Instance; onChanged: () 
         {checks ? <SelfCheckList checks={checks} /> : <p className={a.quiet}>&quot;Prove it now&quot; runs the install&apos;s check again in the cache: it listens only on its LAN address, refuses networks that are not allowed, fetches a Debian index through itself, passes HTTPS through, and keeps its admin actions behind the password.</p>}
       </Panel>
 
-      <Panel title="Settings" sub="master password">
+      <Panel title="Settings" sub="confirmed before saving">
         <div className={a.rows}>
           <label>
             <span style={LABEL}>Who may use it (networks)</span>
@@ -363,7 +357,7 @@ function InstanceView({ i, onChanged, onReading }: { i: Instance; onChanged: () 
       {grow && !grow.preview && r && (
         <Modal title="Grow the cache disk" onClose={() => setGrow(null)}>
           <div className="flex flex-col gap-4">
-            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>The cache disk is {diskGb(r)} GB. It grows while the cache keeps running, through the same guest settings change as anywhere else in HyperProx (a preview first, then your master password). A disk can only grow, never shrink.</p>
+            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>The cache disk is {diskGb(r)} GB. It grows while the cache keeps running, through the same guest settings change as anywhere else in HyperProx (a preview first, then you confirm). A disk can only grow, never shrink.</p>
             <label><span style={LABEL}>New size (GB)</span><input style={INPUT} type="number" min={diskGb(r) + 1} max={4000} value={grow.gb} onChange={e => setGrow({ gb: e.target.value, preview: false })} aria-invalid={!growOk} /></label>
             <div className="flex justify-end gap-2">
               <GhostButton type="button" onClick={() => setGrow(null)}>Cancel</GhostButton>
@@ -378,7 +372,6 @@ function InstanceView({ i, onChanged, onReading }: { i: Instance; onChanged: () 
           onClose={() => setGrow(null)} onApplied={() => { setGrow(null); void after() }} />
       )}
       {confirm && <ConfirmModal c={confirm} onClose={() => setConfirm(null)} />}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </>
   )
 }

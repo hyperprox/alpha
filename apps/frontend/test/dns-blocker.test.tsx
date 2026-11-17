@@ -96,7 +96,7 @@ test('problems: each card says how bad it is, and has its fix button; a role tha
   assert.match(op, /Restart Pi-hole[^<]*<\/button>/); assert.match(op, /disabled=""[^>]*title="Only an admin can do this\."/)
   assert.match(op, /How to point my network at it/)
   const admin = renderToStaticMarkup(<Problems problems={problems} role="admin" busy={null} onFix={noop} onHowTo={noop} />)
-  assert.match(admin, /Restart Pi-hole \(master password\)/)
+  assert.match(admin, /Restart Pi-hole<\/button>/); assert.ok(!/master password/.test(admin), 'a secure fix is confirmed on the page, not with the master password')
   const viewer = renderToStaticMarkup(<Problems problems={problems} role="viewer" busy={null} onFix={noop} onHowTo={noop} />)
   assert.match(viewer, /Only an operator or admin can do this\./)
   const busy = renderToStaticMarkup(<Problems problems={problems} role="admin" busy="protection_off" onFix={noop} onHowTo={noop} />)

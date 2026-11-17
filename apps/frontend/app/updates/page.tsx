@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   UpdatesInventory, UpdatesJob, UpdatesNode, UpdatesPlan, UpdatesPolicyStatus, UpdatesWsPayload, UpdatesScope,
   UpdatesCheckStatus, UpdatesRebootPreview, UpdatesTargetTree } from '@hyperprox/types'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { wsBase } from '@/lib/ws'
 import { useSession } from '@/lib/session'
@@ -20,7 +21,6 @@ import { History } from '@/components/updates/History'
 import { SelfUpdatePanel } from '@/components/updates/SelfUpdatePanel'
 import { ClusterHeader, ClusterTag, CheckPanel, RebootPreviewList, useUpdatesCluster } from '@/components/updates/ClusterBits'
 import { Page, HudHeader, Tiles, GlowBars, type Tone } from '@/components/visual/kit'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { clusterColor } from '@/lib/clusters'
 import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
 import { isNoLoginText } from '@/lib/node-login'
@@ -53,15 +53,8 @@ export default function UpdatesPage() {
   const edge = clusterColor(cluster.kind)
   const [check, setCheck] = useState<UpdatesCheckStatus | null>(null)
   const [checkErr, setCheckErr] = useState<string | null>(null)
-  // A change on a remote cluster asks for the master password again; the action is retried once it is given.
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [rebootPv, setRebootPv] = useState<UpdatesRebootPreview | null>(null)
   const [rebootPvErr, setRebootPvErr] = useState<string | null>(null)
-  const askedAgain = (r: ApiResult, retry: () => void): boolean => {
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => retry); return true }
-    return false
-  }
-
   const [policy, setPolicy] = useState<UpdatesPolicyStatus | null>(null)
   const [inv, setInv] = useState<UpdatesInventory | null>(null)
   const [plan, setPlan] = useState<UpdatesPlan | null>(null)
@@ -266,7 +259,7 @@ export default function UpdatesPage() {
   }
 
   // "Update this", "Update selected", and the old "Run updates" (now: choose everything, then the same): the order
-  // first, in a confirmation, then the run with the master password re-entered.
+  // first, in a confirmation, then the run once you confirm it.
   const askToRun = async (ids: string[]) => {
     if (!ids.length) { setNotice({ tone: 'info', text: 'Nothing can be updated right now.' }); return }
     setBusy(true); setNotice(null)
@@ -280,10 +273,9 @@ export default function UpdatesPage() {
     if (!c) return
     setConfirmRun(null); setBusy(true); setNotice(null)
     const approve = tree ? approvalsFor(tree.targets, new Set(c.ids)) : []
-    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode: 'run', select: c.ids, approve })
+    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode: 'run', select: c.ids, approve }, IN_PAGE)
     setBusy(false)
     if (!r.ok || !r.body?.job) {
-      if (askedAgain(r, () => void runChosen(c))) return
       if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'the run') })
       return
     }
@@ -302,7 +294,6 @@ export default function UpdatesPage() {
     const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode, scope })
     setBusy(false)
     if (!r.ok || !r.body?.job) {
-      if (askedAgain(r, () => void start(mode))) return
       if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'job start') })
       return
     }
@@ -315,9 +306,9 @@ export default function UpdatesPage() {
   const jobAction = async (verb: 'confirm' | 'resume' | 'cancel') => {
     if (!active) return
     setBusy(true); setNotice(null)
-    const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/jobs/${encodeURIComponent(active.id)}/${verb}`, 'POST')
+    const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/jobs/${encodeURIComponent(active.id)}/${verb}`, 'POST', undefined, verb === 'confirm' ? IN_PAGE : undefined)
     setBusy(false)
-    if (!r.ok || !r.body?.job) { if (!askedAgain(r, () => void jobAction(verb))) setNotice({ tone: 'crit', text: apiError(r, verb) }); return }
+    if (!r.ok || !r.body?.job) { setNotice({ tone: 'crit', text: apiError(r, verb) }); return }
     const job = r.body.job
     if (ACTIVE.includes(job.status)) setActive(a => (a ? { ...job, steps: job.steps?.length ? job.steps : a.steps } : job))
     else loadJob(job.id)
@@ -334,10 +325,9 @@ export default function UpdatesPage() {
     const n = given ?? reboot
     if (!n) return
     setReboot(null); setBusy(true); setNotice(null)
-    const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/nodes/${encodeURIComponent(n.node)}/reboot`, 'POST')
+    const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/nodes/${encodeURIComponent(n.node)}/reboot`, 'POST', undefined, IN_PAGE)
     setBusy(false)
     if (!r.ok || !r.body?.job) {
-      if (askedAgain(r, () => void doReboot(n))) return
       if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'reboot') })
       return
     }
@@ -348,10 +338,9 @@ export default function UpdatesPage() {
     const target = given ?? rollback
     if (!target || !active) return
     setRollback(null); setBusy(true); setNotice(null)
-    const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/jobs/${encodeURIComponent(active.id)}/rollback`, 'POST', { target })
+    const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/jobs/${encodeURIComponent(active.id)}/rollback`, 'POST', { target }, IN_PAGE)
     setBusy(false)
     if (!r.ok || !r.body?.job) {
-      if (askedAgain(r, () => void doRollback(target))) return
       setNotice({ tone: 'crit', text: apiError(r, 'rollback') }); return
     }
     setActive(a => (a ? { ...r.body!.job, steps: r.body!.job.steps?.length ? r.body!.job.steps : a.steps } : r.body!.job))
@@ -414,7 +403,7 @@ export default function UpdatesPage() {
         ]}>
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
           Pending packages on every node and guest of {cluster.name}, and the ordered plan to bring them current.
-          {remote && ' The preview is apt\'s own simulation; nothing changes until you confirm, with your master password.'}
+          {remote && ' The preview is apt\'s own simulation; nothing changes until you confirm.'}
           {inv && <span className="font-mono"> Inventory read {fmtTime(inv.refreshedAt)}.</span>}
         </p>
       </HudHeader>
@@ -553,7 +542,7 @@ export default function UpdatesPage() {
           <div>{tag}</div>
           <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
             They run one after another in this order: guests before their node, Ceph before the nodes, one node at a time.
-            A failure stops only that item and what waits for it. You are asked for your master password; the plan is then
+            A failure stops only that item and what waits for it. You confirm it; the plan is then
             read again after <span className="font-mono">apt update</span>, and you confirm it once more before anything changes.
           </p>
           <ItemOrder plan={confirmRun.plan} />
@@ -564,7 +553,6 @@ export default function UpdatesPage() {
         </ConfirmDialog>
       )}
 
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </Page>
   )
 }

@@ -29,7 +29,7 @@ export function CheckCard({ c, admin, busy, onAct, onSnooze }: { c: Check; admin
         <span className={n.sevIcon} aria-hidden><Icon name={SEV_ICON[c.severity]} size={15} /></span>
         <b className={n.checkName}>{c.name}</b>
         <Pill tone={r.kind === 'fix' ? 'accent' : r.kind === 'optional' ? 'violet' : undefined}>{KIND_WORD[r.kind]}</Pill>
-        {r.kind === 'fix' && r.secure && <Pill tone="warn" title="Needs the master password">master password</Pill>}
+        {r.kind === 'fix' && r.secure && <Pill tone="warn" title="Shows what will happen and asks you to confirm">confirmed</Pill>}
       </header>
       <p className={n.checkText}>{c.description}</p>
       {r.kind === 'fix' && r.note && <p className={n.note}>{r.note}</p>}

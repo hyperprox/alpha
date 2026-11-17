@@ -1,13 +1,12 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { atLeast, failureText } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { HudHeader, Icon, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
 import ss from './settings.module.css'
 import { APP_VERSION, GIT_SHA, GIT_DESCRIBE, versionLabel } from '@/components/layout/version'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -205,25 +204,16 @@ export default function SettingsPage() {
     if (want && want in CATEGORY_META) setTab(want as any)
   }, [fetchCategory])
 
-  // Saving or testing a connection sends a stored secret somewhere, so the API asks for the master password
-  // again (403 reconfirm_required). Ask once, then repeat the request.
-  const [confirming, setConfirming] = useState(false)
-  const confirmWaiter = useRef<((ok: boolean) => void) | null>(null)
-  const askReconfirm = () => new Promise<boolean>(resolve => { confirmWaiter.current = resolve; setConfirming(true) })
-  const endReconfirm = (ok: boolean) => { setConfirming(false); confirmWaiter.current?.(ok); confirmWaiter.current = null }
-  const withReconfirm = async (call: () => Promise<Response>): Promise<{ res: Response; json: any }> => {
-    let res = await call()
-    let json = await res.json().catch(() => ({}))
-    if (res.status === 403 && json?.code === 'reconfirm_required' && await askReconfirm()) {
-      res = await call()
-      json = await res.json().catch(() => ({}))
-    }
-    return { res, json }
+  // Saving or testing a connection sends a stored secret somewhere, so the API asks for a confirmation first; the
+  // shared dialog shows it and sends the request again (lib/confirm-bus.ts).
+  const sendJson = async (call: () => Promise<Response>): Promise<{ res: Response; json: any }> => {
+    const res = await call()
+    return { res, json: await res.json().catch(() => ({})) }
   }
 
   const handleSave = async (category: string, provider: string, values: Record<string, string>): Promise<TestResult> => {
     try {
-      const { json } = await withReconfirm(() => fetch(`/api/settings/${category}/${provider}`, {
+      const { json } = await sendJson(() => fetch(`/api/settings/${category}/${provider}`, {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(values),
@@ -237,7 +227,7 @@ export default function SettingsPage() {
 
   const handleTest = async (category: string, provider: string): Promise<TestResult> => {
     try {
-      const { json } = await withReconfirm(() => fetch(`/api/settings/test/${category}/${provider}`, { method: 'POST' }))
+      const { json } = await sendJson(() => fetch(`/api/settings/test/${category}/${provider}`, { method: 'POST' }))
       return { success: json.success, message: json.data?.message,
         details: Array.isArray(json.data?.details) ? json.data.details.map(String) : undefined,
         error: json.error ?? json.data?.error ?? 'Test failed' }
@@ -282,7 +272,6 @@ export default function SettingsPage() {
 
   return (
     <Page>
-      {confirming && <ReconfirmModal onClose={() => endReconfirm(false)} onDone={() => endReconfirm(true)} />}
       <HudHeader level={2} label="Settings overview" icon="lock"
         eyebrow={[vaultWord, 'Credentials'].join(' · ')}
         title={loading ? 'Reading your settings…' : `${setCount} of ${providers.length} connections have their logins saved`}

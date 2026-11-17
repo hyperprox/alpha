@@ -9,8 +9,8 @@
 //  would build drawn the way Homepage draws it, the line diff of every file,
 //  and Apply. Settings: auto-sync (off until turned on), bare guests, excluded
 //  subnets. Widgets are opt-in per service and say plainly where their keys end
-//  up; turning them on, writing their keys and the Proxmox token all ask for the
-//  master password.
+//  up; turning them on, writing their keys and the Proxmox token are all confirmed
+//  first.
 //
 //  Everything here is admin: the preview maps every LAN address.
 // =============================================================================
@@ -18,7 +18,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Icon, Panel, Pill, styles as vs } from '@/components/visual/kit'
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -213,7 +212,6 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
   const [problems, setProblems] = useState<Problem[] | null>(null)
   const [loading, setLoading] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [confirmFix, setConfirmFix] = useState<Problem | null>(null)
   const [chosen, setChosen] = useState<string[]>(i.options.widgets)
   const [subnets, setSubnets] = useState(i.options.excludeSubnets.join(', '))
@@ -223,7 +221,6 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
   const sync = syncWords(i)
 
   const secure = async (r: ApiResult, again: () => void): Promise<boolean> => {
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => again); return false }
     return true
   }
 
@@ -431,7 +428,7 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
         </div>
       </Panel>
 
-      <Panel title="Service widgets" sub="opt-in · master password">
+      <Panel title="Service widgets" sub="opt-in · confirmed">
         <div className={h.rows}>
           <WidgetList entries={preview?.entries ?? []} chosen={chosen} onChange={setChosen} />
           <div className={h.toolbar}>
@@ -494,7 +491,6 @@ function InstanceView({ i, onChanged }: { i: Instance; onChanged: () => Promise<
           </div>
         </Modal>
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </>
   )
 }

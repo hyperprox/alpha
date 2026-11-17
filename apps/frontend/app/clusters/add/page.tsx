@@ -1,7 +1,7 @@
 'use client'
 
 // Add a server: name and address, an admin token made on that server, the token pasted straight into the vault,
-// and (optionally) the nodes' login, then one Connect under one master password. HyperProx verifies the certificate
+// and (optionally) the nodes' login, then one Connect, confirmed once. HyperProx verifies the certificate
 // and every node's host key by itself where it has evidence (Tailscale, WireGuard, the cluster's own record), saves
 // the login where a key is verified, installs monitoring and checks Send files. Only when it has no evidence for the
 // certificate does it show the fingerprint to compare. Then a hardware scan.
@@ -13,7 +13,6 @@ import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { useClusters } from '@/lib/clusters'
 import { INPUT, LABEL, Notice, CopyButton, BusyNote } from '@/components/vault/ui'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Page, HudHeader, styles } from '@/components/visual/kit'
 import { HardwareScan } from '@/components/clusters/HardwareScan'
 
@@ -59,7 +58,6 @@ export default function AddServerPage() {
   const [preview, setPreview] = useState<{ certificate: Cert; connectingTo: { device: string; owner: string | null } | null; why: string | null; monitoring: string[]; hash: string } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [added, setAdded] = useState<{ id: string; name: string; nodes: string[]; version: string } | null>(null)
 
   // A different address or port means a different certificate: any manual compare starts again.
@@ -80,7 +78,7 @@ export default function AddServerPage() {
     return () => clearTimeout(t)
   }, [address, port])
 
-  // Connect starts the add as a job (one master password); the page polls until it answers. Pressing Connect again
+  // Connect starts the add as a job (confirmed once); the page polls until it answers. Pressing Connect again
   // for the same server while it runs joins the same job, and after a stop part way it picks up where it stopped.
   const connect = async () => {
     setBusy('connect'); setErr(null)
@@ -89,7 +87,6 @@ export default function AddServerPage() {
       name: name.trim(), address: address.trim(), port: Number(port), note, tokenId: tokenId.trim(), tokenSecret: secret.trim(),
       ...(cert && matches ? { fingerprint: cert.fingerprint } : {}), login, monitoring, sending, previewHash: preview?.hash,
     })
-    if (start.status === 403 && start.code === 'reconfirm_required') { setBusy(null); setReconfirm(() => () => void connect()); return }
     if (!start.ok) { setBusy(null); setErr(start.error ?? 'Could not add the server'); return }
     let answer: { status: number; body: any } | null = null
     for (let i = 0; i < 600 && !answer; i++) {
@@ -119,7 +116,6 @@ export default function AddServerPage() {
 
   return (
     <Page>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
       <HudHeader level={2} eyebrow="Command center · new server" title="Add a server" icon="router" label="Add a server"
         chips={[{ label: 'Step', value: added ? 'Done' : ready ? 'Connect' : 'Fill in', tone: added ? 'good' : 'accent' }]}
         actions={<Link href="/clusters" className={`${styles.btn} ${styles.btnGhost} inline-flex items-center`}>‹ Command center</Link>}>

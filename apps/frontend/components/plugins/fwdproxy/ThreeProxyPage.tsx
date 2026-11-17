@@ -11,8 +11,8 @@
 //  password in the vault, revealed through the vault), and its settings.
 //
 //  Everything here is admin. A new user, a new password, a removed user and
-//  every setting also ask for the master password; reload
-//  and letting it reach your network are confirmed first.
+//  every setting are confirmed first, as are reload and letting it reach
+//  your network.
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
@@ -344,7 +344,7 @@ function InstanceView({ i, onChanged, onReading }: { i: Instance; onChanged: () 
         </div>
       </Panel>
 
-      <Panel title="Settings" sub="master password">
+      <Panel title="Settings" sub="confirmed before saving">
         <div className={f.rows}>
           <label>
             <span style={LABEL}>Who may use it (networks)</span>

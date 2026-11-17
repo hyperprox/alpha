@@ -11,14 +11,14 @@
 //  Actions (admin): a one-click fix opens a confirm that says exactly what
 //  changes; a guided step opens its form or its steps; long work runs in the
 //  background with its steps and output shown live. The update opens its check
-//  first (who is online, where the dump goes, the rollback) and needs the
-//  master password, as do the other secure actions.
+//  first (who is online, where the dump goes, the rollback), which is its
+//  confirmation, as with the other secure actions.
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Icon, Panel, Pill, styles as vs } from '@/components/visual/kit'
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -40,12 +40,9 @@ interface Instance {
   appPasswordMadeByHyperProx?: boolean
 }
 
-type Retry = () => void
-
-/** POST an action; a reconfirm refusal asks for the master password and tries again. */
-async function post<T>(path: string, body: unknown, ask: (retry: Retry) => void, retry: Retry): Promise<{ ok: boolean; data?: T; error?: string; body?: any } | null> {
-  const r = await apiJson<{ data: T }>(path, 'POST', body)
-  if (r.status === 403 && r.code === 'reconfirm_required') { ask(retry); return null }
+/** POST an action. Each is confirmed in this page's own dialog first, so the API's confirmation step needs no second one. */
+async function post<T>(path: string, body: unknown): Promise<{ ok: boolean; data?: T; error?: string; body?: any } | null> {
+  const r = await apiJson<{ data: T }>(path, 'POST', body, IN_PAGE)
   return r.ok ? { ok: true, data: r.body!.data } : { ok: false, error: r.error ?? 'That did not work.', body: r.body }
 }
 
@@ -63,7 +60,7 @@ function FixModal({ c, r, onClose, onRun }: { c: Check; r: Reading; onClose: () 
     <Modal title={rem.label} onClose={onClose} footer={
       <div className="flex flex-wrap justify-end gap-2">
         <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
-        <PrimaryButton type="button" disabled={!ready} onClick={() => onRun(rem.action, body, rem.secure)}>{rem.long ? 'Start' : 'Do it'}{rem.secure ? ' (master password)' : ''}</PrimaryButton>
+        <PrimaryButton type="button" disabled={!ready} onClick={() => onRun(rem.action, body, rem.secure)}>{rem.long ? 'Start' : 'Do it'}</PrimaryButton>
       </div>}>
       <div className={n.form}>
         <p className="text-sm" style={{ color: 'var(--text-soft)' }}>{rem.confirm}</p>
@@ -125,7 +122,7 @@ function SmtpForm({ r, onRun, onClose }: { r: Reading; onRun: (body: Record<stri
       <div className="flex flex-wrap justify-end gap-2">
         <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
         <PrimaryButton type="button" disabled={!f.fromUser || !f.domain || (f.mode === 'smtp' && (!f.host || !f.port || (f.auth && !f.user)))}
-          onClick={() => onRun({ ...f, port: Number(f.port) })}>Save (master password)</PrimaryButton>
+          onClick={() => onRun({ ...f, port: Number(f.port) })}>Save</PrimaryButton>
       </div>
     </div>
   )
@@ -160,10 +157,10 @@ function TwoFactorFlow({ inst, onRun, onUndo, onClose }: { inst: Instance; onRun
         </>
       )}
       <div className="flex flex-wrap justify-end gap-2">
-        {data?.enforcement?.enforced && <GhostButton type="button" onClick={onUndo} style={{ color: 'var(--crit-soft)' }} title="Turns enforcement off for everyone; earlier group-only settings are not restored">Stop enforcing 2FA for everyone (master password)</GhostButton>}
+        {data?.enforcement?.enforced && <GhostButton type="button" onClick={onUndo} style={{ color: 'var(--crit-soft)' }} title="Turns enforcement off for everyone; earlier group-only settings are not restored">Stop enforcing 2FA for everyone</GhostButton>}
         <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
         <PrimaryButton type="button" disabled={!data || !ack || !v.canEnforce || (v.adminsLacking.length > 0 && !adminAck)}
-          onClick={() => onRun({ acknowledged: true, adminWithout2fa: adminAck, exclude: exclude.split(',').map(s => s.trim()).filter(Boolean) })}>Enforce (master password)</PrimaryButton>
+          onClick={() => onRun({ acknowledged: true, adminWithout2fa: adminAck, exclude: exclude.split(',').map(s => s.trim()).filter(Boolean) })}>Enforce</PrimaryButton>
       </div>
     </div>
   )
@@ -268,7 +265,6 @@ function InstanceView({ inst }: { inst: Instance }) {
   const [fix, setFix] = useState<Check | null>(null)
   const [guide, setGuide] = useState<Check | null>(null)
   const [update, setUpdate] = useState<UpdatePreview | 'loading' | null>(null)
-  const [reconfirm, setReconfirm] = useState<Retry | null>(null)
   const [busy, setBusy] = useState(false)
   const inFlight = useRef(false)
 
@@ -301,7 +297,7 @@ function InstanceView({ inst }: { inst: Instance }) {
 
   const run = async (action: ActionId, body: Record<string, unknown>, secure: boolean) => {
     setBusy(true); setNote(null)
-    const res = await post<{ message: string; jobId?: string }>(`${API}/instances/${inst.id}/${secure ? 'secure-actions' : 'actions'}/${action}`, body, f => setReconfirm(() => f), () => void run(action, body, secure))
+    const res = await post<{ message: string; jobId?: string }>(`${API}/instances/${inst.id}/${secure ? 'secure-actions' : 'actions'}/${action}`, body)
     setBusy(false)
     if (!res) return
     setFix(null); setGuide(null); setUpdate(null)
@@ -319,7 +315,7 @@ function InstanceView({ inst }: { inst: Instance }) {
   }
   const stopWatchingConfirmed = async (): Promise<void> => {
     if (!job) return
-    const res = await post<Job>(`${API}/instances/${inst.id}/jobs/${job.id}/stop-watching`, {}, f => setReconfirm(() => f), () => void stopWatchingConfirmed())
+    const res = await post<Job>(`${API}/instances/${inst.id}/jobs/${job.id}/stop-watching`, {})
     if (res?.ok) { setJob(res.data!); setNote({ text: res.data!.result ?? 'HyperProx stopped watching it.', ok: true }) } else if (res) setNote({ text: res.error ?? 'That did not work.', ok: false })
   }
 
@@ -392,12 +388,11 @@ function InstanceView({ inst }: { inst: Instance }) {
         <Modal title="Update Nextcloud" onClose={() => setUpdate(null)} footer={update !== 'loading' && (
           <div className="flex flex-wrap justify-end gap-2">
             <GhostButton type="button" onClick={() => setUpdate(null)}>Close</GhostButton>
-            <PrimaryButton type="button" disabled={!update.ok || busy} onClick={() => void run('update', { confirmBackupDir: update.backupDir }, true)}>Back up and update (master password)</PrimaryButton>
+            <PrimaryButton type="button" disabled={!update.ok || busy} onClick={() => void run('update', { confirmBackupDir: update.backupDir }, true)}>Back up and update</PrimaryButton>
           </div>)}>
           {update === 'loading' ? <BusyNote>Checking who is online, calls, backups and room for the dump…</BusyNote> : <UpdateCheckView p={update} />}
         </Modal>
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
 }
@@ -412,7 +407,6 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
   const [found, setFound] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [reconfirm, setReconfirm] = useState<Retry | null>(null)
   const set = (k: keyof typeof f, v: any) => setF(x => ({ ...x, [k]: v }))
   useEffect(() => { if (!inst) void apiJson<{ data: Candidate[] }>(`${API}/candidates`).then(r => setCands(r.ok ? r.body!.data.filter(c => c.running) : [])) }, [inst])
   const guest = () => { const [kind, vmid] = f.guest.split(':'); return { kind, vmid: Number(vmid) } }
@@ -430,7 +424,6 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
       : { name: f.name, guest: guest(), ...(f.url ? { url: f.url } : {}), ...(f.user ? { user: f.user } : {}), ...(f.appPassword ? { appPassword: f.appPassword } : {}), ...(f.create ? { createAppPassword: true } : {}) }
     const r = await apiJson(inst ? `${API}/instances/${inst.id}` : `${API}/instances`, inst ? 'PUT' : 'POST', body)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void save()); return }
     if (!r.ok) { setErr(r.error ?? 'Could not save.'); return }
     set('appPassword', '')
     onSaved()
@@ -438,8 +431,7 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
   const [forceRemove, setForceRemove] = useState(false)
   const remove = async (force = false) => {
     if (!inst || (!force && !window.confirm(`Remove ${inst.name} from HyperProx? ${inst.appPasswordMadeByHyperProx ? 'The app password HyperProx made is revoked in Nextcloud first, then' : 'Its app password is'} deleted from the vault. HyperProx will not connect it again by itself. Nextcloud itself is not touched.`))) return
-    const r = await apiJson(`${API}/instances/${inst.id}${force ? '?force=1' : ''}`, 'DELETE')
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove(force)); return }
+    const r = await apiJson(`${API}/instances/${inst.id}${force ? '?force=1' : ''}`, 'DELETE', undefined, force ? undefined : IN_PAGE)
     if (!r.ok) { setErr(r.error ?? 'Could not remove it.'); setForceRemove(r.code === 'revoke_failed'); return }
     onSaved()
   }
@@ -472,7 +464,6 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
         {onCancel && <GhostButton type="button" onClick={onCancel}>Cancel</GhostButton>}
         <PrimaryButton type="button" disabled={busy || !f.name || (!inst && !f.guest)} onClick={() => void save()}>{busy ? 'Checking…' : inst ? 'Save' : 'Check and add'}</PrimaryButton>
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>
   )
 }

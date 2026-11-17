@@ -8,15 +8,15 @@
 //  removal is always previewed by the API first, which decides which way each
 //  item goes (Sonarr or Radarr when they manage it, else Plex itself), what it
 //  costs and who it would upset; removing then needs the operator role and the
-//  master password. This page never builds a delete itself.
+//  confirmation. This page never builds a delete itself.
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { Panel, Pill, bytes, styles as s } from '@/components/visual/kit'
 import { Poster } from '@/components/plugins/visual/views'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, Notice } from '@/components/vault/ui'
 import { RemovalModal, VIA_WORD, type ItemResult, type Plan, type Via } from './Removal'
 import c from './clearout.module.css'
@@ -72,7 +72,6 @@ export function PlexLibrary() {
   const [results, setResults] = useState<ItemResult[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
 
   const load = useCallback(async () => {
     const r = await apiJson<{ data: ListData }>('/api/plugins/plex/library')
@@ -109,9 +108,8 @@ export function PlexLibrary() {
   async function remove() {
     if (!plan) return
     setBusy(true); setActionError(null)
-    const r = await apiJson<{ data: { results: ItemResult[] } }>('/api/plugins/plex/library/remove', 'POST', { previewId: plan.id })
+    const r = await apiJson<{ data: { results: ItemResult[] } }>('/api/plugins/plex/library/remove', 'POST', { previewId: plan.id }, IN_PAGE)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
     if (!r.ok || !r.body?.data) { setActionError(r.error ?? 'Nothing was removed.'); return }
     setResults(r.body.data.results)
     setTicked(new Set())
@@ -244,7 +242,6 @@ export function PlexLibrary() {
           </div>
         )}
         {modal}
-        {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
       </>
     )
   }
@@ -307,7 +304,6 @@ export function PlexLibrary() {
         {actionError && !plan && <div style={{ marginTop: 10 }}><Notice kind="error">{actionError}</Notice></div>}
       </Panel>
       {modal}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </>
   )
 }

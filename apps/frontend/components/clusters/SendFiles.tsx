@@ -9,7 +9,6 @@ import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { bytes } from '@/lib/clusters'
 import { Notice, BusyNote, INPUT } from '@/components/vault/ui'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 interface Lib { id: string; name: string; path: string; node: string; free: number | null; size: number | null; plex: boolean }
 interface HostKey { node: string; fingerprint: string }
@@ -56,7 +55,6 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
   const [preview, setPreview] = useState<Preview | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [keysOk, setKeysOk] = useState(false)
-  const [reconfirm, setReconfirm] = useState(false)
   const [sentWords, setSentWords] = useState<string | null>(null)
 
   const look = useCallback(async (fresh = false) => {
@@ -67,9 +65,9 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
   }, [clusterId])
   useEffect(() => { void look() }, [look])
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !reconfirm) onClose() }
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h)
-  }, [onClose, reconfirm])
+  }, [onClose])
 
   const pickedList = useMemo(() => [...picked.values()], [picked])
   const pickedBytes = pickedList.every(p => p.size !== null) ? pickedList.reduce((a, p) => a + (p.size ?? 0), 0) : null
@@ -87,7 +85,6 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
     if (!preview.ready) {
       setBusy('setup')
       const s = await apiJson<{ data: { words: string; ready: boolean } }>(`/api/clusters/${clusterId}/send/setup`, 'POST', { previewId: preview.previewId, setupHash: preview.setupHash, confirmHostKeys: keysOk ? preview.hostKeys.map(h => h.fingerprint) : [] })
-      if (s.status === 403 && s.code === 'reconfirm_required') { setBusy(null); setReconfirm(true); return }
       if (!s.ok) { setBusy(null); setErr(s.error ?? 'Setting up did not work. Nothing was sent.'); return }
       setPreview({ ...preview, ready: true })
     }
@@ -103,7 +100,6 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
   return (
     <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center sm:p-4" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
          onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void send() }} />}
       <div role="dialog" aria-modal="true" aria-label={`Send files to ${clusterName}`} className="w-full sm:max-w-2xl sm:rounded-xl border flex flex-col min-h-0 overflow-hidden max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)]"
            style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)', borderTop: '4px solid var(--remote)' }}>
         <div className="flex items-center justify-between gap-2 px-4 py-3 border-b" style={{ borderColor: 'var(--border)' }}>
@@ -154,7 +150,7 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
                       ))}
                       {plan && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{plan.looksInside}</span>}
                       {needKeys && <label className="flex gap-2 items-center"><input type="checkbox" checked={keysOk} onChange={e => setKeysOk(e.target.checked)} /> The key{preview.hostKeys.length > 1 ? 's match' : ' matches'}</label>}
-                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>You will be asked for your master password once.</span>
+                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>You will be asked to confirm once.</span>
                     </div>
                   )}
                 </div>

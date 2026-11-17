@@ -1,10 +1,11 @@
 'use client'
 
-// Every config write: a server-held preview in plain words, then apply (master password, a name to type where
+// Every config write: a server-held preview in plain words, then apply (the confirmation, a name to type where
 // the change is to devices or raw lines, extra ticks where the hardware is risky), then the outcome as read back
 // from Proxmox — and, when the guest runs and the change waits for a restart, the offer to restart it now.
 
 import { useCallback, useEffect, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, Notice, PrimaryButton, BusyNote } from '@/components/vault/ui'
@@ -49,7 +50,7 @@ export function PreviewDialog({ guest, change, title, onClose, onApplied }: {
 
   const applyId = async (previewId: string, onOk: (d: ApplyData) => void) => {
     setBusy(true); setErr(null)
-    const r = await apiJson<{ data: ApplyData; problems?: string[] }>(`${API}/apply`, 'POST', { previewId, confirmName: name, acks })
+    const r = await apiJson<{ data: ApplyData; problems?: string[] }>(`${API}/apply`, 'POST', { previewId, confirmName: name, acks }, IN_PAGE)
     setBusy(false)
     if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void applyId(previewId, onOk)); return }
     if (r.body?.data) { onOk(r.body.data); onApplied?.(); return }

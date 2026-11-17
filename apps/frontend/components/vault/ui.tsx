@@ -69,12 +69,12 @@ export function BusyNote({ children }: { children: React.ReactNode }) {
  * A dialog that never grows past the screen: the title stays at the top, `footer` (the action buttons) stays at the
  * bottom, and only what is between them scrolls. Without `footer` the buttons scroll with the body.
  */
-/** The stacking layers: a page's dialogs, and the master-password prompt, which always sits above all of them. */
+/** The stacking layers: a page's dialogs, and the confirmation and master-password prompts, which always sit above them. */
 export const Z_DIALOG = 50
 export const Z_RECONFIRM = 70
 
 export function Modal({ title, onClose, children, footer, top }: { title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode
-  /** The master-password prompt: drawn on document.body above every other dialog, whichever was rendered first. */
+  /** A confirmation or the master-password prompt: drawn on document.body above every other dialog, whichever was rendered first. */
   top?: boolean }) {
   // Escape closes it; Tab stays inside it; focus goes back where it was (lib/focus-trap.ts).
   const box = useRef<HTMLDivElement>(null)

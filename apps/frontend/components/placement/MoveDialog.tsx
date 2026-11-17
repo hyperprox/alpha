@@ -2,13 +2,13 @@
 
 // One move: the server checks it first (the same engine, plus Proxmox's own migrate check), the dialog shows what it
 // costs (downtime, data to copy, the network corosync shares), and only then offers to move: now in a quiet window,
-// "move anyway" outside one, or held for the next quiet window. Moving asks for the master password when the server
-// says so (403 reconfirm_required), then waits for the move to really finish: the server reads the guest back on
+// "move anyway" outside one, or held for the next quiet window. This dialog is the confirmation
+// (lib/confirm-bus.ts), then it waits for the move to really finish: the server reads the guest back on
 // the target before it calls it done.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Btn, Dialog, Label, Note, SELECT } from '@/components/ha/ui'
 import { CostList } from './parts'
 import { moveChoices, quietWords, when as whenText, STATUS_WORD } from './logic'
@@ -21,7 +21,6 @@ export function MoveDialog({ sid, name, to, onClose, onDone }: { sid: string; na
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [bw, setBw] = useState('')
-  const [reconfirm, setReconfirm] = useState<null | { when: 'now' | 'next-quiet'; anyway: boolean }>(null)
   const [move, setMove] = useState<MoveRecord | null>(null)
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
@@ -47,9 +46,8 @@ export function MoveDialog({ sid, name, to, onClose, onDone }: { sid: string; na
   const go = useCallback(async (when: 'now' | 'next-quiet', anyway: boolean) => {
     setBusy(true); setError('')
     const bwlimitKiB = plan?.method === 'migrate' && bw ? Math.round(Number(bw) * 1024) : undefined
-    const r = await apiJson<{ data: MoveRecord }>(`${base}/move`, 'POST', { target: to, when, anyway, ...(bwlimitKiB ? { bwlimitKiB } : {}) })
+    const r = await apiJson<{ data: MoveRecord }>(`${base}/move`, 'POST', { target: to, when, anyway, ...(bwlimitKiB ? { bwlimitKiB } : {}) }, IN_PAGE)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm({ when, anyway }); return }
     if (!r.ok || !r.body) { setError(r.error ?? 'Not moved.'); return }
     setMove(r.body.data)
     if (r.body.data.status === 'running') void follow(r.body.data.id)
@@ -90,7 +88,6 @@ export function MoveDialog({ sid, name, to, onClose, onDone }: { sid: string; na
         {!move && choices.includes('schedule') && <Btn kind="primary" disabled={busy} onClick={() => go('next-quiet', false)} title="Scheduled moves expire after 7 days">Move in the next quiet window</Btn>}
         {!move && choices.includes('anyway') && <Btn kind="danger" disabled={busy} onClick={() => go('now', true)}>Move anyway, now</Btn>}
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const r = reconfirm; setReconfirm(null); void go(r.when, r.anyway) }} />}
     </Dialog>
   )
 }

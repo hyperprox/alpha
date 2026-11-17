@@ -14,7 +14,6 @@ import { useCallback, useEffect, useState } from 'react'
 import { autoConnectWord, isNotConfigured, type AutoConnectSummary } from '@/lib/plugin-status'
 import Link from 'next/link'
 import { Page, HudHeader, Panel, styles } from '@/components/visual/kit'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { PlexSignIn } from '@/components/plugins/plex/SignIn'
 import { AutoConnectPanel } from '@/components/plugins/AutoConnect'
 import { RemovedGuestsNotice } from '@/components/removed-guests/RemovedGuestsNotice'
@@ -302,7 +301,6 @@ export default function PluginsPage() {
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [findings, setFindings] = useState<Finding[] | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   // What auto-connect is doing: a plug-in it handles does not show "needs …" and Set up while it connects or waits for a pick.
   const [auto, setAuto] = useState<AutoConnectSummary | null>(null)
   const loadAuto = useCallback(async () => {
@@ -374,7 +372,6 @@ export default function PluginsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [f.setting]: f.address }),
     }).then(r => r.json())
-    if (res?.code === 'reconfirm_required') { setReconfirm(() => () => void applyFinding(f)); return }
     if (!res.success) return setNotice(res.error)
     setFindings(prev => (prev ?? []).filter(x => x !== f))
     await load()
@@ -397,17 +394,15 @@ export default function PluginsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(values),
     }).then(r => r.json())
-    // Settings hold where a stored credential is sent, so saving asks for the master password again.
-    if (res?.code === 'reconfirm_required') { setReconfirm(() => () => void save(values, p)); return }
+    // Settings hold where a stored credential is sent, so saving is confirmed first (the shared dialog).
     if (!res.success) return setNotice(res.error)
     await load()
     readOne(p.id)
   }
 
-  // Disconnect (the plug-in's settings): the master password again when asked, then the list read afresh.
+  // Disconnect (the plug-in's settings): confirmed first, then the list read afresh.
   const disconnect = async (p: PluginCard): Promise<string | null> => {
     const res = await fetch(`/api/plugins/${p.id}/settings`, { method: 'DELETE' }).then(r => r.json()).catch(() => null)
-    if (res?.code === 'reconfirm_required') { setReconfirm(() => () => { void disconnect(p).then(e => { if (e) setNotice(e) }) }); return null }
     if (!res?.success) return res?.error ?? `${p.name} was not disconnected.`
     setEditing(null)
     setNotice(`${p.name} is disconnected: its settings and keys are gone, and HyperProx will not add it back by itself.`)
@@ -614,7 +609,6 @@ export default function PluginsPage() {
             readOne('plex')
           }} />
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </Page>
   )
 }

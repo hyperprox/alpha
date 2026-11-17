@@ -10,7 +10,7 @@
 //  against ready, warning events as a feed, ingresses and services with their
 //  addresses, namespaces, and the plain tables folded into Details.
 //
-//  Actions (admin; the master password re-entered; each one confirmed first,
+//  Actions (admin; each one confirmed first,
 //  with what it does in words): restart, roll back or scale a workload, delete
 //  a pod, cordon, uncordon or drain a node (the drain shows what moves, stays
 //  and is lost first). Logs are admin too: they hold whatever an app printed.
@@ -20,7 +20,6 @@ import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { Feed, HudHeader, Icon, Panel, Tiles, styles as vs } from '@/components/visual/kit'
 import { DetailsSection, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -52,7 +51,6 @@ function ClusterView({ c, admin, onRemoved }: { c: Cluster; admin: boolean; onRe
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [ask, setAsk] = useState<{ fix: Fix; replicas?: number; drain?: DrainPlan | null; lostOk?: boolean } | null>(null)
   const [logs, setLogs] = useState<{ title: string; lines: string[] | null; error?: string } | null>(null)
   const [showAll, setShowAll] = useState(false)
@@ -77,7 +75,6 @@ function ClusterView({ c, admin, onRemoved }: { c: Cluster; admin: boolean; onRe
     setBusy(fixId(f)); setNote(null)
     const r = await apiJson<{ data: { done: string } }>(`${API}/clusters/${c.id}/actions/${f.action}`, 'POST', { kind: f.target.kind, namespace: f.target.namespace, name: f.target.name, ...body })
     setBusy(null)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void run(f, body)); return }
     setNote(r.ok ? { text: r.body!.data.done, ok: true } : { text: r.error ?? 'That did not work.', ok: false })
     if (r.ok) setTimeout(() => void load(true), 1500)
   }
@@ -210,7 +207,7 @@ function ClusterView({ c, admin, onRemoved }: { c: Cluster; admin: boolean; onRe
                 <span>Delete those {ask.drain.lost.length} pod{ask.drain.lost.length === 1 ? '' : 's'} for good</span>
               </label>
             )}
-            <small style={{ color: 'var(--text-dimmer)' }}>Done with HyperProx&apos;s action account, recorded in the audit log, and asks for your master password if it has not been entered in the last five minutes.</small>
+            <small style={{ color: 'var(--text-dimmer)' }}>Done with HyperProx&apos;s action account, recorded in the audit log, after you confirm it.</small>
           </div>
         </Modal>
       )}
@@ -221,7 +218,6 @@ function ClusterView({ c, admin, onRemoved }: { c: Cluster; admin: boolean; onRe
             : <pre className={k.log} style={{ maxHeight: '60vh' }}>{logs.lines.join('\n')}</pre>}
         </Modal>
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
 }
@@ -230,12 +226,10 @@ function RemoveCluster({ c, onRemoved }: { c: Cluster; onRemoved: () => void }) 
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [force, setForce] = useState(false)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const remove = async () => {
     setBusy(true); setErr(null)
     const r = await apiJson<{ data: { left: string[] } }>(`${API}/clusters/${c.id}${force ? '?force=1' : ''}`, 'DELETE')
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
     if (!r.ok) { setErr(r.error ?? 'It could not be removed.'); if (r.code === 'revoke_failed') setForce(true); return }
     onRemoved()
   }
@@ -245,7 +239,6 @@ function RemoveCluster({ c, onRemoved }: { c: Cluster; onRemoved: () => void }) 
       {err && <Notice kind="error">{err}</Notice>}
       {force && <small style={{ color: 'var(--warn-2)' }}>Removing again removes it from HyperProx anyway; delete the hyperprox-reader and hyperprox-operator accounts (kube-system) and the hyperprox-operator admission policies yourself.</small>}
       <div><GhostButton type="button" disabled={busy} onClick={() => void remove()} style={{ color: 'var(--crit-soft)' }}>{busy ? 'Removing…' : force ? 'Remove anyway' : `Remove ${c.name} from HyperProx`}</GhostButton></div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </section>
   )
 }
@@ -256,13 +249,11 @@ function ConnectForm({ waiting, onCancel, onSaved }: { waiting: Waiting[]; onCan
   const [f, setF] = useState({ name: '', address: '', kubeconfig: '', nodeToken: '' })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const set = (key: keyof typeof f, v: string) => setF(x => ({ ...x, [key]: v }))
   const save = async () => {
     setBusy(true); setErr(null)
     const r = await apiJson(`${API}/clusters`, 'POST', f)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void save()); return }
     if (!r.ok) { setErr(r.error ?? 'It could not be connected.'); return }
     onSaved()
   }
@@ -286,7 +277,6 @@ function ConnectForm({ waiting, onCancel, onSaved }: { waiting: Waiting[]; onCan
         <GhostButton type="button" onClick={onCancel}>Cancel</GhostButton>
         <PrimaryButton type="button" disabled={busy || !f.name || !f.kubeconfig} onClick={() => void save()}>{busy ? 'Connecting…' : 'Check and connect'}</PrimaryButton>
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>
   )
 }

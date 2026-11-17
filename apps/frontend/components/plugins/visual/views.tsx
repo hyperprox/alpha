@@ -8,7 +8,7 @@
 //  tables stay in the page's Details section below. Nothing here writes,
 //  except the Arr Stack's existing "Map by filename" rescue, passed in by the
 //  page and confirmed there, and Sign in with Plex on the Plex page's
-//  "Needs attention" card (admin, master password re-entered).
+//  "Needs attention" card (admin, confirmed).
 // =============================================================================
 
 import type { ArrVisual, MeshVisual, PlexVisual, RouterVisual, UnmanicVisual } from '@hyperprox/types'

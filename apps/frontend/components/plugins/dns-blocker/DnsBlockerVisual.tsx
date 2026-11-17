@@ -138,7 +138,7 @@ export function Problems({ problems, role, busy, onFix, onHowTo }: {
             <span className={d.problemText}><b>{p.severity === 'bad' ? 'Not working' : p.severity === 'warn' ? 'Needs a look' : 'To know'}</b>{p.text}</span>
             {p.fix && (
               <button type="button" className={d.fix} disabled={!!blocked || busy === p.id} title={blocked || undefined} onClick={() => onFix(p)}>
-                {busy === p.id ? 'Working…' : p.fix.label}{p.fix.secure && !blocked ? ' (master password)' : ''}
+                {busy === p.id ? 'Working…' : p.fix.label}
               </button>
             )}
             {!p.fix && p.id === 'no_queries' && <button type="button" className={d.fix} onClick={onHowTo}>How to point my network at it</button>}

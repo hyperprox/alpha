@@ -14,9 +14,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { alpha } from '@/lib/theme'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
 import { InstallWizard, type WizardRecipe } from '@/components/catalogue/InstallWizard'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Page, HudHeader, Panel, Pill, Tiles, styles } from '@/components/visual/kit'
 import { RunSteps, HORIZONTAL_MAX } from '@/components/visual/RunSteps'
 import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
@@ -75,11 +75,9 @@ export default function CataloguePage() {
   const [wizardOpts, setWizardOpts] = useState<Record<string, string> | undefined>(undefined)
   const [category, setCategory] = useState<string>('all')
   const [cleaning, setCleaning] = useState(false)
-  const [reconfirmCleanup, setReconfirmCleanup] = useState<{ jobId: string; vmid?: number; node?: string } | null>(null)
   // Arr Stacks whose Seerr waits for a Plex server, and the one being finished.
   const [seerrJobs, setSeerrJobs] = useState<Array<{ jobId: string; vmid?: number; node?: string; ip?: string }>>([])
   const [finishing, setFinishing] = useState<string | null>(null)
-  const [reconfirmSeerr, setReconfirmSeerr] = useState<string | null>(null)
   // Installs that failed or were cut off by a restart and left a container behind, from earlier sessions too.
   const [leftovers, setLeftovers] = useState<Array<{ jobId: string; recipeId: string; status: string; vmid?: number; node?: string; error?: string }>>([])
 
@@ -145,9 +143,8 @@ export default function CataloguePage() {
     if (!target?.vmid) return
     if (!skipConfirm && !window.confirm(`Remove CT ${target.vmid} on ${target.node}? It was created by an install that did not finish. Its disk is deleted.`)) return
     setCleaning(true)
-    const r = await apiJson<{ data: { detail: string } }>(`/api/catalogue/wizard/jobs/${target.jobId}/cleanup`, 'POST')
+    const r = await apiJson<{ data: { detail: string } }>(`/api/catalogue/wizard/jobs/${target.jobId}/cleanup`, 'POST', undefined, skipConfirm ? undefined : IN_PAGE)
     setCleaning(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirmCleanup(target); return }
     if (!r.ok) return setNotice(r.error ?? 'The container could not be removed.')
     setNotice(r.body!.data.detail)
     if (job?.jobId === target.jobId) setJob({ ...job, removed: true })
@@ -159,7 +156,6 @@ export default function CataloguePage() {
     setFinishing(jobId); setNotice(null)
     const r = await apiJson<{ data: { detail: string } }>(`/api/catalogue/wizard/jobs/${jobId}/finish-seerr`, 'POST')
     setFinishing(null)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirmSeerr(jobId); return }
     if (!r.ok) return setNotice(r.error ?? 'Seerr could not be finished.')
     setNotice(`Seerr is connected. ${r.body!.data.detail}`)
     setSeerrJobs(l => l.filter(x => x.jobId !== jobId))
@@ -345,13 +341,7 @@ export default function CataloguePage() {
         <InstallWizard recipe={wizard} initialOptions={wizardOpts} onClose={() => setWizard(null)}
           onStarted={j => { setJob({ jobId: j.jobId, recipeId: wizard.id, status: 'running', steps: j.steps, log: '' }); setWizard(null) }} />
       )}
-      {reconfirmCleanup && (
-        <ReconfirmModal onClose={() => setReconfirmCleanup(null)} onDone={() => { const t = reconfirmCleanup; setReconfirmCleanup(null); void cleanup(t, true) }} />
-      )}
 
-      {reconfirmSeerr && (
-        <ReconfirmModal onClose={() => setReconfirmSeerr(null)} onDone={() => { const t = reconfirmSeerr; setReconfirmSeerr(null); void finishSeerr(t) }} />
-      )}
 
       {/* ── Arr Stacks whose Seerr waits for Plex ───────────────────────────── */}
       {seerrJobs.length > 0 && (

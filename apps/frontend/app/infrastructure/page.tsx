@@ -6,7 +6,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Notice } from '@/components/vault/ui'
 import { GuestTable } from '@/components/guest-config/GuestList'
 import { GuestDrawer } from '@/components/guest-config/GuestDrawer'
@@ -52,7 +51,6 @@ export default function InfrastructurePage() {
   const [selected, setSelected] = useState<{ type: string; vmid: number } | null>(null)
   const [create, setCreate] = useState<null | 'lxc' | 'qemu'>(null)
   const [msg, setMsg] = useState<string | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const haBadges = useHaBadges()
   // The home cluster's id, for the same backup dialog every cluster uses (read back from Proxmox when it ends).
   const { clusters } = useClusters()
@@ -84,7 +82,6 @@ export default function InfrastructurePage() {
     const ha = action.startsWith('ha:')
     const path = ha ? `/api/infra/ha/${encodeURIComponent(`${g.type === 'qemu' ? 'vm' : 'ct'}:${g.vmid}`)}` : `/api/infra/vms/${g.node}/${g.vmid}/${g.type}/${action}`
     const r = await apiJson(path, ha ? 'PUT' : 'POST', ha ? { state: action.slice(3) } : undefined)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void power(g, action)); return }
     setMsg(r.ok ? `${g.name}: ${ha ? `HA ${action.slice(3)}` : action} requested` : `${g.name}: ${r.error ?? 'failed'}`)
     setTimeout(fetchData, 1200)
   }
@@ -125,7 +122,6 @@ export default function InfrastructurePage() {
 
   return (
     <Page>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
       {backup && home && <ActionDialog g={backup} act={{ kind: 'backup' }} clusterId={home.id} clusterName={home.name} kind="home" onClose={() => setBackup(null)} onDone={backupDone} />}
       {create && <CreateGuestModal type={create} nodes={nodes} viewedNode={node === 'all' ? null : node} onClose={() => { setCreate(null); void fetchData() }} />}
 
