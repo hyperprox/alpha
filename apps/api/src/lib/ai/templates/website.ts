@@ -225,7 +225,7 @@ export async function planWebsite(f: Required<Pick<WebsiteFields, 'kind' | 'doma
     ...(pv.plan.publish ? [`DNS ${pv.plan.publish.record.type} ${pv.plan.publish.record.name} in ${pv.plan.publish.zone}, a proxy host on ${pv.plan.publish.instanceName} and its certificate.`] : []),
     ...(f.kind === 'wordpress' ? [`WordPress admin ${options.WP_ADMIN_USER} (${f.adminEmail}); its password is generated into the vault. Change the user name in the wizard if you want another.`] : []),
     ...(f.kind === 'ghost' ? [`Ghost owner ${f.ownerName} (${f.adminEmail}); the password is generated into the vault and HyperProx makes the owner itself. No mail server is set: add SMTP in the wizard for invites and member sign-in links.`] : []),
-    'Open it in the New website wizard to review every step. Install there asks for your master password.',
+    'Open it in the New website wizard to review every step. Install there shows what it will do and asks you to confirm.',
   ]
   return { kind: 'card', card: { previewId: pv.id, title: `New website: ${recipe.name} at ${publish ? f.domain : 'LAN only'}`, steps, checks: pv.checks, warnings: pv.warnings, link: `/sites?preview=${encodeURIComponent(pv.id)}`, expiresAt: pv.expiresAt } }
 }

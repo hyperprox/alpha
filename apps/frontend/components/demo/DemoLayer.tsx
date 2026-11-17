@@ -91,7 +91,7 @@ const STEPS: Step[] = [
   { target: '#hp-rail a[href="/balance"]', title: 'Load balancing',
     body: 'Where every guest runs and why. HyperProx proposes a plan to even the load out, checks each move first, and can do it on its own in quiet hours.' },
   { target: '[data-tour="vault"]', title: 'The vault',
-    body: 'Every password and token lives in an encrypted vault that only unlocks with your master password. Risky actions ask for it again. Try one: the prompt is real, the change is not.' },
+    body: 'Every password and token lives in an encrypted vault that only unlocks with your master password. Important actions show what will happen and ask you to confirm. Try one: the confirmation is real, the change is not.' },
 ]
 
 function Tour() {

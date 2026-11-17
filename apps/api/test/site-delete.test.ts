@@ -26,6 +26,7 @@ import { homeNodeRunner, pbsMountCleanup } from '../src/lib/pbs/setup-deps'
 import { clusterContext, isRemoteContext } from '../src/lib/clusters/context'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const MARK = (j: string) => `hyperprox-install: ${j}`
 
@@ -445,7 +446,7 @@ before(async () => {
   setAuditSink({ async write() {} })
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildSiteRoutes({
@@ -491,7 +492,7 @@ test('guards: an operator and an API token are refused; an admin must re-confirm
   const body = { previewId: id, items: ['dns', 'proxy:npm:41', 'cert:npm:77'] }
 
   const noConfirm = await app.inject({ method: 'POST', url: URL_('job-1'), headers: { cookie }, payload: body })
-  assert.equal(noConfirm.json().code, 'reconfirm_required')
+  assert.equal(noConfirm.json().code, 'confirm_required')
   assert.equal((await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })).statusCode, 200)
 
   const other = await app.inject({ method: 'POST', url: URL_('a1'), headers: { cookie }, payload: body })

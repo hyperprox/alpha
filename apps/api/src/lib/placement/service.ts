@@ -1183,7 +1183,7 @@ export class PlacementService {
     }
     // The approval: young enough, its Ceph baseline young enough, the approver still an admin.
     if (this.now() - ap0.at > AUTO_APPROVAL_TTL_MS) {
-      await notifyOnce('Automatic balancing needs a new approval', `renew:${ap0.at}`, [`Applying was approved by ${ap0.email} more than 30 days ago. Save automatic balancing again (with your master password) to renew it; until then it only notifies.`])
+      await notifyOnce('Automatic balancing needs a new approval', `renew:${ap0.at}`, [`Applying was approved by ${ap0.email} more than 30 days ago. Save automatic balancing again (and confirm) to renew it; until then it only notifies.`])
       return done('Uneven, but the approval to apply is more than 30 days old: notify only until it is renewed.')
     }
     if (ap0.ceph?.checks.length && this.now() - ap0.at > CEPH_BASELINE_TTL_MS) {

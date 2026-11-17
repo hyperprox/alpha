@@ -9,13 +9,13 @@
 //  finds one; adding one by hand is the exception.
 //
 //  Actions: pause blocking, turn it back on and update the lists (operator and above); restart, allow a domain, switch the
-//  upstream and the guest DNS setting (admin, the master password asked again). A confirm says exactly what changes.
+//  upstream and the guest DNS setting (admin). A confirm says exactly what changes.
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Icon, Panel, Cols, styles as vs } from '@/components/visual/kit'
 import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -52,7 +52,6 @@ function BlockerView({ kind, inst, onChanged }: { kind: DnsKind; inst: Instance;
   const [acting, setActing] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | Retry>(null)
   const inFlight = useRef(false)
 
   const load = useCallback(async (fresh = false) => {
@@ -71,9 +70,8 @@ function BlockerView({ kind, inst, onChanged }: { kind: DnsKind; inst: Instance;
 
   const act = async (body: Record<string, unknown>, secure: boolean, id: string | null = null): Promise<boolean> => {
     setActing(id ?? String(body.action)); setNote(null)
-    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${inst.id}/${secure ? 'secure-actions' : 'actions'}`, 'POST', body)
+    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${inst.id}/${secure ? 'secure-actions' : 'actions'}`, 'POST', body, secure ? IN_PAGE : undefined)
     setActing(null)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void act(body, secure, id)); return false }
     setNote(r.ok ? { text: r.body!.data.message, ok: true } : { text: r.error ?? 'That did not work.', ok: false })
     if (r.ok) { void load(true); onChanged() }
     return r.ok
@@ -88,7 +86,6 @@ function BlockerView({ kind, inst, onChanged }: { kind: DnsKind; inst: Instance;
 
   const toggleHide = async () => {
     const r = await apiJson(`${API}/instances/${inst.id}`, 'PUT', { hideClients: !inst.hideClients })
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void toggleHide()); return }
     if (!r.ok) { setNote({ text: r.error ?? 'That did not work.', ok: false }); return }
     onChanged(); void load(true)
   }
@@ -173,7 +170,7 @@ function BlockerView({ kind, inst, onChanged }: { kind: DnsKind; inst: Instance;
         <Modal title={`Restart ${name}`} onClose={() => setDialog(null)} footer={
           <div className="flex flex-wrap justify-end gap-2">
             <GhostButton type="button" onClick={() => setDialog(null)}>Cancel</GhostButton>
-            <PrimaryButton type="button" disabled={!inst.guest} onClick={async () => { const ok = await act({ action: 'restart_service' }, true); if (ok) setDialog(null) }}>Restart (master password)</PrimaryButton>
+            <PrimaryButton type="button" disabled={!inst.guest} onClick={async () => { const ok = await act({ action: 'restart_service' }, true); if (ok) setDialog(null) }}>Restart</PrimaryButton>
           </div>}>
           <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
             This restarts {name} inside its container. DNS answers stop for a few seconds, and devices using it may notice a short pause.
@@ -185,7 +182,7 @@ function BlockerView({ kind, inst, onChanged }: { kind: DnsKind; inst: Instance;
         <Modal title={dialog.on ? 'Use for HyperProx-installed guests' : 'Stop using it for guests'} onClose={() => setDialog(null)} footer={
           <div className="flex flex-wrap justify-end gap-2">
             <GhostButton type="button" onClick={() => setDialog(null)}>Cancel</GhostButton>
-            <PrimaryButton type="button" onClick={async () => { const ok = await act({ action: dialog.on ? 'use_for_guests' : 'stop_using_for_guests' }, true); if (ok) setDialog(null) }}>{dialog.on ? 'Use it' : 'Stop'} (master password)</PrimaryButton>
+            <PrimaryButton type="button" onClick={async () => { const ok = await act({ action: dialog.on ? 'use_for_guests' : 'stop_using_for_guests' }, true); if (ok) setDialog(null) }}>{dialog.on ? 'Use it' : 'Stop'}</PrimaryButton>
           </div>}>
           <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
             {dialog.on
@@ -199,7 +196,6 @@ function BlockerView({ kind, inst, onChanged }: { kind: DnsKind; inst: Instance;
           <ol className={d.steps}>{pointNetworkSteps(address, name).map((s, i) => <li key={i}>{s}</li>)}</ol>
         </Modal>
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
 }
@@ -214,7 +210,7 @@ function AllowDialog({ domain, onClose, onRun }: { domain: string; onClose: () =
     <Modal title="Allow a domain" onClose={onClose} footer={
       <div className="flex flex-wrap justify-end gap-2">
         <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
-        <PrimaryButton type="button" disabled={!ok} onClick={() => onRun(clean, typed.trim())}>Allow it (master password)</PrimaryButton>
+        <PrimaryButton type="button" disabled={!ok} onClick={() => onRun(clean, typed.trim())}>Allow it</PrimaryButton>
       </div>}>
       <div className={d.form}>
         <p className="text-sm" style={{ color: 'var(--text-soft)' }}>An allowed domain is never blocked again, for every device that uses this blocker. Do this only for a site you trust that is broken because of the block.</p>
@@ -233,7 +229,7 @@ function SwitchDialog({ initial, reading, onClose, onRun }: { initial?: string; 
     <Modal title="Switch the upstream DNS servers" onClose={onClose} footer={
       <div className="flex flex-wrap justify-end gap-2">
         <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
-        <PrimaryButton type="button" onClick={() => onRun(to)}>Switch (master password)</PrimaryButton>
+        <PrimaryButton type="button" onClick={() => onRun(to)}>Switch</PrimaryButton>
       </div>}>
       <div className={d.form}>
         <p className="text-sm" style={{ color: 'var(--text-soft)' }}>These are the servers it asks for names it does not block. Everything that uses this blocker follows the change. HyperProx reads it back to check it took.</p>
@@ -262,7 +258,6 @@ function InstanceForm({ kind, inst, onSaved, onCancel }: { kind: DnsKind; inst: 
   const [f, setF] = useState({ name: inst?.name ?? name, url: inst?.url ?? '', username: '', password: '', guest: inst?.guest ? `${inst.guest.kind}:${inst.guest.vmid}` : '', insecure: !!inst?.insecureTLS })
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [reconfirm, setReconfirm] = useState<Retry | null>(null)
   const set = (k: keyof typeof f, v: any) => setF(x => ({ ...x, [k]: v }))
   useEffect(() => { void apiJson<{ data: Guest[] }>(`${API}/guests`).then(r => setGuests(r.ok ? r.body!.data : [])) }, [API])
   const guest = () => { if (!f.guest) return null; const [k, v] = f.guest.split(':'); return { kind: k, vmid: Number(v) } }
@@ -274,19 +269,16 @@ function InstanceForm({ kind, inst, onSaved, onCancel }: { kind: DnsKind; inst: 
     }
     const r = await apiJson(inst ? `${API}/instances/${inst.id}` : `${API}/instances`, inst ? 'PUT' : 'POST', body)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void save()); return }
     if (!r.ok) { setErr(r.error ?? 'Could not save.'); return }
     set('password', '')
     onSaved()
   }
   const remove = async () => {
     if (!inst || !window.confirm(`Remove ${inst.name} from HyperProx? Its saved login is deleted from the vault. ${name} itself is not touched.`)) return
-    const r = await apiJson(`${API}/instances/${inst.id}`, 'DELETE')
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
+    const r = await apiJson(`${API}/instances/${inst.id}`, 'DELETE', undefined, IN_PAGE)
     if (r.code === 'guest_dns') {
       if (window.confirm(`${r.error ?? ''}\n\nRemove it anyway?`)) {
         const f = await apiJson(`${API}/instances/${inst.id}?force=1`, 'DELETE')
-        if (f.status === 403 && f.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
         if (!f.ok) { setErr(f.error ?? 'Could not remove it.'); return }
         onSaved()
       }
@@ -322,7 +314,6 @@ function InstanceForm({ kind, inst, onSaved, onCancel }: { kind: DnsKind; inst: 
         {onCancel && <GhostButton type="button" onClick={onCancel}>Cancel</GhostButton>}
         <PrimaryButton type="button" disabled={busy || missing} onClick={() => void save()}>{busy ? 'Checking…' : inst ? 'Save' : 'Check and add'}</PrimaryButton>
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>
   )
 }

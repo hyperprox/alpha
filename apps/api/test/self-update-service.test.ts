@@ -25,6 +25,7 @@ import { FileStateSink, readState, type UpdateJob } from '../src/lib/self-update
 import type { Shell } from '../src/lib/self-update/shell'
 import type { Upstream } from '../src/lib/self-update/upstream'
 import { registerLongJob } from '../src/lib/long-jobs'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const A = 'a'.repeat(40), B = 'b'.repeat(40)
 
@@ -365,7 +366,7 @@ async function build(): Promise<FastifyInstance> {
   setBroker(broker)
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
-  const app = Fastify({ logger: false })
+  const app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(apiTokenRoutes, { prefix: '/api/auth/tokens' })
@@ -405,7 +406,7 @@ test('routes: a viewer sees the summary only; an admin must re-enter the master 
   assert.equal(status.statusCode, 200)
   assert.equal(status.json().check.available.sha, B)
   const noConfirm = await app.inject({ method: 'POST', url: '/api/self-update/install', headers: { cookie: admin }, payload: { sha: B } })
-  assert.equal(noConfirm.statusCode, 403); assert.equal(noConfirm.json().code, 'reconfirm_required')
+  assert.equal(noConfirm.statusCode, 403); assert.equal(noConfirm.json().code, 'confirm_required')
   const noConfirmSettings = await app.inject({ method: 'PUT', url: '/api/self-update/settings', headers: { cookie: admin }, payload: { notify: true } })
   assert.equal(noConfirmSettings.statusCode, 403)
 

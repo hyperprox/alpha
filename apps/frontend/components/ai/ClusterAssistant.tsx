@@ -4,15 +4,14 @@
 //  The assistant and clusters: which cluster it is answering about, and the confirm card for an action it
 //  prepared. Teal is the home cluster and amber a remote, as in the Command center. The card applies the plan
 //  by its id only, with the plan's own cluster in the X-HyperProx-Cluster header: the server refuses it for any
-//  other cluster. A delete asks for the guest's name typed; anything that needs the master password asks for it
-//  first, exactly as the same button elsewhere does.
+//  other cluster. A delete asks for the guest's name typed; the card itself is the
+//  confirmation the same button elsewhere would show.
 // =============================================================================
 
 import { useState } from 'react'
 import { CLUSTER_HEADER, type ApiResult } from '@/lib/api'
 import { clusterColor, clusterInk } from '@/lib/clusters'
 import { styles } from '@/components/visual/kit'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 export interface ClusterRef { id: string; name: string; kind: 'home' | 'remote' }
 
@@ -24,7 +23,8 @@ export interface ActionCardData {
   title: string
   words: string
   steps: string[]
-  needsReconfirm: boolean
+  /** The card is the confirmation for an action its page would confirm; only a signed-in person can apply it. */
+  needsConfirm: boolean
   typedName: string | null
   role: string
 }
@@ -68,7 +68,6 @@ export function ActionCard({ card, onDone, onCancel }: { card: ActionCardData; o
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [reconfirm, setReconfirm] = useState(false)
   const remote = card.cluster.kind === 'remote'
   const colour = clusterColor(card.cluster.kind)
   const ready = !card.typedName || typed === card.typedName
@@ -87,7 +86,6 @@ export function ActionCard({ card, onDone, onCancel }: { card: ActionCardData; o
       r = { ok: res.ok && body?.ok !== false, status: res.status, body, code: body?.code, error: body?.error }
     } catch { r = { ok: false, status: 0, body: null, error: 'Could not reach HyperProx.' } }
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(true); return }
     if (r.status === 428) { setError(r.error ?? 'Type the name exactly.'); return }
     const words = (r.body as any)?.words ?? r.error ?? 'Done.'
     onDone(r.ok ? `${card.cluster.name}: ${words}` : `Not done on ${card.cluster.name}: ${r.error ?? words}`)
@@ -98,7 +96,6 @@ export function ActionCard({ card, onDone, onCancel }: { card: ActionCardData; o
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
         <ClusterChip c={card.cluster} size="md" />
         {card.from && card.from.id !== card.cluster.id && <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>from <ClusterChip c={card.from} /></span>}
-        {card.needsReconfirm && <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>asks for your master password</span>}
       </div>
       <div className="font-display" style={{ fontSize: 20, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 4 }}>{card.title}</div>
       {remote && <div style={{ fontSize: 13, color: colour, marginBottom: 6 }}>This runs on the remote cluster {card.cluster.name}, not on your home cluster.</div>}
@@ -121,7 +118,6 @@ export function ActionCard({ card, onDone, onCancel }: { card: ActionCardData; o
           {busy ? 'Working...' : `${card.typedName ? 'Delete' : 'Confirm'} on ${card.cluster.name}`}
         </button>
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void apply() }} />}
     </div>
   )
 }

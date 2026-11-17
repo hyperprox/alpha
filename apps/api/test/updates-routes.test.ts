@@ -15,6 +15,7 @@ import type { UpdatesRunner } from '../src/lib/updates/runner'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { FakeCluster, node, guest, policyLoad, FAST } from './updates-fake'
+import { confirmAfterReconfirm, injectConfirmed } from './fakes/confirm'
 
 const broker = new FakeBroker()
 broker.addUser('admin@example.com', 'admin master password', 'admin')
@@ -33,7 +34,7 @@ before(async () => {
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
   store = new MemoryStore()
   fake = new FakeCluster({ nodes: [node('node-a'), node('node-b')], guests: [guest(101, 'node-a')] })
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await app.register(websocket)
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
@@ -128,10 +129,14 @@ test('without a policy file: run is refused with a reason, dry-run works; bad mo
   } finally { policyYaml = 'nodes:\n  default: { upgrade: upgrade, reboot: manual }\n' }
 })
 
-test('per-node reboot: 202, unknown node 404', async () => {
+test('per-node reboot: confirmed on the page, then 202; unknown node 404', async () => {
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
-  assert.equal((await app.inject({ method: 'POST', url: '/api/updates/nodes/node-z/reboot', headers: { cookie } })).statusCode, 404)
-  const r = await app.inject({ method: 'POST', url: '/api/updates/nodes/node-b/reboot', headers: { cookie } })
+  const asked = await app.inject({ method: 'POST', url: '/api/updates/nodes/node-b/reboot', headers: { cookie } })
+  assert.equal(asked.statusCode, 403)
+  assert.equal(asked.json().code, 'confirm_required')
+  assert.equal(asked.json().confirm.summary, 'Reboot node-b? Its HA guests move to other nodes first, then it restarts. This usually takes about 5 minutes.')
+  assert.equal((await injectConfirmed(app, { method: 'POST', url: '/api/updates/nodes/node-z/reboot', headers: { cookie } })).statusCode, 404)
+  const r = await injectConfirmed(app, { method: 'POST', url: '/api/updates/nodes/node-b/reboot', headers: { cookie } })
   assert.equal(r.statusCode, 202)
   await runner.idle()
   const j = await app.inject({ method: 'GET', url: `/api/updates/jobs/${r.json().job.id}`, headers: { cookie } })

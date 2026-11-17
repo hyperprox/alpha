@@ -8,12 +8,11 @@
 //  in in a new tab). The page only ever asks HyperProx; no Plex token of any kind comes to the browser. The install
 //  gets the sign-in's id, nothing else. Skipping it installs the server unclaimed, and the page says what that means.
 //
-//  Starting a sign-in saves nothing, but it asks for the master password again like the Plex page's own sign-in does.
+//  Starting a sign-in saves nothing, but it is confirmed first like the Plex page's own sign-in.
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { styles } from '@/components/visual/kit'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 export interface ClaimFlow {
   id: string; state: 'waiting' | 'signed-in' | 'expired' | 'error' | 'saved'
@@ -96,7 +95,6 @@ export function PlexClaim({ onFlow }: { onFlow: (id: string) => void }) {
   const [flow, setFlow] = useState<ClaimFlow | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [now, setNow] = useState(() => Date.now())
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
@@ -105,7 +103,6 @@ export function PlexClaim({ onFlow }: { onFlow: (id: string) => void }) {
     setBusy(true); setError(null)
     try {
       const r = await call('POST', BASE, { claim: true })
-      if (r.json?.code === 'reconfirm_required') { setReconfirm(() => () => void start()); return }
       if (!r.json?.success) { setError(r.json?.error ?? 'Could not start the Plex sign-in.'); return }
       setFlow(r.json.data); onFlow('')
     } catch { setError('Could not reach HyperProx.') } finally { setBusy(false) }
@@ -131,7 +128,6 @@ export function PlexClaim({ onFlow }: { onFlow: (id: string) => void }) {
   return (
     <>
       <PlexClaimView flow={flow} error={error} busy={busy} now={now} onStart={() => void start()} onCancel={cancel} />
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </>
   )
 }

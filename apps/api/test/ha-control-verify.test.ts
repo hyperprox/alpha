@@ -30,6 +30,7 @@ import { MemoryApiTokenStore, setApiTokenStore, createApiToken } from '../src/li
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { TOKEN_A, st, fakeHA, memIO, HOUSE_A, openResolver, testClient, type FakeHA } from './ha-control-fake'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const owner: Actor = { sid: 's-owner', email: 'owner@example.com', role: 'owner', token: null }
 const operator: Actor = { sid: 's-op', email: 'op@example.com', role: 'operator', token: null }
@@ -62,7 +63,7 @@ async function gateApp(svc: HAControlService, users: Array<[string, string, 'own
   const tokens = new MemoryApiTokenStore()
   setApiTokenStore(tokens)
   setHAControlService(svc)
-  const app: FastifyInstance = Fastify({ logger: false })
+  const app: FastifyInstance = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(pluginRoutes, { prefix: '/api/plugins' })
@@ -250,7 +251,7 @@ test('finding 8: admin to operator is a demotion (re-confirmed, audited); create
   try {
     const oc = (await signIn(g.app, 'owner@example.com', 'owner master password')).cookie
     const put = () => g.app.inject({ method: 'PUT', url: '/api/plugins/home-assistant/instances/default', headers: { cookie: oc }, payload: { policy: { normalRole: 'operator' } } })
-    assert.equal((await put()).json().code, 'reconfirm_required')
+    assert.equal((await put()).json().code, 'confirm_required')
     await g.app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie: oc }, payload: { password: 'owner master password' } })
     prodAudit.length = 0
     assert.equal((await put()).statusCode, 200)

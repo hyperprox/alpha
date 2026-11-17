@@ -22,7 +22,7 @@ export interface UpdatesSourceDeps {
   tree(): UpdatesTargetTree | null
 }
 
-const RUN_NOTE = 'Updates are chosen and run on the Updates page, with your master password. I cannot start one.'
+const RUN_NOTE = 'Updates are chosen and run on the Updates page, where you confirm them. I cannot start one.'
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 const clean = (s: string) => stripAddresses(String(s ?? '')).replace(/\s+/g, ' ').trim()
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

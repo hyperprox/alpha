@@ -24,7 +24,9 @@ import rateLimit from '@fastify/rate-limit'
 import { FIXTURES, type FixtureRoute } from './fixtures'
 import { NOT_FOUND } from './fixtures/types'
 import { DEMO_OWNER } from './fixtures/data'
-import { needsReconfirm } from '../lib/roles'
+import { needsPassword, needsConfirm } from '../lib/roles'
+import { describeAction, CONFIRM_HEADER } from '../lib/confirm-text'
+import { randomUUID } from 'node:crypto'
 import { forwardToWeb, SECURITY_HEADERS } from './public'
 import type { PublicConfig } from './safety'
 
@@ -239,9 +241,13 @@ export async function buildDemoServer(opts: DemoServerOptions = {}): Promise<Fas
       if (url.pathname.startsWith('/ws')) return refuse(reply)
 
       if (isWrite(method)) {
-        // Ask for the master password exactly where the real product would, then refuse kindly.
-        if (needsReconfirm(method, url.pathname) && !hasCookie(req.headers.cookie, RECONFIRM_COOKIE, '1')) {
+        // Ask for the master password, or show the confirmation, exactly where the real product would, then refuse kindly.
+        if (needsPassword(method, url.pathname) && !hasCookie(req.headers.cookie, RECONFIRM_COOKIE, '1')) {
           return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue', demo: true })
+        }
+        if (needsConfirm(method, url.pathname) && !req.headers[CONFIRM_HEADER]) {
+          const summary = describeAction(method, url.pathname, url.pathname, {}, req.body)
+          return reply.status(403).send({ ok: false, code: 'confirm_required', error: summary, confirm: { token: `demo-${randomUUID()}`, summary, expiresAt: new Date(Date.now() + 300_000).toISOString() }, demo: true })
         }
         const preview = method === 'POST' ? matchFixture(table, url.pathname, 'POST') : null
         if (preview) return reply.send(preview.route.post!(preview.params, Object.fromEntries(url.searchParams), { cluster: clusterOf(req) }))

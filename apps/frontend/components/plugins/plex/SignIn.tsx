@@ -7,12 +7,11 @@
 //  API checks plex.tv, then lists the account's own servers to choose from. The API tests the chosen server and
 //  saves its address and server token in the vault. No Plex token ever comes to this page.
 //
-//  Starting and saving both ask for the master password again (they save plug-in settings).
+//  Starting and saving are both confirmed first (they save plug-in settings).
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { styles } from '@/components/visual/kit'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 interface Connection { uri: string; protocol: 'http' | 'https'; address: string; port: number; local: boolean }
 interface Server { id: string; name: string; version: string; connections: Connection[]; preferred: string | null; matchesKnown: boolean }
@@ -53,7 +52,6 @@ export function PlexSignIn({ known, onDone, compact }: {
   const [expired, setExpired] = useState(false)
   const [server, setServer] = useState<string>('')
   const [uri, setUri] = useState<string>('')
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
 
@@ -61,7 +59,6 @@ export function PlexSignIn({ known, onDone, compact }: {
     setBusy(true); setError(null); setTried([]); setSkipped([]); setExpired(false)
     try {
       const r = await call('POST', BASE, { known: known ?? undefined })
-      if (r.json?.code === 'reconfirm_required') { setReconfirm(() => () => void start()); return }
       if (!r.json?.success) { setError(r.json?.error ?? 'Could not start the Plex sign-in.'); return }
       setFlow(r.json.data)
     } catch { setError('Could not reach HyperProx.') } finally { setBusy(false) }
@@ -99,7 +96,6 @@ export function PlexSignIn({ known, onDone, compact }: {
     setBusy(true); setError(null); setTried([]); setSkipped([])
     try {
       const r = await call('POST', `${BASE}/${flow.id}/connect`, { server, uri })
-      if (r.json?.code === 'reconfirm_required') { setReconfirm(() => () => void connect()); return }
       if (r.status === 404) { setFlow(null); setError('That Plex sign-in has ended. Get a new code and try again.'); setExpired(true); return }
       if (!r.json?.success) { setError(r.json?.error ?? 'Could not save the server.'); setTried(r.json?.tried ?? []); setSkipped(r.json?.skipped ?? []); return }
       setFlow(null)
@@ -221,7 +217,6 @@ export function PlexSignIn({ known, onDone, compact }: {
         </div>
       )}
 
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>
   )
 }

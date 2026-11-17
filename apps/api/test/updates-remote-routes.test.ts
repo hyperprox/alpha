@@ -24,6 +24,7 @@ import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { FakeCluster, node, guest, policyLoad, FAST } from './updates-fake'
 import { standaloneServer } from './updates-remote-fake'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const REMOTE = 'c0123456789'
 const H = { 'x-hyperprox-cluster': REMOTE }
@@ -48,7 +49,7 @@ before(async () => {
   const cs = new MemoryClusterStore()
   await cs.upsert({ id: REMOTE, name: 'Remote server', kind: 'remote', address: 'pve1.example', port: 8006, note: '', certFingerprint: 'AA', certConfirmedAt: null, certConfirmedBy: null, nodeAddresses: { pve1: '10.0.0.9' }, allowedRoots: [], monitoring: {}, plexUrl: null, createdBy: 'x' })
   setClusterStore(cs); await loadClusters()
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   installClusterContext(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
@@ -102,8 +103,8 @@ test('remote changes need a fresh re-confirmation; a dry run and a cancel do not
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const run = await app.inject({ method: 'POST', url: '/api/updates/jobs', headers: { cookie, ...H }, payload: { mode: 'run' } })
   assert.equal(run.statusCode, 403)
-  assert.equal(run.json().code, 'reconfirm_required')
-  assert.equal((await app.inject({ method: 'POST', url: '/api/updates/nodes/pve1/reboot', headers: { cookie, ...H } })).json().code, 'reconfirm_required')
+  assert.equal(run.json().code, 'confirm_required')
+  assert.equal((await app.inject({ method: 'POST', url: '/api/updates/nodes/pve1/reboot', headers: { cookie, ...H } })).json().code, 'confirm_required')
   const dry = await app.inject({ method: 'POST', url: '/api/updates/jobs', headers: { cookie, ...H }, payload: { mode: 'dry-run' } })
   assert.equal(dry.statusCode, 201, dry.body)
   await idle()
@@ -134,7 +135,7 @@ test('preview -> re-confirm -> apply on the remote; the job is "No job" through 
   const { token } = await createApiToken({ name: 'ci', role: 'admin' }, 'test', tokens)
   const viaToken = await app.inject({ method: 'POST', url: `/api/updates/jobs/${id}/confirm`, headers: { authorization: `Bearer ${token}`, ...H } })
   assert.equal(viaToken.statusCode, 403)
-  assert.equal(viaToken.json().code, 'reconfirm_required')
+  assert.equal(viaToken.json().code, 'token_forbidden')
 
   const ok = await app.inject({ method: 'POST', url: `/api/updates/jobs/${id}/confirm`, headers: { cookie, ...H } })
   assert.equal(ok.statusCode, 200, ok.body)

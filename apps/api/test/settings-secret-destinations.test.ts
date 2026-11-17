@@ -12,6 +12,7 @@ import { setCredentialTable } from '../src/lib/credentials'
 import { MemoryApiTokenStore, setApiTokenStore, createApiToken } from '../src/lib/api-tokens'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const broker = new FakeBroker()
 broker.addUser('admin@example.com', 'admin master password', 'admin')
@@ -25,7 +26,7 @@ before(async () => {
   setApiTokenStore(store)
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(settingsRoutes, { prefix: '/api/settings' })
@@ -51,9 +52,9 @@ test('saving needs the master password again, then refuses a moved address witho
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const first = await app.inject({ method: 'PUT', url: '/api/settings/proxmox/proxmox', headers: { cookie }, payload: { host: '198.51.100.9' } })
   assert.equal(first.statusCode, 403)
-  assert.equal(first.json().code, 'reconfirm_required')
+  assert.equal(first.json().code, 'confirm_required')
   const test1 = await app.inject({ method: 'POST', url: '/api/settings/test/proxy/npm', headers: { cookie } })
-  assert.equal(test1.json().code, 'reconfirm_required')
+  assert.equal(test1.json().code, 'confirm_required')
 
   const rc = await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
   assert.equal(rc.statusCode, 200)
@@ -76,7 +77,7 @@ test('an API token can read settings (admin) but never save or test a connection
   assert.equal((await app.inject({ method: 'GET', url: '/api/settings/proxmox', headers: h })).statusCode, 200)
   const put = await app.inject({ method: 'PUT', url: '/api/settings/proxmox/proxmox', headers: h, payload: { host: '198.51.100.9', token_secret: 'x' } })
   assert.equal(put.statusCode, 403)
-  assert.equal(put.json().code, 'reconfirm_required')
+  assert.equal(put.json().code, 'token_forbidden')
   const tst = await app.inject({ method: 'POST', url: '/api/settings/test/proxy/npm', headers: h })
   assert.equal(tst.statusCode, 403)
 })

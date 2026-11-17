@@ -9,15 +9,15 @@
 //  everywhere, home is teal.
 //
 //  Actions: refresh (anyone), a quick SMART test from a disk's sheet (operator
-//  and above), restart and shut down (admin: master password, the phrase, and
+//  and above), restart and shut down (admin: a confirmation, the phrase, and
 //  the NAS's name typed). Nothing here deletes data.
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { useClusters } from '@/lib/clusters'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Panel, Cols, Icon, styles as vs } from '@/components/visual/kit'
 import { DetailsSection, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -74,7 +74,6 @@ function NasView({ n }: { n: Nas }) {
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
   const [power, setPower] = useState<Power | null>(null)
   const [typed, setTyped] = useState('')
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const inFlight = useRef(false)
 
   const load = useCallback(async (fresh = false) => {
@@ -99,8 +98,7 @@ function NasView({ n }: { n: Nas }) {
   }
 
   const act = async (body: Record<string, unknown>, secure: boolean): Promise<void> => {
-    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${n.id}/${secure ? 'secure-actions' : 'actions'}`, 'POST', body)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void act(body, secure)); return }
+    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${n.id}/${secure ? 'secure-actions' : 'actions'}`, 'POST', body, secure ? IN_PAGE : undefined)
     setNote(r.ok ? { text: r.body!.data.message, ok: true } : { text: r.error ?? 'That did not work.', ok: false })
     if (r.ok) void load(true)
   }
@@ -159,7 +157,7 @@ function NasView({ n }: { n: Nas }) {
           <Panel title="Shares" sub={`${r.shares.length}`}><ShareTiles shares={r.shares} /></Panel>
 
           {admin && (
-            <Panel title="Power" sub="admins · master password · typed name">
+            <Panel title="Power" sub="admins · typed name">
               <p className="mb-3 text-sm" style={{ color: 'var(--text-soft)' }}>
                 Restarting interrupts everyone using {n.name} (shares, backups, media). Shutting down needs someone at the NAS to start it again.
               </p>
@@ -233,7 +231,6 @@ function NasView({ n }: { n: Nas }) {
           </div>
         </Modal>
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
 }
@@ -251,7 +248,6 @@ function NasForm({ n, onSaved, onCancel }: { n: Nas | null; onSaved: () => void;
   })
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [probe, setProbe] = useState<null | { fingerprint: string; subject: string; validTo: string }>(null)
   const set = (k: keyof typeof f, v: any) => setF(x => ({ ...x, [k]: v }))
   const cluster = (clusters ?? []).find(c => c.id === f.clusterId)
@@ -273,7 +269,6 @@ function NasForm({ n, onSaved, onCancel }: { n: Nas | null; onSaved: () => void;
     if (f.password || !n) body.password = f.password
     const r = await apiJson(n ? `${API}/instances/${n.id}` : `${API}/instances`, n ? 'PUT' : 'POST', body)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void save()); return }
     if (!r.ok) { setErr(r.error ?? 'Could not save'); return }
     set('password', '')
     onSaved()
@@ -281,8 +276,7 @@ function NasForm({ n, onSaved, onCancel }: { n: Nas | null; onSaved: () => void;
 
   const remove = async () => {
     if (!n || !window.confirm(`Remove ${n.name} from HyperProx? Its login is deleted from the vault. The NAS itself is not touched.`)) return
-    const r = await apiJson(`${API}/instances/${n.id}`, 'DELETE')
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
+    const r = await apiJson(`${API}/instances/${n.id}`, 'DELETE', undefined, IN_PAGE)
     if (!r.ok) { setErr(r.error ?? 'Could not remove'); return }
     onSaved()
   }
@@ -351,7 +345,6 @@ function NasForm({ n, onSaved, onCancel }: { n: Nas | null; onSaved: () => void;
         {onCancel && <GhostButton type="button" onClick={onCancel}>Cancel</GhostButton>}
         <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.username || (!n && !f.password)} onClick={() => void save()}>{busy ? 'Saving…' : 'Save'}</PrimaryButton>
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>
   )
 }

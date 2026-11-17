@@ -27,6 +27,7 @@ import { setAuditSink } from '../src/lib/audit'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { TOKEN_A, TOKEN_B, st, fakeHA, memIO, HOUSE_A, openResolver, testClient, type FakeHA } from './ha-control-fake'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const owner: Actor = { sid: 's-owner', email: 'owner@example.com', role: 'owner', token: null }
 const operator: Actor = { sid: 's-op', email: 'op@example.com', role: 'operator', token: null }
@@ -269,7 +270,7 @@ test('findings 7 and 8 through the gate: viewer redaction, gate refusals audited
   const { svc, audits, store } = house()
   A.isAdmin = true
   setHAControlService(svc)
-  const app: FastifyInstance = Fastify({ logger: false })
+  const app: FastifyInstance = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(haControlRoutes, { prefix: '/api/plugins/home-assistant' })
@@ -318,7 +319,7 @@ test('finding 2: the demotion audit row names each entity moved to everyday', as
     setApiTokenStore(new MemoryApiTokenStore())
     const { svc } = house()
     setHAControlService(svc)
-    const app = Fastify({ logger: false })
+    const app = confirmAfterReconfirm(Fastify({ logger: false }))
     await registerGate(app)
     await app.register(authRoutes, { prefix: '/api/auth' })
     await app.register(haControlRoutes, { prefix: '/api/plugins/home-assistant' })

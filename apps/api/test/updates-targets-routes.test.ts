@@ -17,6 +17,7 @@ import { lastTargets } from '../src/lib/updates/targets-summary'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { FakeCluster, node, guest, pkg, policyLoad, FAST } from './updates-fake'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const broker = new FakeBroker()
 broker.addUser('admin@example.com', 'admin master password', 'admin')
@@ -41,7 +42,7 @@ before(async () => {
     nodes: [node('node-a'), node('gpu-node', { holds: ['proxmox-kernel-7.0'], pinned: '7.0.1-1-pve', pending: [pkg('curl', '8.1-2'), pkg('proxmox-kernel-7.0', '7.0.2-1')] })],
     guests: [guest(101, 'node-a')],
   })
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await app.register(websocket)
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
@@ -89,7 +90,7 @@ test('a chosen run needs the master password again; then it is audited with its 
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const first = await app.inject({ method: 'POST', url: '/api/updates/jobs', headers: { cookie }, payload: { mode: 'run', select: ['guest:101'] } })
   assert.equal(first.statusCode, 403)
-  assert.equal(first.json().code, 'reconfirm_required')
+  assert.equal(first.json().code, 'confirm_required')
   assert.equal(store.audits.some(a => a.action === 'updates.job.start'), false, 'nothing started')
   assert.equal((await reconfirm(cookie)).statusCode, 200)
   const ok = await app.inject({ method: 'POST', url: '/api/updates/jobs', headers: { cookie }, payload: { mode: 'run', select: ['guest:101'] } })
@@ -111,18 +112,19 @@ test('a chosen run needs the master password again; then it is audited with its 
   assert.deepEqual(done.report.items.map((i: any) => [i.id, i.status]), [['guest:101', 'ok']])
 })
 
-test('confirming a chosen run after the re-confirmation has lapsed asks again', async () => {
+test('confirming a chosen run is confirmed on the page again, by whoever confirms it', async () => {
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   await reconfirm(cookie)
   const ok = await app.inject({ method: 'POST', url: '/api/updates/jobs', headers: { cookie }, payload: { mode: 'run', select: ['node:node-a'] } })
   assert.equal(ok.statusCode, 201, ok.body)
   const id = ok.json().job.id
   await runner.idle(); await runner.idle()
-  // A fresh sign-in has no re-confirmation.
+  // Another session has confirmed nothing: its first confirm is answered with a confirmation to show.
   const { cookie: other } = await signIn(app, 'admin@example.com', 'admin master password')
   const conf = await app.inject({ method: 'POST', url: `/api/updates/jobs/${id}/confirm`, headers: { cookie: other } })
   assert.equal(conf.statusCode, 403)
-  assert.equal(conf.json().code, 'reconfirm_required')
+  assert.equal(conf.json().code, 'confirm_required')
+  assert.match(conf.json().confirm.summary, /Carry on with this update run\?/)
   await app.inject({ method: 'POST', url: `/api/updates/jobs/${id}/cancel`, headers: { cookie: other } })
 })
 

@@ -342,7 +342,7 @@ test('actions: admin and a person only, the tier is HyperProx\'s, values checked
   const m = await added(s)
   await assert.rejects(s.svc.act(m.id, 'maintenance-window', { hour: 1 }, { ...ADMIN, token: 'ci' }, false), /API tokens/)
   await assert.rejects(s.svc.act(m.id, 'user:delete', {}, ADMIN, false), (e: any) => e instanceof NcRefusal && e.status === 404)
-  await assert.rejects(s.svc.act(m.id, 'mimetype-repair', {}, ADMIN, false), /master password/)
+  await assert.rejects(s.svc.act(m.id, 'mimetype-repair', {}, ADMIN, false), /its own button/)
   const before = s.audits.length
   await assert.rejects(s.svc.act(m.id, 'maintenance-window', { hour: 30 }, ADMIN, false), /0 to 23/)
   assert.equal(s.audits.length, before)
@@ -397,7 +397,7 @@ test('2FA: the current enforcement is kept, only TOTP/WebAuthn count, unknown us
   assert.match(s2.g.calls.at(-1)!, /'twofactorauth:enforce' '--no-interaction' '--on' '--group=staff' '--exclude=guests' '--exclude=contractors'/, 'the groups already set are kept')
   await s2.svc.act(m2.id, 'unenforce-2fa', {}, ADMIN, true)
   assert.match(s2.g.calls.at(-1)!, /'twofactorauth:enforce' '--no-interaction' '--off'/)
-  await assert.rejects(s2.svc.act(m2.id, 'unenforce-2fa', {}, ADMIN, false), /master password/)
+  await assert.rejects(s2.svc.act(m2.id, 'unenforce-2fa', {}, ADMIN, false), /its own button/)
 })
 
 // ── the update ───────────────────────────────────────────────────────────────

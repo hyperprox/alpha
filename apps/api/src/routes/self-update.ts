@@ -16,7 +16,7 @@ import { sendFailure } from '../lib/failure'
 import path from 'path'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
-import { isReconfirmed } from '../lib/auth'
+import { requireConfirm } from '../lib/confirm'
 import { isUnlocked } from '../lib/vault/state'
 import { publish } from '../lib/notify'
 import { auditOrThrow } from '../lib/audit'
@@ -100,11 +100,10 @@ async function admin(req: FastifyRequest, reply: FastifyReply) {
   if (!hasRole(s.role, 'admin')) return reply.status(403).send({ ok: false, code: 'forbidden', error: 'Updating HyperProx needs the admin role', required: 'admin', role: s.role })
 }
 
-/** A change: a person, not a token, who re-entered the master password within the last five minutes. */
-function personReconfirmed(req: FastifyRequest, reply: FastifyReply): boolean {
+/** A change: a person, not a token, who confirmed it on the page (lib/confirm.ts; the gate has usually checked it already). */
+async function personConfirmed(req: FastifyRequest, reply: FastifyReply): Promise<boolean> {
   if (isToken(req)) { reply.status(403).send({ ok: false, code: 'token_refused', error: 'An API token cannot update HyperProx or change how it updates. Sign in to do this.' }); return false }
-  if (!req.session?.sid || !isReconfirmed(req.session.sid)) { reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue' }); return false }
-  return true
+  return requireConfirm(req, reply)
 }
 
 export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPluginAsync {
@@ -154,7 +153,7 @@ export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPl
     fastify.get('/preview', { preHandler: admin }, async () => svc.preview())
 
     fastify.post<{ Body: { sha?: unknown } }>('/install', { preHandler: admin }, async (req, reply) => {
-      if (!personReconfirmed(req, reply)) return
+      if (!(await personConfirmed(req, reply))) return reply
       const sha = req.body?.sha
       if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha)) return reply.status(400).send({ ok: false, error: 'sha must be the full commit id of the update on offer' })
       try {
@@ -169,7 +168,7 @@ export function buildSelfUpdateRoutes(deps: SelfUpdateRouteDeps = {}): FastifyPl
     fastify.get('/job', { preHandler: admin }, async () => ({ job: await svc.job() }))
 
     fastify.put<{ Body: unknown }>('/settings', { preHandler: admin }, async (req, reply) => {
-      if (!personReconfirmed(req, reply)) return
+      if (!(await personConfirmed(req, reply))) return reply
       try { return { settings: await svc.saveSettings(req.body, req.session!.email) } }
       catch (e: any) {
         if (e instanceof SettingsError) return reply.status(400).send({ ok: false, error: e.message })

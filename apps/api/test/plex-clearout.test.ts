@@ -24,6 +24,7 @@ import { ArtCache, MissLimiter, artKey, artRef, artUpstream } from '../src/lib/p
 import { liveFromPlex } from '../src/plugins/plex'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const NOW = Date.UTC(2026, 5, 15)
 const DAY = 86_400_000
@@ -219,7 +220,7 @@ before(async () => {
     option: async k => (k === 'keep_added_days' ? 'none' : undefined), now: () => NOW,
     audit: async (action, details) => { audits.push({ action, details }) },
   })
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildPlexClearoutRoutes({ service: () => svc }), { prefix: '/api/plugins/plex' })
@@ -257,7 +258,7 @@ test('an API token, even an admin one, cannot remove', async () => {
   assert.equal(pv.statusCode, 200, pv.body)
   const r = await app.inject({ method: 'POST', url: `${BASE}/remove`, headers: h, payload: { previewId: pv.json().data.id } })
   assert.equal(r.statusCode, 403)
-  assert.equal(r.json().code, 'reconfirm_required')
+  assert.equal(r.json().code, 'token_forbidden')
   assert.equal(f.deletes.length, 0)
 })
 
@@ -273,7 +274,7 @@ test('operator: preview, then remove only after the master password, through Rad
 
   const noConfirm = await app.inject({ method: 'POST', url: `${BASE}/remove`, headers: { cookie }, payload: { previewId: p.id } })
   assert.equal(noConfirm.statusCode, 403)
-  assert.equal(noConfirm.json().code, 'reconfirm_required')
+  assert.equal(noConfirm.json().code, 'confirm_required')
   assert.equal(f.deletes.length, 0)
 
   const rc = await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'operator master password' } })
@@ -355,7 +356,7 @@ test('art route: signed in only, fixed upstream paths, image type and cache head
       return { contentType: 'image/jpeg', body: Buffer.from([0xff, 0xd8, 0xff, 0x01]) }
     },
   }
-  const a = Fastify({ logger: false })
+  const a = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(a)
   await a.register(authRoutes, { prefix: '/api/auth' })
   await a.register(buildPlexClearoutRoutes({ service: () => svc, plex: async () => plexArt, cache: new ArtCache() }), { prefix: '/api/plugins/plex' })
@@ -397,7 +398,7 @@ test('live route: now streaming and bandwidth from Plex, for any signed-in perso
     { type: 'movie', title: 'Paper Moons', User: { title: 'alex' }, Player: { state: 'playing', local: false }, Session: { bandwidth: 4200, location: 'wan' },
       viewOffset: 40, duration: 100, thumb: '/library/metadata/9/thumb/3' },
   ] } }
-  const a = Fastify({ logger: false })
+  const a = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(a)
   await a.register(authRoutes, { prefix: '/api/auth' })
   await a.register(buildPlexClearoutRoutes({
@@ -441,7 +442,7 @@ test('the new-items watcher really starts with the routes, and its switches are 
     unlocked: () => unlocked, settings: async () => settings, plex: async () => plexSet,
     publish: async () => {}, store: { load: () => ({ watermark: null, seen: [] }), save: () => {} },
   })
-  const a = Fastify({ logger: false })
+  const a = confirmAfterReconfirm(Fastify({ logger: false }))
   await a.register(buildPlexClearoutRoutes({ service: () => svc, watcher: { start: () => { started++; return () => {} }, deps: wd } }), { prefix: '/api/plugins/plex' })
   await a.ready()
   try {
@@ -512,7 +513,7 @@ test('reading again is operator only and at most once a minute; /live is one sha
   const counting: CoreEndpointClient = { ...ff.plex, async get(p) { if (p === '/library/sections') reads++; return ff.plex.get(p) } }
   const s5 = new ClearoutService({ plex: async () => counting, sonarr: async () => null, radarr: async () => null, option: async () => undefined, now: () => now })
   let liveCalls = 0
-  const a = Fastify({ logger: false })
+  const a = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(a)
   await a.register(authRoutes, { prefix: '/api/auth' })
   await a.register(buildPlexClearoutRoutes({
@@ -564,7 +565,7 @@ test('Arr settings that cannot be read are not "no Arr": refused, never Plex; a 
   try {
     const ff2 = fakes()
     const s7 = new ClearoutService({ plex: async () => ff2.plex, sonarr: async () => null, radarr: async () => ff2.radarr, option: async () => 'none', now: () => NOW })
-    const a = Fastify({ logger: false })
+    const a = confirmAfterReconfirm(Fastify({ logger: false }))
     await registerGate(a)
     await a.register(authRoutes, { prefix: '/api/auth' })
     await a.register(buildPlexClearoutRoutes({ service: () => s7 }), { prefix: '/api/plugins/plex' })

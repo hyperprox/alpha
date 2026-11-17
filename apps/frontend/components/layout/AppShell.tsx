@@ -5,6 +5,7 @@ import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { SessionProvider } from '@/lib/session'
 import { DemoBanner, DemoLayer } from '@/components/demo/DemoLayer'
+import { ConfirmHost } from '@/components/vault/ConfirmHost'
 import s from './shell.module.css'
 
 /** Pages that fill the whole window (the Deck's terminals) get the frame without the page padding or scroll. */
@@ -35,6 +36,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </div>
       <DemoLayer />
+      {/* The one confirmation dialog for every page (lib/confirm-bus.ts). */}
+      <ConfirmHost />
     </SessionProvider>
   )
 }

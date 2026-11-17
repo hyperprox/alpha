@@ -106,10 +106,9 @@ everything** ticks what a run of the whole plan does and goes the same way. The 
 guests, all compose projects, all nodes, or only the security updates.
 
 Before anything starts you see the order it runs in. Guests come before their node, Ceph before the
-nodes, and the nodes run one at a time in policy order, with HyperProx itself last. Then you enter your
-master password again. The job does its preflight and `apt update`, shows the order once more, and waits
-for **Confirm**. Starting, confirming and resuming a chosen run all need the password re-entered within
-the last five minutes, on every cluster, so an API token can never do it.
+nodes, and the nodes run one at a time in policy order, with HyperProx itself last. Then you confirm. The job does its preflight and `apt update`, shows the order once more, and waits
+for **Confirm**. Starting, confirming and resuming a chosen run are each confirmed on the page, on every cluster, so an
+API token can never do it.
 
 What a chosen run will not do:
 
@@ -194,7 +193,7 @@ re-listed with `docker compose ls` when it runs and updated by its name and ever
 - **Never an automatic reboot.** A node whose upgrade needs a reboot is marked *reboot pending*. The
   **Reboot** button is a separate action: it first shows which running guests will stop (and which of
   them will not start again on their own, because they are not set to start at boot), the running kernel
-  and the one that will boot, then asks for your master password. On a one-node server there is no other
+  and the one that will boot, then asks you to confirm. On a one-node server there is no other
   node to move guests to, so they stop until the server is back. HyperProx waits up to 15 minutes for a
   new boot id, then reports the running kernel and which guests came back; a guest set to start at boot
   that is not running fails the step. On a remote with more than one node, HyperProx does not reboot nodes
@@ -213,8 +212,8 @@ re-listed with `docker compose ls` when it runs and updated by its name and ever
   HyperProx can see on that cluster (from its backup tasks, the same ones the Command center reads), and
   says whether that backup was of this guest or a job that may include it. The tick travels with the run
   like an app approval and is written to the audit log.
-- **Master password for every change.** Starting a run, confirming it, resuming, rolling back and
-  rebooting on a remote each need the master password re-entered within the last five minutes. An API
+- **A confirmation for every change.** Starting a run, confirming it, resuming, rolling back and
+  rebooting on a remote are each confirmed on the page first. An API
   token can never do that, so a token cannot change anything on a remote through Updates. A dry run,
   reading and cancelling do not ask. (At home these actions are admin-only and audited, as before.)
 - **Node logins are the remote's own**, saved under **Edit server, Nodes and logins**, and used only once

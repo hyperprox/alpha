@@ -10,10 +10,10 @@
 //  listings and every read-back still go through the read-only token. Turning
 //  management off deletes the manage token on the server (and its permissions),
 //  then the vault item. The consequence is stated wherever it is turned on:
-//  anyone who gets into HyperProx as an admin, with the master password, could
+//  anyone who gets into HyperProx as an admin could
 //  then delete backups on those datastores.
 //
-//  The actions, each admin only, master password re-entered, never an API
+//  The actions, each admin only, confirmed on the page, never an API
 //  token, audited per item and read back afterwards:
 //    delete-snapshots  the snapshots picked;
 //    delete-group      every snapshot of one group (all of a guest's backups);
@@ -52,7 +52,7 @@ export const MANAGE_TOKEN_ID = `${MANAGE_USER}!${MANAGE_TOKEN}`
 export const MANAGE_ROLE = 'DatastoreAdmin'
 export const PREVIEW_TTL_MS = 10 * 60_000
 export const MANAGE_CONSEQUENCE =
-  'Anyone who gets into HyperProx as an admin, with the master password, could then delete or prune backups on the chosen datastores. ' +
+  'Anyone who gets into HyperProx as an admin could then delete or prune backups on the chosen datastores. ' +
   'HyperProx keeps a second token for this (DatastoreAdmin on those datastores only, never on /); turning management off deletes it on the server.'
 
 export class ManageRefusal extends Error {
@@ -192,7 +192,7 @@ export class PbsManager {
   // ── turning it on and off ──────────────────────────────────────────────────
 
   private guard(actor: Actor): void {
-    if (actor.token) throw new ManageRefusal('token_forbidden', 'API tokens can never manage backups: it needs a person with the master password.', 403)
+    if (actor.token) throw new ManageRefusal('token_forbidden', 'API tokens can never manage backups: a signed-in person confirms it on the page.', 403)
     if (!hasRole(actor.role, 'admin')) throw new ManageRefusal('forbidden', 'Managing backups needs the admin role.', 403)
   }
 

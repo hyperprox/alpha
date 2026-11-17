@@ -16,6 +16,7 @@ import { ClientDetector, DETECT_CLIENTS_SCRIPT } from '../src/lib/remote/detect'
 import type { RemoteExecutor } from '../src/lib/remote/executor'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const broker = new FakeBroker()
 broker.addUser('admin@example.com', 'admin master password', 'admin')
@@ -38,7 +39,7 @@ before(async () => {
   setBroker(broker)
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildRemoteRoutes({ service: svc, sweep: false }), { prefix: '/api/remote' })
@@ -103,7 +104,7 @@ test('exclusions: admin only, changing them is re-confirmed, ids only; an exclud
   assert.equal((await app.inject({ method: 'GET', url: '/api/remote/exclusions', headers: { cookie: v.cookie } })).statusCode, 403)
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   const no = await app.inject({ method: 'PUT', url: '/api/remote/exclusions', headers: { cookie }, payload: { machineIds: ['lxc-150'] } })
-  assert.equal(no.statusCode, 403); assert.equal(no.json().code, 'reconfirm_required')
+  assert.equal(no.statusCode, 403); assert.equal(no.json().code, 'confirm_required')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
   const bad = await app.inject({ method: 'PUT', url: '/api/remote/exclusions', headers: { cookie }, payload: { machineIds: ['node-pve-a'] } })
   assert.equal(bad.statusCode, 400)

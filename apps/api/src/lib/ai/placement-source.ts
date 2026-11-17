@@ -19,7 +19,7 @@ export interface PlacementSourceDeps {
   balance?(): Promise<BalanceResult & { auto?: { settings: { enabled: boolean; apply: boolean } } }>
 }
 
-const MOVE_NOTE = 'Moving a guest, or running a balancing plan, is done on the Load balancing page, after a check and your master password. I cannot move anything.'
+const MOVE_NOTE = 'Moving a guest, or running a balancing plan, is done on the Load balancing page, after a check and a confirmation. I cannot move anything.'
 
 /** The guest a question is about: by id, or by the longest name it mentions as a whole word. */
 export function guestIn(prompt: string, guests: GuestPlacement[]): GuestPlacement | null {

@@ -5,11 +5,11 @@
 
 import { Tiles, styles } from '@/components/visual/kit'
 import { useCallback, useEffect, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { clusterColor, clusterInk, bytes } from '@/lib/clusters'
 import { INPUT, LABEL, Notice, BusyNote, Modal } from '@/components/vault/ui'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GuestDrawer } from '@/components/guest-config/GuestDrawer'
 import type { GuestRow } from '@/components/guest-config/types'
 
@@ -33,7 +33,6 @@ export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, on
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
   const [task, setTask] = useState<{ node: string; upid: string } | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const label = `${g.name} (${g.type === 'lxc' ? 'CT' : 'VM'} ${g.vmid})`
   const base = `/api/clusters/${clusterId}/guests/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}`
 
@@ -67,9 +66,9 @@ export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, on
       : act.kind === 'snapshot' ? [`${base}/snapshot`, { name: snapName }]
       : act.kind === 'backup' ? [`${base}/backup`, { storage }]
       : [`${base}/delete`, { confirmName: typed, removePublished }]
-    const r = await apiJson<{ data: any }>(path, 'POST', body)
+    // A delete was confirmed here by typing the guest's name; the other actions show the shared confirmation if asked.
+    const r = await apiJson<{ data: any }>(path, 'POST', body, act.kind === 'delete' ? IN_PAGE : undefined)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void apply()); return }
     if (act.kind === 'backup' && r.ok) { setTask({ node: r.body!.data.node, upid: r.body!.data.upid }); setResult({ ok: true, text: 'The backup has started. HyperProx is following it and will say when Proxmox reports it finished.' }); return }
     setResult({ ok: r.ok, text: r.ok ? r.body!.data.words : r.error ?? 'It did not work' })
     if (r.ok) onDone()
@@ -84,7 +83,6 @@ export function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, on
 
   return (
     <Modal title={title} onClose={onClose}>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
       <p className="text-sm" style={{ color: 'var(--text-muted)' }}>On <b style={{ color: clusterColor(kind) }}>{clusterName}</b>. {impact}</p>
       {act.kind === 'snapshot' && <div><label style={LABEL}>Snapshot name</label><input style={INPUT} value={snapName} onChange={e => setSnapName(e.target.value)} /></div>}
       {act.kind === 'backup' && (storages === null ? <BusyNote>Reading backup storage…</BusyNote> : storages.length === 0 ? <Notice kind="warn">No storage on {g.node} takes backups.</Notice> : (

@@ -6,7 +6,7 @@
 //  Presentation only: tiles that glow when on, a climate dial, a light sheet
 //  with a brightness ring and a warmth slider. Every tap is handed back to the
 //  Devices view, which owns the one way in: the per-device action routes with
-//  their tier, role, confirm and re-confirm checks. Nothing here calls an API.
+//  their tier, role and confirm checks. Nothing here calls an API.
 // =============================================================================
 
 import { useEffect, useRef, useState, type KeyboardEvent as RKeyboardEvent, type PointerEvent as RPointerEvent, type ReactNode } from 'react'

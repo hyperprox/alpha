@@ -29,6 +29,7 @@ import type { PromAlert, ForwarderState } from "../src/lib/alerts/forwarder"
 import type { ClusterPanel } from "../src/lib/clusters/overview"
 import type { ActionPlan } from "../src/lib/ai/actions"
 import type { CertLite } from "../src/lib/ai/ask-sources"
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const HOME: ClusterRef = { id: HOME_ID, name: "Home cluster", kind: "home" }
 const never: ModelCall = async () => { throw new Error("the model must not be called") }
@@ -153,17 +154,17 @@ function allSources(o: Opts = {}): AskSource[] {
 //  The app
 // ---------------------------------------------------------------------------
 
-let role: Role = "admin", sid = "s1", unlocked = true, reconfirmed = false, ownerOverride: string | null = null
+let role: Role = "admin", sid = "s1", unlocked = true, ownerOverride: string | null = null
 let homePlans: PreparedStore<HomePlan>
 const ran: string[] = []
 const audits: Array<{ action: string; details: Record<string, unknown> }> = []
 let previewInputs: any[] = []
 let metrics: SiteMetricsSource = METRICS
 
-beforeEach(() => { ownerOverride = null; role = "admin"; sid = "s1"; unlocked = true; reconfirmed = false; ran.length = 0; audits.length = 0; previewInputs = []; metrics = METRICS })
+beforeEach(() => { ownerOverride = null; role = "admin"; sid = "s1"; unlocked = true; ran.length = 0; audits.length = 0; previewInputs = []; metrics = METRICS })
 
 function app() {
-  const f = Fastify()
+  const f = confirmAfterReconfirm(Fastify())
   homePlans = new PreparedStore<HomePlan>()
   f.register(buildAiRoutes({
     whoami: () => ownerOverride ?? (sid.startsWith("token:") ? sid : "admin@example.com"),
@@ -178,7 +179,7 @@ function app() {
     actionPlans: new PreparedStore<ActionPlan>(),
     prepareDeps: () => ({ inCluster: (_i, fn) => fn(), pve: () => ({ fetchStrict: async () => [] }) as any, row: () => null, connection: () => "k", unlocked: () => unlocked,
       backupStorages: async () => [], monitoringPreview: async () => ({ planId: "m", steps: [] }), copyPreview: async () => ({ previewId: "p", words: "" }), nodes: async () => [], now: () => new Date() }),
-    applyDeps: () => ({ row: () => null, connection: () => "k", unlocked: () => unlocked, reconfirmed: () => reconfirmed, inCluster: (_i, fn) => fn(), pve: () => ({}) as any,
+    applyDeps: () => ({ row: () => null, connection: () => "k", unlocked: () => unlocked, inCluster: (_i, fn) => fn(), pve: () => ({}) as any,
       ops: {} as any, applyMonitoring: async () => ({ ok: false, results: [], checks: [] }), startCopy: async () => ({ id: "", state: "" }), audit: async () => {} }),
     homePlans,
     homeNames: async () => ({ nas: NAS.map(n => n.name), sites: SITES.flatMap(s => [s.name, s.domain!]) }),
@@ -188,7 +189,7 @@ function app() {
       nas: async () => NAS.map(n => ({ id: n.id, name: n.name, disks: n.reading!.disks.map(d => ({ bay: d.bay, model: d.model })) })),
     }),
     homeApplyDeps: () => ({
-      unlocked: () => unlocked, reconfirmed: () => reconfirmed,
+      unlocked: () => unlocked,
       site: async id => { const s = SITES.find(x => x.id === id); return s ? { id: s.id, name: s.name, recipeId: s.kind, domain: s.domain } : undefined },
       pull: async id => { ran.push(`pull:${id}`); return { code: 0, output: "Fetching origin\nHEAD is now at abc123 from https://git.example.com/site.git" } },
       smart: async (nasId, bay, actor) => { ran.push(`smart:${nasId}:${bay}:${actor.role}`); return { message: `Quick SMART test started on disk ${bay} of nas1.` } },
@@ -225,7 +226,7 @@ const yaml = require("js-yaml") as { load(src: string): unknown }
 
 interface HomeScenario {
   id: string; prompt: string; then?: string[]; role?: Role; token?: boolean; metrics?: "none"; found_by: string
-  expect: { kind: "answer" | "action" | "website"; action?: string; role?: string; needs_reconfirm?: boolean; includes?: string[]; excludes?: string[]; choices?: string[] }
+  expect: { kind: "answer" | "action" | "website"; action?: string; role?: string; needs_confirm?: boolean; includes?: string[]; excludes?: string[]; choices?: string[] }
 }
 
 const DIR = join(__dirname, "scenarios", "home-features")
@@ -247,7 +248,7 @@ for (const file of readdirSync(DIR).filter(f => /\.ya?ml$/.test(f)).sort()) {
       assert.equal(r.conversational, false, r.message)
       assert.equal(r.action.action, e.action)
       if (e.role) assert.equal(r.action.role, e.role)
-      if (e.needs_reconfirm !== undefined) assert.equal(r.action.needsReconfirm, e.needs_reconfirm)
+      if (e.needs_confirm !== undefined) assert.equal(r.action.needsConfirm, e.needs_confirm)
     } else if (e.kind === "website") {
       assert.ok(r.website, r.message)
       assert.equal(r.website.link, "/sites?preview=pv-1")
@@ -341,7 +342,7 @@ test("the role of the same action by hand: a viewer cannot prepare a SMART test,
   role = "operator"
   const card = (await a.plan("run a quick SMART test on disk 3 of nas1")).json().action
   assert.equal(card.role, "operator")
-  assert.equal(card.needsReconfirm, false)
+  assert.equal(card.needsConfirm, false)
   assert.match((await a.plan("pull docs.example.com now")).json().message, /needs the admin role/)
   const ok = await a.apply({ planId: card.planId })
   assert.equal(ok.statusCode, 200, ok.body)
@@ -383,7 +384,7 @@ test("the ask-for-missing loop: kind, then name, then title, then email; a wrong
   assert.deepEqual([input.recipeId, input.node, input.vmid, input.hostname, input.ip, input.bridge, input.storage], ["wordpress", "node2", 160, "blog", "dhcp", "vmbr0", "local-lvm"])
   assert.deepEqual(input.options, { WP_TITLE: "Family Recipes", WP_ADMIN_USER: "cook", WP_ADMIN_EMAIL: "cook@example.com", WP_URL: "https://blog.example.com" })
   assert.deepEqual(input.publish, { zone: "example.com", name: "blog", instanceId: "npm1" })
-  assert.match(r.website.steps.join(" "), /Install there asks for your master password/)
+  assert.match(r.website.steps.join(" "), /Install there shows what it will do and asks you to confirm/)
   // A deploy request while a question is open is a new request: the draft is dropped, not fed "deploy gitea".
   await a.plan("make me a website")
   assert.equal((await a.plan("Deploy Gitea at git.example.com")).json().message, "INTENT-FALLBACK")

@@ -16,6 +16,7 @@ import { requiredRole, needsReconfirm } from '../src/lib/roles'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { threeNodes, type FakeHaPve } from './ha-fake'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const MARKER = 'PLANTED-SECRET-7f3c9a1e5b'
 const broker = new FakeBroker()
@@ -38,7 +39,7 @@ before(async () => {
     // The production audit writer passes details through redactSecrets; the same here.
     audit: async (action, resource, details) => { audit.push({ action, resource, details: redactSecrets(details, [MARKER]) }) },
   })
-  app = Fastify({ logger: { level: 'info', stream: { write: (l: string) => { logs.push(l) } } } })
+  app = confirmAfterReconfirm(Fastify({ logger: { level: 'info', stream: { write: (l: string) => { logs.push(l) } } } }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(buildHaRoutes({ planner: () => planner, pve: () => fake, cacheMs: 0 }), { prefix: '/api/ha' })
@@ -81,7 +82,7 @@ test('admin: preview, apply refused until re-confirmed, then applied and audited
   assert.equal(pv.statusCode, 200, pv.body)
   const id = pv.json().data.id
   const noConfirm = await app.inject({ method: 'POST', url: `/api/ha/plans/${id}/apply`, headers: { cookie } })
-  assert.equal(noConfirm.json().code, 'reconfirm_required')
+  assert.equal(noConfirm.json().code, 'confirm_required')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
   const ap = await app.inject({ method: 'POST', url: `/api/ha/plans/${id}/apply`, headers: { cookie } })
   assert.equal(ap.statusCode, 200, ap.body)

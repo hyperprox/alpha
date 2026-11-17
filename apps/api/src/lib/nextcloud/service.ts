@@ -883,7 +883,7 @@ export class NextcloudService {
     this.mustPerson(actor)
     if (!isAction(action)) throw new NcRefusal('unknown_action', 'HyperProx has no such Nextcloud action.', 404)
     const spec = ACTIONS[action]
-    if (spec.secure && !secureRoute) throw new NcRefusal('needs_reconfirm', `${spec.label} needs the master password re-entered.`, 403)
+    if (spec.secure && !secureRoute) throw new NcRefusal('needs_reconfirm', `${spec.label} has its own button, which shows what will happen and asks you to confirm.`, 403)
     if (this.busy.has(id)) throw new NcRefusal('busy', 'Another Nextcloud action is still running here; wait for it to finish.', 409)
     this.limit(id)
     // Held from here (through the preflight of an update, which takes a while) until the action or its job ends.

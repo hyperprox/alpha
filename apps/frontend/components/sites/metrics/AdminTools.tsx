@@ -4,7 +4,7 @@
 //  HyperProx — site metrics: the admin's tools on a Metrics tab
 //
 //  Alert settings, the request-time log format change (preview first: the
-//  exact lines, then the master password), forgetting an adopted site, and
+//  exact lines, then a confirmation), forgetting an adopted site, and
 //  "Add an existing site" for the Sites page: a list of the websites HyperProx
 //  found (proxy hosts and listening containers), one pick to fill the form,
 //  and the logging change offered straight after when the log lacks it. Each
@@ -14,7 +14,6 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { apiJson } from '@/lib/api'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { styles } from '@/components/visual/kit'
 import { StatusIcon, UpState } from './charts'
 import type { AlertSettings } from './types'
@@ -65,7 +64,6 @@ export function LogFormatDialog({ siteId, onClose }: { siteId: string; onClose: 
   const [plan, setPlan] = useState<Plan | null>(null)
   const [planId, setPlanId] = useState<string | null>(null)
   const [msg, setMsg] = useState('Reading nginx\'s configuration…')
-  const [confirm, setConfirm] = useState(false)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     void apiJson<{ data: { planId: string | null; plan: Plan } }>(`/api/site-metrics/sites/${encodeURIComponent(siteId)}/log-format/preview`, 'POST', {}).then(r => {
@@ -77,7 +75,6 @@ export function LogFormatDialog({ siteId, onClose }: { siteId: string; onClose: 
     setBusy(true)
     const r = await apiJson<{ data: { message: string; backups: string[] } }>(`/api/site-metrics/sites/${encodeURIComponent(siteId)}/log-format/apply`, 'POST', { planId })
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setConfirm(true); return }
     setMsg(r.ok && r.body ? `${r.body.data.message} Backups: ${r.body.data.backups.join(', ')}` : r.error ?? 'The change failed.')
     if (r.ok) setPlanId(null)
   }
@@ -104,7 +101,6 @@ export function LogFormatDialog({ siteId, onClose }: { siteId: string; onClose: 
           <button type="button" className={styles.btn} onClick={onClose}>Close</button>
         </div>
       </div>
-      {confirm && <ReconfirmModal onClose={() => setConfirm(false)} onDone={() => { setConfirm(false); void apply() }} />}
     </div>
   )
 }
@@ -214,7 +210,6 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
   const [check, setCheck] = useState<CheckResult | null>(null)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
-  const [confirm, setConfirm] = useState(false)
   const [added, setAdded] = useState<string | null>(null)
   const [logDialog, setLogDialog] = useState(false)
 
@@ -259,7 +254,6 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
     setBusy(true)
     const r = await apiJson<{ data: { id: string } }>('/api/site-metrics/adopt', 'POST', body())
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setConfirm(true); return }
     if (!r.ok || !r.body) { setMsg(r.error ?? 'Could not add the site.'); return }
     if (needsLogChange(picked, check)) setAdded(r.body.data.id); else onDone(r.body.data.id)
   }
@@ -367,25 +361,21 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
           </>
         )}
       </div>
-      {confirm && <ReconfirmModal onClose={() => setConfirm(false)} onDone={() => { setConfirm(false); void adopt() }} />}
     </div>
   )
 }
 
 export function ForgetSiteButton({ siteId, onDone }: { siteId: string; onDone: () => void }) {
-  const [confirm, setConfirm] = useState(false)
   const [msg, setMsg] = useState('')
   const forget = async () => {
     if (!window.confirm('Forget this site and its numbers? The container itself is not touched.')) return
     const r = await apiJson(`/api/site-metrics/adopt/${encodeURIComponent(siteId)}`, 'DELETE')
-    if (r.status === 403 && r.code === 'reconfirm_required') { setConfirm(true); return }
     if (r.ok) onDone(); else setMsg(r.error ?? 'Could not forget it.')
   }
   return (
     <>
       <button type="button" className={styles.btn} onClick={() => void forget()}>Forget site</button>
       {msg && <span className={s.note}>{msg}</span>}
-      {confirm && <ReconfirmModal onClose={() => setConfirm(false)} onDone={() => { setConfirm(false); void forget() }} />}
     </>
   )
 }

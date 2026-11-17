@@ -8,11 +8,12 @@ import { buildTestApp, resetLock, signIn } from './fakes/app'
 import { normalisePath, requiredRole } from '../src/lib/roles'
 import net from 'node:net'
 import type { AddressInfo } from 'node:net'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const broker = new FakeBroker()
 broker.addUser('admin@example.com', 'admin master password', 'admin')
 broker.items.set('x', { id: 'i', name: 'x', fields: { password: 'pw' } })
-const appP = buildTestApp(broker)
+const appP = buildTestApp(broker).then(confirmAfterReconfirm)
 after(async () => { await resetLock(); await (await appP).close() })
 
 test('normalisePath decodes like decodeURI and keeps %2F encoded', () => {
@@ -27,15 +28,16 @@ test('normalisePath decodes like decodeURI and keeps %2F encoded', () => {
 test('encoded paths do not skip re-confirmation', async () => {
   const app = await appP
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
-  for (const [method, url] of [
-    ['POST', '/api/secrets/%72eveal'],
-    ['POST', '/api/%73ecrets/reveal'],
-    ['DELETE', '/api/proxmox/nodes/n1/%6cxc/100'],
-    ['DELETE', '/api/proxmox/nodes/n1/lxc/1%30%30'],
+  // A reveal still needs the master password; a destroy needs a confirmation on the page.
+  for (const [method, url, code] of [
+    ['POST', '/api/secrets/%72eveal', 'reconfirm_required'],
+    ['POST', '/api/%73ecrets/reveal', 'reconfirm_required'],
+    ['DELETE', '/api/proxmox/nodes/n1/%6cxc/100', 'confirm_required'],
+    ['DELETE', '/api/proxmox/nodes/n1/lxc/1%30%30', 'confirm_required'],
   ] as const) {
     const res = await app.inject({ method, url, headers: { cookie }, payload: method === 'POST' ? { name: 'x' } : undefined })
     assert.equal(res.statusCode, 403, `${method} ${url}: ${res.body}`)
-    assert.equal(res.json().code, 'reconfirm_required', url)
+    assert.equal(res.json().code, code, url)
   }
   // An encoded slash is not a segment break for the router either: whatever it reaches, it is not a destroy.
   const slash = await app.inject({ method: 'DELETE', url: '/api/proxmox/nodes/n1/lxc/1%2F0', headers: { cookie } })

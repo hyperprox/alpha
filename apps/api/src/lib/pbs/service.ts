@@ -358,7 +358,7 @@ export class PbsService {
     }
     try { this.limit(actor, 'attemptsPerMinute', 'Too many attempts in a minute; wait a moment.') } catch (e: any) { return refuse(e) }
     if (action !== 'verify') return refuse(new PbsRefusal('action_not_allowed', 'HyperProx can start a verify. GC runs on its own schedule, and HyperProx never deletes, prunes or forgets a backup.'))
-    if (actor.token) return refuse(new PbsRefusal('token_forbidden', 'API tokens can never start a verify or GC: it needs a person with the master password.', 403))
+    if (actor.token) return refuse(new PbsRefusal('token_forbidden', 'API tokens can never start a verify or GC: a signed-in person confirms it on the page.', 403))
     if (!hasRole(actor.role, 'admin')) return refuse(new PbsRefusal('forbidden', `${ACTION_WORD[action]} now needs the admin role.`, 403))
     try { this.limit(actor, 'actionsPerMinute', 'That is the most actions allowed in a minute.') } catch (e: any) { return refuse(e) }
     // The datastore must be one the server reports now.

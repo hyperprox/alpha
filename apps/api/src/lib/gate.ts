@@ -4,7 +4,10 @@
 //    1. Locked?           423 { ok:false, locked:true }  (except /health*, /api/auth/*)
 //    2. Session?          401 when missing, forged, expired or from before a lock
 //    3. Role?             403 when the user's vault role is below the route's
-//    4. Re-confirmed?     403 { reconfirm:true } for destroy / reveal / role changes
+//    4. Password?         403 reconfirm_required: revealing a stored secret, or changing who can sign in
+//                         (lib/roles.ts needsPassword), needs the master password re-entered
+//    5. Confirmed?        403 confirm_required: other important actions are confirmed on the page
+//                         (lib/roles.ts needsConfirm, lib/confirm.ts); checked once the body is read
 //  An API token (`Authorization: Bearer hpx_...`, lib/api-tokens.ts) takes the
 //  place of step 2 and never of step 1: locked is 423 for a token too. A bad one
 //  is 401; a good one on a route tokens may never use is 403 token_forbidden.
@@ -20,11 +23,12 @@ import { describeFailure } from './failure'
 import { installRequestIds } from './request-id'
 import { securityEvent } from './security-events'
 import { bearerApiToken, tokenForbidden, verifyApiToken, apiTokenStore, type ApiTokenRecord } from './api-tokens'
-import { unsafeRequestPath, requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath, tokenPluginScope, SESSION_CHECK, type TokenPluginScope } from './roles'
+import { unsafeRequestPath, requiredRole, needsPassword, needsConfirm, hasRole, bypassesLock, normalisePath, tokenPluginScope, SESSION_CHECK, type TokenPluginScope } from './roles'
 import {
   extractToken, getSession, clearSessions, removeSession, requestContext, isReconfirmed, isLocalCliRequest,
   buildAuthCookie, type ActiveSession,
 } from './auth'
+import { requireConfirm, clearConfirms, TOKEN_CANNOT_CONFIRM } from './confirm'
 
 export interface SessionClaims { sid: string; email: string; role: Role }
 
@@ -39,6 +43,8 @@ declare module 'fastify' {
      * without a re-confirmation: which plug-in, and who granted it. routes/plugins.ts audits the save.
      */
     tokenPluginSettings?: { pluginId: string; grantedBy: string; kind: TokenPluginScope['kind'] }
+    /** Set by the gate when this request needs an in-page confirmation, checked once its body is read. */
+    needsConfirmStep?: boolean
   }
 }
 
@@ -166,7 +172,7 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
 
   if (!lockHookInstalled) {
     lockHookInstalled = true
-    onLock(() => clearSessions())
+    onLock(() => { clearSessions(); clearConfirms() })
   }
 
   server.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
@@ -252,12 +258,30 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       securityEvent(req, 'role_denied', 'forbidden', undefined, { required: needed, role: session.role })
       return reply.status(403).send({ ok: false, code: 'forbidden', error: `This needs the ${needed} role`, required: needed, role: session.role })
     }
-    // A token with the plug-in settings permission skips only that one rule; every other rule still applies.
-    const reconfirmOpts = { tokenPluginScope: !!req.tokenPluginSettings }
-    const reconfirm = needsReconfirm(req.method, path, reconfirmOpts) || (served !== null && needsReconfirm(req.method, served, reconfirmOpts))
-    if (reconfirm && !isReconfirmed(session.sid)) {
-      return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue' })
+    // A token with the plug-in settings permission skips only the confirmation on its allowlisted saves; every other
+    // rule still applies.
+    if (needsPassword(req.method, path) || (served !== null && needsPassword(req.method, served))) {
+      if (!isReconfirmed(session.sid)) {
+        return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue' })
+      }
+      return
     }
+    const confirmOpts = { tokenPluginScope: !!req.tokenPluginSettings }
+    if (needsConfirm(req.method, path, confirmOpts) || (served !== null && needsConfirm(req.method, served, confirmOpts))) {
+      // A token cannot confirm anything: refused now, before its body is read.
+      if (req.apiToken) {
+        securityEvent(req, 'api_token_forbidden', 'token_forbidden', `token:${req.apiToken.name}`)
+        return reply.status(403).send({ ok: false, code: 'token_forbidden', error: TOKEN_CANNOT_CONFIRM })
+      }
+      req.needsConfirmStep = true
+    }
+  })
+
+  // The in-page confirmation is bound to the request's body, so it is checked once the body is read and before any
+  // handler runs: taken (single use), audited (fail closed), or answered with a fresh one (lib/confirm.ts).
+  server.addHook('preValidation', async (req, reply) => {
+    if (!req.needsConfirmStep) return
+    if (!(await requireConfirm(req, reply))) return reply
   })
 
   // A vault session that the vault no longer knows (signed out elsewhere, expired) is a 401; a

@@ -2,13 +2,13 @@
 
 // Running a balancing plan: the moves as the server worked them out, what each costs, and the quiet window. "Run now"
 // is offered only in a quiet window long enough for the whole plan; otherwise "Schedule for the next quiet window".
-// The master password is asked once for the whole plan (403 reconfirm_required); the server then runs the moves one
+// The whole plan is confirmed once, in this dialog (the API's confirmation step, lib/confirm-bus.ts); the server then runs the moves one
 // at a time, checking each again right before it runs, and stops on any change or failure. The moves sent back are
 // the ones shown: if the server's plan differs, nothing runs and the new plan is shown instead.
 
 import { useCallback, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Btn, Dialog, Note } from '@/components/ha/ui'
 import { quietWords, seconds } from './logic'
 import { planChoices, stepLine, GOAL_WORD } from './balance-logic'
@@ -18,14 +18,12 @@ export function PlanDialog({ view, onClose, onStarted }: { view: BalanceView; on
   const [plan, setPlan] = useState<BalancePlan>(view.plan)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [reconfirm, setReconfirm] = useState<null | 'now' | 'next-quiet'>(null)
   const choices = planChoices({ plan, quiet: view.quiet, running: view.running })
 
   const go = useCallback(async (when: 'now' | 'next-quiet') => {
     setBusy(true); setError('')
-    const r = await apiJson<{ data: PlanRecord }>('/api/placement/plans', 'POST', { when, goal: plan.goal, expect: plan.steps.map(s => ({ sid: s.sid, to: s.to })) })
+    const r = await apiJson<{ data: PlanRecord }>('/api/placement/plans', 'POST', { when, goal: plan.goal, expect: plan.steps.map(s => ({ sid: s.sid, to: s.to })) }, IN_PAGE)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(when); return }
     if (r.status === 409 && r.code === 'changed' && (r.body as any)?.plan) {
       setPlan((r.body as any).plan); setError('The plan changed since the page was read. This is the new one: look it over and run it again.'); return
     }
@@ -54,7 +52,6 @@ export function PlanDialog({ view, onClose, onStarted }: { view: BalanceView; on
         </div>
         {!choices.length && <p className="text-xs" style={{ color: 'var(--text-dim)' }}>{view.running ? 'A plan is already running.' : 'No quiet window is known in the next week, so the plan cannot run.'}</p>}
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const w = reconfirm; setReconfirm(null); void go(w) }} />}
     </Dialog>
   )
 }

@@ -8,17 +8,17 @@
 //  a minimum age) and idle (watched before,
 //  but not for months), with the keep rules' counts, a running "frees about"
 //  total, and removal through Sonarr or Radarr only: a preview of exactly what
-//  goes, then the master password. Without the Arr Stack plug-in it only copies
+//  goes, then you confirm. Without the Arr Stack plug-in it only copies
 //  the list. The API (routes/plex-clearout.ts) holds every rule and every guard;
 //  this page only asks.
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { GlowBars, Panel, Pill, Tiles, bytes, styles as s } from '@/components/visual/kit'
 import { Poster } from '@/components/plugins/visual/views'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, CopyButton, Notice } from '@/components/vault/ui'
 import { RemovalModal, VIA_WORD, type ItemResult, type Plan, type Via } from './Removal'
 import c from './clearout.module.css'
@@ -69,7 +69,6 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [results, setResults] = useState<Result[] | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
 
   const load = useCallback(async (refresh = false, quiet = false) => {
     if (!quiet) { setLoading(true); setError(null) }
@@ -138,9 +137,8 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
   async function remove() {
     if (!preview) return
     setBusy('remove'); setActionError(null)
-    const r = await apiJson<{ data: { results: Result[] } }>('/api/plugins/plex/clearout/remove', 'POST', { previewId: preview.id })
+    const r = await apiJson<{ data: { results: Result[] } }>('/api/plugins/plex/clearout/remove', 'POST', { previewId: preview.id }, IN_PAGE)
     setBusy(null)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
     if (!r.ok || !r.body?.data) { setActionError(r.error ?? 'Nothing was removed.'); return }
     setResults(r.body.data.results)
     setTicked(new Set())
@@ -283,7 +281,6 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
         <RemovalModal plan={preview} results={results} busy={busy === 'remove'} error={actionError}
           onRemove={() => void remove()} onClose={() => { setPreview(null); setResults(null); setActionError(null) }} />
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </>
   )
 }

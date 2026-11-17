@@ -10,13 +10,13 @@
 //  first: HyperProx's records and vault items, the cluster's config line by line
 //  (each backup job's new guest list; a job that would back up nothing is only
 //  deleted when ticked), and, unticked, the proxy host and DNS name its install
-//  made. Admins only; the clean-up asks for the master password again.
+//  made. Admins only; the clean-up dialog is the confirmation.
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { Icon, Panel, Pill } from '@/components/visual/kit'
 import { forPlugin, guestWord, jobLine, plan, resultSummary, type CleanResult, type Holding, type RemovedGuest } from './logic'
@@ -116,13 +116,11 @@ function CleanUpDialog({ g, onClose, onDone }: { g: RemovedGuest; onClose: () =>
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [results, setResults] = useState<CleanResult[] | null>(null)
-  const [reconfirm, setReconfirm] = useState(false)
 
   const run = async () => {
     setBusy(true); setError(null)
-    const r = await apiJson<{ data: { results: CleanResult[] } }>(`${API}/${g.vmid}/clean-up`, 'POST', { published, deleteEmptyJobs: deleteJobs })
+    const r = await apiJson<{ data: { results: CleanResult[] } }>(`${API}/${g.vmid}/clean-up`, 'POST', { published, deleteEmptyJobs: deleteJobs }, IN_PAGE)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(true); return }
     if (!r.ok) { setError(r.error ?? 'The clean-up did not work.'); return }
     setResults(r.body!.data.results)
     onDone()
@@ -144,7 +142,6 @@ function CleanUpDialog({ g, onClose, onDone }: { g: RemovedGuest; onClose: () =>
           {!results && <PrimaryButton type="button" disabled={busy} onClick={() => void run()}>{busy ? 'Cleaning up…' : 'Clean up'}</PrimaryButton>}
         </div>
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void run() }} />}
     </Modal>
   )
 }

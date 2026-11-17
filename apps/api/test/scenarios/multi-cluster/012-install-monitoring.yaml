@@ -5,7 +5,7 @@ expect:
   kind: action
   action: monitoring-install
   cluster: Remote server
-  needs_reconfirm: true
+  needs_confirm: true
   role: admin
   includes: ["Install monitoring on Remote server"]
 found_by: "multi-cluster seed inventory"

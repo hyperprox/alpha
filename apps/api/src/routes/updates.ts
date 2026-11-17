@@ -26,7 +26,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
 import { onLock } from '../lib/vault/state'
 import { trackSocket } from '../lib/session-sockets'
-import { isReconfirmed } from '../lib/auth'
+import { requireConfirm } from '../lib/confirm'
 import { policyStatus, unmatchedSections, sectionKeyFor, type PolicyLoad } from '../lib/updates/policy'
 import { type UpdatesExecutor } from '../lib/updates/executor'
 import { annotatePlanSafety } from '../lib/updates/ceph-checks'
@@ -117,17 +117,12 @@ async function adminOnly(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
-const RECONFIRM = 'Re-enter your master password to change anything on a remote cluster'
-
-/** On a remote cluster a change needs a fresh re-confirmation; an API token never has one. */
-function remoteNeedsReconfirm(svc: ClusterUpdates, req: FastifyRequest): boolean {
-  return svc.remote && !(req.session?.sid && isReconfirmed(req.session.sid))
-}
-
-const RECONFIRM_CHOSEN = 'Re-enter your master password to run the chosen updates'
-
-/** Running chosen targets needs a fresh re-confirmation, on every cluster; an API token never has one. */
-const reconfirmed = (req: FastifyRequest) => Boolean(req.session?.sid && isReconfirmed(req.session.sid))
+/**
+ * On a remote cluster every change, and on any cluster a run of chosen targets and a node reboot, is confirmed on the
+ * page (lib/confirm.ts): a single-use confirmation bound to this exact request, which an API token never has.
+ * False when the reply was sent (the confirmation to show, or a refusal) and the handler must stop.
+ */
+const confirmed = (req: FastifyRequest, reply: FastifyReply, summary?: string) => requireConfirm(req, reply, summary)
 
 /** A selection from a request body: target ids, or null when it is not a list of them. */
 function selectionFrom(raw: unknown): string[] | null {
@@ -283,8 +278,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       const select = req.body?.select === undefined ? undefined : selectionFrom(req.body.select)
       if (select === null) return sendRefusal(reply, 400, 'invalid_request', `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets`)
       const s = svc()
-      if (mode === 'run' && remoteNeedsReconfirm(s, req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM)
-      if (select && mode === 'run' && !reconfirmed(req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM_CHOSEN)
+      if (mode === 'run' && (s.remote || select) && !(await confirmed(req, reply))) return reply
       if (select) {
         // Refused before anything starts when nothing chosen could run (a held kernel package, unknown holds...).
         try {
@@ -321,11 +315,10 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     for (const op of ['confirm', 'resume', 'cancel'] as const) {
       fastify.post<{ Params: { id: string } }>(`/jobs/:id/${op}`, async (req, reply) => {
         const s = svc()
-        if (op !== 'cancel' && remoteNeedsReconfirm(s, req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM)
-        if (op !== 'cancel' && !reconfirmed(req)) {
-          // A run of chosen targets is confirmed and resumed with the master password re-entered, like its start.
-          const j = await s.store.getJob(req.params.id).catch(() => null)
-          if (j && Array.isArray(j.plan?.items)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM_CHOSEN)
+        if (op !== 'cancel') {
+          // A run of chosen targets is confirmed and resumed on the page, like its start; so is any run on a remote cluster.
+          const chosen = s.remote ? true : Array.isArray((await s.store.getJob(req.params.id).catch(() => null))?.plan?.items)
+          if (chosen && !(await confirmed(req, reply))) return reply
         }
         if (op !== 'cancel' && checker.running) return sendRefusal(reply, 409, 'check_busy', CHECK_BUSY)
         try {
@@ -340,7 +333,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       const target = req.body?.target
       if (typeof target !== 'string' || !/^\d{1,9}$/.test(target)) return sendRefusal(reply, 400, 'invalid_request', 'target must be a guest id')
       const s = svc()
-      if (remoteNeedsReconfirm(s, req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM)
+      if (s.remote && !(await confirmed(req, reply))) return reply
       if (checker.running) return sendRefusal(reply, 409, 'check_busy', CHECK_BUSY)
       try {
         const job = await s.runner.rollbackGuest(req.params.id, target, req.session?.email)
@@ -356,7 +349,9 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
 
     fastify.post<{ Params: { node: string } }>('/nodes/:node/reboot', async (req, reply) => {
       const s = svc()
-      if (remoteNeedsReconfirm(s, req)) return sendRefusal(reply, 403, 'reconfirm_required', RECONFIRM)
+      // A reboot is always confirmed on the page: it takes the node and, for a moment, its guests down.
+      const standalone = s.remote ? `Reboot ${req.params.node.slice(0, 60)}? Guests that are not in HA stop with it and start again when it is back, usually in about 5 minutes.` : undefined
+      if (!(await confirmed(req, reply, standalone))) return reply
       if (checker.running) return sendRefusal(reply, 409, 'check_busy', CHECK_BUSY)
       try {
         const job = await s.runner.rebootNode(req.params.node, req.session?.email)

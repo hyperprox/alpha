@@ -13,9 +13,9 @@
 //  The rules are fixed here, not chosen by the plug-in (it may relax only the one said below):
 //    - every route is under /api/local/<id>, and every route there needs the admin role, reads included
 //      (lib/roles.ts);
-//    - every request that is not a read needs the master password re-entered within the last few
-//      minutes (lib/roles.ts), unless the plug-in's definition says `reconfirm: false`; that is the one
-//      rule a plug-in may relax, and an id the loader did not register always keeps it;
+//    - every request that is not a read needs an in-page confirmation (lib/confirm.ts, lib/roles.ts),
+//      unless the plug-in's definition says `reconfirm: false`; that is the one rule a plug-in may relax,
+//      and an id the loader did not register always keeps it. No request here asks for the master password;
 //    - API tokens are refused on every /api/local route, reads included (lib/api-tokens.ts);
 //    - every request that is not a read is written to the audit log with who made it and the status it
 //      got (the plug-in adds its own, more detailed rows through host.audit);
@@ -61,8 +61,9 @@ export interface LocalApiPlugin {
   /** The plug-in's routes, registered under /api/local/<id>. */
   routes(host: LocalPluginHost): FastifyPluginAsync
   /**
-   * false: its changes go through for a signed-in admin without the master password re-entered. Leave it out (or
-   * true) to keep the re-confirmation. Admin only, no API tokens and the audit rows apply either way.
+   * No longer needed: no change here asks for the master password any more. Still accepted. false: its changes go
+   * through for a signed-in admin with no confirmation step from the gate (the plug-in's own page confirms). Leave it
+   * out (or true) for the gate's in-page confirmation. Admin only, no API tokens and the audit rows apply either way.
    */
   reconfirm?: boolean
 }

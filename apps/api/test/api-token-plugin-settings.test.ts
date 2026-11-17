@@ -26,6 +26,7 @@ import {
   MemoryApiTokenStore, setApiTokenStore, createApiToken, revokeApiToken, setTokenPluginSettings, verifyApiToken,
 } from '../src/lib/api-tokens'
 import { runTokenCli, CLI_ACTOR, CLI_PLUGIN_SETTINGS_AUDIT } from '../src/cli/api-token'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const OWNER = 'owner@example.com', OWNER_PW = 'owner master password'
 const ADMIN = 'admin@example.com', ADMIN_PW = 'admin master password'
@@ -38,7 +39,7 @@ async function build(): Promise<FastifyInstance> {
   setBroker(broker)
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
-  const app = Fastify({ logger: false })
+  const app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes,     { prefix: '/api/auth' })
   await app.register(secretsRoutes,  { prefix: '/api/secrets' })
@@ -153,14 +154,14 @@ test('roles: only PUT /api/plugins/:id/settings is the plug-in settings save, an
 
 // --- Default off -------------------------------------------------------------------------------
 
-test('default off: a new token does not have it, and its plug-in settings save is refused (reconfirm_required)', async () => {
+test('default off: a new token does not have it, and its plug-in settings save is refused (token_forbidden)', async () => {
   await signedIn()
   const t = await adminToken()
   assert.equal(row('automation').pluginSettingsWithoutReconfirm, false)
   const before = broker.callsTo('upsertSecret').length
   const res = await savePlex(t)
   assert.equal(res.statusCode, 403, res.body)
-  assert.equal(res.json().code, 'reconfirm_required')
+  assert.equal(res.json().code, 'token_forbidden')
   assert.equal(broker.callsTo('upsertSecret').length, before)
   assert.equal(plexItem().plex_token, 'old-plex-token')
 })
@@ -294,23 +295,23 @@ test('on: every excluded category is still refused for that token', async () => 
     ['DELETE', `/api/auth/tokens/${tid}`, 'token_forbidden'], ['PUT', `/api/auth/tokens/${tid}/plugin-settings`, 'token_forbidden'],
     // Owner and setup actions.
     ['POST', '/api/auth/bootstrap', 'token_forbidden'], ['POST', '/api/auth/reconfirm', 'token_forbidden'],
-    ['POST', '/api/setup-checklist/node-login', 'reconfirm_required'],
+    ['POST', '/api/setup-checklist/node-login', 'token_forbidden'],
     // Cluster credentials.
-    ['POST', '/api/clusters/c1/token', 'reconfirm_required'], ['POST', '/api/clusters/c1/plex', 'reconfirm_required'],
-    ['PUT', '/api/settings/proxmox/proxmox', 'reconfirm_required'], ['POST', '/api/settings/test/dns/godaddy', 'reconfirm_required'],
+    ['POST', '/api/clusters/c1/token', 'token_forbidden'], ['POST', '/api/clusters/c1/plex', 'token_forbidden'],
+    ['PUT', '/api/settings/proxmox/proxmox', 'token_forbidden'], ['POST', '/api/settings/test/dns/godaddy', 'token_forbidden'],
     // Destroy and delete, Plex and the plug-in instances that keep their own rules.
-    ['DELETE', '/api/proxmox/nodes/n1/lxc/100', 'reconfirm_required'],
-    ['POST', '/api/clusters/c1/guests/n1/lxc/100/delete', 'reconfirm_required'],
-    ['POST', '/api/plugins/plex/clearout/remove', 'reconfirm_required'], ['POST', '/api/plugins/plex/library/remove', 'reconfirm_required'],
+    ['DELETE', '/api/proxmox/nodes/n1/lxc/100', 'token_forbidden'],
+    ['POST', '/api/clusters/c1/guests/n1/lxc/100/delete', 'token_forbidden'],
+    ['POST', '/api/plugins/plex/clearout/remove', 'token_forbidden'], ['POST', '/api/plugins/plex/library/remove', 'token_forbidden'],
     // PBS add-by-sign-in, manage, verify, forget; every instance delete; HA and QNAP secure actions.
-    ['POST', '/api/plugins/pbs/instances/signin', 'reconfirm_required'],
-    ['PUT', '/api/plugins/pbs/instances/p1/manage', 'reconfirm_required'], ['POST', '/api/plugins/pbs/instances/p1/manage/preview', 'reconfirm_required'],
-    ['POST', '/api/plugins/pbs/instances/p1/manage/apply', 'reconfirm_required'], ['POST', '/api/plugins/pbs/instances/p1/manage/gc', 'reconfirm_required'],
-    ['POST', '/api/plugins/pbs/instances/p1/actions/verify', 'reconfirm_required'], ['POST', '/api/plugins/pbs/instances/p1/forget', 'reconfirm_required'],
-    ['DELETE', '/api/plugins/pbs/instances/p1', 'reconfirm_required'], ['DELETE', '/api/plugins/home-assistant/instances/h1', 'reconfirm_required'],
-    ['DELETE', '/api/plugins/qnap/instances/q1', 'reconfirm_required'],
-    ['POST', '/api/plugins/home-assistant/instances/h1/secure-actions', 'reconfirm_required'],
-    ['POST', '/api/plugins/qnap/instances/q1/secure-actions', 'reconfirm_required'],
+    ['POST', '/api/plugins/pbs/instances/signin', 'token_forbidden'],
+    ['PUT', '/api/plugins/pbs/instances/p1/manage', 'token_forbidden'], ['POST', '/api/plugins/pbs/instances/p1/manage/preview', 'token_forbidden'],
+    ['POST', '/api/plugins/pbs/instances/p1/manage/apply', 'token_forbidden'], ['POST', '/api/plugins/pbs/instances/p1/manage/gc', 'token_forbidden'],
+    ['POST', '/api/plugins/pbs/instances/p1/actions/verify', 'token_forbidden'], ['POST', '/api/plugins/pbs/instances/p1/forget', 'token_forbidden'],
+    ['DELETE', '/api/plugins/pbs/instances/p1', 'token_forbidden'], ['DELETE', '/api/plugins/home-assistant/instances/h1', 'token_forbidden'],
+    ['DELETE', '/api/plugins/qnap/instances/q1', 'token_forbidden'],
+    ['POST', '/api/plugins/home-assistant/instances/h1/secure-actions', 'token_forbidden'],
+    ['POST', '/api/plugins/qnap/instances/q1/secure-actions', 'token_forbidden'],
   ]
   for (const [method, url, code] of cases) {
     const res = await app.inject({ method: method as any, url, headers: bearer(t), payload: method === 'GET' ? undefined : { value: 'from-token', name: 'x', enabled: true } })
@@ -375,7 +376,7 @@ test('turning it off (or revoking) is seen on the very next request', async () =
   assert.equal(off.json().data.pluginSettingsWithoutReconfirm, false)
   const res = await savePlex(t, { plex_url: 'http://plex.lan:32400', plex_token: 'after-off' })
   assert.equal(res.statusCode, 403)
-  assert.equal(res.json().code, 'reconfirm_required')
+  assert.equal(res.json().code, 'token_forbidden')
   assert.notEqual(plexItem().plex_token, 'after-off')
 
   const t2 = await grantedToken('second')
@@ -444,7 +445,7 @@ test('instances: without the permission, add, change and the certificate probe s
     for (const [method, url] of [['POST', `/api/plugins/${id}/instances`], ['PUT', `/api/plugins/${id}/instances/x1`]] as const) {
       const r = await app.inject({ method, url, headers: bearer(t), payload: {} })
       assert.equal(r.statusCode, 403, `${method} ${url}`)
-      assert.equal(r.json().code, 'reconfirm_required', `${method} ${url}`)
+      assert.equal(r.json().code, 'token_forbidden', `${method} ${url}`)
     }
     const probe = await app.inject({ method: 'POST', url: `/api/plugins/${id}/instances/probe-certificate`, headers: bearer(t), payload: { url: 'not a url' } })
     assert.equal(probe.statusCode, 403, id)
@@ -527,7 +528,7 @@ test('instances: a matched route outside the allowlist is never granted, whateve
   // PBS add-by-sign-in carries a PBS admin password: refused by the gate, and by the service if it ever got there.
   const r = await app.inject({ method: 'POST', url: '/api/plugins/pbs/instances/signin', headers: bearer(t), payload: { url: 'https://10.9.8.5:8007', user: 'root', password: 'pw' } })
   assert.equal(r.statusCode, 403)
-  assert.equal(r.json().code, 'reconfirm_required')
+  assert.equal(r.json().code, 'token_forbidden')
   assert.equal(store.audits.some(a => a.action === 'plugin.settings.save'), false)
 })
 
@@ -552,7 +553,7 @@ test('asus: without the permission, add, change and the probe are refused for a 
   for (const [method, url] of [['POST', '/api/plugins/asus/instances'], ['PUT', '/api/plugins/asus/instances/x1']] as const) {
     const r = await app.inject({ method, url, headers: bearer(t), payload: {} })
     assert.equal(r.statusCode, 403, `${method} ${url}`)
-    assert.equal(r.json().code, 'reconfirm_required')
+    assert.equal(r.json().code, 'token_forbidden')
   }
   const probe = await app.inject({ method: 'POST', url: '/api/plugins/asus/instances/probe-certificate', headers: bearer(t), payload: { url: 'not a url' } })
   assert.equal(probe.statusCode, 403)
@@ -582,7 +583,7 @@ test('asus: with the permission, add, change and the probe reach their handler a
     for (const [method, url] of [['POST', '/api/plugins/asus/instances/a1/actions'], ['DELETE', '/api/plugins/asus/instances/a1']] as const) {
       const r = await app.inject({ method, url, headers: bearer(t), payload: { action: 'reboot', confirm: 'x', name: 'x' } })
       assert.equal(r.statusCode, 403, `${method} ${url}: ${r.body}`)
-      assert.equal(r.json().code, 'reconfirm_required')
+      assert.equal(r.json().code, 'token_forbidden')
     }
   } finally { setAsusService(null) }
 })

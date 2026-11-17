@@ -18,6 +18,7 @@ import { requiredRole, needsReconfirm, localPluginSkipsReconfirm, noteLocalPlugi
 import { loadLocalPlugins, registerLocalPlugins } from '../src/lib/local-plugins'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'local-plugins')
 const broker = new FakeBroker()
@@ -34,7 +35,7 @@ before(async () => {
   setAuditSink({ async write(r) { audits.push(r) } })
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
-  app = Fastify({ logger: false })
+  app = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   await registerLocalPlugins(app, loadLocalPlugins(FIXTURES, ['plex']))
@@ -92,7 +93,7 @@ test('an admin reads freely, changes only after the master password, and every c
   const before = audits.length
   const refused = await app.inject({ method: 'POST', url: '/api/local/demo/echo', headers: { cookie }, payload: { n: 7 } })
   assert.equal(refused.statusCode, 403)
-  assert.equal(refused.json().code, 'reconfirm_required')
+  assert.equal(refused.json().code, 'confirm_required')
   const since = audits.slice(before)
   assert.equal(since.some(a => a.action === 'local.demo.echo'), false, 'refused at the gate: the handler never ran')
   assert.equal(since.find(a => a.action === 'local.demo.request')?.details?.status, 403, 'and the refusal is audited')
@@ -143,7 +144,7 @@ test('the opted-out plug-in: an admin changes without the master password (audit
   // The other plug-in in the same install keeps the re-confirmation.
   const demo = await app.inject({ method: 'POST', url: '/api/local/demo/echo', headers: { cookie }, payload: { n: 3 } })
   assert.equal(demo.statusCode, 403)
-  assert.equal(demo.json().code, 'reconfirm_required')
+  assert.equal(demo.json().code, 'confirm_required')
   for (const [email, pw] of [['viewer@example.com', 'viewer master password'], ['op@example.com', 'operator master password']]) {
     const s = await signIn(app, email, pw)
     const r = await app.inject({ method: 'POST', url: '/api/local/sample/echo', headers: { cookie: s.cookie }, payload: { n: 1 } })

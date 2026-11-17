@@ -17,6 +17,7 @@ import { setCredentialTable } from '../src/lib/credentials'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 import { FakeCloudflare } from './fakes/cloudflare'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 function world(zones: string[] = []) {
   const cf = new FakeCloudflare()
@@ -33,7 +34,7 @@ function world(zones: string[] = []) {
   }
   const audits: Array<{ action: string; resource: string; details?: any }> = []
   const client = new CloudflareClient({ token: cf.validToken }, { fetch: cf.fetch, sleep: async () => {} })
-  const app = Fastify({ logger: false })
+  const app = confirmAfterReconfirm(Fastify({ logger: false }))
   app.register(makeDnsRoutes({
     router: async () => new DnsRouter([godaddyBackend(gd as any), cloudflareBackend(client)]),
     wanIp: async () => ({ ip: '198.51.100.7', source: 'test' }),
@@ -53,7 +54,7 @@ test('providers: a Cloudflare account with no zones is listed with 0 zones, besi
 })
 
 test('providers: nothing set up lists both as not configured', async () => {
-  const app = Fastify({ logger: false })
+  const app = confirmAfterReconfirm(Fastify({ logger: false }))
   app.register(makeDnsRoutes({ router: async () => null, wanIp: async () => ({ ip: '', source: '' }), audit: async () => {} }), { prefix: '/api/dns' })
   const r = await app.inject({ method: 'GET', url: '/api/dns/providers' })
   assert.deepEqual(r.json().data.map((p: any) => [p.id, p.configured]), [['godaddy', false], ['cloudflare', false]])
@@ -140,7 +141,7 @@ before(async () => {
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
   // Only Cloudflare's address is answered by the fake; anything else goes where it went before.
   globalThis.fetch = (async (input: any, init?: any) => String(input).startsWith('https://api.cloudflare.com/') ? cf.fetch(input, init) : realFetch(input, init)) as typeof fetch
-  sapp = Fastify({ logger: false })
+  sapp = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(sapp)
   await sapp.register(authRoutes, { prefix: '/api/auth' })
   await sapp.register(settingsRoutes, { prefix: '/api/settings' })

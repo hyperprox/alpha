@@ -78,12 +78,12 @@ To run it locally, see [docs/demo.md](docs/demo.md).
 | Websites | Its own section: a New website wizard (static site, WordPress or Ghost) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link or open Ghost's admin, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
 | Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud, HAProxy, Pi-hole, AdGuard Home, MeshCentral, NGINX, Caddy and Envoy, with no access to credentials; Home Assistant also controls devices, in more than one house |
-| Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and the master password; a message when something new is added |
-| Nextcloud | Version and update, every setup warning from the admin page grouped by severity with a one-click fix, a guided step or an honest "optional" for each, Talk's signalling server and Client Push, PHP, database, background jobs and the log; updates a Docker Compose install (database dump first, master password) |
+| Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and a confirmation; a message when something new is added |
+| Nextcloud | Version and update, every setup warning from the admin page grouped by severity with a one-click fix, a guided step or an honest "optional" for each, Talk's signalling server and Client Push, PHP, database, background jobs and the log; updates a Docker Compose install (database dump first, confirmed on the page) |
 | Proxy load balancing | The HAProxy plug-in draws each load balancer as frontends, backends and servers with their live state, weights, sessions, request rates, errors, health checks and response times; drain, maintenance, weights, health checks, adding and removing servers and the balance algorithm are a click each (runtime only, or saved after `haproxy -c`); **Proxy load balancing** spreads one app's traffic across two or more guests (the Load balancing page, by contrast, moves guests between nodes) |
 | Backups | The Proxmox Backup Server plug-in: datastores, stale guests, job health and an optional Verify, read-only unless you turn on managing backups (delete, prune, clean up; protected snapshots are never touched) |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
-| Security | Built-in Vaultwarden sign-in with 2FA, secrets in memory only, auto-lock, roles and API tokens (an owner can let one admin token save plug-in settings without the master password; off by default and audited) |
+| Security | Built-in Vaultwarden sign-in with 2FA, secrets in memory only, auto-lock, roles and API tokens (an owner can let one admin token save plug-in settings without a confirmation; off by default and audited) |
 
 ## Quick start
 
@@ -420,7 +420,7 @@ is. HyperProx checks every 6 hours, and when you press **Check now**.
   notes are read from the offered version itself, and commit messages are never shown. After an update, the page
   shows what's new in the version you are running once, until you dismiss it. The top-bar chip's tooltip names
   the new entries too.
-- **Install.** Admins only, with your master password re-entered; an API token can never do it. **Preview**
+- **Install.** Admins only, confirmed on the page; an API token can never do it. **Preview**
   lists what will happen and anything that stops it. The update runs in a process of its own, so it carries on
   while HyperProx restarts, and the page picks the progress up again when it comes back:
   1. check the disk space; refuse if the install has local changes, another update or a `deploy.sh` is running,
@@ -592,7 +592,7 @@ Once a remote is added, the Dashboard shows the same panels at the top; with non
 A remote is never joined to your cluster. HyperProx talks to its Proxmox API at any address it can
 reach: a Tailscale name or IP, a WireGuard address, or anything else routable.
 
-**Add a server** (admin) is one form and one master password:
+**Add a server** (admin) is one form and one confirmation:
 
 1. A name and its address (its Tailscale IP, owned by your own tailnet account, or a WireGuard address lets
    HyperProx verify it by itself, when the HyperProx machine runs Tailscale with its normal kernel interface).
@@ -604,7 +604,7 @@ reach: a Tailscale name or IP, a WireGuard address, or anything else routable.
 4. Optionally, the login for its nodes (usually root), and two ticks, on by default: install monitoring,
    and check Send files.
 
-Then **Connect** (your master password, once) does the rest, in the background while the page waits:
+Then **Connect** (confirmed once) does the rest, in the background while the page waits:
 
 - **The certificate.** When the address is a Tailscale IP that `tailscale whois` says is an online device owned
   by the same account as the HyperProx machine (not shared in, not tagged), or a WireGuard peer on a link
@@ -642,7 +642,7 @@ labelled so.
 over a private link, otherwise you compare it), the token (tested before it replaces the old one), node addresses and node logins, the folders
 file copies may write into, its Plex (a Plex token is only ever sent to the address it was saved for;
 plain http only to a private address), and Remove. Changing the address, node addresses or folders asks
-for your master password; a rename does not. Remove (type its name) forgets the server and its secrets,
+you to confirm; a rename does not. Remove (type its name) forgets the server and its secrets,
 takes its sending keys off the nodes they were installed on (or shows the command to run where a node
 cannot be reached), stops Prometheus collecting from it, and shows the two commands that delete the
 token on the server too. Below the admin role, people see only each cluster's name and how it is doing,
@@ -704,7 +704,7 @@ never its addresses.
   server, or 7.5 MB/s until one has finished. A copy that would not fit in the free space is refused.
 
   **The first time** for a library, Send says what it will set up, with the real folder paths, and asks
-  for your master password once. In that one step HyperProx allows copies from the home libraries that
+  you to confirm once. In that one step HyperProx allows copies from the home libraries that
   hold what you picked and into the one library you picked, picks a home node that reaches the other
   server on port 22 at a private address (its Tailscale, WireGuard or NetBird address first), and makes
   that library's sending key. The setup is tied to what the preview showed: if anything changed since,
@@ -746,8 +746,8 @@ never its addresses.
 Each node is a tile at the top (CPU and memory rings, threads, disk, uptime, how many guests are on and
 off, and GPU and power pills). Below them, every VM and container in one list: status, node, CPU, memory
 and disk, address, tags, HA state, and a GPU tag on guests that have graphics passed through. Filter, search, or group by node; it works on a
-phone too. **Create** builds a container from a template or a VM from an ISO. Deleting a guest asks for
-your master password again.
+phone too. **Create** builds a container from a template or a VM from an ISO. Deleting a guest asks you
+to confirm.
 
 Open a guest for its overview, snapshots, network, terminal, high availability and its **Config**:
 
@@ -791,7 +791,7 @@ on it.
 
 Every change is previewed first, including what would move straight away. It is refused if the cluster
 has lost quorum or the HA setup changed since the preview, and it goes through Proxmox's own HA tools.
-Applying a change asks for your master password again.
+Applying a change asks you to confirm.
 
 ### Load balancing
 
@@ -830,7 +830,7 @@ not compete with it. Open it from the rail, or go to `/balance` (old `/placement
 - **Automatic balancing, off by default.** When you turn it on, it checks every hour. If the cluster has
   been uneven for 6 hours in a row, outside your busy hours and backups, it sends a notification with the
   plan. **Apply automatically** also runs the moves:
-  - it needs your master password to turn on, and records who approved it, with the limits and settings
+  - turning it on is confirmed on the page, and records who approved it, with the limits and settings
     then: changing them later can only make it stricter;
   - the approval lasts 30 days, and Ceph warnings accepted when you approved are good for 7. After that
     it only notifies, and asks you to save it again;
@@ -855,7 +855,7 @@ not compete with it. Open it from the rail, or go to `/balance` (old `/placement
   HyperProx could not check (a folder on a node it has no login for) says "not checked", never a guess.
   A node that has been busy for hours shows which guest would relieve it.
 - **A single safe move**, when you ask: the server checks it again, and the confirmation shows the
-  downtime, the data to copy and the network cost. Your master password is asked for. HA guests move
+  downtime, the data to copy and the network cost. You confirm it there. HA guests move
   through HA. HyperProx waits for the move to finish and checks the guest really runs on the new node. One
   move runs at a time. A move that Proxmox is still working on after the wait shows as "still running",
   never as failed: HyperProx keeps watching and starts nothing else until it ends. A guest HyperProx could
@@ -866,14 +866,14 @@ not compete with it. Open it from the rail, or go to `/balance` (old `/placement
   a single guest anyway, or let HyperProx move it in the next window. A scheduled move or plan is checked
   again before it runs, under the stricter of the settings it was approved with and today's. It runs only
   if the person who approved it is still an admin, and it expires after 7 days. Saving these settings asks
-  for your master password.
+  you to confirm.
 - **Network cost.** When moves share the network corosync (the cluster heartbeat) uses, HyperProx says so
   and limits the move's bandwidth (an HA move only follows the cluster's own migration limit).
 - **History.** Every plan and every move, HyperProx's and the ones Proxmox did, with what corosync did
   around each move when a node login lets HyperProx read the node's log.
 
 Reading the page needs only a sign-in. Moving, running a plan and turning on automatic balancing are for
-admins, need the master password, and are refused to API tokens. Stopping a plan, and the emergency
+admins, are confirmed on the page first, and are refused to API tokens. Stopping a plan, and the emergency
 stop, need the admin role but no password.
 
 The AI assistant answers "is the cluster balanced?", "where should this run?" and "why is it on that
@@ -1035,7 +1035,7 @@ not answer. Nodes are left alone unless you include them. See [Package cache](#p
 
 **Choose what to update.** Every node, package, guest, compose project and app is a row in a tree,
 each with its own count and preview. Tick any mix, or press **Update this** on one row. The page shows the
-order before you confirm, asks for your master password, and runs each item on its own, so one failure
+order when you confirm, and runs each item on its own, so one failure
 stops only what depends on it. A node reboot is never part of an update unless you tick its row. A node
 that holds or pins its kernel never gets a kernel, a header package or `dist-upgrade` this way. See
 [docs/updates.md](docs/updates.md#choosing-what-to-update).
@@ -1043,7 +1043,7 @@ that holds or pins its kernel never gets a kernel, a header package or `dist-upg
 **On a remote server or cluster** (its own Updates page, amber, with its name on every card): the
 preview is apt's own simulation of the node upgrade (`dist-upgrade` by default, as Proxmox recommends),
 showing versions, removals, kernel, firmware and Proxmox VE changes, held packages (never offered) and
-whether a reboot will follow. Applying asks for your master password, and every package is read back
+whether a reboot will follow. Applying asks you to confirm, and every package is read back
 afterwards. A remote node is never rebooted on its own: **Reboot** is a separate action that first shows
 which guests will stop. A guest that cannot be snapshotted is updated only when you tick "update without
 a snapshot", which shows its newest backup. Choosing what to update and **Find compose projects in every
@@ -1138,7 +1138,7 @@ for WordPress the admin email, and for Ghost the owner's email and name; Ghost's
 checked against your DNS provider and proxy, the node, storage, bridge, ID and fixed address are the wizard's
 recommendation (from [Naming & addresses](#naming--addresses), each address pinged from the node first), and
 the plan is held for you for 10 minutes. The assistant installs nothing: **Review in
-New website** opens that plan in the wizard, and Install there asks for your master password, as it does by
+New website** opens that plan in the wizard, and Install there asks you to confirm, as it does by
 hand. "Pull docs.example.com now" prepares the Websites section's Pull now for a static site (admin), and "run a
 quick SMART test on disk 3 of nas1" prepares the QNAP page's quick SMART test (operator); each is a confirm
 card, and an API token can never apply one. Restarting or shutting down a NAS, signing in to WordPress admin
@@ -1345,7 +1345,7 @@ when the read-back agrees. The steps:
     setup. Without one, Seerr is installed but not started, because a Seerr nobody has signed in to belongs to
     whoever opens it first. Connect Plex in HyperProx (the Plex plug-in's server and token), then press
     **Finish Seerr** on the Catalogue page. That does the same start and sign-in at once, and needs an admin and
-    the master password again. If it fails, Seerr is stopped again.
+    a confirmation. If it fails, Seerr is stopped again.
 12. Points HyperProx's Arr Stack plug-in at the new Sonarr, Radarr, Lidarr (if picked), Prowlarr and qBittorrent. If
     the plug-in already reads a stack, it is left as it is, except that a Lidarr you picked is added to it when the
     plug-in has no Lidarr address or key yet (an address or key already there is never replaced). The Plex plug-in has no Arr setting of its own: where it reaches
@@ -1677,7 +1677,7 @@ Every Catalogue install is a short wizard:
    and is written to the audit log at install. If something about an address could not be checked, you
    are asked to confirm that too. The Arr Stack and Proxmox Backup Server use this same step.
 5. **Review**: the exact plan, with the address it will have (never a silent DHCP: a DHCP plan says so
-   and carries the warning). Installing it asks for your master password again.
+   and carries the warning). Installing it asks you to confirm.
 
 The wizard's frame always fits the screen: the step strip and the Back / Install buttons stay in view and
 only the middle scrolls, and on a phone it is a full-screen sheet.
@@ -1702,7 +1702,7 @@ clean-up removes only what that run made: the container, the proxy host and the 
 points where the run set it). The certificate is left on the proxy.
 
 Each site then has **Open site**, **Open WordPress admin** (a sign-in link that works once, for 60 seconds,
-POSTed so no access log keeps it; admin only, master password again, audited), **Open Ghost admin** (its
+POSTed so no access log keeps it; admin only, a confirmation, audited), **Open Ghost admin** (its
 `/ghost/` page; sign in with the owner email and the password from the vault), **Reveal password** (through
 the vault), **Pull now** for a static site, **Health** for the container and the public address, and
 **Metrics**. Each card also shows today's visitors and a sparkline of the last 24 hours. A Ghost site's card
@@ -1830,9 +1830,9 @@ for a site HyperProx knows. Picking one fills in the container, address, log and
 with **Edit** to change them, and runs **Check**: the log exists and can be read, the format of its last
 lines, whether nginx and WP-CLI are there, and whether every request seems to come from the proxy with no
 `X-Forwarded-For` (then visitors cannot be told apart). **Enter manually** gives the empty form instead.
-The list is kept a minute. **Add site** asks for your master password and records it like a site
+The list is kept a minute. **Add site** asks you to confirm and records it like a site
 HyperProx made, but HyperProx only reads from it: there is no Pull now or admin sign-in for it, and
-**Stop tracking** (master password again, see below) removes only HyperProx's record and numbers. When the log has no
+**Stop tracking** (a confirmation, see below) removes only HyperProx's record and numbers. When the log has no
 request time (or, behind a proxy, no `X-Forwarded-For`), the next screen offers that logging change
 straight away.
 
@@ -1840,7 +1840,7 @@ A hand-built nginx usually logs in the combined format, with no response times. 
 logging change**) and the site's **Alerts** tab later (**Preview the change**) open the same preview: HyperProx reads nginx's configuration and shows the exact lines it would
 change: a plain `access_log <log>;` becomes `access_log <log> hyperprox_metrics;`, and one `include` line after
 `http {` brings in a new file with the format. A line with its own options or format is left alone and listed.
-**Make this change** asks for your master password, refuses if any file changed since the preview, backs each
+**Make this change** asks you to confirm, refuses if any file changed since the preview, backs each
 file up beside itself (`.hyperprox-bak-<time>`), runs `nginx -t`, and reloads nginx only if the test passes;
 otherwise every file is put back. Nothing in a site is ever changed without this.
 
@@ -1876,7 +1876,7 @@ from any backup job that still lists it. For an adopted site the only default is
 container is never offered, and its DNS record or proxy host is removed only if you tick it and type the
 site's name, because HyperProx did not make them.
 
-The delete is admin-only, needs your master password, and refuses API tokens. The preview is yours, for that
+The delete is admin-only, is confirmed on the page first, and refuses API tokens. The preview is yours, for that
 site, works once and lasts ten minutes. Each item is written to the audit log before it is touched (if the
 log cannot be written, the item is not touched) and after, re-read just before it changes (if it changed
 since the preview it is left alone), and read back afterwards. If something fails, every item says what
@@ -1893,7 +1893,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 | Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
 | QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
 | ASUS router | Stock Asuswrt or Merlin, without Home Assistant: model, firmware, uptime, CPU and RAM; internet status with live down and up rates; each Wi-Fi band with its network name, channel and clients; connected devices with connection, signal and time online; what needs attention; reboot behind the confirm step (see below) |
-| Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; read-only unless you turn on backup management, which adds deleting, pruning and clean-up (see below) |
+| Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind a confirmation; read-only unless you turn on backup management, which adds deleting, pruning and clean-up (see below) |
 | Pi-hole and AdGuard Home | Each DNS blocker as a shield with the share of queries blocked, a 24-hour chart, the domains blocked most (an Allow button each), the busiest devices (hideable), each upstream DNS server with its state and answer time, how old the block lists are, and whether blocking is on; every problem has a fix button (see below) |
 | 3proxy | A forward proxy: open connections per protocol (HTTP and SOCKS5), traffic, refusals and who used it; restart, users and allowed networks (see below) |
 | K3s | Each Kubernetes cluster: nodes with CPU and memory rings, pods in trouble (crash loop, an image that cannot be pulled, pending and why, restarting) with their last log lines and a fix for each, workloads with ready against desired, warning events, ingresses and services with their addresses, namespaces, and whether a newer K3s is out. Restart, roll back, scale, delete a pod, cordon, uncordon and drain, each confirmed (see below) |
@@ -1976,7 +1976,7 @@ shared while it runs, and given up after 45 seconds), so extra tabs do not cost 
 **What you can do about a problem.** Admins get buttons in the Queue tab; viewers and operators see none.
 They act on queue downloads only. They never delete anything in your library. Before anything is removed, the
 page shows a confirm step that lists exactly which downloads will go (the server reads the queue fresh and says
-what it found), and you click to confirm. There is no master password, because nothing permanent is lost.
+what it found), and you click to confirm. There is no extra confirmation step, because nothing permanent is lost.
 Every action is written to the audit log (who, which downloads, whether it was blocklisted) before it runs; if the
 log cannot be written, nothing happens. Actions are limited to 30 requests a minute per person. API tokens cannot
 use them. The result shows right under the buttons, and the queue refreshes itself straight away.
@@ -2045,7 +2045,7 @@ Lidarr address in the plug-in's settings, which says to leave it blank if you do
   done download reads "Kept your better copy (FLAC); nothing left to import." The albums and their track files are
   read in batches inside the shared reading, never one request per row, and the file qualities are kept for 60 seconds
   (and read again as soon as the album's file count or size on disk changes). If Lidarr cannot answer, the line is left out.
-- **Actions.** The same buttons with the same rules: admin only, API tokens refused, no master password, written to
+- **Actions.** The same buttons with the same rules: admin only, API tokens refused, no extra confirmation step, written to
   the audit log before they run, 30 a minute, a confirm step, and the queue read fresh by the server. **Find another**
   removes the download, blocklists the release (without letting Lidarr start its own search) and then asks Lidarr to
   run an album search for exactly the albums it covered; **Remove**, **Retry import**, **Move to top** (qBittorrent, torrents
@@ -2125,7 +2125,7 @@ imported, or nothing usable found.
   already found. Choose **Use this server**: HyperProx checks it answers at that address (and, if not,
   at the server's other addresses plex.tv lists, except plain http over the internet, which would send
   the token unencrypted: that is used only if you pick it yourself), then saves the address and the
-  server's own token in the vault. It needs the admin role and your master password again, like any
+  server's own token in the vault. It needs the admin role and a confirmation, like any
   settings change, and an API token cannot do it. Your Plex account sign-in itself is never stored or
   logged and never reaches your browser: HyperProx uses it only to read your server list, then drops it.
   The server's token is held in memory only while you choose, and is forgotten when the sign-in ends,
@@ -2235,7 +2235,7 @@ How removing works, in the Library and in Clear-out:
   would normally keep it; keep rules do not stop a removal you choose yourself.
 - **Never while someone is watching.** Anything being played right now is left alone, checked again at
   the moment of removing.
-- **Guards.** Removing needs the operator role or higher and your master password again. A preview
+- **Guards.** Removing needs the operator role or higher and a confirmation. A preview
   can be used once, only by the person who made it, only on the page that made it, within 10 minutes.
   API tokens can never remove anything. With Sonarr, episodes are unmonitored before their files are
   deleted. If the audit log cannot be written, the removal stops and says what was already done.
@@ -2276,7 +2276,7 @@ press:
 
 **Disconnecting a plug-in.** A plug-in you set up in its settings (Arr Stack, Unmanic, Plex, MikroTik,
 MeshCentral) has **Disconnect** at the bottom of its settings. It forgets every setting and the keys in the
-vault, after asking for the master password again; nothing changes on the device itself. The plug-in then
+vault, after asking you to confirm; nothing changes on the device itself. The plug-in then
 shows as not set up, leaves the dashboard and is no longer read for metrics, and auto-connect does not add
 the same address back by itself (**Connect again** does). A plug-in with its own list (Homepage, Nextcloud,
 Proxmox Backup Server, QNAP, ASUS, Home Assistant) removes each dashboard, instance or device on its own
@@ -2288,7 +2288,7 @@ removed, and what HyperProx still keeps for it. A guest counts as removed only w
 none lists it on three reads over at least ten minutes, Proxmox answers that its config does not exist, and
 never while it is being migrated or restored, so a slow or failed read never starts a clean-up. If several
 guests vanish at once, HyperProx asks Proxmox about each: those it says are gone are counted as usual, and
-any it will not answer for are named in one alert asking you to check its Proxmox token's permissions. **Clean up** (admins, master password) reads the cluster again first and stops if
+any it will not answer for are named in one alert asking you to check its Proxmox token's permissions. **Clean up** (admin, confirmed first) reads the cluster again first and stops if
 it cannot confirm the guest is gone; if another guest has taken its ID, only the old guest's own records go.
 It then removes, in one go:
 
@@ -2356,7 +2356,7 @@ languages) always is, everyday or not. Plus
 anything you mark **protected** (or a whole kind, such as climate). An everyday mark is tied to the device
 as it was when you marked it: rename it or change its class in Home Assistant and it needs the confirm
 step again. They carry a lock icon and need all of these: the
-admin role, your master password entered in the last 5 minutes, and a confirm step that names the device
+admin role, a confirmation on the page, and a confirm step that names the device
 and the house ("Unlock Front door at Second home") where you type the device's name. API tokens can never
 use them. Everything else needs the operator role (you can raise that to admin per house). Viewers see
 security devices listed but not their state, and their health view leaves out security devices,
@@ -2372,8 +2372,8 @@ house's state but cannot control anything.
 **Adding a house.** In Home Assistant, make a dedicated user for HyperProx with administrator turned
 off, sign in as it, and create a long-lived access token under Profile, Security. A token has every
 right its user has, so do not use your own admin account; HyperProx warns you on the Home Assistant
-page when a token belongs to an admin. Paste the address and token in **Add a house** (admin, asks for
-your master password). The token is kept in the vault and never shown again. An `http://` address must be
+page when a token belongs to an admin. Paste the address and token in **Add a house** (admin, asks you
+to confirm). The token is kept in the vault and never shown again. An `http://` address must be
 on your own network, Tailscale or WireGuard; anything else needs `https://`, and HyperProx never sends a
 token to this machine itself. Certificates are checked; for Home Assistant's own self-signed one, use
 **Read certificate** and **Pin this certificate** in Settings. Changing a house's address to another host
@@ -2406,7 +2406,7 @@ published or proxied. The plug-in always talks to the blocker on its own address
 **Nothing else changes by itself.** The install does not touch any other machine's DNS. The result page has a box,
 **Point your network at it**: set the DNS server your router hands out by DHCP to the blocker's address (a device
 picks it up when it renews its lease), or set it on one device first to try it. Keep a second DNS server out of the
-list, or devices use it and skip the blocking. **Use for HyperProx-installed guests** (admin, master password) puts the
+list, or devices use it and skip the blocking. **Use for HyperProx-installed guests** (admin, confirmed first) puts the
 blocker first in the DNS list HyperProx gives the guests it creates from now on (Settings, Naming), with the old
 servers behind it; guests that already exist are not changed, and one click undoes it. If you have no naming
 settings saved yet, it says so instead of inventing them.
@@ -2416,7 +2416,7 @@ cluster by itself (a Catalogue install, or one its service scan sees), signing i
 saves anything: a Catalogue install uses the generated password from the vault, and one you installed yourself needs
 exactly one vault item whose login address is that very address (Pi-hole: its password; AdGuard Home: user name and
 password). With none, the page says what is missing; with several, you pick one. A blocker can also be added by hand
-(admin, master password again). The login goes only to the address it was saved for, and a blocker that refuses it
+(admin, confirmed first). The login goes only to the address it was saved for, and a blocker that refuses it
 is not asked again until you save the login again.
 
 | What you see | Where it comes from |
@@ -2431,10 +2431,10 @@ is not asked again until you save the login again.
 | Blocking is off or paused | Turn blocking back on | operator |
 | (any time) | Pause blocking for 5, 30 or 60 minutes | operator |
 | Block lists overdue | Update the block lists now | operator |
-| One upstream server does not answer | Use only the ones that answer | admin, master password |
-| No upstream server answers | Switch to Cloudflare (or Quad9, Google) | admin, master password |
-| It does not answer a test lookup | Restart it (needs the guest it runs in; goes through the leave-alone guard) | admin, master password |
-| A site is broken by a block | Allow that domain (you type `Allow <domain>` to confirm) | admin, master password |
+| One upstream server does not answer | Use only the ones that answer | admin, confirmed first |
+| No upstream server answers | Switch to Cloudflare (or Quad9, Google) | admin, confirmed first |
+| It does not answer a test lookup | Restart it (needs the guest it runs in; goes through the leave-alone guard) | admin, confirmed first |
+| A site is broken by a block | Allow that domain (you type `Allow <domain>` to confirm) | admin, confirmed first |
 
 Each action reads the blocker again afterwards and says it worked only when the blocker agrees. Every attempt,
 refused ones too, is written to the audit log with who did it and what, never a password. API tokens cannot use the
@@ -2442,7 +2442,7 @@ admin actions or add a blocker.
 
 #### QNAP NAS
 
-Open **Plug-ins, QNAP** and press **Add a NAS** (admins; the master password is asked again, because a
+Open **Plug-ins, QNAP** and press **Add a NAS** (admins; it asks you to confirm, because a
 login is being stored). Each NAS you add gets its own tab. Its page opens with a header ring for how
 full it is and four readings: health, used of total, temperature and uptime. Under it:
 
@@ -2457,7 +2457,7 @@ full it is and four readings: health, used of total, temperature and uptime. Und
   HyperProx does not install firmware; do that on the NAS.
 - **Network** (each port, its link speed, address and current traffic) and **Shares** (each shared
   folder with the space QTS counted for it).
-- **Power** (admins): **Restart NAS** and **Shut down NAS**. Each needs the master password re-entered
+- **Power** (admins): **Restart NAS** and **Shut down NAS**. Each needs a confirmation
   and the NAS's name typed. API tokens can never use them. Every attempt is in the audit log, and a
   notification goes to your channels after each one.
 - **Details**: the same readings as plain tables.
@@ -2512,7 +2512,7 @@ worked.
 #### ASUS routers
 
 For an ASUS router on stock Asuswrt or Asuswrt-Merlin (388.x, 3004.x and the 3.0.0.6 base), without
-Home Assistant. Open **Plug-ins, ASUS** and press **Add a router** (admins; the master password is asked
+Home Assistant. Open **Plug-ins, ASUS** and press **Add a router** (admins; it asks you to confirm
 again, because a login is being stored). Enter the router's address, its admin user and its password.
 **Find my router** fills in the address when the router is HyperProx's own network gateway. HyperProx signs in
 once to check the login, reads the model and firmware itself, and names the router after its model if
@@ -2546,7 +2546,7 @@ firmware (stock or Merlin), uptime, CPU and RAM. Under it:
   band), its signal as bars and dBm, and how long it has been on Wi-Fi. You can filter by wired or by
   band. Operators and admins also see each device's address and MAC; viewers never see MACs or
   addresses.
-- **Reboot** (admins): needs the master password re-entered and the router's name typed. API tokens can
+- **Reboot** (admins): needs a confirmation and the router's name typed. API tokens can
   never use it, and each router (and each person) gets at most three reboots an hour. Every attempt is in the audit log, and a
   notification goes to your channels. Afterwards HyperProx reads the router again and records whether it
   came back with a fresh uptime, and sends a notification if it has not.
@@ -2604,8 +2604,8 @@ a call out, the page names the missing part, and the rest of the page still work
 
 #### Proxmox Backup Server
 
-Open **Plug-ins, Proxmox Backup Server** and press **Add a backup server** (admins; the master password
-is asked again, because a token is being stored). Give it a name and its address (`https://`, port 8007
+Open **Plug-ins, Proxmox Backup Server** and press **Add a backup server** (admins; it asks you to
+confirm, because a token is being stored). Give it a name and its address (`https://`, port 8007
 if you leave the port out), then choose how HyperProx gets in. Each server you add gets its own tab.
 
 **Sign in (recommended).** Enter a PBS admin login once: user, realm (`pam` for a Linux user such as
@@ -2623,7 +2623,7 @@ are limited to 3 a minute, and each attempt is in the audit log with the user na
 role on each datastore, never on `/`. In PBS 4 that role is `Datastore.Audit`, `Datastore.Read` and
 `Datastore.Verify`: the token can then start a verify, and anyone holding it could also read (restore)
 backup contents on those datastores. It still cannot prune, forget, delete or garbage-collect anything.
-Starting a verify still needs an admin and the master password.
+Starting a verify still needs an admin and a confirmation.
 
 **Paste a token (advanced).** If you would rather make the token yourself, in the backup server's shell:
 
@@ -2679,7 +2679,7 @@ group whose newest snapshot failed verification). Otherwise it **Needs attention
 such as "2 guests not backed up in 26 h", "datastore 91% full" or "verify failed". The dashboard's
 plug-in chip shows the same words.
 
-**Verify now** is admin only, needs the master password re-entered, and API tokens can never use it. It
+**Verify now** is admin only, is confirmed on the page first, and API tokens can never use it. It
 names a datastore the server reports, starts the verify on the server, and reads the task's status back,
 so the page says whether it is running, finished or failed. Every attempt, refused or not, is in the
 audit log.
@@ -2691,7 +2691,7 @@ on one datastore. Pruning by schedule is the server's own prune job.
 
 **Backup management (opt-in).** **Let HyperProx manage backups (delete, prune, clean up)** is a checkbox
 when you add a server by signing in, and a panel under **Settings** later; it is off by default. Turning it
-on means anyone who gets into HyperProx as an admin, with the master password, could delete or prune
+on means anyone who gets into HyperProx as an admin could delete or prune
 backups on the chosen datastores. HyperProx then makes a second token, `hyperprox@pbs!manage`, with the
 DatastoreAdmin role on each chosen datastore (never on `/`), and keeps it in its own vault item, apart from
 the read-only token. Every read still uses the read-only token; the manage token is used only by these
@@ -2703,7 +2703,7 @@ actions:
   own). The preview is PBS's own dry-run for each group, so it lists exactly which snapshots go.
 - **Clean up now** on a datastore card: garbage collection, which frees the space of deleted snapshots.
 
-Each is admin only, needs the master password re-entered, is refused for API tokens, is audited per
+Each is admin only, is confirmed on the page first, is refused for API tokens, is audited per
 snapshot, and is read back afterwards (nothing removed is still listed, and every protected snapshot is
 still there). The three that delete go through a preview the server holds: it is yours, works once and
 expires after 10 minutes, and it shows what goes and what stays. A **protected** snapshot is never deleted;
@@ -2717,7 +2717,7 @@ off and on again)
 (the password is used once and never stored): turning it off deletes the manage token and its permissions
 on the server, and then the vault item. A server with management on cannot be removed from HyperProx until
 it is turned off, so no delete token is left behind on the server. For a server that cannot be reached
-any more, **Forget this server** (admins, master password) removes only HyperProx's copy and names the
+any more, **Forget this server** (admin, confirmed first) removes only HyperProx's copy and names the
 tokens that may remain on that server (the manage token first), to delete there by hand if it comes back.
 If turning management on fails halfway and its token cannot be deleted again, the page says so and names it.
 
@@ -2746,8 +2746,8 @@ HyperProx's own app password is kept in the vault and revoked in Nextcloud when 
 Nothing is guessed: two vault logins for the address, or two possible containers, become one choice on the
 page; with several admins and no vault login, the web login waits for you to add it. Removing an instance is remembered, so it is not added back by itself.
 
-To add one the scan cannot see, open **Plug-ins, Nextcloud** and press **Add one by hand** (admins; the
-master password is asked again). Pick the container or VM it runs in and press **Look for Nextcloud there**: HyperProx looks inside the guest
+To add one the scan cannot see, open **Plug-ins, Nextcloud** and press **Add one by hand** (admins; it asks
+you to confirm). Pick the container or VM it runs in and press **Look for Nextcloud there**: HyperProx looks inside the guest
 (read-only) for a running container with Nextcloud's `occ` in it, its Docker Compose project, directory and
 file, whether the image is built from a Dockerfile, the database container, Talk's signalling server and a
 Client Push daemon; or, with no container, a plain install's `occ` and the user that owns it. Nothing is
@@ -2813,8 +2813,8 @@ backup of the guest running, room for the dump and the new image (the database's
 and a pending upgrade or maintenance mode left on. A user id HyperProx cannot check counts as someone online. Any of
 them stops it, with the reason. It shows where the database dump goes (`hyperprox-backups` in the Compose
 directory), every step, how to roll back, and whether Proxmox can snapshot the guest: a container with bind
-mounts cannot be snapshotted, so the dump and the kept image are the rollback. **Back up and update** needs
-the master password. The update then runs as one script started inside the guest (`systemd-run`, or
+mounts cannot be snapshotted, so the dump and the kept image are the rollback. **Back up and update** is
+confirmed on the page. The update then runs as one script started inside the guest (`systemd-run`, or
 `nohup setsid` where the guest has no systemd), so a closed page or a restart of HyperProx does not stop it:
 it writes its progress and log under `hyperprox-backups/jobs/<job>` and HyperProx reads them, again after a
 restart too. Each step is on the page:
@@ -2854,8 +2854,8 @@ changed (the previous one is tagged `hyperprox-pre-<version>`), refused while a 
 
 Every action is an admin's and a signed-in person's (API tokens are refused), is written to the audit log
 before it runs (if the entry cannot be written, nothing runs), and runs one at a time per Nextcloud. The
-update, the signalling update, the database work, mail, two-factor enforcement and app updates also need the
-master password. Viewers see the health and the checks, but not the log, user names, paths, container or
+update, the signalling update, the database work, mail, two-factor enforcement and app updates are also
+confirmed on the page. Viewers see the health and the checks, but not the log, user names, paths, container or
 image names, or the confirm texts, and cannot ask for a fresh read. The page reads Nextcloud again every two minutes while it is open (a reading is kept 30 seconds).
 
 #### HAProxy
@@ -2973,13 +2973,13 @@ preview at any time.
 Homepage**), the config folder moved (**Use the folder Docker mounts now**), a `services.yaml` that is not
 valid YAML (**Back it up and start it fresh**, which asks first), a folder that cannot be written, widgets
 that wait for keys, a key on the guest that is no longer the one in the vault, and old copies of the key file
-(**Delete the old key backups**, which asks first and needs the master password).
+(**Delete the old key backups**, which asks first and is confirmed on the page first).
 
 **Service widgets** (Sonarr's queue, Plex's streams, the cluster's load and so on) are opt-in per service and
 off by default. Homepage reads their keys from its own config, so **they are stored in plaintext on the
 Homepage guest**: in `homepage.env` beside its compose file (mode 0600, readable by root there), in the
 container's environment, and in that file's dated backups until you delete them. The page says so before you
-choose any. Turning widgets on and **Write the keys to the guest** both ask for your master password again, and
+choose any. Turning widgets on and **Write the keys to the guest** both ask you to confirm, and
 API tokens can never do either. The keys come from HyperProx's vault (each plug-in's own settings). A widget is
 offered only on the entry at the address that plug-in is set up for, so a key never goes to another server of
 the same kind. `services.yaml` only ever holds a `{{HOMEPAGE_VAR_...}}` placeholder, and no other value HyperProx
@@ -2995,7 +2995,7 @@ installs of Homepage create `homepage.env` empty (mode 0600) and list it as `env
 every Compose version reads. For an older install the page offers **Let Homepage read its key file** (master
 password again): it adds that one line under the Homepage service and changes nothing else in the file. If
 the file is not laid out simply enough to do that safely, it says so and shows the line to add by hand. For the cluster widget, **Make a read-only Proxmox token** creates a privilege-separated token with only
-`PVEAuditor` on `/` (master password again). HyperProx keeps the token's secret in the vault and records the
+`PVEAuditor` on `/` (a confirmation). HyperProx keeps the token's secret in the vault and records the
 token so it can be revoked; a token that is already gone from Proxmox counts as revoked. A dashboard with a
 token cannot be disconnected until the token is revoked. When the guest cannot be reached to take its keys off,
 disconnecting asks again and names what is left there.
@@ -3026,7 +3026,7 @@ its Details show totals and refusals only, never a user name or a client address
   and the log it wrote so far is emptied.
 - **Restart** starts 3proxy again on its current config, after you confirm.
 
-Adding, removing or resetting a user and changing the settings ask for your master password. Every action is
+Adding, removing or resetting a user and changing the settings ask you to confirm. Every action is
 audited. HyperProx changes the proxy only through its helper's fixed commands, with checked names and networks.
 
 #### K3s
@@ -3055,7 +3055,7 @@ The page opens with the cluster's nodes ready, pods running, pods in trouble and
 - **Warning events** of the last hour, **Network** (ingresses with a link to open, services with their addresses),
   **Namespaces**, and a note when a newer stable K3s is out.
 
-Every action is for admins, asks for the master password (once every five minutes), says what it will do before it
+Every action is for admins, asks you to confirm, says what it will do before it
 runs, is checked against the cluster at that moment (a button never acts on something that has gone), is written to
 the audit log, and is sent with the separate `hyperprox-operator` account, which the admission policies (see K3s in the Catalogue above) keep from
 changing what a workload runs or a node beyond cordoning; a roll back is sent with the admin login, after you confirm it. API tokens cannot act on a cluster.
@@ -3104,7 +3104,7 @@ traffic per repository, which guests use it (by guest name; addresses are added 
 shown), and when the daily clean-up last ran. Every problem has a fix button: start it again, run the clean-up, grow
 its disk (through the same guest settings change as elsewhere in HyperProx, with a preview first), and **Repair guests'
 setting**, which writes the setting again everywhere and checks each guest can reach the cache. Everything is admin
-only; changing who may use it, the Updates setting and the actions on every guest also ask for your master password,
+only; changing who may use it, the Updates setting and the actions on every guest also ask you to confirm,
 and API tokens cannot change anything here. Every action is written to the audit log first, and nothing is done when
 it cannot be.
 
@@ -3193,7 +3193,7 @@ follows the same rules: it proposes the ID and net0 address, and the API refuses
 outside the range unless you type it, and audits the exception. (A VM's address is set inside its own OS, so the
 Create VM form is not checked.) Saved settings that no longer pass their checks stop every create until they are
 saved again. Saving the settings is for
-admins and asks for your master password again. With nothing saved, the wizards follow your guests'
+admins and asks you to confirm. With nothing saved, the wizards follow your guests'
 numbering when most of them follow node + address, else a free address at the top of the node's own
 network, and use DHCP only when nothing can be picked, with a warning.
 
@@ -3226,13 +3226,22 @@ not protected, are in [docs/security.md](docs/security.md).
   | Manager | operator | View, start, stop and restart guests, open consoles |
   | User | viewer | View only |
 
-- **Re-confirmation.** Revealing a secret, destroying a guest, creating or revoking an API token,
-  changing roles, installing from the Catalogue (or removing a failed install), resetting Grafana's
-  admin password, and changes on the Setup checklist ask for the master password again (valid five
-  minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming or verifying its
-  certificate, verifying its node keys, saving or removing a node login, deleting a guest, installing or removing monitoring,
-  changing a server's address, node addresses, copy folders or "never look inside" list, setting up a sending key (including
-  the first-time setup of Send files), and saving a Plex address or token. Removing media with Plex Clear-out or Library asks for it too. The AI assistant asks for it in exactly the same cases.
+- **Confirmations.** Actions that change something important show what will happen in plain words and ask you to
+  confirm on the page: destroying or moving a guest, rebooting a node, running, resuming or rolling back updates,
+  installing from the Catalogue (or removing a failed install), plug-in actions (locks, alarms, garage doors, network
+  gear, NAS power, backups, Nextcloud, K3s, Plex removals), saving settings and connections, and, for remote clusters,
+  adding or removing one, replacing its token, confirming its certificate or node keys, node logins, monitoring and
+  Send files' first setup. The confirmation is enforced by the server, not just drawn by the page: it is a single-use
+  token for that person and that exact request (the same action, on the same cluster, with the same details), it
+  lasts five minutes, another site cannot get or use one, and an API token can never have one. Every confirmed
+  action is written to the audit log ("confirmed in page") before it runs, and nothing runs if that row cannot be
+  written. Where a page already shows a preview with an Apply button, or asks you to type a name, that is the
+  confirmation.
+- **The master password** is asked for again (valid five minutes) only to reveal a stored secret (the Secrets page,
+  Send, a guest config's secret value, a WireGuard device's private key, deleting a vault item) and to change who can
+  sign in or what they may do (inviting, confirming or removing a person, changing a role, creating or revoking an API
+  token, letting a token save plug-in settings, or marking a notification channel private, since sign-in links
+  go there).
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one
@@ -3247,9 +3256,9 @@ not protected, are in [docs/security.md](docs/security.md).
 - **API tokens** (`Authorization: Bearer hpx_...`) carry a role of viewer, operator or admin, stop
   working while HyperProx is locked, and can never read secrets, open the terminal or WebSockets, or
   manage tokens. Only a SHA-256 hash is stored.
-- **Plug-in settings without the master password (opt-in, off by default).** An owner can let one admin token
+- **Plug-in settings without a confirmation (opt-in, off by default).** An owner can let one admin token
   save plug-in settings, so a script can connect a plug-in such as Plex for you. Turn it on in Settings → API tokens
-  (it asks for your master password), or as root on the HyperProx machine with
+  (it asks for your master password, like every change to a token), or as root on the HyperProx machine with
   `hyperprox token plugin-settings <name> on|off`. Anyone holding that token can then change plug-in addresses and
   their keys or passwords. It also covers adding or changing a Proxmox Backup Server (by its token, not by signing in),
   a Home Assistant house or a QNAP, including reading the certificate to confirm; not a house's security settings,

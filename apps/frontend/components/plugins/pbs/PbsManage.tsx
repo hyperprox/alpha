@@ -13,14 +13,14 @@
 
 import { useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { Sheet } from '@/components/plugins/home-assistant/HomeVisual'
 import { styles as vs } from '@/components/visual/kit'
 
 const API = '/api/plugins/pbs'
 
-export const MANAGE_WARNING = 'Anyone who gets into HyperProx as an admin, with the master password, could then delete or prune backups on the chosen datastores. HyperProx keeps a second token for this (DatastoreAdmin on those datastores only, never on /); turning it off deletes that token on the server.'
+export const MANAGE_WARNING = 'Anyone who gets into HyperProx as an admin could then delete or prune backups on the chosen datastores. HyperProx keeps a second token for this (DatastoreAdmin on those datastores only, never on /); turning it off deletes that token on the server.'
 
 interface Item { type: string; id: string; time: number; protected: boolean; size: number | null }
 export interface ManagePreview {
@@ -32,16 +32,17 @@ export interface ManagePreview {
 const at = (t: number) => new Date(t * 1000).toLocaleString()
 const size = (b: number | null) => (b === null ? '' : b >= 1024 ** 3 ? ` · ${(b / 1024 ** 3).toFixed(1)} GiB` : ` · ${Math.round(b / 1024 ** 2)} MiB`)
 
-/** POST with the master-password step when the gate asks for it. */
-export function useReconfirmed() {
-  const [retry, setRetry] = useState<null | (() => void)>(null)
+/**
+ * A manage call. Every one is confirmed (lib/confirm-bus.ts): a preview and its Apply are confirmed by this page itself
+ * (the preview lists exactly what goes), so they carry IN_PAGE; turning management on or off and Clean up now show the
+ * shared confirmation.
+ */
+export function useManageCall() {
   const call = async <T,>(path: string, method: string, body: unknown, onDone: (r: { ok: boolean; body?: T; error?: string; code?: string }) => void): Promise<void> => {
-    const r = await apiJson<T>(path, method, body)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setRetry(() => () => void call(path, method, body, onDone)); return }
+    const r = await apiJson<T>(path, method, body, /\/manage\/(preview|apply)$/.test(path) ? IN_PAGE : undefined)
     onDone(r as any)
   }
-  const modal = retry ? <ReconfirmModal onClose={() => setRetry(null)} onDone={() => { const f = retry; setRetry(null); f() }} /> : null
-  return { call, modal }
+  return { call, modal: null }
 }
 
 /** The preview, then the apply: exactly what goes, what stays, and the second confirmation when it is the last. */
@@ -49,7 +50,7 @@ export function PreviewModal({ serverId, p, onClose, onDone }: { serverId: strin
   const [last, setLast] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const { call, modal } = useReconfirmed()
+  const { call, modal } = useManageCall()
   const title = p.action === 'prune' ? `Prune ${p.store}` : p.action === 'delete-group' ? 'Delete a whole backup group' : 'Delete snapshots'
   const apply = () => {
     setBusy(true); setErr(null)
@@ -96,7 +97,7 @@ export function GroupSheet({ serverId, store, ns, type, id, onClose, onPreview }
   const [list, setList] = useState<Array<{ time: number; size: number | null; verify: string; protected: boolean }> | null>(null)
   const [pick, setPick] = useState<number[]>([])
   const [err, setErr] = useState<string | null>(null)
-  const { call, modal } = useReconfirmed()
+  const { call, modal } = useManageCall()
   useEffect(() => {
     void apiJson<{ data: any[] }>(`${API}/instances/${serverId}/snapshots?${new URLSearchParams({ store, ns, type, id })}`).then(r => (r.ok ? setList(r.body!.data) : setErr(r.error ?? 'Could not read the snapshots.')))
   }, [serverId, store, ns, type, id])
@@ -130,7 +131,7 @@ export function GroupSheet({ serverId, store, ns, type, id, onClose, onPreview }
 /** Prune now (a preview first) and Clean up now, for one datastore under management. */
 export function StoreManageButtons({ serverId, store, onPreview, onNote }: { serverId: string; store: string; onPreview: (p: ManagePreview) => void; onNote: (n: { text: string; ok: boolean }) => void }) {
   const [busy, setBusy] = useState<string | null>(null)
-  const { call, modal } = useReconfirmed()
+  const { call, modal } = useManageCall()
   return (
     <>
       <button type="button" className={vs.btn} disabled={busy !== null} onClick={() => { setBusy('prune'); void call<{ data: ManagePreview }>(`${API}/instances/${serverId}/manage/preview`, 'POST', { action: 'prune', store }, r => { setBusy(null); r.ok ? onPreview(r.body!.data) : onNote({ text: r.error ?? 'No preview.', ok: false }) }) }}>{busy === 'prune' ? 'Dry run…' : 'Prune now…'}</button>
@@ -147,7 +148,7 @@ export function ManageSettings({ serverId, manage, stores, onSaved }: { serverId
   const [ok, setOk] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const { call, modal } = useReconfirmed()
+  const { call, modal } = useManageCall()
   const save = (enabled: boolean) => {
     setBusy(true); setErr(null)
     void call(`${API}/instances/${serverId}/manage`, 'PUT', { enabled, stores: chosen, ...f }, r => {

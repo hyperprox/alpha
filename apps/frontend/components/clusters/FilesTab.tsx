@@ -9,7 +9,6 @@ import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { useClusters, clusterColor, clusterInk, bytes, type ClusterInfo } from '@/lib/clusters'
 import { INPUT, LABEL, Notice, BusyNote } from '@/components/vault/ui'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Dot } from './CommandCenter'
 import { SendFilesButton } from './SendFiles'
 
@@ -96,7 +95,6 @@ export function FilesTab({ clusterId }: { clusterId: string }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<{ text: string; setup?: boolean } | null>(null)
   const [jobs, setJobs] = useState<Job[]>([])
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const dstC = clusters?.find(c => c.id === dst.cluster)
   const dstRoot = useMemo(() => dstC?.allowedRoots.filter(r => dst.path === r || dst.path.startsWith(r + '/')).sort((a, b) => b.length - a.length)[0] ?? null, [dstC, dst.path])
 
@@ -116,7 +114,6 @@ export function FilesTab({ clusterId }: { clusterId: string }) {
     setBusy('setup')
     const r = await apiJson<{ data: { words: string } }>('/api/clusters/files/keys', 'POST', { src: src.cluster, dst: dst.cluster, dstNode: dst.node, root: dstRoot })
     setBusy(null)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void setup()); return }
     setErr(r.ok ? { text: `${r.body!.data.words} Press Preview again.` } : { text: r.error ?? 'Not set up' })
   }
   const start = async () => {
@@ -131,7 +128,6 @@ export function FilesTab({ clusterId }: { clusterId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 rounded-md font-semibold" style={{ background: clusterColor(dk), color: clusterInk(dk) }}>
         <span className="uppercase">Destination: {nameOf(dst.cluster)}</span>
         <small className="font-medium" style={{ opacity: 0.85 }}>Copy adds files there. Your files stay where they are, and HyperProx replaces and deletes nothing that was already there.</small>

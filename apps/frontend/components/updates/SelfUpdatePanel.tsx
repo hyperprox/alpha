@@ -4,7 +4,7 @@
 //  HyperProx — Updates: HyperProx itself
 //
 //  The version this install runs, whether a newer one is out on its channel,
-//  and the update: a preview of every step, the master password, then the
+//  and the update: a preview of every step, your confirmation, then the
 //  steps and log as the updater runs them. The updater restarts HyperProx, so
 //  the progress comes from its state file: when the API is back, the next
 //  poll carries on from where the updater is.
@@ -16,8 +16,8 @@
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, type ApiResult } from '@/lib/api'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Badge, Btn, ConfirmDialog, Notice, Panel, fmtTime } from './ui'
 
 type Channel = 'stable' | 'alpha'
@@ -69,7 +69,6 @@ export function SelfUpdatePanel() {
   const [notice, setNotice] = useState<{ tone: 'warn' | 'crit' | 'info'; text: string } | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [editing, setEditing] = useState<Settings | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const logRef = useRef<HTMLPreElement>(null)
 
   const load = useCallback(async () => {
@@ -98,7 +97,6 @@ export function SelfUpdatePanel() {
   useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }) }, [job?.log.length])
 
   const askedAgain = (r: ApiResult, retry: () => void) => {
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => retry); return true }
     return false
   }
 
@@ -119,7 +117,7 @@ export function SelfUpdatePanel() {
     const sha = preview?.target?.sha
     if (!sha) return
     setBusy(true)
-    const r = await apiJson<{ job: Job }>('/api/self-update/install', 'POST', { sha })
+    const r = await apiJson<{ job: Job }>('/api/self-update/install', 'POST', { sha }, IN_PAGE)
     setBusy(false)
     if (askedAgain(r, install)) return
     if (r.ok && r.body?.job) { setPreview(null); setJob(r.body.job); return }
@@ -186,14 +184,13 @@ export function SelfUpdatePanel() {
               {r.detail && <pre className="mt-1 max-h-40 overflow-auto font-mono text-xs">{r.detail.join('\n')}</pre>}
             </Notice>
           ))}
-          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Only HyperProx is updated; nothing else on this machine or cluster is touched. You will be asked for your master password.</p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Only HyperProx is updated; nothing else on this machine or cluster is touched.</p>
           <div className="flex justify-end gap-2">
             <Btn kind="primary" onClick={() => void install()} disabled={busy || preview.refusals.length > 0 || !preview.target}>Install {preview.target?.label ?? ''}</Btn>
             <Btn onClick={() => setPreview(null)}>Cancel</Btn>
           </div>
         </ConfirmDialog>
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
 }

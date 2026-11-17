@@ -4,6 +4,6 @@ expect:
   kind: action
   action: site-pull
   role: admin
-  needs_reconfirm: false
+  needs_confirm: false
   includes: ["Pull docs.example.com now", "the same as Pull now on the Sites page"]
 found_by: "2026-11-11 AI update"

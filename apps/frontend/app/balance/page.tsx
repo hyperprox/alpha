@@ -10,7 +10,7 @@
 //  each shown travelling between nodes with both nodes' bars before and after,
 //  its outage, the data to copy and the network cost. "Balance the cluster"
 //  runs it in a quiet window or schedules it for the next one, with your
-//  master password once; the server runs the moves one at a time and stops on
+//  confirmation once; the server runs the moves one at a time and stops on
 //  any change. Automatic balancing is off by default. Why each guest is where
 //  it is, and single moves, are below.
 // =============================================================================

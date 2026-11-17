@@ -10,10 +10,10 @@
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
 import { alpha } from '@/lib/theme'
 import { ArrPicker, type ArrNames, type ArrVpn } from './ArrPicker'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 import { PbsLocation } from './PbsLocation'
 import { PublishBlock, type PublishChoice } from './PublishBlock'
@@ -191,7 +191,6 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
   const [warnings, setWarnings] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [reconfirm, setReconfirm] = useState(false)
 
   const below = useMemo(() => ({
     cores: cores < recipe.minimum.cores, memory: memoryMb < recipe.minimum.memoryMb, disk: diskGb < recipe.minimum.diskGb,
@@ -340,9 +339,8 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
   const apply = async () => {
     if (!preview) return
     setBusy(true); setError('')
-    const r = await apiJson<{ data: { jobId: string; steps: any[] } }>('/api/catalogue/wizard/apply', 'POST', { previewId: preview.previewId })
+    const r = await apiJson<{ data: { jobId: string; steps: any[] } }>('/api/catalogue/wizard/apply', 'POST', { previewId: preview.previewId }, IN_PAGE)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(true); return }
     if (!r.ok) {
       setError(r.error ?? 'The install could not be started.')
       setProblems((r.body as any)?.problems ?? [])
@@ -362,7 +360,6 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
 
   return (
     <ModalFrame label={`Install ${recipe.name}`} escape={false}
-      after={reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void apply() }} />}
       header={<>
         {/* Header and step strip: corner brackets and a glowing current step, like the HUD headers */}
         <div className="flex items-start justify-between gap-3 border-b px-4 sm:px-6 py-4"

@@ -25,6 +25,7 @@ import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 
 import { TOKEN_A, TOKEN_B, st, fakeHA, memIO, HOUSE_A, openResolver, testClient, type FakeHA } from './ha-control-fake'
+import { confirmAfterReconfirm } from './fakes/confirm'
 
 let A: FakeHA, B: FakeHA
 const audits: Array<{ action: string; resource: string; details: Record<string, unknown> }> = []
@@ -324,7 +325,7 @@ test('through the gate: operator acts, a lock needs re-confirmation, an API toke
   setApiTokenStore(tokens)
   const { svc } = await twoHouses()
   setHAControlService(svc)
-  const app: FastifyInstance = Fastify({ logger: false })
+  const app: FastifyInstance = confirmAfterReconfirm(Fastify({ logger: false }))
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
   // Registered beside the generic plug-in routes, as index.ts does: neither shadows the other.
@@ -353,14 +354,14 @@ test('through the gate: operator acts, a lock needs re-confirmation, an API toke
     const lockBody = { entityId: 'lock.front_door', action: 'unlock', confirm: 'Unlock Front door at Home', typed: 'Front door' }
     assert.equal((await call('POST', '/instances/default/secure-actions', { cookie: opCookie }, lockBody)).statusCode, 403)
     const needs = await call('POST', '/instances/default/secure-actions', { cookie: ownerCookie }, lockBody)
-    assert.equal(needs.json().code, 'reconfirm_required')
+    assert.equal(needs.json().code, 'confirm_required')
     // The everyday route does not take the lock either, re-confirmed or not.
     assert.equal((await call('POST', '/instances/default/actions', { cookie: ownerCookie }, lockBody)).json().code, 'security_action')
 
     const tok = (await createApiToken({ name: 'automation', role: 'admin' }, 'test', tokens)).token
     const viaToken = await call('POST', '/instances/default/secure-actions', { authorization: `Bearer ${tok}` }, lockBody)
     assert.equal(viaToken.statusCode, 403)
-    assert.equal(viaToken.json().code, 'reconfirm_required')
+    assert.equal(viaToken.json().code, 'token_forbidden')
     const tokNormal = await call('POST', '/instances/default/actions', { authorization: `Bearer ${tok}` }, { entityId: 'light.kitchen', action: 'turn_off' })
     assert.equal(tokNormal.statusCode, 200, tokNormal.body)
     assert.equal(A.calls.filter(c => c.startsWith('lock.')).length, 0, 'no lock call yet')

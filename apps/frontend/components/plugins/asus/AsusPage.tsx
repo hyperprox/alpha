@@ -19,9 +19,9 @@
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Panel, Cols, Icon, styles as vs } from '@/components/visual/kit'
 import { DetailsSection, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -79,7 +79,6 @@ function RouterView({ n: n0, onRenamed }: { n: Router; onRenamed?: () => void })
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [typed, setTyped] = useState('')
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [trail, setTrail] = useState<{ down: number[]; up: number[] }>({ down: [], up: [] })
   const inFlight = useRef(false)
 
@@ -110,8 +109,7 @@ function RouterView({ n: n0, onRenamed }: { n: Router; onRenamed?: () => void })
 
   const reboot = async (): Promise<void> => {
     const body = { action: 'reboot', confirm: n.phrase, typed }
-    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${n.id}/actions`, 'POST', body)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void reboot()); return }
+    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${n.id}/actions`, 'POST', body, IN_PAGE)
     setTyped('')
     setNote(r.ok ? { text: r.body!.data.message, ok: true } : { text: r.error ?? 'That did not work.', ok: false })
   }
@@ -179,7 +177,7 @@ function RouterView({ n: n0, onRenamed }: { n: Router; onRenamed?: () => void })
           </Panel>
 
           {admin && (
-            <Panel title="Reboot" sub="admins · master password · typed name">
+            <Panel title="Reboot" sub="admins · typed name">
               <p className="mb-3 text-sm" style={{ color: 'var(--text-soft)' }}>
                 Rebooting drops Wi-Fi and the internet for everyone for 2 to 4 minutes, HyperProx included if it reaches the internet through {n.name}.
               </p>
@@ -228,12 +226,11 @@ function RouterView({ n: n0, onRenamed }: { n: Router; onRenamed?: () => void })
           </div>
         </Modal>
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
 }
 
-// ── settings: add, edit, remove (admin, re-confirmed) ────────────────────────
+// ── settings: add, edit, remove (admin, confirmed) ────────────────────────
 
 const ADVICE = 'Enter the router’s address and its admin login (Administration → System on the router). HyperProx signs in once to check it, reads the model and firmware itself, and keeps the login in the vault; it is never shown again. ASUS routers allow one admin session at a time, so HyperProx signs out whenever it has not needed the router for two minutes. If you are signed in to the router’s own page at the same moment, one of the two may be asked to sign in again.'
 
@@ -247,7 +244,6 @@ function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () =>
   const [busy, setBusy] = useState(false)
   const [finding, setFinding] = useState(false)
   const [found, setFound] = useState<Array<{ url: string; model: string | null }> | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const set = (k: keyof typeof f, v: any) => setF(x => ({ ...x, [k]: v }))
   const https = f.url.trim().toLowerCase().startsWith('https:')
   const pinChanged = f.fingerprint !== (n?.fingerprint ?? '')
@@ -279,7 +275,6 @@ function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () =>
     if (pinChanged) body.fingerprint = f.fingerprint || null
     const r = await apiJson<{ data: Router & { pinnedNow: boolean } }>(n ? `${API}/instances/${n.id}` : `${API}/instances`, n ? 'PUT' : 'POST', body)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void save()); return }
     if (!r.ok) { setErr(r.error ?? 'Could not save'); return }
     const d = r.body!.data
     setOk(`Saved ${d.name}${d.model ? `: ${d.model}` : ''}${d.firmware ? `, firmware ${d.firmware}` : ''}.${d.pinnedNow ? ' Its certificate is pinned: only that certificate is accepted from now on.' : ''}`)
@@ -290,8 +285,7 @@ function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () =>
 
   const remove = async () => {
     if (!n || !window.confirm(`Remove ${n.name} from HyperProx? Its login is deleted from the vault. The router itself is not touched.`)) return
-    const r = await apiJson(`${API}/instances/${n.id}`, 'DELETE')
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
+    const r = await apiJson(`${API}/instances/${n.id}`, 'DELETE', undefined, IN_PAGE)
     if (!r.ok) { setErr(r.error ?? 'Could not remove'); return }
     onSaved()
   }
@@ -343,7 +337,6 @@ function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () =>
         {onCancel && <GhostButton type="button" onClick={onCancel}>Cancel</GhostButton>}
         <PrimaryButton type="button" disabled={busy || !f.url || !f.username || (!n && !f.password)} onClick={() => void save()}>{busy ? 'Saving…' : 'Save'}</PrimaryButton>
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>
   )
 }

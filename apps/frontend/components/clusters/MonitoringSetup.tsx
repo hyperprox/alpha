@@ -5,10 +5,10 @@
 
 import { styles } from '@/components/visual/kit'
 import { useCallback, useEffect, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
 import type { ClusterInfo } from '@/lib/clusters'
 import { Notice, BusyNote } from '@/components/vault/ui'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 interface NodeFacts { node: string; address: string | null; listen: string | null; iface: string | null; amd: boolean; intel?: boolean; intelDriver?: string | null; python3?: boolean; intelOurs?: boolean; packageInstalled: boolean; problem?: string }
 interface Question { id: string; ask: string; what: string; available: boolean; default: boolean; why?: string }
@@ -20,7 +20,6 @@ export function MonitoringSetup({ c, onChanged }: { c: ClusterInfo; onChanged: (
   const [result, setResult] = useState<{ ok: boolean; results: Array<{ node: string; status: string; reason: string }>; checks: Array<{ node: string; ok: boolean; words: string }> } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const installed = Object.values(c.monitoring ?? {}).some(m => m?.nodeExporter)
 
   const doScan = useCallback(async () => {
@@ -42,16 +41,14 @@ export function MonitoringSetup({ c, onChanged }: { c: ClusterInfo; onChanged: (
   const apply = async () => {
     if (!preview) return
     setBusy('apply'); setErr(null)
-    const r = await apiJson<{ data: typeof result }>(`/api/clusters/${c.id}/monitoring/apply`, 'POST', { planId: preview.planId })
+    const r = await apiJson<{ data: typeof result }>(`/api/clusters/${c.id}/monitoring/apply`, 'POST', { planId: preview.planId }, IN_PAGE)
     setBusy(null)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void apply()); return }
     if (!r.ok) { setErr(r.error ?? 'Not applied'); return }
     setResult(r.body!.data); setPreview(null); onChanged()
   }
 
   return (
     <section className={`${styles.panel} flex flex-col gap-3`}>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
       <span className="font-mono font-bold" style={{ fontSize: 12, color: 'var(--accent)' }}>STEP 5</span>
       <h2 className={styles.panelTitle} style={{ margin: 0 }}>Monitoring on {c.name}</h2>
       <p className="text-sm" style={{ color: 'var(--text-muted)' }}>HyperProx looks at the server first and asks plain questions. Nothing installs until you press Apply. It uses the saved, confirmed node login, and every step is checked afterwards.</p>

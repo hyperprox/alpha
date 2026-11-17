@@ -82,8 +82,8 @@ proof (firewalls drop it).
 - There is no one-call `/install` route: every install is preview, then apply.
 - Creates go through the Proxmox API (`POST /nodes/{node}/lxc`), unprivileged with `nesting=1` only, never
   by writing a config file.
-- Every wizard route is admin-only, reads included. Apply and clean-up also need the master password
-  re-entered (`roles.ts`).
+- Every wizard route is admin-only, reads included. Apply and clean-up are also confirmed on the page first
+  (`roles.ts`, `lib/confirm.ts`).
 - A failed or interrupted install can remove its own container: only when the job created it, the container
   still carries the job's mark in its description, and HA can be read and does not manage it. The delete
   is `purge=1` only, never `destroy-unreferenced-disks`, which would also delete older volumes named for the

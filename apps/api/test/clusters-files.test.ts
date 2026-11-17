@@ -18,6 +18,7 @@ import { MemoryClusterStore } from '../src/lib/clusters/store'
 import { fingerprintOf } from '../src/lib/ssh-broker'
 import { assertSafeScript } from '../src/lib/clusters/monitoring'
 import {
+import { confirmAfterReconfirm } from './fakes/confirm'
   rootFor, containmentScript, parseContainment, authorizedLine, hostKeyLines, parseStats, parsePoll, launchScript, runScript,
   browse, previewCopy, startCopy, CopyRunner, setJobStore, MemoryJobStore, jobStore, POLL_SCRIPT, type NodeRunner, type JobRow,
 } from '../src/lib/clusters/files'
@@ -27,7 +28,7 @@ const bash = (script: string) => { try { return execFileSync('bash', ['-c', scri
 
 const broker = new FakeBroker()
 broker.addUser('owner@example.com', 'owner master password', 'owner')
-const appP = buildTestApp(broker)
+const appP = buildTestApp(broker).then(confirmAfterReconfirm)
 let sid = ''
 after(async () => { await resetLock(); await (await appP).close(); rmSync(tmp, { recursive: true, force: true }) })
 const asOwner = <T>(fn: () => Promise<T>) => requestContext.run({ sid, email: 'owner@example.com', role: 'owner' }, fn)

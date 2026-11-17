@@ -8,13 +8,12 @@
 //  server, the assistant) picks the next free ID and address from here, pings
 //  the address from the node first, and asks for a typed confirmation before
 //  DHCP under "never" or an address outside the range. Saving needs the
-//  master password again; the API enforces it.
+//  a confirmation; the API enforces it.
 // =============================================================================
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { apiJson } from '@/lib/api'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Page, Panel, Pill, styles } from '@/components/visual/kit'
 import { alpha } from '@/lib/theme'
@@ -87,7 +86,6 @@ export default function NamingSettingsPage() {
   const [saving, setSaving] = useState(false)
   const [problems, setProblems] = useState<string[]>([])
   const [msg, setMsg] = useState<{ kind: 'error' | 'info'; text: string } | null>(null)
-  const [reconfirm, setReconfirm] = useState(false)
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm(f => ({ ...f, [k]: v }))
 
@@ -129,7 +127,6 @@ export default function NamingSettingsPage() {
     setSaving(true); setMsg(null); setProblems([])
     const r = await apiJson<{ data: { settings: Saved } }>('/api/catalogue/wizard/naming', 'PUT', { settings: body })
     setSaving(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(true); return }
     if (!r.ok) { setProblems((r.body as any)?.problems ?? []); setMsg({ kind: 'error', text: r.error ?? 'Could not save.' }); return }
     setSaved(r.body!.data.settings); setForm(toForm(r.body!.data.settings))
     setMsg({ kind: 'info', text: 'Saved. Every wizard uses it from the next install.' })
@@ -240,13 +237,12 @@ export default function NamingSettingsPage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="text-[12px]" style={{ color: 'var(--text-dim)' }}>
               {saved?.updatedAt ? `Saved ${new Date(saved.updatedAt).toLocaleString()}${saved.updatedBy ? ` by ${saved.updatedBy}` : ''}.` : 'Nothing saved yet: wizards use your guests’ numbering if they follow one, else a free address on the node’s network.'}
-              {' '}Saving asks for your master password.
+              {' '}Saving asks you to confirm.
             </span>
             <PrimaryButton type="button" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</PrimaryButton>
           </div>
         </div>
       )}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void save() }} />}
     </Page>
   )
 }

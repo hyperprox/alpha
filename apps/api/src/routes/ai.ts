@@ -39,7 +39,6 @@ import { scanCluster }        from '../lib/clusters/scan'
 import { previewMonitoring, applyMonitoring } from '../lib/clusters/monitoring'
 import { power, snapshot, backupNow, backupStorages, destroy } from '../lib/clusters/guest-actions'
 import { forgetAfterDelete } from '../lib/removed-guests/after-delete'
-import { isReconfirmed }      from '../lib/auth'
 import { auditCredentialUse } from '../lib/audit'
 import type { Role }          from '../lib/roles'
 import { isQuestionPrompt }   from '../lib/ai/intent'
@@ -290,7 +289,6 @@ function defaultDeps(): AiRouteDeps {
       row: clusterRow,
       connection: connectionKey,
       unlocked: isUnlocked,
-      reconfirmed: sid => isReconfirmed(sid),
       inCluster: (id, fn) => runInCluster(id, fn),
       pve: () => pveFromEnv(),
       ops: {
@@ -317,7 +315,6 @@ function defaultDeps(): AiRouteDeps {
     }),
     homeApplyDeps: () => ({
       unlocked: isUnlocked,
-      reconfirmed: sid => isReconfirmed(sid),
       site: async id => { const s = await getSite(id); return s ? { id: s.id, name: s.name, recipeId: s.recipeId, domain: s.domain ?? null } : undefined },
       // The same script the Sites page's Pull now runs (routes/sites.ts).
       pull: async id => { const s = await getSite(id); if (!s) throw new Error('No such site.'); return realRun(s, 'set -e\n/usr/local/bin/site-pull') },

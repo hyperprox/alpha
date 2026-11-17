@@ -10,14 +10,14 @@
 //  cluster cross-check, and the plain tables folded into Details.
 //
 //  Actions: refresh (anyone); "Verify now" per datastore (admin,
-//  master password; the server's answer, including which privilege a token
+//  confirmed first; the server's answer, including which privilege a token
 //  lacks, is shown as it came). Nothing here deletes, prunes or forgets.
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 import { Feed, HudHeader, Icon, Panel, Pill, RingGauge, styles as vs } from '@/components/visual/kit'
 import { DetailsSection, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -182,7 +182,6 @@ function ServerView({ s }: { s: Server }) {
   const [onlyStale, setOnlyStale] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [preview, setPreview] = useState<ManagePreview | null>(null)
   const [sheet, setSheet] = useState<Group | null>(null)
   const managed = (store: string) => admin && !!s.manage?.stores.includes(store)
@@ -207,7 +206,6 @@ function ServerView({ s }: { s: Server }) {
     setBusy(`${action}:${store}`); setNote(null)
     const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${s.id}/actions/${action}`, 'POST', { store })
     setBusy(null)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void act(action, store)); return }
     setNote(r.ok ? { text: r.body!.data.message, ok: true } : { text: r.error ?? 'That did not work.', ok: false })
     if (r.ok) void load(true)
   }
@@ -250,7 +248,7 @@ function ServerView({ s }: { s: Server }) {
           {note && <p className="text-sm" role="status" style={{ color: note.ok ? 'var(--good)' : 'var(--warn-2)' }}>{note.text}</p>}
           {r.missing.length > 0 && <Notice kind="warn">Not read: {r.missing.join(', ')}. A read-only token (Audit on /) sees most of it; the rest of the page is real.</Notice>}
 
-          <Panel title="Datastores" sub={admin ? 'verify needs the master password; GC runs on its schedule' : undefined}>
+          <Panel title="Datastores" sub={admin ? 'verify asks you to confirm; GC runs on its schedule' : undefined}>
             {r.datastores.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>The token sees no datastore. Give it Datastore.Audit (the Audit role on /).</p>
               : <div className={p.stores}>{r.datastores.map(d => <StoreCard key={d.store} d={d} admin={admin} busy={busy} onAct={(a, st) => void act(a, st)}
                 extra={managed(d.store) ? <StoreManageButtons serverId={s.id} store={d.store} onPreview={setPreview} onNote={n => { setNote(n); if (n.ok) void load(true) }} /> : undefined} />)}</div>}
@@ -308,12 +306,11 @@ function ServerView({ s }: { s: Server }) {
       )}
       {sheet && <GroupSheet serverId={s.id} store={sheet.store} ns={sheet.ns} type={sheet.type} id={sheet.id} onClose={() => setSheet(null)} onPreview={pv => { setSheet(null); setPreview(pv) }} />}
       {preview && <PreviewModal serverId={s.id} p={preview} onClose={() => setPreview(null)} onDone={m => { setPreview(null); setNote({ text: m, ok: true }); void load(true) }} />}
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
 }
 
-// ── settings: add, change, remove (admin, re-confirmed) ──────────────────────
+// ── settings: add, change, remove (admin, confirmed) ──────────────────────
 
 const TOKEN_STEPS = [
   'proxmox-backup-manager user create hyperprox@pbs',
@@ -335,7 +332,6 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
   const signin = !s && mode === 'signin'
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const set = (k: keyof typeof f, v: string) => setF(x => ({ ...x, [k]: v }))
   // The certificate, read and shown BEFORE a password or token is sent; the admin compares and confirms it.
   const [cert, setCert] = useState<null | { fingerprint: string; caVerified: boolean; subject?: string | null; validTo?: string | null; pinned?: string }>(null)
@@ -360,7 +356,6 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
       ...confirmed, ...(cert?.pinned && certOk ? { repin: true } : {}),
     })
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void signIn()); return }
     // The password is cleared from the form either way: it was for this one sign-in.
     set('password', '')
     if (!r.ok) { certRefused(r); setErr(r.error ?? 'Could not add the server'); return }
@@ -375,7 +370,6 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
     if (f.secret || !s) body.secret = f.secret
     const r = await apiJson(s ? `${API}/instances/${s.id}` : `${API}/instances`, s ? 'PUT' : 'POST', body)
     setBusy(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void save(repin)); return }
     if (!r.ok) { certRefused(r); setErr(r.error ?? 'Could not save'); return }
     set('secret', ''); setCert(null)
     onSaved()
@@ -384,8 +378,7 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
   // For a server with management on that cannot be reached any more (turning management off needs the server).
   const forget = async () => {
     if (!s?.manage || !window.confirm(`Forget ${s.name} here, without reaching it? Its manage token ${s.manage.tokenId} may stay on that server and could still delete backups there. Delete it by hand on that server if it comes back. Use this only if the server is gone.`)) return
-    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${s.id}/forget`, 'POST', {})
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void forget()); return }
+    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${s.id}/forget`, 'POST', {}, IN_PAGE)
     if (!r.ok) { setErr(r.error ?? 'Could not forget it'); return }
     window.alert(r.body!.data.message)
     onSaved()
@@ -393,8 +386,7 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
 
   const remove = async () => {
     if (!s || !window.confirm(`Remove ${s.name} from HyperProx? Its token is deleted from the vault. The backup server and its backups are not touched.`)) return
-    const r = await apiJson(`${API}/instances/${s.id}`, 'DELETE')
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void remove()); return }
+    const r = await apiJson(`${API}/instances/${s.id}`, 'DELETE', undefined, IN_PAGE)
     if (!r.ok) { setErr(r.error ?? 'Could not remove'); return }
     onSaved()
   }
@@ -440,7 +432,7 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
           <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text)' }}>
             <input type="checkbox" checked={f.allowVerify === '1'} onChange={e => set('allowVerify', e.target.checked ? '1' : '0')} />
             <span>Allow &quot;Verify now&quot;
-              <span className="block text-[12px]" style={{ color: 'var(--text-dim)' }}>Off by default. Gives the token the DatastoreReader role on each datastore (never on /): Datastore.Verify, plus Datastore.Read, so anyone holding the token could also read (restore) backup contents there. It still cannot prune, forget, delete or garbage-collect anything. Starting a verify still needs an admin and the master password.</span></span>
+              <span className="block text-[12px]" style={{ color: 'var(--text-dim)' }}>Off by default. Gives the token the DatastoreReader role on each datastore (never on /): Datastore.Verify, plus Datastore.Read, so anyone holding the token could also read (restore) backup contents there. It still cannot prune, forget, delete or garbage-collect anything. Starting a verify still needs an admin, who confirms it.</span></span>
           </label>
           <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text)' }}>
             <input type="checkbox" checked={f.manage === '1'} onChange={e => set('manage', e.target.checked ? '1' : '0')} />
@@ -500,7 +492,6 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
           ? <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.username || !f.password || !cert || (!certOk && !cert.caVerified)} onClick={() => void signIn()}>{busy ? 'Setting up…' : 'Sign in and set up'}</PrimaryButton>
           : <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.tokenId || (!s && (!f.secret || !cert || (!certOk && !cert.caVerified)))} onClick={() => void save()}>{busy ? 'Checking…' : s ? 'Save' : 'Check and add'}</PrimaryButton>}
       </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>
   )
 }
