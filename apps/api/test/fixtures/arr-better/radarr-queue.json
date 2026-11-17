@@ -1,0 +1,43 @@
+{
+ "page": 1,
+ "pageSize": 200,
+ "totalRecords": 2,
+ "records": [
+  {
+   "id": 301,
+   "movieId": 7,
+   "title": "Paper.Lanterns.2011.1080p.WEB-DL.H264-SLOW",
+   "downloadId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "protocol": "torrent",
+   "size": 4000000000.0,
+   "sizeleft": 3900000000.0,
+   "status": "downloading",
+   "trackedDownloadStatus": "ok",
+   "trackedDownloadState": "downloading",
+   "quality": {
+    "quality": {
+     "id": 3,
+     "name": "WEBDL-1080p"
+    }
+   }
+  },
+  {
+   "id": 302,
+   "movieId": 8,
+   "title": "Another.Film.2019.1080p.BluRay-OTHER",
+   "downloadId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "protocol": "torrent",
+   "size": 5000000000.0,
+   "sizeleft": 1000000000.0,
+   "status": "downloading",
+   "trackedDownloadStatus": "ok",
+   "trackedDownloadState": "downloading",
+   "quality": {
+    "quality": {
+     "id": 7,
+     "name": "Bluray-1080p"
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,59 @@
+{
+ "page": 1,
+ "pageSize": 200,
+ "totalRecords": 4,
+ "records": [
+  {
+   "id": 400,
+   "seriesId": 11,
+   "episodeId": 201,
+   "seasonNumber": 2,
+   "title": "Quiet.Harbour.S02.1080p.WEB-DL-PACK",
+   "downloadId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+   "protocol": "torrent",
+   "size": 9000000000.0,
+   "sizeleft": 8000000000.0,
+   "status": "downloading",
+   "trackedDownloadState": "downloading"
+  },
+  {
+   "id": 401,
+   "seriesId": 11,
+   "episodeId": 202,
+   "seasonNumber": 2,
+   "title": "Quiet.Harbour.S02.1080p.WEB-DL-PACK",
+   "downloadId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+   "protocol": "torrent",
+   "size": 9000000000.0,
+   "sizeleft": 8000000000.0,
+   "status": "downloading",
+   "trackedDownloadState": "downloading"
+  },
+  {
+   "id": 402,
+   "seriesId": 11,
+   "episodeId": 203,
+   "seasonNumber": 2,
+   "title": "Quiet.Harbour.S02.1080p.WEB-DL-PACK",
+   "downloadId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+   "protocol": "torrent",
+   "size": 9000000000.0,
+   "sizeleft": 8000000000.0,
+   "status": "downloading",
+   "trackedDownloadState": "downloading"
+  },
+  {
+   "id": 410,
+   "seriesId": 12,
+   "episodeId": 900,
+   "seasonNumber": 1,
+   "title": "Other.Show.S01E01.720p-ONE",
+   "downloadId": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+   "protocol": "torrent",
+   "size": 1000000000.0,
+   "sizeleft": 1000000000.0,
+   "status": "downloading",
+   "trackedDownloadState": "downloading"
+  }
+ ]
+}

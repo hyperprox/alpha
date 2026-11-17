@@ -21,6 +21,26 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-17 — Arr Stack: a better copy, and the VPN at a glance
+
+### New
+- **Find a better copy of anything in your library.** On the Arr Stack's Upcoming tab, look up a film, show or album and pick the film, album, a season or one episode. You get a ranked list: what your quality profile accepts first, then the better quality, then more seeders, with slow torrents marked. One tap downloads your pick and moves it to the top of qBittorrent's queue; what you have stays until the new copy is imported.
+  - Technical: `routes/arr-better.ts` (GET `/better/find`, `/better/episodes`; POST `/better/search`, `/better/grab`, admin, token-forbidden, audited first via `auditOrThrow`); `lib/arr-better/rank.ts` ranks by approved, `qualityWeight`, seeders; `SLOW_SEEDS = 3`.
+- **This download is too slow: find a faster copy.** Each download on the Queue tab has Find a faster copy. The new download starts first; once it is in the queue, the slow one is removed from qBittorrent and blocklisted, and nothing else in the queue is touched. If the new one does not show up, the slow one stays.
+  - Technical: target `queue:<app>:d:<downloadId>`; rows resolved from a fresh `readAllQueue` with `resolveDownload` and checked against the item's own ids; removal `DELETE /queue/bulk?removeFromClient=true&blocklist=true&skipRedownload=true` with those row ids only.
+- **What your profile refuses stays refused, in plain words.** The one exception is a release the profile only turns down because the slow download is still queued: you can grab it anyway when swapping that download out.
+  - Technical: `verdict` ok / anyway / refused per row; `anyway: true` is accepted only with a queue swap.
+- **A VPN panel for Arr Stacks behind Gluetun.** The Queue tab shows whether the tunnel is up, where it comes out, the forwarded port beside qBittorrent's port, speeds and uptime. The public address is for admins only, and your VPN login is never read.
+  - Technical: `routes/arr-vpn.ts` (GET `/vpn`, POST `/vpn/actions`); `lib/arr-vpn` runs a read-only script in the stack's container through the remote executor (guest guard applies): `docker inspect`, `/gluetun/forwarded_port`, control server `/v1/vpn/status`, `/v1/publicip/ip`, `/v1/portforward`; env filtered in the guest to six non-secret keys.
+- **Every VPN problem has a fix button.** Put the forwarded port into qBittorrent, reconnect the tunnel (downloads pause for about a minute), or restart qBittorrent when it lost the VPN's network. Each is confirmed and written to the audit log first.
+  - Technical: reconnect is `PUT /v1/vpn/status` stopped then running from the guest; if refused, `docker restart gluetun` then `qbittorrent`. Region switching is deliberately not offered.
+- **An alert when the VPN stays broken.** If the tunnel is down or the port is wrong for more than ten minutes, you get one message, and one more when it is fixed.
+  - Technical: notification types `arr.vpn.down`, `arr.vpn.no-port`, `arr.vpn.mismatch` (fingerprinted, resolved on recovery); watch every 2 minutes from `lib/services/bootstrap.ts` step `arr-vpn`.
+
+### Improved
+- **Clearer reason when something is already downloading.** When Sonarr, Radarr or Lidarr turns a release down because a release in the queue already meets the cutoff, the reason now reads "Something as good is already downloading" instead of "Not better than what you already have". This shows in Find a better copy and in See what's available.
+  - Technical: the release rows, queue read and grab checks moved to `lib/arr-release/` and are shared by the give-up service and the better-copy service.
+
 ## 2026-11-17 — Confirmations instead of the master password
 
 ### Before you update

@@ -30,6 +30,7 @@ import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
 import { PlexLibrary } from '@/components/plugins/plex/Library'
 import { ArrUpcoming } from '@/components/plugins/arr/Upcoming'
 import { ArrQueue, useArrQueue } from '@/components/plugins/arr/Queue'
+import { ArrVpn } from '@/components/plugins/arr/Vpn'
 import { ArrView, MeshView, PlexView, RouterView, UnmanicView, arrChips, plexChips, routerChips, unmanicChips, type Stuck } from '@/components/plugins/visual/views'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
@@ -466,7 +467,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
             {/* What nobody watches, and the whole library. Read on their own (Plex itself), so they never slow the live view. */}
             {isPlex && plexTab === 'clearout' && <PlexClearOut live={live} />}
             {isPlex && plexTab === 'library' && <PlexLibrary />}
-            {v?.kind === 'arrstack' && arrTab === 'queue' && <ArrQueue q={arrQ} />}
+            {v?.kind === 'arrstack' && arrTab === 'queue' && <><ArrVpn /><ArrQueue q={arrQ} /></>}
             {v?.kind === 'arrstack' && arrTab === 'overview' && <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />}
             {v?.kind === 'arrstack' && arrTab === 'upcoming' && <ArrUpcoming onQueue={showArrQueue} />}
             {v?.kind === 'unmanic' && <UnmanicView v={v} />}

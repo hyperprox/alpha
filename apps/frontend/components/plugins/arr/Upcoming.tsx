@@ -8,7 +8,8 @@
 //  in this browser's time zone and cross-references the download queue. Posters
 //  are HyperProx paths, fetched by the API with the stored key: no Sonarr or
 //  Radarr address or key is ever in this page. The schedule is read-only; under it, "give up after X tries"
-//  (GiveUp.tsx), and for an admin a "See what's available" button on each missing item.
+//  (GiveUp.tsx), and for an admin a "See what's available" button on each missing item, "Find a better copy" on
+//  each item you already have, and the library search for a better copy of anything (BetterCopy.tsx).
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
@@ -17,6 +18,7 @@ import { Cols, Panel, Pill, styles as s } from '@/components/visual/kit'
 import { Poster } from '@/components/plugins/visual/views'
 import c from './upcoming.module.css'
 import { ArrGiveUp, ReleasesDialog } from './GiveUp'
+import { BetterDialog, FindBetter } from './BetterCopy'
 import { missingTarget, type App } from './giveup-view'
 import { useSession } from '@/lib/session'
 
@@ -57,6 +59,7 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
   const { role } = useSession()
   const canAct = atLeast(role, 'admin')
   const [look, setLook] = useState<{ target: string; app: App; title: string } | null>(null)
+  const [better, setBetter] = useState<{ target: string; app: App; title: string } | null>(null)
 
   useEffect(() => {
     setShow(remembered('hp.arr.up.show', ['both', 'tv', 'film', 'music'] as const, 'both'))
@@ -126,6 +129,9 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
                     <Pill tone={TONE[i.status]}>{i.status === 'have' ? 'Have it' : i.status === 'downloading' ? `Downloading${i.progress ? ` ${i.progress}%` : ''}` : i.status === 'waiting' ? 'Waiting' : 'Scheduled'}</Pill>
                     <span className={c.note}>{i.statusText}</span>
                     {i.status === 'downloading' && <button type="button" className={c.link} onClick={onQueue}>See the queue</button>}
+                    {i.status === 'have' && canAct && missingTarget(i.id) && (
+                      <button type="button" className={c.link} onClick={() => { const t = missingTarget(i.id)!; setBetter({ target: t, app: t.split(':')[0] as App, title: i.title }) }}>Find a better copy</button>
+                    )}
                   </div>
                 </div>
               </li>
@@ -163,8 +169,10 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
         </Panel>
       )}
 
+      <FindBetter lidarr={lidarrOn} />
       <ArrGiveUp onChanged={() => void load()} />
       {look && <ReleasesDialog target={look.target} app={look.app} title={look.title} onClose={() => setLook(null)} />}
+      {better && <BetterDialog target={better.target} app={better.app} title={better.title} onClose={() => setBetter(null)} />}
     </>
   )
 }

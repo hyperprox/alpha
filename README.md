@@ -1886,7 +1886,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 
 | Plug-in | What it shows |
 |---|---|
-| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, and **see what's available** for any missing item |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, **see what's available** for any missing item, **find a better copy** of anything you have or a faster copy of a slow download, and a **VPN panel** for stacks behind Gluetun |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
 | Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
@@ -2115,6 +2115,64 @@ imported, or nothing usable found.
   HyperProx reads its file list from qBittorrent, and again after 1, 3 and 10 minutes while qBittorrent does not have
   it yet, and removes and blocklists the download if a program file is in it. When no check is possible (a usenet
   download, no qBittorrent connection, or no file list in time) the result says plainly that its files were not checked.
+
+**Find a better copy.** On the Upcoming tab (admin), for anything already in your library: type a film, show or album
+name, pick the film, album, a whole season or one episode, and HyperProx runs one release search for it. Items marked
+**Have it** in the schedule have the same button.
+
+- **The list** shows each release's quality, size, seeders, indexer and codec, and whether your quality profile accepts
+  it. What the profile accepts comes first, then the better quality, then more seeders. A torrent with three seeders or
+  fewer is marked **Slow**. AV1, 3D, 48 fps, torrents with no seeders and anything with a program file in its name are
+  never offered, and the list says how many were left out.
+- **Get this one** downloads that release and moves it to the top of qBittorrent's queue. What you have now stays
+  until Sonarr, Radarr or Lidarr imports the new copy, the normal upgrade; HyperProx never deletes a file in your
+  library. The program-file check after a download starts is the same as for See what's available.
+- **What the profile refuses is refused here too**, with its reason in plain words ("Not better than what you already
+  have", "Too small for its quality"). HyperProx does not change your quality profile to get around it.
+- **This download is too slow: Find a faster copy.** On the Queue tab, each download has **Find a faster copy**. It
+  searches for what that download is for (the film, the album, the episode or the season), from a fresh read of the
+  queue. When you pick a release, it is downloaded and moved to the top first; once it shows in the queue, the slow
+  download is removed from qBittorrent and blocklisted, without starting another search. Only that download's own
+  queue rows are removed, each checked against the film, episodes or album it is for. If the new one does not show up,
+  the slow one is left alone. When the only objection to a release is that the slow download is still queued, you can
+  choose **Grab anyway**; the swap is what clears that objection. Any other objection still refuses.
+- A search is limited to one per item every ten minutes (you see the last answer in between), and six a minute per
+  person. A second click while a search is still running waits for that same search. Every search and download is written to the audit log first; if the entry cannot be written, nothing runs.
+  API tokens cannot use it.
+
+**VPN panel.** When your Arr Stack was installed with the VPN option (Gluetun, with qBittorrent behind it), the Queue
+tab opens with a VPN panel: whether the tunnel is up, where it comes out, the forwarded port beside the port
+qBittorrent listens on, download and upload speed, and how long the tunnel has been up. The tunnel's public address is
+shown to admins only; everyone else sees that it is hidden. Without Gluetun, the panel does not appear.
+
+- **How it reads.** HyperProx runs a short read-only script inside the stack's container, the same way its other
+  plug-ins reach a container. It finds the container by the qBittorrent address in the plug-in's settings, or the one
+  container the Catalogue installed the Arr Stack in. If two running containers have that address, it does not guess:
+  the panel says so and no fix runs. It reads Docker's view of both containers, the forwarded port from
+  Gluetun's own status file, and Gluetun's control server inside the container. Gluetun 3.41 still answers those reads
+  without a key; if a later version asks for one, the panel falls back to the status file and Gluetun's health check.
+  Your VPN login is never read: Gluetun's settings are filtered inside the container to the provider, VPN type, port
+  forwarding and the region you chose.
+- **Problems, each with a fix** (admin, confirmed, written to the audit log first):
+  - the forwarded port and qBittorrent's port differ: **Put the forwarded port into qBittorrent**, the same thing
+    Gluetun does by itself when it gets a new port. It goes to the qBittorrent inside the VPN's network, in the same
+    container the port came from. The qBittorrent address in the plug-in's settings is used only when it is that
+    container's own address; otherwise HyperProx says it cannot prove they are the same and leaves it alone;
+  - the tunnel is down, no port has been handed out, or qBittorrent says it is firewalled: **Reconnect the tunnel**.
+    HyperProx asks Gluetun to stop and start the tunnel, which keeps qBittorrent connected to it. If Gluetun refuses
+    the request, HyperProx restarts the VPN container and then qBittorrent instead (qBittorrent shares the VPN's
+    network and loses it when the VPN restarts). Downloads pause for about a minute either way;
+  - qBittorrent was left on a network that no longer exists after the VPN restarted, or it stopped: **Restart
+    qBittorrent**;
+  - qBittorrent is not using the VPN's network at all: the panel says so; this one is fixed in the stack's compose
+    file, not from HyperProx.
+- **Switching region is not offered.** The region sits in the same settings file as your VPN login, and changing it
+  means recreating both containers, so it is left to you.
+- **An alert** goes out through your notification channels when the tunnel has been down, or the port has been wrong,
+  for more than ten minutes, and one more when it is fixed. HyperProx checks every two minutes while it is unlocked,
+  and remembers what it has announced across a restart, so it neither repeats an alert nor forgets the all-clear.
+- Viewers see the panel without the public address, and a plain sentence instead of the details when it cannot be
+  read; admins see why.
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.
 

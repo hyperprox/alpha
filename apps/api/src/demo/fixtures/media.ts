@@ -170,8 +170,20 @@ function arrUpcoming(q: Record<string, string>) {
   }
 }
 
+// ================================================================================ Arr Stack: the VPN panel
+function arrVpn() {
+  const now = Date.now()
+  return {
+    present: true, guest: 'media', tunnel: 'up', health: 'healthy', provider: 'example vpn', vpnType: 'WireGuard', location: 'Amsterdam, North Holland, Netherlands',
+    chosen: 'Netherlands', publicIp: null, publicIpHidden: true, portForwarding: true, forwardedPort: 40123, listenPort: 40123, portMatch: 'ok',
+    downBps: 8_400_000, upBps: 1_200_000, connection: 'connected', startedAt: new Date(now - 2 * DAY).toISOString(), uptimeSec: Math.round(2 * DAY / 1000),
+    problems: [], readAt: new Date(now).toISOString(),
+  }
+}
+
 void HOUR
 export const MEDIA_ROUTES: FixtureRoute[] = [
+  { path: '/api/plugins/arrstack/vpn', get: () => ok(arrVpn()) },
   { path: '/api/plugins/plex/live', get: () => ok(plexLive()) },
   { path: '/api/plugins/plex/library', get: () => ok(plexLibrary()) },
   { path: '/api/plugins/plex/library/show/:id', get: p => ok(plexShow(p.id)) },
