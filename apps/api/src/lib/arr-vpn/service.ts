@@ -99,6 +99,8 @@ export interface ActResult { action: FixName; done: boolean; summary: string; no
 
 export class VpnService {
   private memo: { at: number; p: Promise<VpnStatus> } | null = null
+  /** The last reading that came back, for a fix's confirmation (lib/confirm-text.ts). */
+  private last: VpnStatus | null = null
   private alerts: AlertState | null = null
   private busy = false
   private watching = false
@@ -112,8 +114,13 @@ export class VpnService {
     const p = this.read()
     const mine = { at: now, p }
     this.memo = mine
-    p.catch(() => { if (this.memo === mine) this.memo = null })
+    p.then(st => { this.last = st }, () => { if (this.memo === mine) this.memo = null })
     return p
+  }
+
+  /** The port the VPN forwarded at the last reading, or null. Never reads anything. */
+  lastForwardedPort(): number | null {
+    return this.last?.present ? this.last.forwardedPort : null
   }
 
   private async read(): Promise<VpnStatus> {

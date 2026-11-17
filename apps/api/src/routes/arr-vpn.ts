@@ -5,12 +5,16 @@
 //    GET  /vpn           viewer, like the Arr Stack page: tunnel up or down, where it comes out, the forwarded port
 //                        against qBittorrent's listening port, speeds, uptime and any problem. The tunnel's public
 //                        address only for an admin; everyone else sees that it is hidden. Never a VPN login.
-//    POST /vpn/actions   admin, confirmed: one fix (set-port, reconnect, restart-qbit). Audited before it runs.
+//    POST /vpn/actions   admin, confirmed on the page (lib/roles.ts needsConfirm, lib/confirm.ts: the gate takes the
+//                        single-use token and audits it before this runs): one fix (set-port, reconnect, restart-qbit).
+//                        Audited again before it runs. The confirmation names the port (setConfirmNames below).
 //  The POST is a signed-in admin's act: API tokens are refused by name (lib/api-tokens.ts tokenForbidden).
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { sendFailure, sendRefusal } from '../lib/failure'
+import { requireConfirm } from '../lib/confirm'
+import { setConfirmNames } from '../lib/confirm-text'
 import { hasRole } from '../lib/roles'
 import { MissLimiter } from '../lib/plex-art'
 import { VpnRefusal, type VpnService } from '../lib/arr-vpn/service'
@@ -23,6 +27,7 @@ export function buildArrVpnRoutes(deps: { service?: () => VpnService | null; lim
   const svc = deps.service ?? (() => arrVpnService())
   const limiter = deps.limiter ?? new MissLimiter(10)
   return async (fastify) => {
+    setConfirmNames({ vpnPort: () => svc()?.lastForwardedPort() ?? null })
     const need = (reply: FastifyReply): VpnService | null => {
       const s = svc()
       if (!s) { sendRefusal(reply, 503, 'not_ready', 'This is not available yet. Try again in a minute.'); return null }
@@ -46,7 +51,8 @@ export function buildArrVpnRoutes(deps: { service?: () => VpnService | null; lim
       if (!session || !hasRole(session.role, 'admin')) return sendRefusal(reply, 403, 'forbidden', 'This needs the admin role.')
       const b = (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}) as Record<string, unknown>
       if (!FIXES.includes(b.action as FixName)) return sendRefusal(reply, 400, 'bad_request', 'Name the fix.')
-      if (b.confirmed !== true) return sendRefusal(reply, 400, 'confirm_required', 'Confirm the fix first.')
+      // The gate has already taken and audited the confirmation; this only makes sure it did.
+      if (!(await requireConfirm(req, reply))) return
       if (!limiter.allow(session.email)) return sendRefusal(reply, 429, 'rate_limited', 'Too many fixes in a minute. Wait a moment and try again.')
       const s = need(reply); if (!s) return
       try { return { success: true, data: await s.act(b.action as FixName, session.email) } } catch (e) {

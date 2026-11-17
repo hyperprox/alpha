@@ -9,11 +9,14 @@
 //  seeders are marked slow. One tap downloads the pick and moves it to the top of qBittorrent's queue; for a queue
 //  download the slow one is then removed and blocklisted. What the profile refuses is shown with its reason and no
 //  button, except "Grab anyway" when the only objection is the slow download being swapped out.
+//  The download is confirmed here, in the page's own box, and sent with IN_PAGE: the server's confirmation token
+//  (lib/confirm-bus.ts) is then exchanged without a second dialog.
 //  Admins only: the server refuses everyone else. Everything comes from routes/arr-better.ts.
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { useSession } from '@/lib/session'
 import { ModalFrame } from '@/components/layout/ModalFrame'
 import { Panel, Pill, styles as s } from '@/components/visual/kit'
@@ -104,7 +107,7 @@ export function BetterDialog({ target, app, title, onClose }: { target: string; 
   const grab = async () => {
     if (!pick) return
     setBusy(true)
-    const r = await apiJson<{ data: BetterGrab }>('/api/plugins/arrstack/better/grab', 'POST', { target, releaseId: pick.id, confirmed: true, ...(pick.verdict === 'anyway' ? { anyway: true } : {}) })
+    const r = await apiJson<{ data: BetterGrab }>('/api/plugins/arrstack/better/grab', 'POST', { target, releaseId: pick.id, ...(pick.verdict === 'anyway' ? { anyway: true } : {}) }, IN_PAGE)
     setBusy(false); setPick(null)
     if (!r.ok || !r.body?.data) { setErr(r.error ?? 'The download could not be started.'); return }
     setDone(r.body.data)

@@ -6,12 +6,14 @@
 //  Shown only for a stack with the VPN option: the tunnel as a ring (up or down), where it comes out, the forwarded
 //  port beside qBittorrent's listening port (a dashed red link when they differ), speeds and uptime. The public
 //  address is for admins; everyone else sees "hidden". Every problem carries its fix button for an admin, each with a
-//  confirm that says what it does (downloads pause during a reconnect). Read from routes/arr-vpn.ts every 30 s while
+//  confirm that says what it does (downloads pause during a reconnect), sent with IN_PAGE so the server's confirmation
+//  (lib/confirm-bus.ts) needs no second dialog. Read from routes/arr-vpn.ts every 30 s while
 //  the tab is visible. The VPN's login is never on this page.
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
+import { IN_PAGE } from '@/lib/confirm-bus'
 import { useSession } from '@/lib/session'
 import { Panel, Pill, RingGauge, duration, rate, styles as s } from '@/components/visual/kit'
 import c from './giveup.module.css'
@@ -90,7 +92,7 @@ export function ArrVpn() {
   const run = async () => {
     if (!fix) return
     setBusy(true)
-    const r = await apiJson<{ data: VpnActResult }>('/api/plugins/arrstack/vpn/actions', 'POST', { action: fix, confirmed: true })
+    const r = await apiJson<{ data: VpnActResult }>('/api/plugins/arrstack/vpn/actions', 'POST', { action: fix }, IN_PAGE)
     setBusy(false); setFix(null)
     if (!r.ok || !r.body?.data) { setErr(r.error ?? 'The fix did not run.'); return }
     setResult(r.body.data); setV(r.body.data.status)

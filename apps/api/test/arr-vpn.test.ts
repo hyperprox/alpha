@@ -9,7 +9,8 @@ import path from 'node:path'
 import Fastify from 'fastify'
 import { registerGate } from '../src/lib/gate'
 import { authRoutes } from '../src/routes/auth'
-import { requiredRole, needsReconfirm } from '../src/lib/roles'
+import { requiredRole, needsConfirm, needsPassword } from '../src/lib/roles'
+import { injectConfirmed } from './fakes/confirm'
 import { buildArrVpnRoutes } from '../src/routes/arr-vpn'
 import { ALERT_AFTER_MS, READ_SCRIPT, alertStep, emptyAlertState, forViewer, parseReading, vpnStatus } from '../src/lib/arr-vpn/parse'
 import { RECONNECT_SCRIPT, VpnRefusal, VpnService, setPortScript, type VpnDeps } from '../src/lib/arr-vpn/service'
@@ -318,12 +319,14 @@ test('no guest found: the panel says so and every fix is refused', async () => {
 
 // ── roles and the routes through the real gate ───────────────────────────────
 
-test('roles: the panel is a read; fixes are admin and refused to API tokens; no master password', () => {
+test('roles: the panel is a read; fixes are admin, refused to API tokens and confirmed on the page; no master password', () => {
   assert.equal(requiredRole('GET', '/api/plugins/arrstack/vpn'), 'viewer')
   assert.equal(requiredRole('POST', '/api/plugins/arrstack/vpn/actions'), 'admin')
   assert.equal(tokenForbidden('POST', '/api/plugins/arrstack/vpn/actions'), true)
   assert.equal(tokenForbidden('GET', '/api/plugins/arrstack/vpn'), false)
-  assert.equal(needsReconfirm('POST', '/api/plugins/arrstack/vpn/actions'), false)
+  assert.equal(needsPassword('POST', '/api/plugins/arrstack/vpn/actions'), false)
+  assert.equal(needsConfirm('POST', '/api/plugins/arrstack/vpn/actions'), true)
+  assert.equal(needsConfirm('GET', '/api/plugins/arrstack/vpn'), false)
 })
 
 test('routes: a viewer sees the panel without the address; an admin sees it; fixes need an admin, a confirm, never a token', async () => {
@@ -346,7 +349,17 @@ test('routes: a viewer sees the panel without the address; an admin sees it; fix
     const s = await a.inject({ method: 'GET', url: '/api/plugins/arrstack/vpn', headers: { cookie: adm.cookie } })
     assert.equal(JSON.parse(s.body).data.publicIp, '198.51.100.23')
     const post = (payload: any) => a.inject({ method: 'POST', url: '/api/plugins/arrstack/vpn/actions', headers: { cookie: adm.cookie }, payload })
-    assert.equal(JSON.parse((await post({ action: 'reconnect' })).body).code, 'confirm_required')
-    assert.equal((await post({ action: 'switch-region', confirmed: true })).statusCode, 400)
+    const ask = await post({ action: 'reconnect' })
+    assert.equal(JSON.parse(ask.body).code, 'confirm_required')
+    assert.equal(JSON.parse(ask.body).confirm.summary, 'Reconnect the VPN? Downloads pause for about a minute.')
+    // The page's own flag is not a confirmation: only the server's single-use token is.
+    const flag = await post({ action: 'reconnect', confirmed: true })
+    assert.equal(flag.statusCode, 403); assert.equal(JSON.parse(flag.body).code, 'confirm_required')
+    const port = JSON.parse(s.body).data.forwardedPort
+    assert.equal(JSON.parse((await post({ action: 'set-port' })).body).confirm.summary, `Put port ${port} into qBittorrent?`)
+    assert.equal(JSON.parse((await post({ action: 'restart-qbit' })).body).confirm.summary, 'Restart qBittorrent? Downloads pause while it starts again.')
+    assert.equal((await injectConfirmed(a, { method: 'POST', url: '/api/plugins/arrstack/vpn/actions', headers: { cookie: adm.cookie }, payload: { action: 'switch-region' } })).statusCode, 400)
+    const done = await injectConfirmed(a, { method: 'POST', url: '/api/plugins/arrstack/vpn/actions', headers: { cookie: adm.cookie }, payload: { action: 'restart-qbit' } })
+    assert.equal(done.statusCode, 200, done.body); assert.equal(JSON.parse(done.body).data.action, 'restart-qbit')
   } finally { await a.close() }
 })

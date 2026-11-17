@@ -22,6 +22,35 @@ const PLUGIN: Record<string, string> = {
 }
 const pluginName = (id: string) => PLUGIN[id] ?? id
 
+/**
+ * Names only a running service knows: the release a person picked from a search, the port the VPN forwards. The route
+ * that owns those ids sets the look-up when it is registered (routes/arr-better.ts, routes/arr-vpn.ts); without one, or
+ * when it finds nothing, the sentence uses plain words instead. The names come from the server, never from the body.
+ */
+export interface ConfirmNames {
+  betterGrab?: (target: string, releaseId: string) => { item: string; release: string; swap: string | null } | null
+  vpnPort?: () => number | null
+}
+const names: ConfirmNames = {}
+export function setConfirmNames(n: ConfirmNames): void { Object.assign(names, n) }
+
+function betterGrabSentence(b: any): string {
+  const n = typeof b?.target === 'string' && typeof b?.releaseId === 'string' ? names.betterGrab?.(b.target, b.releaseId) ?? null : null
+  const what = n && str(n.release, 120) ? `"${str(n.release, 120)}"${str(n.item, 80) ? ` for ${str(n.item, 80)}` : ''}` : 'the release you picked'
+  const swap = n?.swap && str(n.swap, 120) ? ` Then the slow download, "${str(n.swap, 120)}", is removed and blocklisted.` : ''
+  return `Download ${what} and move it to the top of the queue?${swap}`
+}
+
+function vpnFixSentence(b: any): string {
+  if (b?.action === 'reconnect') return 'Reconnect the VPN? Downloads pause for about a minute.'
+  if (b?.action === 'restart-qbit') return 'Restart qBittorrent? Downloads pause while it starts again.'
+  if (b?.action === 'set-port') {
+    const p = names.vpnPort?.() ?? null
+    return Number.isInteger(p) && p! > 0 && p! < 65536 ? `Put port ${p} into qBittorrent?` : 'Put the port the VPN forwards into qBittorrent?'
+  }
+  return 'Run this fix on the VPN?'
+}
+
 const RULES: Rule[] = [
   // ── Updates and node reboots ──
   ['POST', /^\/api\/updates\/nodes\/([^/]+)\/reboot$/, m =>
@@ -76,6 +105,8 @@ const RULES: Rule[] = [
     const n = Array.isArray(b?.items) ? b.items.length : Array.isArray(b?.ids) ? b.ids.length : 0
     return `Remove ${n ? `${n} item${n === 1 ? '' : 's'}` : 'these items'} from your library? Their files are deleted.`
   }],
+  ['POST', /^\/api\/plugins\/arrstack\/better\/grab$/, (_m, _p, b) => betterGrabSentence(b)],
+  ['POST', /^\/api\/plugins\/arrstack\/vpn\/actions$/, (_m, _p, b) => vpnFixSentence(b)],
   ['POST', /^\/api\/local\/([^/]+)\//, m => `Run this ${m[1]} action?`],
   ['POST', /^\/api\/plugins\/apt-cacher-ng\/guests\/repair$/, () =>
     'Write the package cache setting on every guest Updates looks after, and check each can reach it?'],

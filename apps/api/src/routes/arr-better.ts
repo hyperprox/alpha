@@ -8,14 +8,18 @@
 //    POST /better/search     admin: ONE interactive release search for one item, or for the item a queue download is
 //                            for. At most once per item every ten minutes (the last answer in between), and at most
 //                            six new searches a minute per person. A POST because it makes the arr search. Audited.
-//    POST /better/grab       admin, confirmed: download the picked release and move it to the top of qBittorrent's
-//                            queue; for a queue download, then remove the slow one (blocklisted). Audited.
+//    POST /better/grab       admin, confirmed on the page (lib/roles.ts needsConfirm, lib/confirm.ts: the gate takes the
+//                            single-use token and audits it before this runs): download the picked release and move it
+//                            to the top of qBittorrent's queue; for a queue download, then remove the slow one
+//                            (blocklisted). Audited. The confirmation names the release (setConfirmNames below).
 //  Every POST is a signed-in admin's act: API tokens are refused by name (lib/api-tokens.ts tokenForbidden).
 //  No master password: no library file is ever deleted, and nothing a person cannot undo is changed.
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { sendFailure, sendRefusal } from '../lib/failure'
+import { requireConfirm } from '../lib/confirm'
+import { setConfirmNames } from '../lib/confirm-text'
 import { hasRole } from '../lib/roles'
 import { MissLimiter } from '../lib/plex-art'
 import { BetterRefusal, parseBetterTarget, type BetterCopyService } from '../lib/arr-better/service'
@@ -32,6 +36,7 @@ export function buildArrBetterRoutes(deps: { service?: () => BetterCopyService |
   const searchLimiter = deps.searchLimiter ?? new MissLimiter(6)
 
   return async (fastify) => {
+    setConfirmNames({ betterGrab: (target, releaseId) => svc()?.namesFor(target, releaseId) ?? null })
     const need = (reply: FastifyReply): BetterCopyService | null => {
       const s = svc()
       if (!s) { sendRefusal(reply, 503, 'not_ready', 'This is not available yet. Try again in a minute.'); return null }
@@ -78,9 +83,10 @@ export function buildArrBetterRoutes(deps: { service?: () => BetterCopyService |
 
     fastify.post('/better/grab', async (req, reply) => {
       const by = admin(req, reply); if (!by) return
+      // The gate has already taken and audited the confirmation; this only makes sure it did.
+      if (!(await requireConfirm(req, reply))) return
       const s = need(reply); if (!s) return
       const b = body(req)
-      if (b.confirmed !== true) return sendRefusal(reply, 400, 'confirm_required', 'Confirm the download first.')
       if (!parseBetterTarget(b.target) || typeof b.releaseId !== 'string' || !/^[0-9a-f]{24}$/.test(b.releaseId)) return sendRefusal(reply, 400, 'bad_request', 'Name the release.')
       if (b.anyway !== undefined && typeof b.anyway !== 'boolean') return sendRefusal(reply, 400, 'bad_request', 'Bad "grab anyway" value.')
       try { return { success: true, data: await s.grab(b.target as string, b.releaseId, by, { anyway: b.anyway === true }) } } catch (e) { return fail(reply, e) }

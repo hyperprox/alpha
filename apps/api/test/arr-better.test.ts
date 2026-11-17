@@ -11,7 +11,8 @@ import path from 'node:path'
 import Fastify from 'fastify'
 import { registerGate } from '../src/lib/gate'
 import { authRoutes } from '../src/routes/auth'
-import { requiredRole, needsReconfirm } from '../src/lib/roles'
+import { requiredRole, needsConfirm, needsPassword } from '../src/lib/roles'
+import { injectConfirmed } from './fakes/confirm'
 import { buildArrBetterRoutes } from '../src/routes/arr-better'
 import { betterView, rejectionKind, SLOW_SEEDS } from '../src/lib/arr-better/rank'
 import { BetterCopyService, itemOfDownload, parseBetterTarget, type BetterDeps } from '../src/lib/arr-better/service'
@@ -292,13 +293,14 @@ test('a download that left the queue cannot be searched from', async () => {
 
 // ── roles and the routes through the real gate ───────────────────────────────
 
-test('roles: finding is a read; searches and grabs are admin, refused to API tokens; no master password', () => {
+test('roles: finding is a read; searches and grabs are admin, refused to API tokens; a grab is confirmed on the page; no master password', () => {
   assert.equal(requiredRole('GET', '/api/plugins/arrstack/better/find'), 'viewer')
   assert.equal(requiredRole('GET', '/api/plugins/arrstack/better/episodes'), 'viewer')
   for (const p of ['search', 'grab']) {
     assert.equal(requiredRole('POST', `/api/plugins/arrstack/better/${p}`), 'admin', p)
     assert.equal(tokenForbidden('POST', `/api/plugins/arrstack/better/${p}`), true, p)
-    assert.equal(needsReconfirm('POST', `/api/plugins/arrstack/better/${p}`), false, p)
+    assert.equal(needsPassword('POST', `/api/plugins/arrstack/better/${p}`), false, p)
+    assert.equal(needsConfirm('POST', `/api/plugins/arrstack/better/${p}`), p === 'grab', p)
   }
   assert.equal(tokenForbidden('GET', '/api/plugins/arrstack/better/find'), false)
 })
@@ -322,12 +324,21 @@ test('routes: a viewer can look things up but not search or grab; a token is ref
     assert.equal(tp.statusCode, 403); assert.equal(JSON.parse(tp.body).code, 'token_forbidden')
     const adm = await signIn(a, 'admin@example.com', 'admin master password')
     const post = (url: string, payload: any) => a.inject({ method: 'POST', url: `/api/plugins/arrstack/better/${url}`, headers: { cookie: adm.cookie }, payload })
+    const confirmed = (url: string, payload: any) => injectConfirmed(a, { method: 'POST', url: `/api/plugins/arrstack/better/${url}`, headers: { cookie: adm.cookie }, payload })
     assert.equal(JSON.parse((await post('grab', { target: 'radarr:7', releaseId: 'a'.repeat(24) })).body).code, 'confirm_required')
-    assert.equal((await post('search', { target: 'radarr:7; rm' })).statusCode, 400)
-    assert.equal((await post('grab', { target: 'radarr:7', releaseId: 'a'.repeat(24), confirmed: true, anyway: 'yes' })).statusCode, 400)
+    // The page's own flag is not a confirmation: only the server's single-use token is.
+    const flag = await post('grab', { target: 'radarr:7', releaseId: 'a'.repeat(24), confirmed: true })
+    assert.equal(flag.statusCode, 403); assert.equal(JSON.parse(flag.body).code, 'confirm_required')
+    assert.equal(JSON.parse(flag.body).confirm.summary, 'Download the release you picked and move it to the top of the queue?')
+    assert.equal((await post('search', { target: 'radarr:7; rm' })).statusCode, 400, 'a search is a read: never confirmed')
+    assert.equal((await confirmed('grab', { target: 'radarr:7', releaseId: 'a'.repeat(24), anyway: 'yes' })).statusCode, 400)
     const s = await post('search', { target: 'radarr:7' })
     assert.equal(s.statusCode, 200, s.body)
-    const g = await post('grab', { target: 'radarr:7', releaseId: JSON.parse(s.body).data.rows[0].id, confirmed: true })
+    const row = JSON.parse(s.body).data.rows[0]
+    const ask = await post('grab', { target: 'radarr:7', releaseId: row.id })
+    assert.equal(ask.statusCode, 403)
+    assert.equal(JSON.parse(ask.body).confirm.summary, `Download "${row.title}" for ${JSON.parse(s.body).data.label} and move it to the top of the queue?`)
+    const g = await confirmed('grab', { target: 'radarr:7', releaseId: row.id })
     assert.equal(g.statusCode, 200, g.body); assert.equal(JSON.parse(g.body).data.result, 'queued')
   } finally { await a.close() }
 })

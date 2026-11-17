@@ -2124,7 +2124,8 @@ name, pick the film, album, a whole season or one episode, and HyperProx runs on
   it. What the profile accepts comes first, then the better quality, then more seeders. A torrent with three seeders or
   fewer is marked **Slow**. AV1, 3D, 48 fps, torrents with no seeders and anything with a program file in its name are
   never offered, and the list says how many were left out.
-- **Get this one** downloads that release and moves it to the top of qBittorrent's queue. What you have now stays
+- **Get this one** asks you to confirm, naming the release, then downloads it and moves it to the top of
+  qBittorrent's queue. What you have now stays
   until Sonarr, Radarr or Lidarr imports the new copy, the normal upgrade; HyperProx never deletes a file in your
   library. The program-file check after a download starts is the same as for See what's available.
 - **What the profile refuses is refused here too**, with its reason in plain words ("Not better than what you already

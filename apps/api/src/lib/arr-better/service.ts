@@ -292,6 +292,15 @@ export class BetterCopyService {
 
   // ── grab ───────────────────────────────────────────────────────────────────
 
+  /** What a download from the last search would be, for its confirmation (lib/confirm-text.ts). Never searches. */
+  namesFor(target: string, releaseId: string): { item: string; release: string; swap: string | null } | null {
+    const t = parseBetterTarget(target)
+    const s = t ? this.searches.get(t.key) : undefined
+    if (!s || this.d.now() - s.at > GRAB_WINDOW_MS) return null
+    const row = betterView(s.raw, { app: s.app, profile: s.profile, swap: !!s.swap }).all.find(r => r.id === releaseId)
+    return row ? { item: s.label, release: row.title, swap: s.swap?.name ?? null } : null
+  }
+
   /**
    * Download one release from the last search, by HyperProx's row id, and move it to the top of qBittorrent's queue.
    * For a swap, the slow download is removed (blocklisted, no re-search) once the new one is in the queue.
