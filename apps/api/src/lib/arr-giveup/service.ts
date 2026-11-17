@@ -31,7 +31,8 @@ import {
   parseKey, radarrItems, reasonCounts, rows, sameRule, sonarrItems, summarise, wholeSeasons,
   type App, type GiveUpSettings, type Restore, type Row, type Track,
 } from './logic'
-import { isProgramFile, profileInfo, releaseView, type ReleaseRow, type ReleaseView } from './releases'
+import { profileInfo, releaseView, type ReleaseRow, type ReleaseView } from './releases'
+import { API, ID_FIELD, READ_MS, RECHECK_MS, ReleaseGrabber, allPages, readQueue } from '../arr-release/grab'
 import type { GiveUpStore } from './store'
 import type { ParsedSettings } from './logic'
 
@@ -66,19 +67,16 @@ const MISSING_COMMAND: Record<App, Record<string, unknown>> = {
 }
 export interface RunResult { at: string; app: App; given: number; skipped: Array<{ title: string; why: string }>; failed: Array<{ title: string; why: string }>; error?: string }
 
-const API: Record<App, string> = { sonarr: '/api/v3', radarr: '/api/v3', lidarr: '/api/v1' }
-const ID_FIELD: Record<App, 'episodeId' | 'movieId' | 'albumId'> = { sonarr: 'episodeId', radarr: 'movieId', lidarr: 'albumId' }
 export const MAX_PER_RUN = 250
 const OBSERVE_EVERY_MS = 3 * 3600_000
-/** When a download's files are checked again for program files, after the first look. */
-export const RECHECK_MS = [60_000, 3 * 60_000, 10 * 60_000]
+/** When a download's files are checked again for program files, after the first look (lib/arr-release/grab.ts). */
+export { RECHECK_MS }
 const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 const PREVIEW_TTL_MS = 15 * 60_000
 /** One item is searched at most this often; in between, the last answer is shown. */
 export const SEARCH_COOLDOWN_MS = 10 * 60_000
 /** The arrs keep a search's releases this long; a grab needs a search newer than this. */
 const GRAB_WINDOW_MS = 25 * 60_000
-const READ_MS = 120_000
 
 const msg = (e: any) => String(e?.message ?? e).slice(0, 200)
 const chunk = <T,>(l: T[], n: number): T[][] => { const o: T[][] = []; for (let i = 0; i < l.length; i += n) o.push(l.slice(i, i + n)); return o }
@@ -91,6 +89,8 @@ export class GiveUpService {
   private searches = new Map<string, Search>()
   private busy = false
   private chain: Promise<unknown> = Promise.resolve()
+  /** The grab's queue read and program-file checks, shared with "Find a better copy". */
+  private grabber: ReleaseGrabber
 
   /** One writer at a time: every read-change-write of the store runs inside this. */
   private locked<T>(fn: () => Promise<T>): Promise<T> {
@@ -99,7 +99,12 @@ export class GiveUpService {
     return run
   }
 
-  constructor(private d: GiveUpDeps) {}
+  constructor(private d: GiveUpDeps) {
+    this.grabber = new ReleaseGrabber({
+      qbit: d.qbit, audit: (a, x) => d.audit(a, x), sleep: ms => this.sleep(ms), log: d.log ? m => d.log!(m) : undefined,
+      later: d.later ? (fn, ms) => d.later!(fn, ms) : undefined, waitMs: d.grabWaitMs, auditPrefix: 'arrstack.giveup.grab', logPrefix: '[arr-giveup]',
+    })
+  }
 
   private sleep(ms: number) { return this.d.sleep ? this.d.sleep(ms) : new Promise<void>(r => setTimeout(r, ms)) }
   private iso() { return new Date(this.d.now()).toISOString() }
@@ -118,29 +123,15 @@ export class GiveUpService {
 
   // ── reading ────────────────────────────────────────────────────────────────
 
-  private async allPages(c: CoreEndpointClient, path: string, size = 1000, maxPages = 50): Promise<any[]> {
-    const out: any[] = []
-    for (let p = 1; p <= maxPages; p++) {
-      const page = await c.get(`${path}${path.includes('?') ? '&' : '?'}page=${p}&pageSize=${size}`, READ_MS)
-      const recs: any[] = Array.isArray(page?.records) ? page.records : []
-      out.push(...recs)
-      if (!recs.length || out.length >= (Number(page?.totalRecords) || 0)) return out
-    }
-    throw new Error('The list was longer than HyperProx reads at once.')
-  }
-
   private async missing(c: CoreEndpointClient, app: App) {
     const now = this.d.now()
-    if (app === 'sonarr') return sonarrItems(await this.allPages(c, '/api/v3/wanted/missing?monitored=true&includeSeries=true&sortKey=airDateUtc&sortDirection=descending'))
-    if (app === 'radarr') return radarrItems(await this.allPages(c, '/api/v3/wanted/missing?monitored=true&sortKey=movieMetadata.digitalRelease&sortDirection=descending'), now)
-    return lidarrItems(await this.allPages(c, '/api/v1/wanted/missing?monitored=true&includeArtist=true&sortKey=releaseDate&sortDirection=descending'), now)
+    if (app === 'sonarr') return sonarrItems(await allPages(c, '/api/v3/wanted/missing?monitored=true&includeSeries=true&sortKey=airDateUtc&sortDirection=descending'))
+    if (app === 'radarr') return radarrItems(await allPages(c, '/api/v3/wanted/missing?monitored=true&sortKey=movieMetadata.digitalRelease&sortDirection=descending'), now)
+    return lidarrItems(await allPages(c, '/api/v1/wanted/missing?monitored=true&includeArtist=true&sortKey=releaseDate&sortDirection=descending'), now)
   }
 
   /** The queue, every page. Its rows are matched to items HERE: never trust a filter in the query. */
-  private async queue(c: CoreEndpointClient, app: App): Promise<any[]> {
-    const extra = app === 'sonarr' ? 'includeUnknownSeriesItems=true' : app === 'radarr' ? 'includeUnknownMovieItems=true' : 'includeUnknownArtistItems=true'
-    return this.allPages(c, `${API[app]}/queue?${extra}`, 500, 20)
-  }
+  private queue(c: CoreEndpointClient, app: App): Promise<any[]> { return readQueue(c, app) }
   private queueIds(app: App, recs: any[]): Set<number> {
     const out = new Set<number>()
     for (const r of recs) { const id = Number(r?.[ID_FIELD[app]]); if (Number.isInteger(id) && id > 0) out.add(id) }
@@ -659,7 +650,7 @@ export class GiveUpService {
       const c = (await this.client(s.app))!
       if (!c.post) throw new GiveUpRefusal(409, 'cannot_grab', 'Downloads cannot be started from here.')
       await this.d.audit('arrstack.giveup.grab', { app: s.app, by, item: s.label, release: row.title, quality: row.quality, approved: row.approved, belowProfile: row.belowProfile, indexer: row.indexer })
-      const before = new Set((await this.queue(c, s.app)).map(r => Number(r?.id)))
+      const before = await this.grabber.before(c, s.app)
       await c.post(`${API[s.app]}/release`, { guid: row.guid, indexerId: row.indexerId }, 60_000)
       return await this.afterGrab(c, s, row, before, by)
     } catch (e) {
@@ -681,7 +672,7 @@ export class GiveUpService {
           notes.push(`${tracks.length === 1 ? 'It is' : `${tracks.length} items are`} off the given-up list and searched for again.`)
         })
       }
-      const out = await this.verifyGrab(c, s, row, before, notes, by)
+      const { hash: _hash, ...out } = await this.grabber.verify(c, { app: s.app, wanted: s.wanted, seriesId: s.seriesId, season: s.season }, row, before, notes, by)
       await this.d.audit('arrstack.giveup.grab.done', { app: s.app, by, item: s.label, result: out.result, filesChecked: out.filesChecked })
         .catch(e => this.d.log?.(`[arr-giveup] the after-grab audit entry could not be written: ${msg(e)}`))
       return out
@@ -689,75 +680,6 @@ export class GiveUpService {
       // The arr took the download: the search stays used whatever failed after.
       throw Object.assign(e instanceof Error ? e : new Error(String(e)), { grabbed: true })
     }
-  }
-
-  /**
-   * Read the queue for about 20 s. When it shows up, check its files in qBittorrent for program files; a torrent often
-   * has no file list yet, so it is looked at again 1, 3 and 10 minutes later and removed then if one turns up.
-   */
-  private async verifyGrab(c: CoreEndpointClient, s: Search, row: ReleaseRow & { guid: string }, before: Set<number>, notes: string[], by: string): Promise<GrabResult> {
-    const wait = this.d.grabWaitMs ?? 20_000
-    const step = Math.max(1, Math.min(5000, Math.floor(wait / 4)))
-    let hit: any = null
-    for (let waited = 0; waited <= wait && !hit; waited += step) {
-      await this.sleep(step)
-      const recs = await this.queue(c, s.app).catch(() => [])
-      hit = this.findGrab(recs, s, row, before)
-    }
-    const unchecked = (why: string) => `Its files were not checked for program files: ${why}.`
-    if (!hit) {
-      notes.push(unchecked('it is not in the queue yet'))
-      return { result: 'not-seen', filesChecked: false, summary: `${APP_NAME[s.app]} took the request, but the download is not in the queue yet. Check the Queue tab in a minute.`, notes }
-    }
-    const queued = { result: 'queued' as const, summary: `Downloading: ${row.title} is in the queue.` }
-    if (row.protocol !== 'torrent') return { ...queued, filesChecked: false, notes: [...notes, unchecked('it is a usenet download, and its files are only known once it has downloaded')] }
-    const qb = await this.d.qbit().catch(() => null)
-    if (!qb) return { ...queued, filesChecked: false, notes: [...notes, unchecked('HyperProx has no qBittorrent connection in the Arr Stack settings')] }
-    const hash = typeof hit.downloadId === 'string' ? hit.downloadId.toLowerCase() : ''
-    if (!/^[0-9a-f]{40}$/.test(hash)) return { ...queued, filesChecked: false, notes: [...notes, unchecked('the queue did not say which torrent it is')] }
-    const first = await this.checkFiles(c, qb, s.app, hash, row.title, by)
-    if (first === 'removed') return { result: 'removed-executable', filesChecked: true, summary: 'It contained a program file, so HyperProx removed it and blocklisted it.', notes }
-    if (first === 'clean') return { ...queued, filesChecked: true, notes: [...notes, 'Its files were checked: no program files.'] }
-    this.scheduleRechecks(c, qb, s.app, hash, row.title, by)
-    return { ...queued, filesChecked: false, notes: [...notes, 'Files not checked yet: qBittorrent does not have its file list. HyperProx looks again after 1, 3 and 10 minutes and removes it if a program file shows up.'] }
-  }
-
-  /** The new queue row for a grab, matched here: Sonarr's /queue ignores seriesId and answers with everything. */
-  private findGrab(recs: any[], s: Search, row: { title: string }, before: Set<number>): any {
-    return recs.find(r => !before.has(Number(r?.id)) && (s.wanted.has(Number(r?.[ID_FIELD[s.app]])) || (!!s.seriesId && Number(r?.seriesId) === s.seriesId && Number(r?.seasonNumber) === s.season)))
-      ?? recs.find(r => !before.has(Number(r?.id)) && String(r?.title ?? '') === row.title)
-  }
-
-  /** One look at a torrent's files: 'removed' (a program file: removed and blocklisted), 'clean', or 'unknown' (no list yet). */
-  private async checkFiles(c: CoreEndpointClient, qb: CoreEndpointClient, app: App, hash: string, title: string, by: string): Promise<'removed' | 'clean' | 'unknown'> {
-    const files = await qb.get(`/api/v2/torrents/files?hash=${hash}`, 15_000).catch(() => null)
-    if (!Array.isArray(files) || !files.length) return 'unknown'
-    const bad = files.map((f: any) => String(f?.name ?? '')).filter(isProgramFile)
-    if (!bad.length) return 'clean'
-    // The queue is read fresh and matched here by the torrent's hash.
-    const recs = await this.queue(c, app).catch(() => [])
-    const q = recs.find(r => String(r?.downloadId ?? '').toLowerCase() === hash)
-    if (q) await c.delete(`${API[app]}/queue/${Number(q.id)}?removeFromClient=true&blocklist=true`, 30_000)
-    await this.d.audit('arrstack.giveup.grab.program-file', { app, by, release: title, file: bad[0].split('/').pop(), removed: !!q })
-      .catch(e => this.d.log?.(`[arr-giveup] audit failed: ${msg(e)}`))
-    if (!q) this.d.log?.(`[arr-giveup] ${title} holds a program file but is no longer in the queue`)
-    return 'removed'
-  }
-
-  private scheduleRechecks(c: CoreEndpointClient, qb: CoreEndpointClient, app: App, hash: string, title: string, by: string) {
-    const later = this.d.later ?? ((fn: () => void, ms: number) => { const t = setTimeout(fn, ms); t.unref?.() })
-    let settled = false
-    RECHECK_MS.forEach((ms, i) => later(() => {
-      if (settled) return
-      void this.checkFiles(c, qb, app, hash, title, by).then(r => {
-        if (r !== 'unknown') { settled = true; return }
-        if (i === RECHECK_MS.length - 1) {
-          settled = true
-          void this.d.audit('arrstack.giveup.grab.files-unchecked', { app, by, release: title }).catch(() => {})
-          this.d.log?.(`[arr-giveup] ${title}: files not checked (qBittorrent never had its file list)`)
-        }
-      }, e => this.d.log?.(`[arr-giveup] file check failed: ${msg(e)}`))
-    }, ms))
   }
 }
 
