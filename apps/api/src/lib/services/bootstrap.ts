@@ -55,6 +55,10 @@
 //                         hours and acts once a day where it is switched on
 //                         (a tick does nothing while locked). Only with the
 //                         database, where the counts live.
+//   14. arr-vpn           The Arr Stack VPN panel's watch (lib/arr-vpn): a
+//                         look every two minutes, an alert when the tunnel
+//                         is down or the port is wrong for ten minutes (a
+//                         look does nothing while locked).
 //
 //  On close, everything started here is stopped, in reverse.
 //
@@ -89,12 +93,14 @@ import { broadcast } from '../updates/broadcast'
 import { jobLog, type LogLike } from '../log-once'
 import { removedGuests } from '../removed-guests'
 import { giveUpService, startGiveUpTimer } from '../arr-giveup/production'
+import { arrVpnService } from '../arr-vpn/production'
+import { startVpnWatch } from '../arr-vpn/service'
 
 /** The steps, by name, in the order they run (the list above). */
 export type BootStep =
   | 'exclusions' | 'compose-owners' | 'dismissed' | 'updates' | 'install-hook'
   | 'nextcloud' | 'homepage' | 'auto-connect' | 'removed-guests'
-  | 'updates-recover' | 'updates-timers' | 'placement' | 'arr-give-up'
+  | 'updates-recover' | 'updates-timers' | 'placement' | 'arr-give-up' | 'arr-vpn'
 
 /**
  * What is built. Production leaves every field out; a test passes fakes (with the same start methods) to boot the
@@ -117,6 +123,8 @@ export interface BootstrapDeps {
   removedGuests?: { start(onUnlock: (cb: () => void) => void): () => void }
   /** The Arr Stack give-up timer. Default: the real one, with the database; null: none. */
   arrGiveUp?: { start(): () => void } | null
+  /** The Arr Stack VPN panel's watch. Default: the real one; null: none. */
+  arrVpn?: { start(): () => void } | null
   /** Registers a callback for every unlock. Default: the vault's. */
   onUnlock?: (cb: () => void) => void
 }
@@ -220,6 +228,9 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
     const giveUp = deps.arrGiveUp !== undefined ? deps.arrGiveUp
       : prisma ? { start: () => startGiveUpTimer(giveUpService(prisma, m => log(m, 'warn')), m => log(m, 'warn')) } : null
     if (giveUp) stops.push(giveUp.start())
+    steps.push('arr-vpn')
+    const vpn = deps.arrVpn !== undefined ? deps.arrVpn : { start: () => startVpnWatch(arrVpnService(m => log(m, 'warn')), m => log(m, 'warn')) }
+    if (vpn) stops.push(vpn.start())
   })
 
   app.addHook('onClose', async () => {

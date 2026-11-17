@@ -99,6 +99,9 @@ export function bypassesLock(path: string): boolean {
 // Arr Stack "Find a better copy" (routes/arr-better.ts): finding an item in the library is a read (viewer); a release
 // search and a download (or a swap of a slow download) are admin (the default for a POST). Refused to API tokens by name.
 // No master password: no library file is ever deleted.
+// Arr Stack VPN panel (routes/arr-vpn.ts): the status is a read (viewer; the public address only for an admin); its fixes
+// (put the forwarded port into qBittorrent, reconnect the tunnel) are admin. Refused to API tokens by name. No master
+// password: nothing permanent changes.
 
 // Guest power actions. Both route families exist: /api/infra (infrastructure.ts)
 // and /api/proxmox (proxmox.ts).

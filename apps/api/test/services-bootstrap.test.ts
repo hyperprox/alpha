@@ -62,6 +62,7 @@ function rig() {
     placement: { start: async () => { started('placement'); return () => { events.push('placement-stopped') } } },
     removedGuests: { start: on => { started('removed-guests'); on(() => events.push('removed-guests-unlock-look')); return () => { events.push('removed-guests-stopped') } } },
     arrGiveUp: { start: () => { started('arr-give-up'); return () => { events.push('arr-give-up-stopped') } } },
+    arrVpn: { start: () => { started('arr-vpn'); return () => { events.push('arr-vpn-stopped') } } },
     onUnlock: cb => { unlockCallbacks.push(cb) },
   }
   return { events, counts, sourcesAtStart, unlockCallbacks, dismissals, rt, deps }
@@ -85,7 +86,7 @@ async function boot(r: ReturnType<typeof rig>, routes?: (app: FastifyInstance) =
   return { app, handle }
 }
 
-const ALL = ['nextcloud', 'homepage', 'auto-connect', 'removed-guests', 'updates-recover', 'updates-timers', 'placement', 'arr-give-up']
+const ALL = ['nextcloud', 'homepage', 'auto-connect', 'removed-guests', 'updates-recover', 'updates-timers', 'placement', 'arr-give-up', 'arr-vpn']
 
 test('no route registered: every service still starts, once, in the documented order, after its sources', async () => {
   setGuestExclusionSource(null)
@@ -93,7 +94,7 @@ test('no route registered: every service still starts, once, in the documented o
   const { handle } = await boot(r)
   assert.deepEqual(handle.steps, [
     'exclusions', 'compose-owners', 'dismissed', 'updates', 'install-hook',
-    'nextcloud', 'homepage', 'auto-connect', 'removed-guests', 'updates-recover', 'updates-timers', 'placement', 'arr-give-up',
+    'nextcloud', 'homepage', 'auto-connect', 'removed-guests', 'updates-recover', 'updates-timers', 'placement', 'arr-give-up', 'arr-vpn',
   ])
   for (const name of ALL) assert.equal(r.counts[name], 1, `${name} started exactly once`)
   // The compose owners and the read-only Updates sources come before the first thing that can tick or resume.

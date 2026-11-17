@@ -1,0 +1,12 @@
+{
+ "connection_status": "connected",
+ "dht_nodes": 365,
+ "dl_info_data": 282554697866,
+ "dl_info_speed": 10625762,
+ "dl_rate_limit": 9999360,
+ "last_external_address_v4": "198.51.100.23",
+ "last_external_address_v6": "",
+ "up_info_data": 132274292275,
+ "up_info_speed": 1722791,
+ "up_rate_limit": 1999872
+}
