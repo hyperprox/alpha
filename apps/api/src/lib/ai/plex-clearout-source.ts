@@ -38,7 +38,7 @@ export function clearoutLines(r: ClearoutReport, library: LibraryRow[] = []): st
     const big = [...library].sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0)).slice(0, 5)
     out.push(`Largest in the library: ${big.map(x => `${x.title}${x.year ? ` (${x.year})` : ''} ${x.sizeBytes ? gb(x.sizeBytes) : 'size unknown'}`).join('; ')}.`)
   }
-  out.push('Removing is done on the Plex page (Clear-out or Library): through Sonarr or Radarr when they manage the item, otherwise through Plex itself, after a preview and the master password. I cannot remove anything.')
+  out.push('Removing is done on the Plex page (Clear-out or Library): through Sonarr or Radarr when they manage the item, otherwise through Plex itself, after a preview and a confirmation. I cannot remove anything.')
   return out
 }
 

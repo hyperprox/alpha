@@ -20,7 +20,7 @@
 
 import type { ProxmoxClient } from '../proxmox-client'
 import type { Role } from '../roles'
-import { requiredRole, needsReconfirm, hasRole } from '../roles'
+import { requiredRole, needsConfirm, hasRole } from '../roles'
 import type { ClusterRow } from '../clusters/store'
 import type { PreparedStore } from './prepared'
 import { resolveTargets, withoutClusterWords, promptOn, type ClusterRef, type Choice } from './clusters'
@@ -152,7 +152,8 @@ export interface ActionCard {
   title: string
   words: string
   steps: string[]
-  needsReconfirm: boolean
+  /** Confirmed on the card itself (its Apply button), which only a signed-in person can press: never an API token. */
+  needsConfirm: boolean
   /** A delete: the guest's name, typed exactly to confirm. */
   typedName: string | null
   role: Role
@@ -170,12 +171,13 @@ export function uiRouteFor(plan: Pick<ActionPlan, 'kind' | 'clusterId' | 'guest'
 }
 
 /**
- * The master password is asked for by the kind of action (never only by matching a built path, which fails open
- * on a path nobody expected), and also whenever lib/roles.ts would ask for the same route by hand.
+ * Whether the card stands in for an in-page confirmation (a person only, never an API token): by the kind of action
+ * (never only by matching a built path, which fails open on a path nobody expected), and also whenever lib/roles.ts
+ * would confirm the same route by hand.
  */
-const RECONFIRM_KINDS: ActionKind[] = ['delete', 'monitoring-install', 'monitoring-remove']
-export function reconfirmFor(plan: Pick<ActionPlan, 'kind' | 'clusterId' | 'guest'>): boolean {
-  return RECONFIRM_KINDS.includes(plan.kind) || needsReconfirm('POST', uiRouteFor(plan))
+const CONFIRM_KINDS: ActionKind[] = ['delete', 'monitoring-install', 'monitoring-remove']
+export function confirmFor(plan: Pick<ActionPlan, 'kind' | 'clusterId' | 'guest'>): boolean {
+  return CONFIRM_KINDS.includes(plan.kind) || needsConfirm('POST', uiRouteFor(plan))
 }
 
 /** The role, likewise: the higher of the kind's own floor and what the UI route needs. */
@@ -229,7 +231,7 @@ function roleRefusal(plan: Pick<ActionPlan, 'kind' | 'clusterId' | 'guest'>, rol
 function card(plan: ActionPlan, id: string, title: string, words: string, steps: string[], from?: ClusterRef): ActionCard {
   return {
     planId: id, action: plan.kind, cluster: { id: plan.clusterId, name: plan.clusterName, kind: plan.clusterKind }, ...(from ? { from } : {}),
-    title, words, steps, needsReconfirm: reconfirmFor(plan), typedName: plan.kind === 'delete' ? plan.confirmName ?? null : null,
+    title, words, steps, needsConfirm: confirmFor(plan), typedName: plan.kind === 'delete' ? plan.confirmName ?? null : null,
     role: roleFor(plan),
   }
 }
@@ -436,7 +438,6 @@ export interface ApplyDeps {
   row(id: string): ClusterRow | null
   connection(id: string): string
   unlocked(): boolean
-  reconfirmed(sid: string): boolean
   inCluster<T>(id: string, fn: () => Promise<T>): Promise<T>
   pve(): ProxmoxClient
   ops: {
@@ -533,8 +534,11 @@ async function applyOnce(planId: unknown, body: { confirmName?: unknown }, d: Ap
     burn()
     return refuse(403, 'forbidden', `This needs the ${need} role. Nothing was done.`, { required: need })
   }
-  if (reconfirmFor(plan) && !d.reconfirmed(d.ctx.sid)) {
-    return refuse(403, 'reconfirm_required', 'Re-enter your master password to continue')
+  // The card is the confirmation: it said what will happen and the person pressed Apply. What the pages confirm, only a
+  // person may apply, never an API token (it cannot confirm anything).
+  if (confirmFor(plan) && d.ctx.sid.startsWith('token:')) {
+    burn()
+    return refuse(403, 'token_forbidden', 'API tokens can never apply this. A person confirms it on its card. Nothing was done.')
   }
 
   const cluster = { id: plan.clusterId, name: plan.clusterName, kind: plan.clusterKind }

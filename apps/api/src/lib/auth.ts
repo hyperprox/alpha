@@ -125,6 +125,8 @@ export interface RequestContext {
    * plug-in settings permission: which plug-in, and which owner granted it.
    */
   pluginSettings?: { pluginId: string; grantedBy: string; instances?: boolean }
+  /** Set once the request's in-page confirmation was taken and audited (lib/confirm.ts): audit rows say so. */
+  confirmedInPage?: boolean
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>()

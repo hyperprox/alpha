@@ -249,7 +249,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: { name?: string; address?: string; port?: number; note?: string; tokenId?: string; tokenSecret?: string; fingerprint?: string; login?: any; monitoring?: boolean; sending?: boolean; previewHash?: string } }>('/', async (req, reply) => {
     const b = req.body ?? {}
     try {
-      if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'Adding a server needs a person with the master password, not an API token.' })
+      if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'Adding a server needs a signed-in person who confirms it, not an API token.' })
       const address = String(b.address ?? '').trim(), port = Number(b.port ?? 8006)
       if (!isServerAddress(address)) throw new ClusterRefusal('The address must be a name or an IP address only.')
       if (!allowedApiPort(port)) throw new ClusterRefusal('The port must be 8006 (Proxmox\'s own), 443, 8443, or a number from 1024 to 65535.')
@@ -303,7 +303,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     const b: Record<string, any> = req.body ?? {}
     const other = Object.keys(b).filter(k => !['name', 'note'].includes(k) && b[k] !== undefined)
-    if (other.length) return reply.status(422).send({ success: false, error: `Change ${other.join(', ')} through the connection settings (they need your master password), not here.` })
+    if (other.length) return reply.status(422).send({ success: false, error: `Change ${other.join(', ')} through the connection settings (they ask you to confirm), not here.` })
     try {
       const c = await updateCluster(row.id, { name: b.name, note: b.note })
       await auditCredentialUse('cluster.edit', `cluster:${row.id}`, { ...auditBy(contextActor()), fields: Object.keys(b) })

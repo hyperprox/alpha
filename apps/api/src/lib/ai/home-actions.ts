@@ -7,7 +7,7 @@
 //  id, and nothing runs until the person confirms the card. Applying is checked
 //  in the same order as lib/ai/actions.ts: unlocked, the plan is this person's,
 //  never an API token, the role the same action has by hand (lib/roles.ts for
-//  its UI route), the master password when that route asks for it, then the
+//  its UI route), then the
 //  thing itself read again (the site still exists and is a static site; the NAS
 //  still reports a disk in that bay, which lib/qnap checks once more itself).
 //
@@ -18,7 +18,7 @@
 // =============================================================================
 
 import type { Role } from '../roles'
-import { requiredRole, needsReconfirm, hasRole } from '../roles'
+import { requiredRole, needsConfirm, hasRole } from '../roles'
 import type { PreparedStore } from './prepared'
 import type { ActionCard } from './actions'
 import type { Choice, ClusterRef } from './clusters'
@@ -47,9 +47,9 @@ export type HomeParsed =
 // ---------------------------------------------------------------------------
 
 export const BY_HAND = {
-  nasPower: 'Restarting or shutting down a NAS is done by hand, on its QNAP page: it asks for the admin role, your master password, a confirm phrase and the NAS\'s name typed. The assistant never prepares it.',
-  wpLogin: 'Signing in to WordPress admin is done by hand: Sites, then the site, then Open WordPress admin. It asks for your master password and makes a sign-in link that works once, for 60 seconds. The assistant never makes one.',
-  haSecurity: 'Locks, alarms, garage doors and other security devices are controlled by hand on the Home Assistant page, with the admin role, your master password and the device\'s name typed. The assistant only reads their state.',
+  nasPower: 'Restarting or shutting down a NAS is done by hand, on its QNAP page: it asks for the admin role, a confirmation, a confirm phrase and the NAS\'s name typed. The assistant never prepares it.',
+  wpLogin: 'Signing in to WordPress admin is done by hand: Sites, then the site, then Open WordPress admin. It asks you to confirm and makes a sign-in link that works once, for 60 seconds. The assistant never makes one.',
+  haSecurity: 'Locks, alarms, garage doors and other security devices are controlled by hand on the Home Assistant page, with the admin role, a confirmation and the device\'s name typed. The assistant only reads their state.',
   haDevice: 'The assistant reads Home Assistant but does not switch devices. Use the Home Assistant page\'s Devices view.',
 }
 
@@ -113,7 +113,7 @@ export function homeRoute(plan: Pick<HomePlan, 'kind' | 'siteId' | 'nasId'>): st
   return plan.kind === 'site-pull' ? `/api/sites/${enc(plan.siteId!)}/pull` : `/api/plugins/qnap/instances/${enc(plan.nasId!)}/actions`
 }
 export const homeRole = (plan: Pick<HomePlan, 'kind' | 'siteId' | 'nasId'>): Role => requiredRole('POST', homeRoute(plan)) ?? 'admin'
-export const homeReconfirm = (plan: Pick<HomePlan, 'kind' | 'siteId' | 'nasId'>) => needsReconfirm('POST', homeRoute(plan))
+export const homeConfirm = (plan: Pick<HomePlan, 'kind' | 'siteId' | 'nasId'>) => needsConfirm('POST', homeRoute(plan))
 
 const say = (message: string, choices?: Choice[]): HomePrepareResult => ({ kind: 'say', message, ...(choices?.length ? { choices } : {}) })
 
@@ -164,7 +164,7 @@ function card(plan: HomePlan, who: HomeWho, d: HomePrepareDeps, title: string, s
   const need = homeRole(plan)
   if (!who.role || !hasRole(who.role, need)) return say(`That needs the ${need} role${who.role ? `, and you are signed in as ${who.role}` : ''}, so I did not prepare it.`)
   const planId = d.prepared.put(who.owner, plan)
-  return { kind: 'card', card: { planId, action: plan.kind, cluster: who.home, title, words: `${title}. ${steps[0]}`, steps, needsReconfirm: homeReconfirm(plan), typedName: null, role: need } }
+  return { kind: 'card', card: { planId, action: plan.kind, cluster: who.home, title, words: `${title}. ${steps[0]}`, steps, needsConfirm: homeConfirm(plan), typedName: null, role: need } }
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +179,6 @@ export interface HomeApplyDeps {
   requestCluster: string
   homeId: string
   unlocked(): boolean
-  reconfirmed(sid: string): boolean
   site(id: string): Promise<HomeSite | undefined>
   /** Runs site-pull in the site's container (routes/sites.ts realRun). */
   pull(id: string): Promise<{ code: number | null; output: string }>
@@ -208,7 +207,6 @@ export async function applyHomeAction(planId: unknown, d: HomeApplyDeps): Promis
     if (d.requestCluster !== d.homeId) { burn(); return (answer = refuse(409, 'wrong_cluster', 'This was prepared for the home cluster. Nothing was done. Ask again with the home cluster selected.')) }
     const need = homeRole(plan)
     if (!hasRole(d.ctx.role, need)) { burn(); return (answer = { status: 403, body: { ok: false, code: 'forbidden', required: need, error: `This needs the ${need} role. Nothing was done.` } }) }
-    if (homeReconfirm(plan) && !d.reconfirmed(d.ctx.sid)) return (answer = refuse(403, 'reconfirm_required', 'Re-enter your master password to continue'))
 
     if (plan.kind === 'site-pull') {
       const s = await d.site(plan.siteId!)

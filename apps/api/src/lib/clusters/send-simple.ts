@@ -465,7 +465,7 @@ export async function discoverSend(dstId: string, deps: SendDeps = sendDeps(), o
   const sources = checkNode ? await verifyRoots(HOME_ID, checkNode, found, deps) : []
   if (found.length > sources.length) problems.push(`${found.length - sources.length} home folder${found.length - sources.length === 1 ? ' was' : 's were'} left out: ${found.length - sources.length === 1 ? 'it leads' : 'they lead'} somewhere else through a link, or could not be checked.`)
   if (!homeFacts.length) problems.push(homeMisses.includes('unconfirmed-key')
-    ? "Your home nodes' identity keys are not verified yet, so HyperProx will not send them anything. Press Verify automatically in Settings, Setup checklist (one master password), then look again."
+    ? "Your home nodes' identity keys are not verified yet, so HyperProx will not send them anything. Press Verify automatically in Settings, Setup checklist (and confirm), then look again."
     : homeMisses.length && homeMisses.every(m => m === 'no-login')
       ? 'HyperProx has no login for any home node, so it cannot read your library. Add one in Settings, Setup checklist.'
       : 'HyperProx could not read any home node just now. Check they are online and their logins work in Settings, Setup checklist.')

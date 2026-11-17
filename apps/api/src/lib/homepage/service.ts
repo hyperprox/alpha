@@ -169,7 +169,7 @@ export interface Problem {
   severity: 'bad' | 'warn'
   title: string
   detail: string
-  /** `secure`: the fix has its own button behind the master password (export_keys, wire_env). */
+  /** `secure`: the fix has its own button, confirmed on the page (export_keys, wire_env). */
   fix: { id: string; label: string; confirm?: string; secure?: boolean } | null
 }
 
@@ -976,7 +976,7 @@ export class HomepageService {
   async fix(id: string, fixId: unknown, actor: Actor, o: { applyAnyway?: boolean } = {}): Promise<{ message: string }> {
     const known = ['recheck', 'relocate', 'start', 'reset_services', 'widgets_off'] as const
     if (!known.includes(fixId as any)) {
-      throw new HomepageRefusal('bad_input', fixId === 'export_keys' || fixId === 'wire_env' || fixId === 'purge_key_backups' ? 'That fix has its own button (it needs the master password).' : 'Not a fix HyperProx knows.')
+      throw new HomepageRefusal('bad_input', fixId === 'export_keys' || fixId === 'wire_env' || fixId === 'purge_key_backups' ? 'That fix has its own button (it asks you to confirm).' : 'Not a fix HyperProx knows.')
     }
     const f = fixId as typeof known[number]
     if (f === 'recheck') return { message: 'Checked again.' }

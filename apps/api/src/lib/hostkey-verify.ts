@@ -202,7 +202,7 @@ export interface AnchorSet { local: string; nodes: Record<string, RecordedKey[]>
 /** Pasting would replace anchors the installer read on the node itself; that needs a separate, fresh confirmation. */
 export class AnchorReplaceRefusal extends Error {
   constructor(readonly nodes: string[]) {
-    super(`This would replace the host keys the installer read on ${nodes.join(', ')} itself. If those nodes were rebuilt on purpose, confirm the replacement (HyperProx asks for your master password again); otherwise do not: someone may be answering for them.`)
+    super(`This would replace the host keys the installer read on ${nodes.join(', ')} itself. If those nodes were rebuilt on purpose, confirm the replacement (HyperProx shows you what it will replace first); otherwise do not: someone may be answering for them.`)
     this.name = 'AnchorReplaceRefusal'
   }
 }

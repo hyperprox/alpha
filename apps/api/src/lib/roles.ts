@@ -1,7 +1,11 @@
 // =============================================================================
 //  HyperProx — Role matrix
 //  Pure functions: given a request's method and path, which role does it need,
-//  and does it need a fresh master-password re-confirmation?
+//  and does it need a deliberate step: an in-page confirmation (needsConfirm,
+//  lib/confirm.ts) or, only to reveal a stored secret or change who can sign
+//  in, the master password re-entered (needsPassword)?
+//  In the route notes below, "re-confirmed" means the in-page confirmation
+//  unless the route is one needsPassword lists.
 //
 //  viewer   any GET + the live-status WebSocket
 //  operator viewer + guest start/stop/shutdown/reboot + terminal and console
@@ -140,8 +144,10 @@ const SITE_METRICS_RECONFIRM: Array<[string, RegExp]> = [
 ]
 const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/(cleanup|finish-seerr))$/
 // Guest config editor (routes/guest-config.ts): reads are viewer like any GET, previews admin by the default
-// rule, and applying a preview writes a cluster-replicated guest config, so it also needs the master password.
-const GUEST_CONFIG_APPLY = /^\/api\/infra\/guest-config\/(apply|guests\/[^/]+\/[^/]+\/[^/]+\/reveal)$/
+// rule. Applying a preview writes a cluster-replicated guest config, so it is confirmed on the page; showing one
+// secret value of a config needs the master password.
+const GUEST_CONFIG_APPLY = /^\/api\/infra\/guest-config\/apply$/
+const GUEST_CONFIG_REVEAL = /^\/api\/infra\/guest-config\/guests\/[^/]+\/[^/]+\/[^/]+\/reveal$/
 // HA management (routes/ha.ts). Reads (the HA page, a guest's panel, the migration grid, list badges) are
 // viewer: they are status. Every write is admin: previews, the live rule check, and applying a preview,
 // which writes cluster-wide HA configuration and so also needs the master password re-entered.
@@ -249,24 +255,26 @@ const APTCACHE_RECONFIRM = /^\/api\/plugins\/apt-cacher-ng\/(caches\/[^/]+\/sett
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
-// Local plug-ins (lib/local-plugins.ts): admin for every method, reads included, and every change re-confirmed
-// (API tokens are refused there outright by api-tokens.ts, reads too). A plug-in may opt out of the re-confirmation
-// alone (`reconfirm: false`); the list below is consulted only for an id the loader registered.
+// Local plug-ins (lib/local-plugins.ts): admin for every method, reads included, and every change confirmed on the page
+// (API tokens are refused there outright by api-tokens.ts, reads too). No local plug-in action asks for the master
+// password any more, so `reconfirm: false` is no longer needed; it is still accepted, and a plug-in that sets it keeps
+// what it had: no gate step at all (its own page confirms what needs confirming). The list below is consulted only for
+// an id the loader registered.
 const LOCAL = /^\/api\/local(\/|$)/
 const LOCAL_PLUGIN_ID = /^\/api\/local\/([a-z][a-z0-9-]{1,39})(\/|$)/
 
-// Which loaded local plug-ins opted out of the re-confirmation. Filled by registerLocalPlugins (lib/local-plugins.ts)
+// Which loaded local plug-ins opted out of the gate's step (`reconfirm: false`). Filled by registerLocalPlugins (lib/local-plugins.ts)
 // as each one is registered; kept here so the role rules import nothing. An id never registered — a plug-in that
 // failed to load, a typo, anything — keeps the re-confirmation.
 const localNoReconfirm = new Set<string>()
 
-/** Record a registered local plug-in and whether its changes need the master password re-entered (the default). */
+/** Record a registered local plug-in and whether its changes need the gate's confirmation step (the default). */
 export function noteLocalPlugin(id: string, opts: { reconfirm?: boolean } = {}): void {
   if (opts.reconfirm === false) localNoReconfirm.add(id)
   else localNoReconfirm.delete(id)
 }
 
-/** True only for a registered local plug-in that opted out of the re-confirmation. */
+/** True only for a registered local plug-in that opted out of the gate's step (`reconfirm: false`). */
 export function localPluginSkipsReconfirm(id: string): boolean {
   return localNoReconfirm.has(id)
 }
@@ -347,6 +355,8 @@ const SELF_UPDATE = /^\/api\/self-update(\/|$)/
 const SELF_UPDATE_SUMMARY = '/api/self-update/summary'
 
 const VPN_PREVIEW = /^\/api\/vpn\/wg\/router\/peers\/preview$/
+// Showing a device's configuration (its private key): the master password, like any secret.
+const VPN_REVEAL = /^\/api\/vpn\/wg\/peers\/[^/]+\/reveal$/
 // Remote access job output names hosts, packages and addresses: admins only, like Updates.
 const REMOTE_JOBS = /^\/api\/remote\/(exclusions$|(v1\/)?jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$|v1\/machines\/[^/]+\/(tailscale|netbird)\/(install-preview|settings)$)/
 
@@ -460,25 +470,49 @@ export function requiredRole(method: string, path: string): Role | null {
 }
 
 /**
- * Requests that need the master password re-entered within the last 5 minutes.
- * `opts.tokenPluginScope` (the gate, for an API token an owner gave the plug-in settings permission) lifts the
- * re-confirmation for exactly the allowlisted pairs in tokenPluginScope(); every other request is unchanged.
+ * Requests that need the master password re-entered within the last 5 minutes (POST /api/auth/reconfirm). Only two
+ * kinds of request: revealing a stored secret, and changing who can sign in or what they may do. Everything else that
+ * deserves a deliberate step is confirmed on the page instead (needsConfirm, lib/confirm.ts).
+ *   POST   /api/secrets/reveal                                   a vault item's value
+ *   POST   /api/secrets/send                                     a value handed out as an expiring link
+ *   POST   /api/secrets/delete                                   a vault item deleted (the vault itself)
+ *   POST   /api/infra/guest-config/guests/:node/:type/:vmid/reveal   one secret value of a guest's config
+ *   POST   /api/vpn/wg/peers/:id/reveal                          a WireGuard device's configuration and private key
+ *   POST|PUT|DELETE /api/users/...                               invite, confirm, change a role, remove a person
+ *   POST|PUT|DELETE /api/auth/tokens/...                         create or revoke an API token, or change what one may do
+ *   anything but GET under /api/roles and /api/auth/roles        role management (reserved)
  */
-export function needsReconfirm(method: string, path: string, opts: { tokenPluginScope?: boolean } = {}): boolean {
+export function needsPassword(method: string, path: string): boolean {
   const m = method.toUpperCase()
   const p = normalisePath(path)
+  if (m === 'POST' && (p === '/api/secrets/reveal' || p === '/api/secrets/send' || p === '/api/secrets/delete')) return true
+  if (m === 'POST' && GUEST_CONFIG_REVEAL.test(p)) return true
+  if (m === 'POST' && VPN_REVEAL.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
+  if ((m === 'POST' || m === 'DELETE' || m === 'PUT') && TOKENS.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && /^\/api\/users(\/|$)/.test(p)) return true
+  return false
+}
+
+/**
+ * Requests that need an in-page confirmation (lib/confirm.ts): the page shows what will happen, the person presses
+ * Confirm, and the request carries a single-use token bound to it. API tokens can never confirm, so these are closed
+ * to them too. `opts.tokenPluginScope` (the gate, for an API token an owner gave the plug-in settings permission) lifts
+ * the step for exactly the allowlisted pairs in tokenPluginScope(); every other request is unchanged.
+ */
+export function needsConfirm(method: string, path: string, opts: { tokenPluginScope?: boolean } = {}): boolean {
+  const m = method.toUpperCase()
+  const p = normalisePath(path)
+  if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return false
+  if (needsPassword(m, p)) return false
   if (opts.tokenPluginScope && tokenPluginScope(m, p)) return false
   if (m === 'DELETE' && DESTROY.test(p)) return true
-  if (m === 'POST' && p === '/api/secrets/reveal') return true
-  // A Send hands the value out too (as an expiring link), so it is re-confirmed like reveal.
-  if (m === 'POST' && p === '/api/secrets/send') return true
   // Setup checklist changes: storing a node login, and anything that runs as root on your nodes or shreds files.
-  if (m !== 'GET' && m !== 'HEAD' && SETUP_CHECKLIST.test(p)) return true
+  if (SETUP_CHECKLIST.test(p)) return true
   // A new Grafana admin password goes straight into the vault, but it is still a credential being replaced.
   if (m === 'POST' && p === '/api/monitoring/grafana-admin/reset') return true
-  if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
-  // Naming & addresses decides which network every new guest lands on: saving it is re-confirmed.
+  // Naming & addresses decides which network every new guest lands on.
   if (m === 'PUT' && p === '/api/catalogue/wizard/naming') return true
   if (m === 'POST' && SITES_RECONFIRM.test(p)) return true
   for (const [sm, re] of SITE_METRICS_RECONFIRM) if (m === sm && re.test(p)) return true
@@ -488,17 +522,17 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m === 'PUT' && p === '/api/placement/settings') return true
   if (m === 'POST' && p === PLACEMENT_PLAN_RUN) return true
   if (m === 'PUT' && p === PLACEMENT_AUTO) return true
-  if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && DNS_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && ASUS_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && PBS_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && PBS_MANAGE_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && NEXTCLOUD_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && K3S_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && HOMEPAGE_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && FWDPROXY_RECONFIRM.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && APTCACHE_RECONFIRM.test(p)) return true
+  if (HA_CONTROL_RECONFIRM.test(p)) return true
+  if (QNAP_RECONFIRM.test(p)) return true
+  if (DNS_RECONFIRM.test(p)) return true
+  if (ASUS_RECONFIRM.test(p)) return true
+  if (PBS_RECONFIRM.test(p)) return true
+  if (PBS_MANAGE_RECONFIRM.test(p)) return true
+  if (NEXTCLOUD_RECONFIRM.test(p)) return true
+  if (K3S_RECONFIRM.test(p)) return true
+  if (HOMEPAGE_RECONFIRM.test(p)) return true
+  if (FWDPROXY_RECONFIRM.test(p)) return true
+  if (APTCACHE_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   // Disconnecting a plug-in deletes its vault item (every key it had).
   if (m === 'DELETE' && PLUGIN_SETTINGS.test(p)) return true
@@ -507,20 +541,22 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
   if (m === 'POST' && SETTINGS_TEST.test(p)) return true
-  // Creating or revoking an API token, or changing what one may do.
-  if ((m === 'POST' || m === 'DELETE' || m === 'PUT') && TOKENS.test(p)) return true
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && VPN.test(p) && !VPN_PREVIEW.test(p)) return true
+  if (VPN.test(p) && !VPN_PREVIEW.test(p)) return true
   for (const [cm, re] of CLUSTERS_RECONFIRM) if (m === cm && re.test(p)) return true
-  if (m !== 'GET' && m !== 'HEAD' && LOCAL.test(p)) {
+  if (LOCAL.test(p)) {
     const id = LOCAL_PLUGIN_ID.exec(p)?.[1]
     return !(id && localPluginSkipsReconfirm(id))
   }
   if (m === 'POST' && p === '/api/self-update/install') return true
   if (m === 'PUT' && p === '/api/self-update/settings') return true
-  // ── Vault items and people (routes/secrets.ts delete, routes/users.ts) ─────
-  // Deleting a vault item, inviting a person, changing their role or confirming them into the vault.
-  if (m === 'POST' && p === '/api/secrets/delete') return true
-  if (m !== 'GET' && m !== 'HEAD' && /^\/api\/users(\/|$)/.test(p)) return true
   return false
+}
+
+/**
+ * Any deliberate step at all: the master password (needsPassword) or an in-page confirmation (needsConfirm). Kept for
+ * callers and plug-ins written before the two were split; new code asks the question it means.
+ */
+export function needsReconfirm(method: string, path: string, opts: { tokenPluginScope?: boolean } = {}): boolean {
+  return needsPassword(method, path) || needsConfirm(method, path, opts)
 }
