@@ -10,15 +10,19 @@
 //             request app's folder, was added after sorting was switched on and within the last day, carries no
 //             "hpx-routed" tag and was never moved back by a person. Each move is audited BEFORE it is made (no audit
 //             row, no move), made through the arr's editor (rootFolderPath with moveFiles, plus the tag) and read
-//             back. At most 20 moves a minute per app.
+//             back: the folder from the item, and the files from the arr's own move command, so a move whose files
+//             are still on their way is "files moving" until a later minute sees the command finish (or fail). An
+//             item the arr is importing right now waits for the next minute. At most 20 moves a minute per app.
 //   test      "Test on my library": the rules over the whole library, read-only, compared with where everything is.
 //   save      the rules for one app. Switching sorting on (or changing the rules while it is on) needs the id of a
 //             library test of exactly those rules from the last 15 minutes.
 //   move      "Undo / move to…": one item from the Recently sorted list to the folder a person picks. The router
 //             never touches that item again.
 //   graduate  "Graduate finished shows": the preview (ended, every aired episode on disk, still in the running-shows
-//             folder), then the move of exactly those, which also switches graduating on for shows that finish later
-//             (looked at every six hours).
+//             folder of the enabled rules), then the move of exactly those, 20 a minute, which also switches graduating
+//             on for shows that finish later (looked at every six hours). Its own record keeps only that it is on and
+//             the two folders the preview showed. A show graduated once is never graduated again, so one a person moved
+//             back stays where they put it.
 //
 //  The routes are routes/arr-router.ts.
 // =============================================================================
@@ -26,7 +30,7 @@
 import crypto from 'node:crypto'
 import type { CoreEndpointClient } from '../plugin-host'
 import {
-  APPS, CONDITION_LABEL, ROUTED_TAG, conditionsFor, defaultSettings, filmOf, folderName, graduates, guessDefaultRoot, normRoot, parseSettings,
+  APPS, CONDITION_LABEL, ROUTED_TAG, conditionsFor, curatedFolders, defaultSettings, filmOf, folderName, graduateFolders, graduates, guessDefaultRoot, normRoot, parseSettings,
   pickFolder, routable, ruleFingerprint, showOf, testLibrary, whyWord,
   type App, type AppSettings, type Condition, type Item, type LibraryTest, type Show,
 } from './rules'
@@ -46,6 +50,8 @@ export interface RouterDeps {
   now(): number
   unlocked(): boolean
   log?(m: string): void
+  /** Waits before the file move is first checked. Default: a real timer. */
+  sleep?(ms: number): Promise<void>
 }
 
 export const APP_NAME: Record<App, string> = { radarr: 'Radarr', sonarr: 'Sonarr' }
@@ -68,6 +74,13 @@ const PROBE_MISSES = 3
 const SUGGEST_TTL_MS = 10 * 60_000
 const ROOTS_TTL_MS = 5 * 60_000
 const MAX_LEAVE_ALONE = 2000
+const MAX_GRADUATED = 5000
+/** A file move the arr no longer lists after this long is reported as not confirmed. */
+const FILES_CONFIRM_MS = 30 * 60_000
+const MOVE_COMMAND = /move/i
+const DONE = new Set(['completed'])
+const BROKEN = new Set(['failed', 'aborted', 'cancelled', 'orphaned'])
+const IMPORTING = new Set(['importpending', 'importing'])
 
 const msg = (e: any) => String(e?.message ?? e).slice(0, 200)
 const toItem = (app: App, raw: any): Item => (app === 'radarr' ? filmOf(raw) : showOf(raw))
@@ -80,7 +93,15 @@ export interface Move {
   why: string
   /** What in the arr's data matched: "genre Horror". */
   detail: string
+  /**
+   * True only when the item is in the new folder AND its files are there (or it had none). A move whose files are still
+   * on their way is not ok yet: `files` says "pending" until the arr's move command finishes.
+   */
   by: string; ok: boolean; error?: string
+  /** The files: moved, none to move, still moving, failed, or no longer listed by the arr. */
+  files?: 'moved' | 'none' | 'pending' | 'failed' | 'unconfirmed'
+  /** The arr's move command, while its files are pending. */
+  commandId?: number
 }
 
 interface AppState {
@@ -91,9 +112,18 @@ interface AppState {
   leaveAlone: number[]
   tagId: number | null
   lastGraduateAt: number
-  lastTick?: { at: string; looked: number; moved: number; failed: number; error?: string }
+  /** New items the arr was importing: looked at again next minute. */
+  retry: number[]
+  /** Shows graduated once: never graduated again (one back in the running folder was moved back by a person). */
+  graduated: number[]
+  /** Shows confirmed for graduating, still to move (20 a minute). */
+  graduateQueue: { from: string; to: string; ids: number[] } | null
+  lastTick?: { at: string; looked: number; moved: number; failed: number; waiting?: number; error?: string }
 }
-const freshState = (): AppState => ({ maxId: 0, lastFullAt: 0, seen: {}, leaveAlone: [], tagId: null, lastGraduateAt: 0 })
+const freshState = (): AppState => ({ maxId: 0, lastFullAt: 0, seen: {}, leaveAlone: [], tagId: null, lastGraduateAt: 0, retry: [], graduated: [], graduateQueue: null })
+
+/** Graduating's own record: on or off, and the two folders the confirmed preview showed. Never the rules. */
+interface GraduateRecord { on: boolean; from: string; to: string }
 
 export interface AppStatus {
   app: App; label: string; name: string; configured: boolean
@@ -139,6 +169,7 @@ export class RouterService {
 
   async storedSettings(app: App): Promise<AppSettings | null> { return this.d.store.get<AppSettings>(`settings:${app}`) }
   private async state(app: App): Promise<AppState> { return { ...freshState(), ...((await this.d.store.get<AppState>(`state:${app}`)) ?? {}) } }
+  private async gradRecord(): Promise<GraduateRecord | null> { return this.d.store.get<GraduateRecord>('graduate:sonarr') }
   private saveState(app: App, s: AppState) { return this.d.store.set(`state:${app}`, s, 'hyperprox') }
   async recent(): Promise<Move[]> {
     const list = (await this.d.store.get<Move[]>('recent')) ?? []
@@ -212,8 +243,9 @@ export class RouterService {
       try {
         const [stored, st] = await Promise.all([this.storedSettings(app), this.state(app)])
         base.roots = await this.roots(c, app)
-        if (stored) base.settings = stored
-        else { const sg = await this.suggest(c, app); base.settings = sg.s; base.suggestedFrom = sg.from }
+        if (stored) base.settings = { ...stored }
+        else { const sg = await this.suggest(c, app); base.settings = { ...sg.s }; base.suggestedFrom = sg.from }
+        if (app === 'sonarr') base.settings.graduate = (await this.gradRecord())?.on === true
         base.saved = !!stored
         base.lastTick = st.lastTick ?? null
       } catch (e) {
@@ -260,20 +292,24 @@ export class RouterService {
         }
       }
       s.enabledAt = s.enabled ? (cur?.enabled && cur.enabledAt ? cur.enabledAt : this.iso()) : null
-      // Graduating is switched on only by confirming its preview (graduateApply); here it can only stay on or go off.
-      s.graduate = app === 'sonarr' && s.graduate && cur?.graduate === true
+      // Graduating is switched on only by confirming its preview (graduateApply) and lives in its own record; here it
+      // can only be switched off.
+      const grad = app === 'sonarr' ? await this.gradRecord() : null
+      const gradOff = !!grad?.on && !s.graduate
+      s.graduate = false
       await this.d.audit('arrstack.router.settings', {
-        app, by, enabled: s.enabled, graduate: s.graduate, defaultRoot: s.defaultRoot,
+        app, by, enabled: s.enabled, graduateOff: gradOff, defaultRoot: s.defaultRoot,
         rules: s.rules.filter(r => r.enabled).map(r => `${r.condition}:${r.folder ? folderName(r.folder) : '-'}`).join(', '),
       })
       await this.d.store.set(`settings:${app}`, s, by)
+      if (gradOff) await this.d.store.set('graduate:sonarr', { ...grad!, on: false }, by)
       if (turningOn && !cur?.enabled) {
         // Start counting from now: everything already in the library is the owner's, not the router's.
         const st = await this.state(app)
-        st.maxId = 0; st.lastFullAt = 0; st.seen = {}
+        st.maxId = 0; st.lastFullAt = 0; st.seen = {}; st.retry = []
         await this.saveState(app, st)
       }
-      return s
+      return { ...s, graduate: !!grad?.on && !gradOff }
     })
   }
 
@@ -294,78 +330,105 @@ export class RouterService {
     const out: Item[] = []
     let id = st.maxId + 1, misses = 0
     while (misses < PROBE_MISSES && out.length < 50) {
-      try {
-        const it = toItem(app, await c.get(API[app].one(id)))
-        if (it.id === id) { out.push(it); st.maxId = id; misses = 0 } else misses++
-      } catch (e) {
-        if (!/HTTP 404\b/.test(msg(e))) throw e
-        misses++
-      }
+      const it = await this.one(c, app, id)
+      if (it) { out.push(it); st.maxId = id; misses = 0 } else misses++
       id++
     }
     return out
   }
 
+  /** One item, or null when the arr says it does not exist. */
+  private async one(c: CoreEndpointClient, app: App, id: number): Promise<Item | null> {
+    try {
+      const it = toItem(app, await c.get(API[app].one(id)))
+      return it.id === id ? it : null
+    } catch (e) {
+      if (/HTTP 404\b/.test(msg(e))) return null
+      throw e
+    }
+  }
+
+  /** Is the arr importing this item right now? Then it waits a minute. The queue is filtered here, never by the query. */
+  private async importing(c: CoreEndpointClient, app: App, id: number): Promise<boolean> {
+    const field = app === 'radarr' ? 'movieId' : 'seriesId'
+    try {
+      const rows = await c.get(`/api/v3/queue/details?${field}=${id}`)
+      return (Array.isArray(rows) ? rows : []).some((r: any) => r?.[field] === id && IMPORTING.has(String(r?.trackedDownloadState ?? '').toLowerCase()))
+    } catch (e) {
+      // Cannot tell: wait rather than move something mid-import.
+      this.d.log?.(`[arr-router] ${app} ${id}: the queue could not be read (${msg(e)}); trying again next minute`)
+      return true
+    }
+  }
+
   private async tickApp(app: App): Promise<void> {
     const s = await this.storedSettings(app)
-    if (!s || (!s.enabled && !s.graduate)) return
+    const grad = app === 'sonarr' ? await this.gradRecord() : null
+    const pendingFiles = (await this.recent()).some(m => m.app === app && m.files === 'pending')
+    if (!s?.enabled && !grad?.on && !pendingFiles) return
     const c = await this.client(app, false)
     if (!c) return
     const st = await this.state(app)
     const now = this.d.now()
-    // Graduating alone: nothing to do until its next six-hourly look.
-    if (!s.enabled && (app !== 'sonarr' || now - st.lastGraduateAt < GRADUATE_EVERY_MS)) return
-    const tick = { at: new Date(now).toISOString(), looked: 0, moved: 0, failed: 0 } as NonNullable<AppState['lastTick']>
+    const gradDue = !!grad?.on && (!!st.graduateQueue?.ids.length || now - st.lastGraduateAt >= GRADUATE_EVERY_MS)
+    if (!s?.enabled && !gradDue && !pendingFiles) return
+    const tick = { at: new Date(now).toISOString(), looked: 0, moved: 0, failed: 0, waiting: 0 } as NonNullable<AppState['lastTick']>
     try {
-      let all: Item[] | null = null
-      const leave = new Set(st.leaveAlone)
-      if (s.enabled) {
-        // Graduating alone needs no look for new items; sorting does.
-        let found: Item[]
-        if (!st.maxId || now - st.lastFullAt >= FULL_READ_MS) {
-          all = await this.library(c, app)
-          found = all
-          st.maxId = Math.max(st.maxId, ...all.map(i => i.id), 0)
-          st.lastFullAt = now
-        } else {
-          found = await this.probe(c, app, st)
-        }
-        const pending = found.filter(i => st.seen[String(i.id)] === undefined && routable(i, s, { routedTag: st.tagId, now, lookbackMs: LOOKBACK_MS, leaveAlone: leave }))
-          .sort((a, b) => a.id - b.id)
-        const cands = pending.slice(0, MAX_MOVES_PER_TICK)
-        // More than one minute's share: the next minute reads the whole library again to pick up the rest.
-        if (pending.length > cands.length) st.lastFullAt = 0
-        for (const it of cands) {
-          tick.looked++
-          st.seen[String(it.id)] = Date.parse(it.added)
-          const p = pickFolder(app, s, it)
-          if (!p || p.folder === it.root) continue
-          const roots = await this.roots(c, app)
-          if (!roots.includes(p.folder)) { tick.failed++; this.d.log?.(`[arr-router] ${app}: the folder for ${p.condition} is no longer a root folder`); continue }
-          // Read it again: a person (or another tool) may have moved or tagged it since the list was read.
-          const live = toItem(app, await c.get(API[app].one(it.id)))
-          if (live.root !== it.root || (st.tagId !== null && live.tags.includes(st.tagId))) continue
-          const m = await this.moveOne(c, app, st, live, p.folder, { kind: 'sorted', condition: p.condition, why: whyWord(p.condition, p.folder), detail: p.why, by: 'hyperprox' })
-          if (m.ok) tick.moved++; else tick.failed++
-        }
-        const forget = now - LOOKBACK_MS - 3600_000
-        for (const [k, added] of Object.entries(st.seen)) if (!(added >= forget)) delete st.seen[k]
-      }
-      if (app === 'sonarr' && s.graduate && now - st.lastGraduateAt >= GRADUATE_EVERY_MS) {
-        all ??= await this.library(c, app)
-        st.lastGraduateAt = now
-        const g = graduates(s, all as Show[], leave)
-        for (const show of g?.shows.slice(0, MAX_MOVES_PER_TICK) ?? []) {
-          const m = await this.moveOne(c, app, st, show, g!.to, { kind: 'graduated', condition: 'ended', why: whyWord('ended', g!.to), detail: 'it has ended and every aired episode is on disk', by: 'hyperprox' })
-          if (m.ok) tick.moved++; else tick.failed++
-        }
-      }
+      if (pendingFiles) await this.checkFiles(c, app)
+      if (s?.enabled) await this.sortNew(c, app, s, st, now, tick)
+      if (gradDue && grad) await this.graduateTick(c, st, grad, now, tick)
     } catch (e) {
       tick.error = msg(e)
       this.d.log?.(`[arr-router] ${app}: ${tick.error}`)
     }
     st.lastTick = tick
     await this.saveState(app, st)
+  }
+
+  private async sortNew(c: CoreEndpointClient, app: App, s: AppSettings, st: AppState, now: number, tick: NonNullable<AppState['lastTick']>): Promise<void> {
+    let found: Item[]
+    if (!st.maxId || now - st.lastFullAt >= FULL_READ_MS) {
+      found = await this.library(c, app)
+      for (const i of found) if (i.id > st.maxId) st.maxId = i.id
+      st.lastFullAt = now
+    } else {
+      found = await this.probe(c, app, st)
+    }
+    // The ones the arr was importing last minute, looked at again.
+    const have = new Set(found.map(i => i.id))
+    for (const id of st.retry) {
+      if (have.has(id)) continue
+      const it = await this.one(c, app, id)
+      if (it) found.push(it)
+    }
+    const leave = new Set(st.leaveAlone)
+    const pending = found.filter(i => st.seen[String(i.id)] === undefined && routable(i, s, { routedTag: st.tagId, now, lookbackMs: LOOKBACK_MS, leaveAlone: leave }))
+      .sort((a, b) => a.id - b.id)
+    const cands = pending.slice(0, MAX_MOVES_PER_TICK)
+    // More than one minute's share: the next minute reads the whole library again to pick up the rest.
+    if (pending.length > cands.length) st.lastFullAt = 0
+    const retry: number[] = []
+    for (const it of cands) {
+      tick.looked++
+      const p = pickFolder(app, s, it)
+      if (!p || p.folder === it.root) { st.seen[String(it.id)] = Date.parse(it.added); continue }
+      const roots = await this.roots(c, app)
+      if (!roots.includes(p.folder)) {
+        st.seen[String(it.id)] = Date.parse(it.added); tick.failed++
+        this.d.log?.(`[arr-router] ${app}: the folder for ${p.condition} is no longer a root folder`)
+        continue
+      }
+      // Read it again: a person (or another tool) may have moved or tagged it since the list was read.
+      const live = await this.one(c, app, it.id)
+      if (!live || live.root !== it.root || (st.tagId !== null && live.tags.includes(st.tagId))) { st.seen[String(it.id)] = Date.parse(it.added); continue }
+      if (await this.importing(c, app, it.id)) { retry.push(it.id); tick.waiting = (tick.waiting ?? 0) + 1; continue }
+      st.seen[String(it.id)] = Date.parse(it.added)
+      const m = await this.moveOne(c, app, st, live, p.folder, { kind: 'sorted', condition: p.condition, why: whyWord(p.condition, p.folder), detail: p.why, by: 'hyperprox' })
+      if (m.ok || m.files === 'pending') tick.moved++; else tick.failed++
+    }
+    st.retry = retry
+    const forget = now - LOOKBACK_MS - 3600_000
+    for (const [k, added] of Object.entries(st.seen)) if (!(added >= forget)) delete st.seen[k]
   }
 
   // ── moving one item ────────────────────────────────────────────────────────
@@ -382,6 +445,54 @@ export class RouterService {
     return null
   }
 
+  /** The editor call, with the tag. When it fails with a tag that may be stale (deleted in the arr), the tag is looked up again and the call made once more. */
+  private async editorPut(c: CoreEndpointClient, app: App, st: AppState, id: number, to: string): Promise<void> {
+    const send = (tagId: number | null) => {
+      const body: Record<string, unknown> = { [API[app].ids]: [id], rootFolderPath: to, moveFiles: true }
+      if (tagId !== null) { body.tags = [tagId]; body.applyTags = 'add' }
+      return c.put(API[app].editor, body, 60_000)
+    }
+    const tagId = await this.tag(c, app, st)
+    try { await send(tagId) } catch (e) {
+      if (tagId === null) throw e
+      st.tagId = null
+      const again = await this.tag(c, app, st)
+      this.d.log?.(`[arr-router] ${app} ${id}: the move failed with tag ${tagId} (${msg(e)}); trying once more with tag ${again ?? 'none'}`)
+      await send(again)
+    }
+  }
+
+  /** The arr's move command for this item: its id and status, or null when it lists none. */
+  private async moveCommand(c: CoreEndpointClient, app: App, id: number, commandId?: number): Promise<{ id: number; status: string; message: string } | null> {
+    const pick = (x: any) => ({ id: Number(x?.id), status: String(x?.status ?? '').toLowerCase(), message: String(x?.message ?? x?.exception ?? '').slice(0, 160) })
+    if (commandId) {
+      try { return pick(await c.get(`/api/v3/command/${commandId}`)) } catch (e) { if (/HTTP 404\b/.test(msg(e))) return null; throw e }
+    }
+    const list = await c.get('/api/v3/command')
+    const mine = (Array.isArray(list) ? list : []).filter((x: any) => {
+      if (!MOVE_COMMAND.test(String(x?.name ?? x?.commandName ?? ''))) return false
+      const b = x?.body ?? {}
+      const ids: unknown[] = app === 'radarr'
+        ? [b.movieId, ...(Array.isArray(b.movieIds) ? b.movieIds : []), ...(Array.isArray(b.movies) ? b.movies.map((m: any) => m?.movieId) : [])]
+        : [b.seriesId, ...(Array.isArray(b.seriesIds) ? b.seriesIds : []), ...(Array.isArray(b.series) ? b.series.map((m: any) => m?.seriesId) : [])]
+      return ids.includes(id)
+    }).sort((a: any, b: any) => Number(b?.id) - Number(a?.id))
+    return mine.length ? pick(mine[0]) : null
+  }
+
+  /** What the files' move says: done, broken, still running (or not listed yet). */
+  private filesFrom(m: Move, cmd: { id: number; status: string; message: string } | null): void {
+    if (cmd && DONE.has(cmd.status)) { m.files = 'moved'; m.ok = true; delete m.error; delete m.commandId; return }
+    if (cmd && BROKEN.has(cmd.status)) {
+      m.files = 'failed'; m.ok = false; delete m.commandId
+      m.error = `${APP_NAME[m.app]} could not move the files (${cmd.status}${cmd.message ? `: ${cmd.message}` : ''}). The item points at ${folderName(m.to)}; check both folders.`
+      return
+    }
+    m.files = 'pending'; m.ok = false
+    if (cmd && Number.isInteger(cmd.id) && cmd.id > 0) m.commandId = cmd.id
+    m.error = `${APP_NAME[m.app]} is still moving the files.`
+  }
+
   /** Audit, move through the arr's editor (files too), read back, and remember it in Recently sorted. */
   private async moveOne(c: CoreEndpointClient, app: App, st: AppState, item: Item, to: string,
     meta: { kind: MoveKind; condition: Condition | null; why: string; detail: string; by: string }): Promise<Move> {
@@ -391,23 +502,46 @@ export class RouterService {
     }
     // No audit row, no move: this throws and nothing below runs.
     await this.d.audit('arrstack.router.move', { app, id: item.id, title: item.title, from: item.root, to, kind: meta.kind, why: meta.why, by: meta.by })
+    const hadFiles = app === 'radarr' ? (item as { hasFile: boolean }).hasFile : (item as Show).files > 0
     try {
-      const tagId = await this.tag(c, app, st)
-      const body: Record<string, unknown> = { [API[app].ids]: [item.id], rootFolderPath: to, moveFiles: true }
-      if (tagId !== null) { body.tags = [tagId]; body.applyTags = 'add' }
-      await c.put(API[app].editor, body, 60_000)
+      await this.editorPut(c, app, st, item.id, to)
       const back = toItem(app, await c.get(API[app].one(item.id)))
-      m.ok = back.root === to || back.path.startsWith(`${to}/`)
-      if (!m.ok) m.error = `${APP_NAME[app]} still shows it in ${folderName(back.root || item.root)}.`
+      if (!(back.root === to || back.path.startsWith(`${to}/`))) {
+        m.error = `${APP_NAME[app]} still shows it in ${folderName(back.root || item.root)}.`
+      } else if (!hadFiles) {
+        m.ok = true; m.files = 'none'
+      } else {
+        await (this.d.sleep ? this.d.sleep(1000) : new Promise<void>(r => setTimeout(r, 1000)))
+        this.filesFrom(m, await this.moveCommand(c, app, item.id).catch(() => null))
+      }
     } catch (e) {
       m.error = `${APP_NAME[app]} did not move it: ${msg(e)}`
     }
-    if (!m.ok) this.d.log?.(`[arr-router] ${app} ${item.id}: ${m.error}`)
-    await this.d.audit('arrstack.router.moved', { app, id: item.id, to, ok: m.ok, error: m.error ?? null }).catch(() => {})
+    if (!m.ok && m.files !== 'pending') this.d.log?.(`[arr-router] ${app} ${item.id}: ${m.error}`)
+    await this.d.audit('arrstack.router.moved', { app, id: item.id, to, ok: m.ok, files: m.files ?? null, error: m.error ?? null }).catch(() => {})
     const list = [m, ...await this.recent()].slice(0, RECENT_MAX)
     await this.d.store.set('recent', list, meta.by)
     this.recentCache = list
     return m
+  }
+
+  /** Moves whose files were still on their way: ask the arr how its move command ended. */
+  private async checkFiles(c: CoreEndpointClient, app: App): Promise<void> {
+    const list = await this.recent()
+    let changed = false
+    for (const m of list) {
+      if (m.app !== app || m.files !== 'pending') continue
+      const cmd = await this.moveCommand(c, app, m.id, m.commandId).catch(() => undefined)
+      if (cmd === undefined) continue
+      if (!cmd && this.d.now() - Date.parse(m.at) > FILES_CONFIRM_MS) {
+        m.files = 'unconfirmed'; m.ok = false; delete m.commandId
+        m.error = `${APP_NAME[app]} no longer lists the file move, so it could not be confirmed. Check ${folderName(m.to)}.`
+      } else if (cmd) this.filesFrom(m, cmd)
+      if (m.files === 'pending') continue
+      changed = true
+      await this.d.audit('arrstack.router.files', { app, id: m.id, to: m.to, files: m.files, ok: m.ok }).catch(() => {})
+    }
+    if (changed) { await this.d.store.set('recent', list, 'hyperprox'); this.recentCache = list }
   }
 
   /** "Undo / move to…": one item from the Recently sorted list to a folder a person picked. */
@@ -419,13 +553,16 @@ export class RouterService {
       }
       const to = normRoot(folder)
       if (!(await this.roots(c, app, true)).includes(to)) throw new RouterRefusal(400, 'bad_request', `That is not one of ${APP_NAME[app]}'s root folders.`)
-      const live = toItem(app, await c.get(API[app].one(id)))
+      const s = (await this.storedSettings(app)) ?? (await this.suggest(c, app)).s
+      if (curatedFolders(s.rules).has(to)) throw new RouterRefusal(400, 'hand_picked', `${folderName(to)} is hand-picked: HyperProx never moves anything into it. Do that in ${APP_NAME[app]} if you mean to.`)
+      const live = await this.one(c, app, id)
+      if (!live) throw new RouterRefusal(404, 'not_found', `${APP_NAME[app]} no longer has it.`)
       if (live.root === to) throw new RouterRefusal(409, 'already_there', `${live.title} is already in ${folderName(to)}.`)
       const st = await this.state(app)
       if (!st.leaveAlone.includes(id)) st.leaveAlone = [...st.leaveAlone, id].slice(-MAX_LEAVE_ALONE)
       const m = await this.moveOne(c, app, st, live, to, { kind: 'moved', condition: null, why: `Moved by hand → ${folderName(to)}`, detail: 'moved from the Recently sorted list', by })
       await this.saveState(app, st)
-      if (!m.ok) throw new RouterRefusal(502, 'not_moved', m.error ?? 'It was not moved.')
+      if (!m.ok && m.files !== 'pending') throw new RouterRefusal(502, 'not_moved', m.error ?? 'It was not moved.')
       return m
     })
   }
@@ -435,13 +572,14 @@ export class RouterService {
   private async showSettings(c: CoreEndpointClient): Promise<AppSettings> {
     return (await this.storedSettings('sonarr')) ?? (await this.suggest(c, 'sonarr')).s
   }
+  private never(st: AppState): Set<number> { return new Set([...st.leaveAlone, ...st.graduated]) }
 
   async graduatePreview(): Promise<GraduatePreview> {
     const c = (await this.client('sonarr'))!
     const s = await this.showSettings(c)
     const st = await this.state('sonarr')
-    const g = graduates(s, await this.library(c, 'sonarr') as Show[], new Set(st.leaveAlone))
-    if (!g) throw new RouterRefusal(409, 'no_folders', 'Pick a folder for running shows and a different one for ended shows first.')
+    if (!graduateFolders(s)) throw new RouterRefusal(409, 'no_folders', 'Switch on the "Ended" and "Still running" rules, each with its own folder, first.')
+    const g = graduates(s, await this.library(c, 'sonarr') as Show[], this.never(st))!
     const previewId = crypto.randomBytes(12).toString('hex')
     const now = this.d.now()
     for (const [k, v] of this.previews) if (now - v.at > TEST_TTL_MS) this.previews.delete(k)
@@ -449,30 +587,73 @@ export class RouterService {
     return { previewId, from: g.from, to: g.to, shows: g.shows.map(x => ({ id: x.id, title: x.title, year: x.year, files: x.files, aired: x.aired })) }
   }
 
-  /** Move exactly the previewed shows that still qualify, and switch graduating on for shows that finish later. */
-  async graduateApply(previewId: unknown, by: string): Promise<{ moved: number; failed: number; skipped: number; summary: string }> {
+  /** Does this show (read live) still qualify to graduate from `from`? */
+  private stillGraduates(x: Item | null, from: string, never: Set<number>): x is Show {
+    const sh = x as Show | null
+    return !!sh && sh.root === from && sh.status === 'ended' && sh.aired > 0 && sh.files >= sh.aired && !never.has(sh.id)
+  }
+
+  /** Up to 20 shows from the confirmed list: each read live, moved if it still qualifies, and never graduated again. */
+  private async graduateBatch(c: CoreEndpointClient, st: AppState, by: string, tick?: NonNullable<AppState['lastTick']>): Promise<{ moved: number; failed: number }> {
+    const q = st.graduateQueue
+    let moved = 0, failed = 0
+    if (!q) return { moved, failed }
+    const take = q.ids.splice(0, MAX_MOVES_PER_TICK)
+    const never = this.never(st)
+    for (const id of take) {
+      const live = await this.one(c, 'sonarr', id)
+      if (!this.stillGraduates(live, q.from, never)) continue
+      const m = await this.moveOne(c, 'sonarr', st, live, q.to, { kind: 'graduated', condition: 'ended', why: whyWord('ended', q.to), detail: 'it has ended and every aired episode is on disk', by })
+      if (m.ok || m.files === 'pending') { moved++; st.graduated = [...st.graduated, id].slice(-MAX_GRADUATED) } else failed++
+    }
+    if (!q.ids.length) st.graduateQueue = null
+    if (tick) { tick.moved += moved; tick.failed += failed }
+    return { moved, failed }
+  }
+
+  /** The timer's part: the rest of a confirmed list, or (every six hours) the shows that finished since. */
+  private async graduateTick(c: CoreEndpointClient, st: AppState, grad: GraduateRecord, now: number, tick: NonNullable<AppState['lastTick']>): Promise<void> {
+    // Only while the enabled rules still name the same two folders the owner confirmed.
+    const f = graduateFolders(await this.showSettings(c))
+    if (!f || f.from !== grad.from || f.to !== grad.to) {
+      this.d.log?.('[arr-router] graduating is on, but the running and ended rules no longer name the confirmed folders; nothing moved')
+      return
+    }
+    if (!st.graduateQueue?.ids.length) {
+      st.lastGraduateAt = now
+      const g = graduates({ rules: [{ condition: 'running', folder: grad.from, enabled: true }, { condition: 'ended', folder: grad.to, enabled: true }] },
+        await this.library(c, 'sonarr') as Show[], this.never(st))
+      if (!g?.shows.length) return
+      st.graduateQueue = { from: grad.from, to: grad.to, ids: g.shows.map(x => x.id) }
+    }
+    await this.graduateBatch(c, st, 'hyperprox', tick)
+  }
+
+  /**
+   * Confirming the preview: the shows it listed that still qualify are queued, the first 20 move now and the rest 20 a
+   * minute, and graduating is switched on with exactly the two folders the preview showed. The rules are not touched.
+   */
+  async graduateApply(previewId: unknown, by: string): Promise<{ moved: number; failed: number; queued: number; skipped: number; summary: string }> {
     const p = typeof previewId === 'string' ? this.previews.get(previewId) : undefined
     if (!p || this.d.now() - p.at > TEST_TTL_MS) throw new RouterRefusal(409, 'preview_required', 'Look at the preview first (it lasts 15 minutes).')
     const c = (await this.client('sonarr'))!
     return this.locked(async () => {
       this.previews.delete(previewId as string)
-      const s = await this.showSettings(c)
+      const f = graduateFolders(await this.showSettings(c))
+      if (!f || f.from !== p.from || f.to !== p.to) throw new RouterRefusal(409, 'changed', 'The show folders changed since the preview. Look at it again.')
       const st = await this.state('sonarr')
-      const g = graduates(s, await this.library(c, 'sonarr') as Show[], new Set(st.leaveAlone))
-      if (!g || g.from !== p.from || g.to !== p.to) throw new RouterRefusal(409, 'changed', 'The show folders changed since the preview. Look at it again.')
-      const now = g.shows.filter(x => p.ids.has(x.id))
-      await this.d.audit('arrstack.router.graduate', { by, count: now.length, from: g.from, to: g.to })
-      let moved = 0, failed = 0
-      for (const show of now) {
-        const m = await this.moveOne(c, 'sonarr', st, show, g.to, { kind: 'graduated', condition: 'ended', why: whyWord('ended', g.to), detail: 'it has ended and every aired episode is on disk', by })
-        if (m.ok) moved++; else failed++
-      }
+      const never = this.never(st)
+      const ids = (await this.library(c, 'sonarr')).filter(x => p.ids.has(x.id) && this.stillGraduates(x, p.from, never)).map(x => x.id)
+      await this.d.audit('arrstack.router.graduate', { by, count: ids.length, from: p.from, to: p.to })
+      await this.d.store.set('graduate:sonarr', { on: true, from: p.from, to: p.to } satisfies GraduateRecord, by)
+      st.graduateQueue = { from: p.from, to: p.to, ids: [...(st.graduateQueue?.ids ?? []).filter(x => !ids.includes(x)), ...ids] }
       st.lastGraduateAt = this.d.now()
+      const { moved, failed } = await this.graduateBatch(c, st, by)
+      const queued = st.graduateQueue?.ids.length ?? 0
       await this.saveState('sonarr', st)
-      await this.d.store.set('settings:sonarr', { ...s, graduate: true }, by)
-      const skipped = p.ids.size - now.length
-      const summary = `Moved ${moved} finished ${moved === 1 ? 'show' : 'shows'} to ${folderName(g.to)}${failed ? `; ${failed} did not move` : ''}${skipped ? `; ${skipped} no longer qualified` : ''}. Shows that finish from now on move on their own.`
-      return { moved, failed, skipped, summary }
+      const skipped = p.ids.size - ids.length
+      const summary = `Moved ${moved} finished ${moved === 1 ? 'show' : 'shows'} to ${folderName(p.to)}${queued ? `; ${queued} more follow, 20 a minute` : ''}${failed ? `; ${failed} did not move` : ''}${skipped ? `; ${skipped} no longer qualified` : ''}. Shows that finish from now on move on their own.`
+      return { moved, failed, queued, skipped, summary }
     })
   }
 }

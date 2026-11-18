@@ -229,8 +229,10 @@ export interface Pick { condition: Condition; folder: string; why: string }
 /** The first enabled rule with a folder that matches; null when none does (the item stays where it is). */
 export function pickFolder(app: App, settings: Pick_<AppSettings, 'rules' | 'photoreal'>, item: Item): Pick | null {
   const extra = new Set(settings.photoreal ?? [])
+  const curated = curatedFolders(settings.rules)
   for (const r of settings.rules) {
-    if (!r.enabled || !r.folder || r.condition === 'curated') continue
+    // A hand-picked folder is never a target, whichever rule points at it.
+    if (!r.enabled || !r.folder || r.condition === 'curated' || curated.has(normRoot(r.folder))) continue
     const why = app === 'radarr' ? filmMatch(r.condition, item as Film, extra) : showMatch(r.condition, item as Show)
     if (why) return { condition: r.condition, folder: normRoot(r.folder), why }
   }
@@ -238,11 +240,16 @@ export function pickFolder(app: App, settings: Pick_<AppSettings, 'rules' | 'pho
 }
 type Pick_<T, K extends keyof T> = { [P in K]: T[P] }
 
+/** The hand-picked folders: every folder a "curated" rule names. Nothing is ever sorted or graduated into them. */
+export function curatedFolders(rules: Rule[]): Set<string> {
+  return new Set(rules.filter(r => r.condition === 'curated' && r.folder).map(r => normRoot(r.folder!)))
+}
+
 // ── defaults, matched to the owner's folders by name ────────────────────────
 
 /** Name patterns for the default rules, tried against each root folder's last path part. */
 const FOLDER_HINTS: Record<Condition, RegExp | null> = {
-  curated: /\b(dts|curated|hand[- ]?picked|favou?rites?|best of|cinema)\b/i,
+  curated: /\b(curated|hand[- ]?picked|favou?rites?|best of|cinema)\b/i,
   documentary: /documentar|\bdocs?\b/i,
   christmas: /christmas|xmas|holiday|festive/i,
   horror: /horror|scary|spooky|halloween|fright/i,
@@ -334,6 +341,10 @@ export function parseSettings(app: App, raw: unknown, roots: string[] | null): A
     if (enabled && !folder) return `Pick a folder for "${CONDITION_LABEL[c as Condition]}" or turn it off.`
     rules.push({ condition: c, folder, enabled })
   }
+  const hand = curatedFolders(rules)
+  if (def && hand.has(def)) return 'The folder requests arrive in is marked hand-picked. Pick another, or take it off the hand-picked rule.'
+  const into = rules.find(r => r.condition !== 'curated' && r.enabled && r.folder && hand.has(r.folder))
+  if (into) return `"${CONDITION_LABEL[into.condition]}" points at a hand-picked folder. Nothing is ever sorted into it: pick another folder.`
   const photo = b.photoreal === undefined ? [] : b.photoreal
   if (!Array.isArray(photo) || photo.length > MAX_PHOTOREAL || !photo.every(n => Number.isInteger(n) && n > 0 && n < 1e9)) return 'The photoreal remakes are a list of TMDB numbers.'
   const enabled = b.enabled === true
@@ -368,12 +379,12 @@ const label = (i: Item) => (i.year ? `${i.title} (${i.year})` : i.title)
 
 /** Run the rules over the whole library, read-only, and compare with where everything already is. */
 export function testLibrary(app: App, settings: AppSettings, items: Item[], maxGroups = 12, maxExamples = 6): LibraryTest {
-  const curatedFolders = new Set(settings.rules.filter(r => r.condition === 'curated' && r.folder).map(r => normRoot(r.folder!)))
+  const handPicked = curatedFolders(settings.rules)
   const groups = new Map<string, Disagreement>()
   const actual = new Map<string, number>(), picked = new Map<string, number>()
   let scored = 0, agree = 0, curated = 0
   for (const it of items) {
-    if (curatedFolders.has(it.root)) { curated++; continue }
+    if (handPicked.has(it.root)) { curated++; continue }
     const p = pickFolder(app, settings, it)
     const to = p?.folder ?? it.root
     scored++
@@ -415,12 +426,23 @@ export function routable(item: Item, s: AppSettings, opts: { routedTag: number |
 
 // ── "Graduate finished shows" ───────────────────────────────────────────────
 
-/** Shows in the running-shows folder that have ended and have every aired episode on disk. */
-export function graduates(s: AppSettings, shows: Show[], leaveAlone: ReadonlySet<number> = new Set()): { from: string; to: string; shows: Show[] } | null {
-  const running = s.rules.find(r => r.condition === 'running' && r.folder)?.folder
-  const ended = s.rules.find(r => r.condition === 'ended' && r.folder)?.folder
+/** The running-shows and ended-shows folders of the enabled rules, or null when either is off or they are the same. */
+export function graduateFolders(s: Pick_<AppSettings, 'rules'>): { from: string; to: string } | null {
+  const running = s.rules.find(r => r.condition === 'running' && r.enabled && r.folder)?.folder
+  const ended = s.rules.find(r => r.condition === 'ended' && r.enabled && r.folder)?.folder
   if (!running || !ended || normRoot(running) === normRoot(ended)) return null
-  const from = normRoot(running), to = normRoot(ended)
+  if (curatedFolders(s.rules).has(normRoot(ended))) return null
+  return { from: normRoot(running), to: normRoot(ended) }
+}
+
+/**
+ * Shows in the running-shows folder that have ended and have every aired episode on disk. `leaveAlone` holds the shows
+ * a person moved by hand and the ones already graduated once (one back in the running folder was moved back by hand).
+ */
+export function graduates(s: Pick_<AppSettings, 'rules'>, shows: Show[], leaveAlone: ReadonlySet<number> = new Set()): { from: string; to: string; shows: Show[] } | null {
+  const f = graduateFolders(s)
+  if (!f) return null
+  const { from, to } = f
   return {
     from, to,
     shows: shows.filter(x => x.root === from && x.status === 'ended' && x.aired > 0 && x.files >= x.aired && !leaveAlone.has(x.id))

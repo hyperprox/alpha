@@ -117,7 +117,7 @@ test('the default rules follow the owner\'s order and find each folder by its na
   assert.equal(guessDefaultRoot(films), `${F}Main Films`)
   const r = defaultRules('radarr', FILM_ROOTS, `${F}Main Films`)
   assert.deepEqual(r.map(x => [x.condition, x.folder?.replace(F, '') ?? null]), [
-    ['curated', 'Cinema Picks DTS'], ['documentary', 'Docs'], ['christmas', 'Festive'], ['horror', 'Frights'], ['superhero', 'Comic Heroes'],
+    ['curated', 'Cinema Picks'], ['documentary', 'Docs'], ['christmas', 'Festive'], ['horror', 'Frights'], ['superhero', 'Comic Heroes'],
     ['animated-family', 'Kids Cartoons'], ['family-live-action', 'Kids Live Action'], ['default', 'Main Films'],
   ])
   assert.ok(r.every(x => x.enabled))
@@ -195,6 +195,11 @@ class FakeArr implements CoreEndpointClient {
   calls: string[] = []
   tags: Array<{ id: number; label: string }> = []
   failPut = false
+  /** The arr's own move commands; each new one starts with this status. */
+  commands: Array<{ id: number; name: string; status: string; body: any; message?: string }> = []
+  commandStatus = 'completed'
+  /** Queue rows (filtered by the caller, like the real queue). */
+  queue: any[] = []
   constructor(public app: 'radarr' | 'sonarr', public items: any[], public roots: string[]) {}
   private kind() { return this.app === 'radarr' ? 'movie' : 'series' }
   async get(p: string): Promise<any> {
@@ -208,13 +213,29 @@ class FakeArr implements CoreEndpointClient {
     }
     if (p === '/api/v3/rootfolder') return this.roots.map((path, i) => ({ id: i + 1, path }))
     if (p === '/api/v3/tag') return structuredClone(this.tags)
+    if (p === '/api/v3/command') return structuredClone(this.commands)
+    const cmd = /^\/api\/v3\/command\/(\d+)$/.exec(p)
+    if (cmd) {
+      const x = this.commands.find(k => k.id === Number(cmd[1]))
+      if (!x) throw new Error(`${this.app} returned HTTP 404`)
+      return structuredClone(x)
+    }
+    // The real queue ignores the filter often enough: answer with every row, the caller must filter.
+    if (p.startsWith('/api/v3/queue/details?')) return structuredClone(this.queue)
     throw new Error(`unexpected GET ${p}`)
   }
   async put(p: string, b: any): Promise<any> {
     this.calls.push(`PUT ${p} ${JSON.stringify(b)}`)
     if (this.failPut) throw new Error(`${this.app} returned HTTP 500`)
     if (p !== `/api/v3/${this.kind()}/editor`) throw new Error(`unexpected PUT ${p}`)
-    for (const id of b[this.app === 'radarr' ? 'movieIds' : 'seriesIds']) {
+    if (Array.isArray(b.tags) && b.tags.some((x: number) => !this.tags.some(t => t.id === x))) throw new Error(`${this.app} returned HTTP 400`)
+    const ids = b[this.app === 'radarr' ? 'movieIds' : 'seriesIds']
+    if (b.moveFiles) {
+      const key = this.app === 'radarr' ? 'movies' : 'series', idKey = this.app === 'radarr' ? 'movieId' : 'seriesId'
+      this.commands.push({ id: 500 + this.commands.length, name: this.app === 'radarr' ? 'BulkMoveMovie' : 'BulkMoveSeries', status: this.commandStatus,
+        body: { destinationRootFolder: b.rootFolderPath, [key]: ids.map((id: number) => ({ [idKey]: id })) } })
+    }
+    for (const id of ids) {
       const it = this.items.find(i => i.id === id)
       const leaf = it.path.split('/').pop()
       it.rootFolderPath = b.rootFolderPath; it.path = `${b.rootFolderPath}/${leaf}`
@@ -245,14 +266,14 @@ function rig(over: Partial<RouterDeps> = {}) {
     clients: { radarr: async () => radarr, sonarr: async () => sonarr },
     store,
     audit: async (action, details) => { audits.push({ action, details }) },
-    now: () => now, unlocked: () => unlocked, ...over,
+    now: () => now, unlocked: () => unlocked, sleep: async () => {}, ...over,
   })
   return { svc, radarr, sonarr, store, audits, at: (ms: number) => { now = ms }, setUnlocked: (u: boolean) => { unlocked = u } }
 }
 
-const newFilm = (id: number, title: string, genres: string[], keywords: string[], added: string, root = `${F}Main Films`) => ({
+const newFilm = (id: number, title: string, genres: string[], keywords: string[], added: string, root = `${F}Main Films`, hasFile = false) => ({
   id, tmdbId: 910000 + id, title, year: 2026, genres, keywords, certification: 'PG-13', studio: 'Northwind Pictures', collection: null, overview: '',
-  rootFolderPath: root, path: `${root}/${title} (2026)`, added, tags: [], hasFile: false, monitored: true,
+  rootFolderPath: root, path: `${root}/${title} (2026)`, added, tags: [], hasFile, monitored: true,
 })
 
 async function switchOn(r: ReturnType<typeof rig>, app: 'radarr' | 'sonarr' = 'radarr', settings?: AppSettings) {
@@ -372,7 +393,7 @@ test('tick: no audit row, no move; a failed move is recorded, not retried by the
   assert.equal(rec[0].ok, false); assert.match(rec[0].error!, /did not move it/)
   r2.at(NOW + 120_000)
   await r2.svc.tick()
-  assert.equal(r2.radarr.writes().filter(w => w.startsWith('PUT')).length, 1, 'tried once')
+  assert.equal(r2.radarr.writes().filter(w => w.startsWith('PUT')).length, 2, 'one try, plus one retry with the tag looked up again; nothing the next minute')
 })
 
 test('tick: nothing while HyperProx is locked, nothing while sorting is off, at most 20 moves a minute', async () => {
@@ -429,7 +450,9 @@ test('graduating finished shows: a preview first, then exactly those move, and g
   assert.equal(done.moved, 1); assert.match(done.summary, /Moved 1 finished show to Finished Runs/)
   assert.equal(r.sonarr.items.find(i => i.id === 5).rootFolderPath, `${T}Finished Runs`)
   assert.equal(r.sonarr.items.find(i => i.id === 6).rootFolderPath, `${T}On Air`)
-  assert.equal((await r.svc.storedSettings('sonarr'))!.graduate, true)
+  assert.equal(await r.svc.storedSettings('sonarr'), null, 'the suggested rules are not stored as the owner\'s')
+  assert.equal((await r.svc.status()).apps.find(a => a.app === 'sonarr')!.settings!.graduate, true)
+  assert.equal(r.audits.find(a => a.action === 'arrstack.router.moved' && a.details.id === 5)!.details.files, 'moved', 'the files move was followed to the end')
   await assert.rejects(r.svc.graduateApply(p.previewId, 'admin@example.com'), (e: any) => e.code === 'preview_required', 'a preview is used once')
   // Graduating on: the next look (every six hours) moves the show that finished since.
   r.at(NOW + 60_000)
@@ -438,10 +461,114 @@ test('graduating finished shows: a preview first, then exactly those move, and g
   r.at(NOW + GRADUATE_EVERY_MS)
   await r.svc.tick()
   assert.equal(r.sonarr.items.find(i => i.id === 6).rootFolderPath, `${T}Finished Runs`)
-  // Saving the rules cannot switch graduating on by itself, only keep it on or switch it off.
-  const s = (await r.svc.storedSettings('sonarr'))!
-  assert.equal((await r.svc.saveSettings('sonarr', { ...s, graduate: false }, undefined, 'admin@example.com')).graduate, false)
-  assert.equal((await r.svc.saveSettings('sonarr', { ...s, graduate: true }, undefined, 'admin@example.com')).graduate, false)
+  // A graduated show the owner moved back by hand stays where he put it.
+  const back = r.sonarr.items.find(i => i.id === 5)
+  back.rootFolderPath = `${T}On Air`; back.path = `${T}On Air/Tidewater`
+  r.at(NOW + 2 * GRADUATE_EVERY_MS)
+  await r.svc.tick()
+  assert.equal(back.rootFolderPath, `${T}On Air`, 'never graduated twice')
+  // Saving the rules keeps graduating on, or switches it off; it never switches it on.
+  const s = (await r.svc.status()).apps.find(a => a.app === 'sonarr')!.settings!
+  assert.equal((await r.svc.saveSettings('sonarr', { ...s, graduate: true }, undefined, 'admin@example.com')).graduate, true, 'kept on')
+  assert.equal((await r.svc.saveSettings('sonarr', { ...s, graduate: false }, undefined, 'admin@example.com')).graduate, false, 'switched off')
+  assert.equal((await r.svc.saveSettings('sonarr', { ...s, graduate: true }, undefined, 'admin@example.com')).graduate, false, 'not back on without a preview')
+})
+
+test('graduating: only with the running and ended rules on; 20 a minute, the rest on the next ticks', async () => {
+  const r = rig()
+  const s = (await r.svc.status()).apps.find(a => a.app === 'sonarr')!.settings!
+  await r.svc.saveSettings('sonarr', { ...s, rules: s.rules.map(x => (x.condition === 'ended' ? { ...x, enabled: false } : x)) }, undefined, 'admin@example.com')
+  await assert.rejects(r.svc.graduatePreview(), (e: any) => e.code === 'no_folders')
+  await r.svc.saveSettings('sonarr', s, undefined, 'admin@example.com')
+  for (let i = 0; i < 25; i++) {
+    r.sonarr.items.push({ ...structuredClone(r.sonarr.items[4]), id: 100 + i, tvdbId: 800100 + i, title: `Closed Book ${i}`, path: `${T}On Air/Closed Book ${i}` })
+  }
+  const p = await r.svc.graduatePreview()
+  assert.equal(p.shows.length, 26)
+  const done = await r.svc.graduateApply(p.previewId, 'admin@example.com')
+  assert.equal(done.moved, 20); assert.equal(done.queued, 6); assert.match(done.summary, /6 more follow, 20 a minute/)
+  r.at(NOW + 60_000)
+  await r.svc.tick()
+  assert.equal(r.sonarr.items.filter(i => i.rootFolderPath === `${T}Finished Runs`).length, 1 + 26, 'the rest the next minute')
+  // Switching the ended rule off stops graduating at once.
+  for (let i = 0; i < 2; i++) r.sonarr.items.push({ ...structuredClone(r.sonarr.items[4]), id: 200 + i, tvdbId: 800200 + i, title: `Late Finish ${i}`, rootFolderPath: `${T}On Air`, path: `${T}On Air/Late Finish ${i}` })
+  await r.svc.saveSettings('sonarr', { ...s, graduate: true, rules: s.rules.map(x => (x.condition === 'ended' ? { ...x, enabled: false } : x)) }, undefined, 'admin@example.com')
+  r.at(NOW + GRADUATE_EVERY_MS + 60_000)
+  await r.svc.tick()
+  assert.ok(r.sonarr.items.filter(i => i.id >= 200).every(i => i.rootFolderPath === `${T}On Air`))
+})
+
+test('hand-picked folders are never a target: refused when saved, skipped when picking, refused for Move to', async () => {
+  const s = filmSettings()
+  const intoCurated = { ...s, rules: s.rules.map(x => (x.condition === 'horror' ? { ...x, folder: `${F}Cinema Picks` } : x)) }
+  assert.match(parseSettings('radarr', intoCurated, FILM_ROOTS) as string, /points at a hand-picked folder/)
+  assert.match(parseSettings('radarr', { ...s, defaultRoot: `${F}Cinema Picks` }, FILM_ROOTS) as string, /marked hand-picked/)
+  assert.equal(typeof parseSettings('radarr', { ...intoCurated, rules: intoCurated.rules.map(x => (x.condition === 'horror' ? { ...x, enabled: false } : x)) }, FILM_ROOTS), 'object', 'a rule that is off may keep it')
+  assert.equal(pickFolder('radarr', intoCurated, film({ genres: ['Horror'] }))!.folder, `${F}Main Films`, 'the horror rule is skipped, the next fitting rule wins')
+  const r = rig()
+  await switchOn(r)
+  r.radarr.items.push(newFilm(18, 'Harrow Lane Haunting', ['Horror'], [], '2026-11-18T12:00:30Z'))
+  r.at(NOW + 60_000)
+  await r.svc.tick()
+  await assert.rejects(r.svc.move('radarr', 18, `${F}Cinema Picks`, 'admin@example.com'), (e: any) => e.code === 'hand_picked')
+})
+
+test('files: a move whose files are still on their way is "pending", then confirmed or failed from the arr\'s command', async () => {
+  const r = rig()
+  await switchOn(r)
+  r.radarr.commandStatus = 'started'
+  r.radarr.items.push(newFilm(18, 'Harrow Lane Haunting', ['Horror'], [], '2026-11-18T12:00:30Z', `${F}Main Films`, true))
+  r.radarr.items.push(newFilm(19, 'Copper Comet Again', ['Action'], ['dc extended universe (dceu)'], '2026-11-18T12:00:40Z', `${F}Main Films`, true))
+  r.at(NOW + 60_000)
+  await r.svc.tick()
+  let rec = await r.svc.recent()
+  assert.deepEqual(rec.map(m => [m.id, m.ok, m.files]), [[19, false, 'pending'], [18, false, 'pending']], 'not ok while the files move')
+  assert.ok(rec.every(m => m.commandId))
+  r.radarr.commands[0].status = 'completed'
+  r.radarr.commands[1].status = 'failed'; r.radarr.commands[1].message = 'Destination folder is full'
+  r.at(NOW + 120_000)
+  await r.svc.tick()
+  rec = await r.svc.recent()
+  assert.deepEqual(rec.map(m => [m.id, m.ok, m.files]), [[19, false, 'failed'], [18, true, 'moved']])
+  assert.match(rec[0].error!, /could not move the files \(failed: Destination folder is full\)/)
+  assert.ok(r.audits.some(a => a.action === 'arrstack.router.files' && a.details.files === 'failed'))
+  // A film with no files has nothing to move: ok at once.
+  r.radarr.items.push(newFilm(20, 'Quiet Frights', ['Horror'], [], '2026-11-18T12:02:30Z'))
+  r.at(NOW + 180_000)
+  await r.svc.tick()
+  assert.deepEqual([(await r.svc.recent())[0].ok, (await r.svc.recent())[0].files], [true, 'none'])
+})
+
+test('an item the arr is importing waits for the next minute (the queue is filtered here, not trusted)', async () => {
+  const r = rig()
+  await switchOn(r)
+  r.radarr.items.push(newFilm(18, 'Harrow Lane Haunting', ['Horror'], [], '2026-11-18T12:00:30Z'))
+  r.radarr.queue = [{ movieId: 18, trackedDownloadState: 'importPending' }, { movieId: 3, trackedDownloadState: 'downloading' }]
+  r.at(NOW + 60_000)
+  await r.svc.tick()
+  assert.equal(r.radarr.writes().filter(w => w.startsWith('PUT')).length, 0)
+  assert.equal((await r.svc.status()).apps.find(a => a.app === 'radarr')!.lastTick!.waiting, 1)
+  // Another item's import does not hold this one back.
+  r.radarr.queue = [{ movieId: 3, trackedDownloadState: 'importing' }]
+  r.at(NOW + 120_000)
+  await r.svc.tick()
+  assert.equal(r.radarr.items.find(i => i.id === 18).rootFolderPath, `${F}Frights`, 'looked at again, though no new id was found')
+})
+
+test('a stale hpx-routed tag (deleted in the arr) is looked up again and the move retried once', async () => {
+  const r = rig()
+  await switchOn(r)
+  r.radarr.items.push(newFilm(18, 'Harrow Lane Haunting', ['Horror'], [], '2026-11-18T12:00:30Z'))
+  r.at(NOW + 60_000)
+  await r.svc.tick()
+  r.radarr.tags = []   // someone deleted the tag in Radarr
+  r.radarr.items.push(newFilm(19, 'Harrow Lane Haunting II', ['Horror'], [], '2026-11-18T12:01:30Z'))
+  r.at(NOW + 120_000)
+  await r.svc.tick()
+  const moved = r.radarr.items.find(i => i.id === 19)
+  assert.equal(moved.rootFolderPath, `${F}Frights`)
+  assert.deepEqual(moved.tags, [40], 'tagged with the tag made again')
+  assert.equal((await r.svc.recent())[0].ok, true)
 })
 
 test('films: The pick for every fixture with the default rules', () => {
