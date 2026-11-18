@@ -10,7 +10,7 @@ export type Condition = string
 
 export interface Rule { condition: Condition; folder: string | null; enabled: boolean }
 export interface RouterSettings { enabled: boolean; defaultRoot: string | null; rules: Rule[]; photoreal: number[]; graduate: boolean; enabledAt: string | null }
-export interface Tick { at: string; looked: number; moved: number; failed: number; error?: string }
+export interface Tick { at: string; looked: number; moved: number; failed: number; waiting?: number; error?: string }
 export interface RouterAppStatus {
   app: RouterApp; label: string; name: string; configured: boolean; roots: string[]
   conditions: Array<{ id: Condition; label: string }>
@@ -21,6 +21,7 @@ export interface RouterAppStatus {
 export interface Move {
   key: string; at: string; app: RouterApp; id: number; title: string; year: number; from: string; to: string
   kind: 'sorted' | 'graduated' | 'moved'; condition: Condition | null; why: string; detail: string; by: string; ok: boolean; error?: string
+  files?: 'moved' | 'none' | 'pending' | 'failed' | 'unconfirmed'
 }
 export interface RouterStatus { apps: RouterAppStatus[]; recent: Move[]; everySeconds: number; lookbackHours: number }
 export interface Disagreement { actual: string; pick: string; condition: Condition | null; count: number; examples: string[] }
@@ -82,6 +83,7 @@ export function tickWord(t: Tick | null, now = Date.now()): string {
   if (t.looked) parts.push(`${t.looked} new`)
   if (t.moved) parts.push(`${t.moved} sorted`)
   if (t.failed) parts.push(`${t.failed} not moved`)
+  if (t.waiting) parts.push(`${t.waiting} waiting for an import to finish`)
   return `${parts.join(' · ')}.`
 }
 
@@ -105,6 +107,15 @@ export function suggestedWord(st: Pick<RouterAppStatus, 'saved' | 'suggestedFrom
   return st.suggestedFrom === 'seerr'
     ? 'Suggested rules, matched to your folders by name. Requests arrive where Seerr sends them.'
     : 'Suggested rules, matched to your folders by name. Requests arrive where most new items went: check that folder, or add Seerr in the plug-in\'s settings so HyperProx reads it from there.'
+}
+
+/** The pill on a Recently sorted card: why it moved, or what is wrong with the move. */
+export function moveState(m: Pick<Move, 'ok' | 'why' | 'files'>): { tone: 'accent' | 'warn'; text: string } {
+  if (m.ok) return { tone: 'accent', text: m.why }
+  if (m.files === 'pending') return { tone: 'accent', text: 'Files moving' }
+  if (m.files === 'failed') return { tone: 'warn', text: 'Files not moved' }
+  if (m.files === 'unconfirmed') return { tone: 'warn', text: 'Files not confirmed' }
+  return { tone: 'warn', text: 'Not moved' }
 }
 
 /** A TMDB number typed by a person: a positive whole number, or null. */

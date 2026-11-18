@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MoveCard, PhotorealList, RuleFlow, TestView } from '../components/plugins/arr/Router'
 import {
-  agreementWord, draftBody, folderName, graduateWord, moveRule, moveWord, parseTmdb, ruleLine, suggestedWord, switchOnWord, tickWord,
+  agreementWord, draftBody, folderName, graduateWord, moveRule, moveState, moveWord, parseTmdb, ruleLine, suggestedWord, switchOnWord, tickWord,
   type LibraryTest, type Move, type RouterAppStatus, type RouterSettings,
 } from '../components/plugins/arr/router-view'
 
@@ -84,6 +84,9 @@ test('Recently sorted: from → to with why; "Move to…" for an admin only, wit
   assert.ok(!/<select|<button/.test(viewer))
   const failed = renderToStaticMarkup(<MoveCard m={{ ...m, ok: false, error: 'Radarr did not move it: HTTP 500' }} st={st} canAct onMove={noop} />)
   assert.match(failed, /Not moved/); assert.match(failed, /did not move it/); assert.ok(!/<select/.test(failed), 'nothing to undo')
+  const moving = renderToStaticMarkup(<MoveCard m={{ ...m, ok: false, files: 'pending', error: 'Radarr is still moving the files.' }} st={st} canAct onMove={noop} />)
+  assert.match(moving, /Files moving/); assert.match(moving, /still moving the files/); assert.ok(!/<select/.test(moving), 'no Move to until the files are there')
+  assert.equal(moveState({ ok: false, why: 'x', files: 'failed' }).text, 'Files not moved')
 })
 
 test('the words: switching on, moving, graduating, the last look; the body sent is only what the API reads', () => {
@@ -92,6 +95,7 @@ test('the words: switching on, moving, graduating, the last look; the body sent 
   assert.match(graduateWord({ previewId: 'x', from: '/tv/On Air', to: '/tv/Finished Runs', shows: [{ id: 1, title: 'Tidewater', year: 2015, files: 20, aired: 20 }] }), /^Move 1 finished show to Finished Runs\?/)
   assert.equal(tickWord(null), 'Not looked yet.')
   assert.equal(tickWord({ at: new Date(NOW - 30_000).toISOString(), looked: 2, moved: 1, failed: 0 }, NOW), 'Last look just now · 2 new · 1 sorted.')
+  assert.equal(tickWord({ at: new Date(NOW - 30_000).toISOString(), looked: 1, moved: 0, failed: 0, waiting: 1 }, NOW), 'Last look just now · 1 new · 1 waiting for an import to finish.')
   assert.ok(!('enabledAt' in draftBody({ ...settings, enabledAt: '2026-11-18T00:00:00Z' })))
   assert.match(suggestedWord({ saved: false, suggestedFrom: 'seerr' })!, /where Seerr sends them/)
   assert.match(suggestedWord({ saved: false, suggestedFrom: 'guess' })!, /most new items went/)

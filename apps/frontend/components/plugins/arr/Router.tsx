@@ -24,7 +24,7 @@ import c from './giveup.module.css'
 import r from './router.module.css'
 import { ConfirmBox } from './GiveUp'
 import {
-  agreementWord, conditionLabel, draftBody, folderName, graduateWord, moveRule, moveWord, parseTmdb, ruleLine, sinceWord, suggestedWord, switchOnWord, tickWord,
+  agreementWord, conditionLabel, draftBody, folderName, graduateWord, moveRule, moveState, moveWord, parseTmdb, ruleLine, sinceWord, suggestedWord, switchOnWord, tickWord,
   type GraduatePreview, type LibraryTest, type Move, type RouterApp, type RouterAppStatus, type RouterSettings, type RouterStatus, type Rule,
 } from './router-view'
 
@@ -161,7 +161,7 @@ export function MoveCard({ m, st, canAct, onMove }: { m: Move; st?: RouterAppSta
         <span className={r.folder}>{folderName(m.from)}</span>
         <span className={r.arrow} aria-hidden>→</span>
         <span className={r.folder}>{folderName(m.to)}</span>
-        <Pill tone={m.ok ? 'accent' : 'warn'}>{m.ok ? m.why : 'Not moved'}</Pill>
+        <Pill tone={moveState(m).tone === 'warn' ? 'warn' : 'accent'}>{moveState(m).text}</Pill>
       </div>
       <span className={c.meta}>{m.ok ? `Because: ${m.detail}${m.kind === 'moved' ? ` · by ${m.by}` : ''}` : m.error}</span>
       {canAct && onMove && st && m.ok && (

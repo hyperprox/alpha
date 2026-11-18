@@ -2197,9 +2197,12 @@ folder it belongs in, about a minute after it is added and usually before it dow
   by its TMDB number.
 - **What it touches.** Only something that landed in the folder requests arrive in, was added after you switched
   sorting on and within the last day, and was not moved back by you. Nothing already in your library moves, and
-  neither does anything you placed yourself. Each move is written to the audit log first (no audit row, no move),
-  made through Radarr or Sonarr with the files, read back, and marked with the tag "hpx-routed" so it is done once.
-  At most 20 moves a minute per app, and nothing while HyperProx is locked.
+  neither does anything you placed yourself, and nothing is ever sorted into a hand-picked folder (a rule pointing at
+  one is refused). Something Radarr or Sonarr is importing right now waits for the next minute. Each move is written
+  to the audit log first (no audit row, no move), made through Radarr or Sonarr with the files, read back, and marked
+  with the tag "hpx-routed" so it is done once. HyperProx follows the app's own file move: until it finishes the move
+  shows as "Files moving", and if it fails it says so. At most 20 moves a minute per app, and nothing while HyperProx
+  is locked.
 - **Cheap to run.** Each minute HyperProx asks only for the few items after the newest one it has seen; it reads the
   whole library at most every 15 minutes, in case it missed one.
 - **Test on my library** (admin) runs the rules over everything you already have, without moving anything, and shows
@@ -2210,8 +2213,10 @@ folder it belongs in, about a minute after it is added and usually before it dow
   to…** (admin, confirmed, audited) moves one item to another folder, undo included, and the sorter never touches it
   again.
 - **Graduate finished shows** (shows, off by default): a show in the running-shows folder that has ended, with every
-  aired episode on disk, moves to the ended-shows folder. You see the list first, and confirming it moves those shows
-  and keeps graduating shows that finish later (checked every six hours).
+  aired episode on disk, moves to the ended-shows folder. It needs the "Ended" and "Still running" rules on, each with
+  its own folder. You see the list first; confirming it moves those shows, 20 a minute, and keeps graduating shows that
+  finish later (checked every six hours) for as long as those two rules name the same folders. A show graduated once
+  is never graduated again, so one you move back stays where you put it.
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.
 
