@@ -1886,7 +1886,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 
 | Plug-in | What it shows |
 |---|---|
-| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, **see what's available** for any missing item, **find a better copy** of anything you have or a faster copy of a slow download, and a **VPN panel** for stacks behind Gluetun |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, **see what's available** for any missing item, **find a better copy** of anything you have or a faster copy of a slow download, a **VPN panel** for stacks behind Gluetun, and **sorting new requests into your folders** |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
 | Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
@@ -1908,7 +1908,7 @@ the router (DHCP leases, ARP comments) and, where it has none, from HyperProx's 
 guest has which address. On the Arr Stack page, an import blocked because the filenames carry no season
 and episode offers **Map by filename**, the same rescue as before.
 
-**Arr Stack queue.** The Arr Stack page opens on a **Queue** tab (next to Overview and Upcoming) that
+**Arr Stack queue.** The Arr Stack page opens on a **Queue** tab (next to Overview, Upcoming and Sorting) that
 updates by itself, like the Plex page: the queue about every 4 seconds and the rest of the page every 30
 seconds. Both stop while the browser tab is hidden and catch up when you come back. The **pause** button
 turns it off, and **Refresh** is now a small extra for when you want a reading right away. Behind the page, HyperProx
@@ -2174,6 +2174,44 @@ shown to admins only; everyone else sees that it is hidden. Without Gluetun, the
   and remembers what it has announced across a restart, so it neither repeats an alert nor forgets the all-clear.
 - Viewers see the panel without the public address, and a plain sentence instead of the details when it cannot be
   read; admins see why.
+
+**Sort requests into folders.** Request apps such as Seerr send every film to one folder and every show to another,
+and the person asking cannot choose. On the Arr Stack's **Sorting** tab, HyperProx can move each new request into the
+folder it belongs in, about a minute after it is added and usually before it downloads.
+
+- **Your folders, your order.** For films and for shows there is a list of rules, each a kind of item and the folder it
+  goes to, picked from Radarr's or Sonarr's own folders. You can switch each rule on or off, point it at another
+  folder and move it up or down; the first rule that fits wins. The suggested rules are matched to your folders by
+  their names. The folder requests arrive in is read from Seerr (or Overseerr, Jellyseerr) when you add its address and
+  API key to the plug-in's settings, which an Arr Stack installed with Seerr does for you; otherwise it is the folder
+  most new items went to. Either way you can change it.
+- **Films**: hand-picked (a folder nothing is ever sorted into), documentaries, Christmas and holiday films,
+  horror, Marvel and DC, family cartoons, live-action family films, and everything else. **Shows**: animated or
+  anime, ended, and still running.
+- **How it decides.** Only from what Radarr and Sonarr already know: TMDB genres and keywords, the age rating, the
+  studio and collection, the title and summary; for shows, the genres, the series type and whether it has ended.
+  Christmas films are found by their keywords, holiday words in the title, and, for TV films, family films and
+  comedies, the summary; an action film or thriller that only happens at Christmas is left alone. Marvel and DC films
+  are found by studio, by TMDB's Marvel and DC keywords, or by a character's name when TMDB calls the film a comic one.
+  A remake drawn to look like live action is not a cartoon; TMDB marks most of them, and you can add any it misses
+  by its TMDB number.
+- **What it touches.** Only something that landed in the folder requests arrive in, was added after you switched
+  sorting on and within the last day, and was not moved back by you. Nothing already in your library moves, and
+  neither does anything you placed yourself. Each move is written to the audit log first (no audit row, no move),
+  made through Radarr or Sonarr with the files, read back, and marked with the tag "hpx-routed" so it is done once.
+  At most 20 moves a minute per app, and nothing while HyperProx is locked.
+- **Cheap to run.** Each minute HyperProx asks only for the few items after the newest one it has seen; it reads the
+  whole library at most every 15 minutes, in case it missed one.
+- **Test on my library** (admin) runs the rules over everything you already have, without moving anything, and shows
+  how many items are already where the rules would put them, each folder now and with the rules, and the biggest
+  disagreements with examples, so you can tune the rules first. Items in a hand-picked folder are left out of the
+  score. Sorting is off until you switch it on from a test of exactly those rules, and the switch asks you to confirm.
+- **Recently sorted** lists every move with why ("Horror → your horror folder") and what in the data matched. **Move
+  to…** (admin, confirmed, audited) moves one item to another folder, undo included, and the sorter never touches it
+  again.
+- **Graduate finished shows** (shows, off by default): a show in the running-shows folder that has ended, with every
+  aired episode on disk, moves to the ended-shows folder. You see the list first, and confirming it moves those shows
+  and keeps graduating shows that finish later (checked every six hours).
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.
 
