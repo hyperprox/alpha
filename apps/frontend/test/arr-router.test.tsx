@@ -6,9 +6,9 @@ import "./css-stub"
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { MoveCard, PhotorealList, RuleFlow, TestView } from '../components/plugins/arr/Router'
+import { GroupCard, JobView, MoveCard, PhotorealList, RuleFlow, TestView } from '../components/plugins/arr/Router'
 import {
-  agreementWord, draftBody, folderName, graduateWord, moveRule, moveState, moveWord, parseTmdb, ruleLine, suggestedWord, switchOnWord, tickWord,
+  agreementWord, draftBody, groupTicked, jobWord, libraryWord, toggleGroup, toggleItem, type LibraryJob, type LibraryPreview, type PlanGroup, folderName, graduateWord, moveRule, moveState, moveWord, parseTmdb, ruleLine, suggestedWord, switchOnWord, tickWord,
   type LibraryTest, type Move, type RouterAppStatus, type RouterSettings,
 } from '../components/plugins/arr/router-view'
 
@@ -100,4 +100,39 @@ test('the words: switching on, moving, graduating, the last look; the body sent 
   assert.match(suggestedWord({ saved: false, suggestedFrom: 'seerr' })!, /where Seerr sends them/)
   assert.match(suggestedWord({ saved: false, suggestedFrom: 'guess' })!, /most new items went/)
   assert.equal(suggestedWord({ saved: true }), null)
+})
+
+const group: PlanGroup = {
+  key: 'k', from: `${F}Main Films`, to: `${F}Frights`, condition: 'horror', count: 2, word: 'Horror in Main Films → Frights',
+  items: [{ id: 14, title: 'Signal Lost', year: 1986, detail: 'genre Horror' }, { id: 31, title: 'Old Fright', year: 1990, detail: 'genre Horror' }],
+}
+
+test('Sort my library: a group card is from → to with its count; unticked by default; titles open with their own boxes', () => {
+  const closed = renderToStaticMarkup(<GroupCard g={group} sel={new Set()} open={false} canAct onGroup={noop} onItem={noop} onOpen={noop} />)
+  assert.match(closed, /Main Films<\/span><span class="arrow" aria-hidden="true">→<\/span><span class="folder">Frights/)
+  assert.match(closed, /<b class="count">2<\/b>/); assert.match(closed, /data-ticked="none"/)
+  assert.match(closed, /aria-label="Move all of Horror in Main Films → Frights"/); assert.ok(!/checked=""/.test(closed), 'unticked by default')
+  assert.match(closed, /Show the 2 titles/); assert.ok(!/Signal Lost/.test(closed))
+  const open = renderToStaticMarkup(<GroupCard g={group} sel={new Set([14])} open canAct onGroup={noop} onItem={noop} onOpen={noop} />)
+  assert.match(open, /Signal Lost \(1986\)/); assert.match(open, /data-ticked="some"/); assert.match(open, /1 ticked/)
+  const shows = renderToStaticMarkup(<GroupCard g={{ ...group, items: [{ id: 5, title: 'Tidewater', year: 2015, detail: 'it has ended', episodes: { files: 18, aired: 20 } }] }} sel={new Set()} open canAct onGroup={noop} onItem={noop} onOpen={noop} />)
+  assert.match(shows, /18 of 20 episodes/)
+  const viewer = renderToStaticMarkup(<GroupCard g={group} sel={new Set()} open canAct={false} onGroup={noop} onItem={noop} onOpen={noop} />)
+  assert.ok(!/<input/.test(viewer), 'a viewer sees the groups with no boxes')
+})
+
+test('Sort my library: ticking groups and titles, the confirm, and the progress ring with Stop', () => {
+  let sel = toggleGroup(new Set(), group, true)
+  assert.equal(groupTicked(sel, group), 'all')
+  sel = toggleItem(sel, 31, false)
+  assert.equal(groupTicked(sel, group), 'some')
+  const p: LibraryPreview = { previewId: 'p', app: 'radarr', total: 2, groups: [group] }
+  assert.equal(libraryWord(p, sel), 'Move 1 item in your library into the folders your rules pick? Horror in Main Films → Frights (1). Their files move with them, 20 a minute.')
+  const j: LibraryJob = { id: 'j', app: 'radarr', by: 'a', startedAt: '', state: 'running', total: 300, moved: 142, failed: 3, skipped: 0, remaining: 155, groups: ['Horror in Main Films → Frights (300)'] }
+  assert.equal(jobWord(j), '142 of 300 moved, 3 failed. The rest move 20 a minute.')
+  const html = renderToStaticMarkup(<JobView j={j} canAct onStop={noop} />)
+  assert.match(html, /aria-label="Sorting: 48%"/); assert.match(html, />Stop</)
+  assert.ok(!/>Stop</.test(renderToStaticMarkup(<JobView j={j} canAct={false} onStop={noop} />)))
+  assert.match(jobWord({ ...j, state: 'done', moved: 297, rescan: 'Plex was asked to rescan 1 library.' }), /Finished\. Plex was asked to rescan 1 library\./)
+  assert.match(jobWord({ ...j, state: 'stopped', stoppedBy: 'admin@example.com' }), /Stopped by admin@example.com; the rest stayed where they were/)
 })

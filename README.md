@@ -2212,6 +2212,16 @@ folder it belongs in, about a minute after it is added and usually before it dow
 - **Recently sorted** lists every move with why ("Horror → your horror folder") and what in the data matched. **Move
   to…** (admin, confirmed, audited) moves one item to another folder, undo included, and the sorter never touches it
   again.
+- **Sort my library** (admin) applies your saved rules to what you already have. **Preview** reads the whole library
+  without moving anything and lists every item that is not where your rules would put it, in groups such as "Horror in
+  your main folder → your horror folder (63)", each with the rule's reason. Nothing is ever proposed out of a
+  hand-picked folder or into one, and nothing you moved back by hand. Every group starts unticked: tick whole groups,
+  or open one and untick single titles (shows list "x of y episodes"). The preview lasts 15 minutes, works once, and
+  only for you. **Move** asks you to confirm, saying how many items in which groups; each item is checked again just
+  before it moves (still where it was, your rules still pick the same folder) and moved the same way as a new
+  request, 20 straight away and then 20 a minute. The page shows the progress as a ring ("142 of 300 moved, 3 failed")
+  with **Stop**; the sort carries on after a restart, and every move is in Recently sorted with Move to. When it ends,
+  a connected Plex server is asked to rescan its film or TV libraries once.
 - **Graduate finished shows** (shows, off by default): a show in the running-shows folder that has ended, with every
   aired episode on disk, moves to the ended-shows folder. It needs the "Ended" and "Still running" rules on, each with
   its own folder. You see the list first; confirming it moves those shows, 20 a minute, and keeps graduating shows that

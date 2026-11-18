@@ -17,10 +17,19 @@ export interface RouterAppStatus {
   settings: RouterSettings | null; saved: boolean; lastTick: Tick | null; error?: string
   /** For suggested rules: where the folder requests arrive in came from. */
   suggestedFrom?: 'seerr' | 'guess'
+  /** The latest "Sort my library" run. */
+  library?: LibraryJob | null
 }
+export interface LibraryJob {
+  id: string; app: RouterApp; by: string; startedAt: string; finishedAt?: string; state: 'running' | 'stopped' | 'done'
+  total: number; moved: number; failed: number; skipped: number; remaining: number; groups: string[]; stoppedBy?: string; rescan?: string
+}
+export interface PlanItem { id: number; title: string; year: number; detail: string; episodes?: { files: number; aired: number } }
+export interface PlanGroup { key: string; from: string; to: string; condition: Condition; count: number; items: PlanItem[]; word: string }
+export interface LibraryPreview { previewId: string; app: RouterApp; total: number; groups: PlanGroup[] }
 export interface Move {
   key: string; at: string; app: RouterApp; id: number; title: string; year: number; from: string; to: string
-  kind: 'sorted' | 'graduated' | 'moved'; condition: Condition | null; why: string; detail: string; by: string; ok: boolean; error?: string
+  kind: 'sorted' | 'graduated' | 'moved' | 'library'; condition: Condition | null; why: string; detail: string; by: string; ok: boolean; error?: string
   files?: 'moved' | 'none' | 'pending' | 'failed' | 'unconfirmed'
 }
 export interface RouterStatus { apps: RouterAppStatus[]; recent: Move[]; everySeconds: number; lookbackHours: number }
@@ -116,6 +125,40 @@ export function moveState(m: Pick<Move, 'ok' | 'why' | 'files'>): { tone: 'accen
   if (m.files === 'failed') return { tone: 'warn', text: 'Files not moved' }
   if (m.files === 'unconfirmed') return { tone: 'warn', text: 'Files not confirmed' }
   return { tone: 'warn', text: 'Not moved' }
+}
+
+/** "142 of 300 moved, 3 failed": a library sort's progress in words. */
+export function jobWord(j: LibraryJob): string {
+  const parts = [`${j.moved} of ${j.total} moved`]
+  if (j.failed) parts.push(`${j.failed} failed`)
+  if (j.skipped) parts.push(`${j.skipped} skipped (moved or changed since the preview)`)
+  const head = parts.join(', ')
+  if (j.state === 'running') return `${head}. The rest move 20 a minute.`
+  if (j.state === 'stopped') return `${head}. Stopped${j.stoppedBy && j.stoppedBy !== 'hyperprox' ? ` by ${j.stoppedBy}` : ''}; the rest stayed where they were.`
+  return `${head}. Finished.${j.rescan ? ` ${j.rescan}` : ''}`
+}
+
+/** Tick or untick a whole group in a selection, returning a new selection. */
+export function toggleGroup(sel: ReadonlySet<number>, g: Pick<PlanGroup, 'items'>, on: boolean): Set<number> {
+  const out = new Set(sel)
+  for (const i of g.items) { if (on) out.add(i.id); else out.delete(i.id) }
+  return out
+}
+export function toggleItem(sel: ReadonlySet<number>, id: number, on: boolean): Set<number> {
+  const out = new Set(sel)
+  if (on) out.add(id); else out.delete(id)
+  return out
+}
+/** How many of a group's items are ticked: all, some or none. */
+export function groupTicked(sel: ReadonlySet<number>, g: Pick<PlanGroup, 'items'>): 'all' | 'some' | 'none' {
+  const n = g.items.filter(i => sel.has(i.id)).length
+  return n === 0 ? 'none' : n === g.items.length ? 'all' : 'some'
+}
+/** The confirm the page shows before moving the ticked items (the server's names the same count and groups). */
+export function libraryWord(p: LibraryPreview, sel: ReadonlySet<number>): string {
+  const groups = p.groups.map(g => ({ g, n: g.items.filter(i => sel.has(i.id)).length })).filter(x => x.n > 0)
+  const n = groups.reduce((a, x) => a + x.n, 0)
+  return `Move ${n} ${n === 1 ? 'item' : 'items'} in your library into the folders your rules pick? ${groups.map(x => `${x.g.word} (${x.n})`).join('; ')}. Their files move with them, 20 a minute.`
 }
 
 /** A TMDB number typed by a person: a positive whole number, or null. */

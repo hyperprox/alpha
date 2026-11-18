@@ -24,8 +24,8 @@ import c from './giveup.module.css'
 import r from './router.module.css'
 import { ConfirmBox } from './GiveUp'
 import {
-  agreementWord, conditionLabel, draftBody, folderName, graduateWord, moveRule, moveState, moveWord, parseTmdb, ruleLine, sinceWord, suggestedWord, switchOnWord, tickWord,
-  type GraduatePreview, type LibraryTest, type Move, type RouterApp, type RouterAppStatus, type RouterSettings, type RouterStatus, type Rule,
+  agreementWord, conditionLabel, draftBody, folderName, graduateWord, groupTicked, jobWord, libraryWord, moveRule, moveState, moveWord, toggleGroup, toggleItem, parseTmdb, ruleLine, sinceWord, suggestedWord, switchOnWord, tickWord,
+  type GraduatePreview, type LibraryJob, type LibraryPreview, type LibraryTest, type Move, type PlanGroup, type RouterApp, type RouterAppStatus, type RouterSettings, type RouterStatus, type Rule,
 } from './router-view'
 
 const BASE = '/api/plugins/arrstack/router'
@@ -163,7 +163,7 @@ export function MoveCard({ m, st, canAct, onMove }: { m: Move; st?: RouterAppSta
         <span className={r.folder}>{folderName(m.to)}</span>
         <Pill tone={moveState(m).tone === 'warn' ? 'warn' : 'accent'}>{moveState(m).text}</Pill>
       </div>
-      <span className={c.meta}>{m.ok ? `Because: ${m.detail}${m.kind === 'moved' ? ` · by ${m.by}` : ''}` : m.error}</span>
+      <span className={c.meta}>{m.ok ? `Because: ${m.detail}${m.kind === 'moved' ? ` · by ${m.by}` : m.kind === 'library' ? ' · sorting the library' : ''}` : m.error}</span>
       {canAct && onMove && st && m.ok && (
         <div className={c.row}>
           <select aria-label={`Move ${m.title} to`} value={to} onChange={e => setTo(e.target.value)}>
@@ -174,6 +174,121 @@ export function MoveCard({ m, st, canAct, onMove }: { m: Move; st?: RouterAppSta
         </div>
       )}
     </li>
+  )
+}
+
+// ── "Sort my library" ────────────────────────────────────────────────────────
+
+/** One group of the preview: from → to, how many, why; tick the whole group or open it and untick single titles. */
+export function GroupCard({ g, sel, open, canAct, onGroup, onItem, onOpen }: {
+  g: PlanGroup; sel: ReadonlySet<number>; open: boolean; canAct: boolean
+  onGroup: (on: boolean) => void; onItem: (id: number, on: boolean) => void; onOpen: () => void
+}) {
+  const t = groupTicked(sel, g)
+  const n = g.items.filter(i => sel.has(i.id)).length
+  return (
+    <li className={r.group} data-ticked={t}>
+      <div className={r.groupHead}>
+        {canAct && <input type="checkbox" aria-label={`Move all of ${g.word}`} checked={t === 'all'} ref={el => { if (el) el.indeterminate = t === 'some' }} onChange={e => onGroup(e.target.checked)} />}
+        <span className={r.folder}>{folderName(g.from)}</span>
+        <span className={r.arrow} aria-hidden>→</span>
+        <span className={r.folder}>{folderName(g.to)}</span>
+        <b className={r.count}>{g.count}</b>
+      </div>
+      <span className={c.meta}>{g.word}{t !== 'none' ? ` · ${n} ticked` : ''} · e.g. {g.items[0]?.detail}</span>
+      <button type="button" className={c.link} aria-expanded={open} onClick={onOpen}>{open ? 'Hide the titles' : `Show the ${g.count} ${g.count === 1 ? 'title' : 'titles'}`}</button>
+      {open && (
+        <ul className={r.titles}>
+          {g.items.map(i => (
+            <li key={i.id}>
+              <label className={c.check}>
+                {canAct && <input type="checkbox" checked={sel.has(i.id)} onChange={e => onItem(i.id, e.target.checked)} />}
+                <span>{i.year ? `${i.title} (${i.year})` : i.title}</span>
+                {i.episodes && <span className={c.meta}>{i.episodes.files} of {i.episodes.aired} episodes</span>}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  )
+}
+
+/** A running (or finished) library sort: a progress ring and the counts in words; Stop for an admin. */
+export function JobView({ j, canAct, onStop }: { j: LibraryJob; canAct: boolean; onStop?: () => void }) {
+  const done = j.total ? (j.moved + j.failed + j.skipped) / j.total : 1
+  return (
+    <div className={r.job} data-state={j.state}>
+      <RingGauge value={done} size={84} text={`${Math.round(done * 100)}%`} label={j.state === 'running' ? 'Sorting' : j.state === 'done' ? 'Done' : 'Stopped'}
+        color={j.failed ? 'var(--warn)' : 'var(--hx-accent)'} spin={j.state === 'running'} />
+      <div className={r.testFacts}>
+        <p className={c.big}>{jobWord(j)}</p>
+        {j.groups.length > 0 && <p className={c.meta}>{j.groups.join(' · ')}</p>}
+        {canAct && onStop && j.state === 'running' && <div className={c.row}><button type="button" className={c.ghost} onClick={onStop}>Stop</button></div>}
+      </div>
+    </div>
+  )
+}
+
+function LibrarySort({ st, canAct, onDone }: { st: RouterAppStatus; canAct: boolean; onDone: (note: string) => void }) {
+  const [p, setP] = useState<LibraryPreview | null>(null)
+  const [sel, setSel] = useState<Set<number>>(new Set())
+  const [open, setOpen] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [ask, setAsk] = useState<'apply' | 'stop' | null>(null)
+  const job = st.library ?? null
+  const preview = async () => {
+    setBusy(true); setErr(null)
+    const res = await apiJson<{ data: LibraryPreview }>(`${BASE}/library/preview`, 'POST', { app: st.app })
+    setBusy(false)
+    if (!res.ok || !res.body?.data) { setErr(res.error ?? 'The preview did not work.'); return }
+    setP(res.body.data); setSel(new Set()); setOpen(null)
+  }
+  const apply = async () => {
+    if (!p) return
+    setBusy(true)
+    const res = await apiJson<{ data: LibraryJob }>(`${BASE}/library/apply`, 'POST', { previewId: p.previewId, ids: [...sel] }, IN_PAGE)
+    setBusy(false); setAsk(null)
+    if (!res.ok || !res.body?.data) { setErr(res.error ?? 'The library was not sorted.'); return }
+    setP(null); setSel(new Set())
+    onDone(`${st.label}: ${jobWord(res.body.data)}`)
+  }
+  const stop = async () => {
+    setBusy(true)
+    const res = await apiJson<{ data: LibraryJob }>(`${BASE}/library/stop`, 'POST', { app: st.app }, IN_PAGE)
+    setBusy(false); setAsk(null)
+    if (!res.ok) { setErr(res.error ?? 'It did not stop.'); return }
+    onDone(`${st.label}: the library sort is stopped.`)
+  }
+  return (
+    <div className={r.chips}>
+      <span className={r.stepTitle}>Sort my library</span>
+      <span className={c.meta}>Your saved rules over everything you already have. Nothing moves until you tick it and confirm; nothing leaves or enters a hand-picked folder.</span>
+      {err && <p className={c.bad} role="alert">{err}</p>}
+      {job && <JobView j={job} canAct={canAct} onStop={() => setAsk('stop')} />}
+      {ask === 'stop' && <ConfirmBox text={`Stop sorting the ${st.app === 'sonarr' ? 'shows' : 'films'} in your library? What has moved stays moved; the rest stays where it is.`} yes="Stop it" busy={busy} onYes={() => void stop()} onNo={() => setAsk(null)} />}
+      {canAct && job?.state !== 'running' && (
+        <div className={c.row}>
+          <button type="button" className={c.ghost} disabled={busy || !st.saved} onClick={() => void preview()}>{busy && !p ? 'Reading the library…' : 'Preview'}</button>
+          {!st.saved && <span className={c.meta}>Save your rules first.</span>}
+        </div>
+      )}
+      {p && (
+        <>
+          <p className={c.note}>{p.total === 0 ? 'Everything is already where your rules would put it.' : `${p.total} ${p.total === 1 ? 'item is' : 'items are'} not where your rules would put them, in ${p.groups.length} ${p.groups.length === 1 ? 'group' : 'groups'}. Tick what should move.`}</p>
+          <ul className={r.groups} aria-label="What would move">
+            {p.groups.map(g => (
+              <GroupCard key={g.key} g={g} sel={sel} open={open === g.key} canAct={canAct}
+                onGroup={on => setSel(x => toggleGroup(x, g, on))} onItem={(id, on) => setSel(x => toggleItem(x, id, on))}
+                onOpen={() => setOpen(o => (o === g.key ? null : g.key))} />
+            ))}
+          </ul>
+          {canAct && sel.size > 0 && <div className={c.btns}><button type="button" className={c.primary} disabled={busy} onClick={() => setAsk('apply')}>Move {sel.size} {sel.size === 1 ? 'item' : 'items'}</button></div>}
+          {ask === 'apply' && <ConfirmBox text={libraryWord(p, sel)} yes="Move them" busy={busy} onYes={() => void apply()} onNo={() => setAsk(null)} />}
+        </>
+      )}
+    </div>
   )
 }
 
@@ -257,6 +372,7 @@ function AppCard({ st, canAct, onSaved }: { st: RouterAppStatus; canAct: boolean
         </>
       )}
       {ask === 'on' && <ConfirmBox text={switchOnWord(st.app, draft)} yes={on ? 'Save it' : 'Turn it on'} busy={busy} onYes={() => void save(true, true)} onNo={() => setAsk(null)} />}
+      <LibrarySort st={st} canAct={canAct} onDone={onSaved} />
       {st.app === 'sonarr' && (
         <div className={r.chips}>
           <span className={r.stepTitle}>Graduate finished shows</span>

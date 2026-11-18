@@ -52,6 +52,12 @@
 .groupHead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .count { margin-left: auto; font: 700 1.1rem var(--font-display); color: var(--warn); }
 
+.titles { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 0; max-height: 18rem; overflow-y: auto; }
+.titles li { border-top: 1px solid var(--hx-line); }
+.group[data-ticked="all"], .group[data-ticked="some"] { border-left-color: var(--hx-accent); }
+.job { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; border: 1px solid color-mix(in srgb, var(--hx-accent) 35%, transparent); border-radius: 12px; padding: 8px 10px; }
+.job[data-state="stopped"] { border-color: var(--hx-line-hi); }
+
 .move { background: var(--hx-deep); border: 1px solid var(--hx-line); border-left: 3px solid var(--hx-accent); border-radius: 10px; padding: 8px 10px;
   display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .move[data-ok="false"] { border-left-color: var(--warn); }
