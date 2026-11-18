@@ -2,7 +2,7 @@
 //  HyperProx — Arr Stack "Sort requests into the right folder" routes (/api/plugins/arrstack/router)
 //
 //  Roles (lib/roles.ts):
-//    GET  /router                    viewer, like the Arr Stack page: each app's root folders, its rules (the saved
+//    GET  /router                    viewer (people's emails shown as "an admin"), like the Arr Stack page: each app's root folders, its rules (the saved
 //                                    ones, or the suggested ones matched to its folders by name), the last minute's
 //                                    look, and the Recently sorted list with why each item went where it went.
 //    POST /router/test               admin: "Test on my library", the rules over the whole library, read-only (it
@@ -18,7 +18,8 @@
 //                                    read-only, single-use, 15 minutes, for the person who asked only.
 //    POST /router/library/apply      admin, confirmed (the sentence names how many and which groups): move exactly the
 //                                    ticked items, 20 now and 20 a minute. Audited before anything is queued.
-//    POST /router/library/stop       admin, confirmed: stop a running library sort.
+//    POST /router/library/stop       admin, confirmed: stop a running library sort (it stops before its next move).
+//    POST /router/library/undo       admin, confirmed: move back every item the last sort moved that is still where it put it.
 //  Every POST is a signed-in admin's act: API tokens are refused by name (lib/api-tokens.ts tokenForbidden). No master
 //  password: nothing is deleted, and every move can be moved back.
 // =============================================================================
@@ -28,6 +29,7 @@ import { sendFailure, sendRefusal } from '../lib/failure'
 import { requireConfirm } from '../lib/confirm'
 import { setConfirmNames } from '../lib/confirm-text'
 import { hasRole } from '../lib/roles'
+import { currentContext } from '../lib/auth'
 import { MissLimiter } from '../lib/plex-art'
 import { RouterRefusal, type RouterService } from '../lib/arr-router/service'
 import { currentRouterService } from '../lib/arr-router/production'
@@ -48,7 +50,9 @@ export function buildArrRouterRoutes(deps: { service?: () => RouterService | nul
     setConfirmNames({
       routerMove: (app, id, folder) => svc()?.moveNames(app, id, folder) ?? null,
       routerGraduate: id => svc()?.graduateNames(id) ?? null,
-      routerLibrary: (id, ids) => svc()?.libraryNames(id, ids) ?? null,
+      // Only the asking person's own live preview names anything (lib/auth.ts currentContext is this request's).
+      routerLibrary: (id, ids) => svc()?.libraryNames(id, ids, currentContext()?.email ?? '') ?? null,
+      routerLibraryUndo: app => svc()?.libraryUndoNames(app) ?? null,
     })
     const need = (reply: FastifyReply): RouterService | null => {
       const s = svc()
@@ -65,9 +69,10 @@ export function buildArrRouterRoutes(deps: { service?: () => RouterService | nul
     }
     const body = (req: any): Record<string, unknown> => (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {})
 
-    fastify.get('/router', async (_req, reply) => {
+    fastify.get('/router', async (req, reply) => {
       const s = need(reply); if (!s) return
-      try { return { success: true, data: await s.status() } } catch (e) { return fail(reply, e) }
+      const isAdmin = !req.apiToken && !!req.session && hasRole(req.session.role, 'admin')
+      try { return { success: true, data: await s.status(isAdmin) } } catch (e) { return fail(reply, e) }
     })
 
     fastify.post('/router/test', async (req, reply) => {
@@ -143,6 +148,15 @@ export function buildArrRouterRoutes(deps: { service?: () => RouterService | nul
       if (!(await requireConfirm(req, reply))) return
       const s = need(reply); if (!s) return
       try { return { success: true, data: await s.libraryStop(b.app, by) } } catch (e) { return fail(reply, e) }
+    })
+
+    fastify.post('/router/library/undo', async (req, reply) => {
+      const by = admin(req, reply); if (!by) return
+      const b = body(req)
+      if (!isApp(b.app)) return sendRefusal(reply, 400, 'bad_request', 'Name radarr or sonarr.')
+      if (!(await requireConfirm(req, reply))) return
+      const s = need(reply); if (!s) return
+      try { return { success: true, data: await s.libraryUndo(b.app, by) } } catch (e) { return fail(reply, e) }
     })
   }
 }

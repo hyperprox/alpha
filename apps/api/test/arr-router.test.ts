@@ -19,7 +19,7 @@ import {
   defaultRules, defaultSettings, filmMatch, groupWord, leftAloneFolders, libraryPlan, filmOf, graduates, guessDefaultRoot, parseSettings, pickFolder, routable, ruleFingerprint, showMatch, showOf, testLibrary,
   whyWord, type AppSettings, type Film,
 } from '../src/lib/arr-router/rules'
-import { FULL_READ_MS, GRADUATE_EVERY_MS, LOOKBACK_MS, MAX_MOVES_PER_TICK, RouterRefusal, RouterService, type RouterDeps } from '../src/lib/arr-router/service'
+import { FULL_READ_MS, GRADUATE_EVERY_MS, LOOKBACK_MS, MAX_EXAMINED_PER_TICK, MAX_MOVES_PER_TICK, RouterRefusal, RouterService, type RouterDeps } from '../src/lib/arr-router/service'
 import { MemoryRouterStore } from '../src/lib/arr-router/store'
 import type { CoreEndpointClient } from '../src/lib/plugin-host'
 import { signIn } from './fakes/app'
@@ -224,8 +224,11 @@ class FakeArr implements CoreEndpointClient {
     if (p.startsWith('/api/v3/queue/details?')) return structuredClone(this.queue)
     throw new Error(`unexpected GET ${p}`)
   }
+  /** Called at the start of every PUT (a test can act mid-batch). */
+  onPut?: () => Promise<void> | void
   async put(p: string, b: any): Promise<any> {
     this.calls.push(`PUT ${p} ${JSON.stringify(b)}`)
+    await this.onPut?.()
     if (this.failPut) throw new Error(`${this.app} returned HTTP 500`)
     if (p !== `/api/v3/${this.kind()}/editor`) throw new Error(`unexpected PUT ${p}`)
     if (Array.isArray(b.tags) && b.tags.some((x: number) => !this.tags.some(t => t.id === x))) throw new Error(`${this.app} returned HTTP 400`)
@@ -714,7 +717,8 @@ test('library apply: audited first, moves exactly the ticked items, each checked
   const iMove = r.audits.findIndex(a => a.action === 'arrstack.router.move')
   assert.ok(iLib >= 0 && iLib < iMove, 'the library sort is audited before the first move')
   assert.equal(r.audits[iLib].details.count, 2)
-  const rec = await r.svc.recent()
+  assert.deepEqual(await r.svc.recent(), [], 'library moves have their own list: they never push request moves out')
+  const rec = await r.svc.recentLibrary()
   assert.equal(rec[0].kind, 'library'); assert.equal(rec[0].why, 'Horror → Frights'); assert.equal(rec[0].files, 'moved')
   const back = await r.svc.move('radarr', 14, `${F}Main Films`, ADMIN)
   assert.equal(back.ok, true)
@@ -807,7 +811,15 @@ test('library routes: preview admin-only and unconfirmed; apply and stop confirm
     const done = await injectConfirmed(a, { method: 'POST', url: '/api/plugins/arrstack/router/library/apply', headers: { cookie: adm.cookie }, payload })
     assert.equal(done.statusCode, 200, done.body); assert.equal(JSON.parse(done.body).data.moved, 2)
     const stopAsk = await a.inject({ method: 'POST', url: '/api/plugins/arrstack/router/library/stop', headers: { cookie: adm.cookie }, payload: { app: 'radarr' } })
-    assert.match(JSON.parse(stopAsk.body).confirm.summary, /^Stop sorting the films in your library\?/)
+    assert.match(JSON.parse(stopAsk.body).confirm.summary, /^Stop sorting the films in your library\? It stops before the next move/)
+    assert.equal(needsConfirm('POST', '/api/plugins/arrstack/router/library/undo'), true)
+    assert.equal(tokenForbidden('POST', '/api/plugins/arrstack/router/library/undo'), true)
+    const undoAsk = await a.inject({ method: 'POST', url: '/api/plugins/arrstack/router/library/undo', headers: { cookie: adm.cookie }, payload: { app: 'radarr' } })
+    assert.equal(JSON.parse(undoAsk.body).confirm.summary, 'Undo the last library sort of your films? The 2 items it moved go back where they were, 20 a minute, each only if it is still where the sort put it.')
+    const undone = await injectConfirmed(a, { method: 'POST', url: '/api/plugins/arrstack/router/library/undo', headers: { cookie: adm.cookie }, payload: { app: 'radarr' } })
+    assert.equal(undone.statusCode, 200, undone.body); assert.equal(JSON.parse(undone.body).data.moved, 2)
+    const vs = await a.inject({ method: 'GET', url: '/api/plugins/arrstack/router', headers: { cookie: viewer.cookie } })
+    assert.doesNotMatch(vs.body, /admin@example\.com/, 'a viewer sees no emails')
   } finally { await a.close() }
 })
 
@@ -834,4 +846,137 @@ test('library plan: a folder no enabled rule fills is left alone, like a hand-pi
   const job = await r.svc.libraryApply(p.previewId, ids, ADMIN)
   assert.equal(job.skipped, 1, 'its folder is no longer filled by any rule: skipped at move time')
   assert.equal(r.radarr.items.find(i => i.id === 10).rootFolderPath, `${F}Main Films`)
+})
+
+// ── "Sort my library": review notes ──────────────────────────────────────────
+
+const oldFrights = (r: ReturnType<typeof rig>, n: number, base = 300, hasFile = false) => {
+  for (let i = 0; i < n; i++) r.radarr.items.push(newFilm(base + i, `Old Fright ${base + i}`, ['Horror'], [], '2026-09-01T10:00:00Z', `${F}Main Films`, hasFile))
+}
+const horrorIds = async (r: ReturnType<typeof rig>) => {
+  const p = await r.svc.libraryPreview('radarr', ADMIN)
+  return { p, ids: p.groups.find(g => g.word === 'Horror in Main Films → Frights')!.items.map(i => i.id) }
+}
+
+test('undo this sort: audited, moves back each item still where the sort put it, never proposed again; not twice', async () => {
+  const r = await libRig()
+  const { p } = await horrorIds(r)
+  await r.svc.libraryApply(p.previewId, [14, 10], ADMIN)
+  assert.equal((await r.svc.status()).apps.find(a => a.app === 'radarr')!.library!.canUndo, 2)
+  assert.deepEqual(r.svc.libraryUndoNames('radarr'), { count: 2 })
+  // One of them was moved again since: it is not where the sort put it, so it stays.
+  const moved = r.radarr.items.find(i => i.id === 10)
+  moved.rootFolderPath = `${F}Docs`; moved.path = `${F}Docs/The Clockwork Orphan (2015)`
+  const undo = await r.svc.libraryUndo('radarr', ADMIN)
+  assert.equal(undo.kind, 'undo'); assert.equal(undo.state, 'done'); assert.equal(undo.moved, 1); assert.equal(undo.skipped, 1)
+  assert.equal(r.radarr.items.find(i => i.id === 14).rootFolderPath, `${F}Main Films`, 'back where it was')
+  assert.equal(r.radarr.items.find(i => i.id === 10).rootFolderPath, `${F}Docs`)
+  const iUndo = r.audits.findIndex(a => a.action === 'arrstack.router.library.undo')
+  assert.ok(iUndo >= 0 && iUndo < r.audits.map(a => a.action).lastIndexOf('arrstack.router.move'))
+  assert.equal((await r.svc.recentLibrary())[0].why, 'Undo → Main Films')
+  assert.ok(!(await r.svc.libraryPreview('radarr', ADMIN)).groups.some(g => g.items.some(i => i.id === 14)), 'undone: not proposed again')
+  await assert.rejects(r.svc.libraryUndo('radarr', ADMIN), (e: any) => e.code === 'nothing_to_undo')
+})
+
+test('Plex rescans only once no file move of the sort is still running, or after 30 minutes anyway', async () => {
+  const calls: string[] = []
+  const plex: Partial<CoreEndpointClient> = {
+    async get() { return { MediaContainer: { Directory: [{ key: '3', type: 'movie' }] } } },
+    async trigger(p: string) { calls.push(p) },
+  }
+  const r = await libRig({ mediaServer: async () => plex as CoreEndpointClient })
+  oldFrights(r, 2, 300, true)
+  r.radarr.commandStatus = 'started'
+  const { p, ids } = await horrorIds(r)
+  const job = await r.svc.libraryApply(p.previewId, ids, ADMIN)
+  assert.equal(job.state, 'done'); assert.equal(job.rescanPending, true); assert.deepEqual(calls, [], 'files still moving: no rescan yet')
+  r.radarr.commands.forEach(c => { c.status = 'completed' })
+  r.at(NOW + 60_000)
+  await r.svc.tick()
+  assert.deepEqual(calls, ['/library/sections/3/refresh'])
+  assert.equal((await r.svc.libraryJob('radarr'))!.rescanPending, false)
+  // A file move that never finishes: rescan anyway after 30 minutes, and say so.
+  const r2 = await libRig({ mediaServer: async () => plex as CoreEndpointClient })
+  oldFrights(r2, 1, 300, true)
+  r2.radarr.commandStatus = 'started'
+  const h2 = await horrorIds(r2)
+  await r2.svc.libraryApply(h2.p.previewId, [h2.ids.find(x => x >= 300)!], ADMIN)
+  calls.length = 0
+  r2.at(NOW + 10 * 60_000); await r2.svc.tick()
+  assert.deepEqual(calls, [])
+  r2.at(NOW + 31 * 60_000); await r2.svc.tick()
+  assert.deepEqual(calls, ['/library/sections/3/refresh'])
+  assert.match((await r2.svc.libraryJob('radarr'))!.rescan!, /1 file move was still running after 30 minutes/)
+})
+
+test('Stop takes effect between moves, without waiting for the batch', async () => {
+  const r = await libRig()
+  oldFrights(r, 10)
+  const { p, ids } = await horrorIds(r)
+  let puts = 0, stopAnswer: any = null
+  r.radarr.onPut = async () => {
+    puts++
+    if (puts === 3) stopAnswer = await r.svc.libraryStop('radarr', ADMIN)   // returns at once: the batch holds the lock
+  }
+  const job = await r.svc.libraryApply(p.previewId, ids, ADMIN)
+  assert.equal(stopAnswer.state, 'stopped')
+  assert.equal(job.state, 'stopped'); assert.equal(job.moved, 3, 'the move under way finished; nothing after it')
+  assert.equal(job.stoppedBy, ADMIN); assert.equal(job.remaining, ids.length - 3)
+  assert.equal((await r.svc.libraryJob('radarr'))!.state, 'stopped')
+})
+
+test('a library sort looks at no more than 60 items a minute, skips included, and shares the minute\'s 20 moves', async () => {
+  const r = await libRig()
+  oldFrights(r, 70)
+  const { p, ids } = await horrorIds(r)
+  // All of them moved elsewhere since the preview: every one is a skip.
+  for (const it of r.radarr.items) if (it.id >= 300) { it.rootFolderPath = `${F}Docs`; it.path = `${F}Docs/${it.title}` }
+  const job = await r.svc.libraryApply(p.previewId, ids, ADMIN)
+  assert.equal(job.skipped, MAX_EXAMINED_PER_TICK); assert.equal(job.remaining, ids.length - MAX_EXAMINED_PER_TICK); assert.equal(job.state, 'running')
+  // Shared budget: new requests already used 15 of this minute's moves, so a sort started now moves 5.
+  const r2 = rig()
+  await switchOn(r2)
+  for (let i = 0; i < 15; i++) r2.radarr.items.push(newFilm(100 + i, `Fresh Fright ${i}`, ['Horror'], [], '2026-11-18T12:00:40Z'))
+  oldFrights(r2, 10)
+  r2.at(NOW + 60_000)
+  await r2.svc.tick()
+  assert.equal(r2.radarr.writes().filter(w => w.startsWith('PUT')).length, 15)
+  const h = await horrorIds(r2)
+  const j2 = await r2.svc.libraryApply(h.p.previewId, h.ids, ADMIN)
+  assert.equal(j2.moved, 5); assert.equal(j2.remaining, h.ids.length - 5)
+})
+
+test('an item whose move errors three times is marked failed, and the sort goes on', async () => {
+  const r = await libRig()
+  oldFrights(r, 1)
+  const { p, ids } = await horrorIds(r)
+  const bad = ids.find(x => x >= 300)!
+  r.radarr.onPut = () => { if (r.radarr.calls.at(-1)!.includes(`[${bad}]`)) throw new Error('radarr returned HTTP 500') }
+  let job = await r.svc.libraryApply(p.previewId, ids, ADMIN)
+  assert.equal(job.failed, 0); assert.equal(job.remaining, 1, 'tried again later')
+  r.at(NOW + 60_000); await r.svc.tick()
+  r.at(NOW + 120_000); await r.svc.tick()
+  job = (await r.svc.status()).apps.find(a => a.app === 'radarr')!.library!
+  assert.equal(job.failed, 1); assert.equal(job.state, 'done'); assert.equal(job.moved, ids.length - 1)
+})
+
+test('library preview leaves out graduated shows; the names need a live preview of the same person; viewers see no emails', async () => {
+  const r = rig()
+  const s = (await r.svc.status()).apps.find(a => a.app === 'sonarr')!.settings!
+  await r.svc.saveSettings('sonarr', s, undefined, ADMIN)
+  await r.store.set('state:sonarr', { graduated: [6] }, 'test')
+  const p = await r.svc.libraryPreview('sonarr', ADMIN)
+  assert.deepEqual(p.groups.flatMap(g => g.items.map(i => i.title)), ['Tidewater'], 'a show graduated once (then moved back) is not proposed')
+  assert.ok(r.svc.libraryNames(p.previewId, [5], ADMIN))
+  assert.equal(r.svc.libraryNames(p.previewId, [5], 'someone-else@example.com'), null, 'another person\'s preview names nothing')
+  r.at(NOW + 16 * 60_000)
+  assert.equal(r.svc.libraryNames(p.previewId, [5], ADMIN), null, 'an expired preview names nothing')
+  r.at(NOW)
+  const r2 = await libRig()
+  const h = await horrorIds(r2)
+  await r2.svc.libraryApply(h.p.previewId, [14], ADMIN)
+  const asViewer = await r2.svc.status(false)
+  assert.equal(asViewer.recentLibrary[0].by, 'an admin')
+  assert.equal(asViewer.apps.find(a => a.app === 'radarr')!.library!.by, 'an admin')
+  assert.equal((await r2.svc.status(true)).recentLibrary[0].by, ADMIN)
 })

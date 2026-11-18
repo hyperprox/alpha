@@ -33,6 +33,7 @@ export interface ConfirmNames {
   routerMove?: (app: unknown, id: unknown, folder: unknown) => { title: string; folder: string } | null
   routerGraduate?: (previewId: unknown) => { count: number; folder: string } | null
   routerLibrary?: (previewId: unknown, ids: unknown) => { count: number; groups: string[] } | null
+  routerLibraryUndo?: (app: unknown) => { count: number } | null
 }
 const names: ConfirmNames = {}
 export function setConfirmNames(n: ConfirmNames): void { Object.assign(names, n) }
@@ -137,7 +138,13 @@ const RULES: Rule[] = [
   ['POST', /^\/api\/plugins\/arrstack\/router\/move$/, (_m, _p, b) => routerMoveSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/graduate$/, (_m, _p, b) => routerGraduateSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/library\/apply$/, (_m, _p, b) => routerLibrarySentence(b)],
-  ['POST', /^\/api\/plugins\/arrstack\/router\/library\/stop$/, (_m, _p, b) => `Stop sorting the ${b?.app === 'sonarr' ? 'shows' : 'films'} in your library? What has moved stays moved; the rest stays where it is.`],
+  ['POST', /^\/api\/plugins\/arrstack\/router\/library\/undo$/, (_m, _p, b) => {
+    const n = names.routerLibraryUndo?.(b?.app)?.count ?? 0
+    const what = b?.app === 'sonarr' ? 'shows' : 'films'
+    return n ? `Undo the last library sort of your ${what}? The ${n} ${n === 1 ? 'item' : 'items'} it moved go back where they were, 20 a minute, each only if it is still where the sort put it.`
+      : `Undo the last library sort of your ${what}? What it moved goes back where it was, if it is still where the sort put it.`
+  }],
+  ['POST', /^\/api\/plugins\/arrstack\/router\/library\/stop$/, (_m, _p, b) => `Stop sorting the ${b?.app === 'sonarr' ? 'shows' : 'films'} in your library? It stops before the next move; what has moved stays moved.`],
   ['POST', /^\/api\/local\/([^/]+)\//, m => `Run this ${m[1]} action?`],
   ['POST', /^\/api\/plugins\/apt-cacher-ng\/guests\/repair$/, () =>
     'Write the package cache setting on every guest Updates looks after, and check each can reach it?'],
