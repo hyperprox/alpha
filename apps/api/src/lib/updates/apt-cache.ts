@@ -50,6 +50,10 @@ export async function prepareAptCache(
         return say(`package cache: left alone, ${target.name} has its own apt proxy${e.own ? ` (${e.own})` : ''}`)
       }
       if (e.result === 'no-apt') return null
+      if (e.result === 'unusable') {
+        await hook.record(clusterId, target.key, { kind: target.kind, name: target.name, state: 'failed', src: null, at, detail: 'apt could not run the cache check, so the setting was taken out' }).catch(() => {})
+        return say('package cache: apt could not run the cache check, so the setting was taken out; apt fetches directly')
+      }
       await hook.record(clusterId, target.key, { kind: target.kind, name: target.name, state: 'set', src: e.src, reachable: e.reachable, at }).catch(() => {})
       return say(e.reachable ? `package cache: ${d.reason}` : `package cache: set, but ${target.name} cannot reach it now, so apt fetches directly`)
     }

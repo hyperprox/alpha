@@ -151,7 +151,10 @@ if [ -n "$own" ]; then
   rm -f "$D" "$S"
   echo "result=own-proxy"; echo "own=$(echo "$own" | head -n1 | tr ' ' '_')"; exit 0
 fi
-mkdir -p "$(dirname "$S")"
+# apt runs the detect script as its unprivileged _apt user: the folder must be readable and searchable by everyone,
+# whatever umask this shell inherited (a 0700 folder made apt fail every fetch with "ProxyAutoDetect returned 100").
+install -d -m 755 "$(dirname "$S")"
+chmod 755 "$(dirname "$S")"
 T=$(mktemp)
 cat > "$T" <<'HPX_DETECT'
 ${detect}HPX_DETECT
@@ -165,7 +168,14 @@ rm -f "$T" "$U"
 [ "$changed" = 1 ] && echo "result=set" || echo "result=unchanged"
 src=$(ip -4 route get ${host} 2>/dev/null | sed -n 's/.* src \\([0-9.]*\\).*/\\1/p' | head -n1 || true)
 [ -z "$src" ] || echo "src=$src"
-[ "$("$S" http://deb.debian.org/debian/ 2>/dev/null)" = "http://${host}:${port}" ] && echo "reachable=1" || echo "reachable=0"
+# Check as apt will run it: as _apt when that user exists, so a permission problem shows up here, not in apt.
+if id _apt >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then got=$(runuser -u _apt -- "$S" http://deb.debian.org/debian/ 2>/dev/null) || got=FAILED; else got=$("$S" http://deb.debian.org/debian/ 2>/dev/null) || got=FAILED; fi
+if [ "$got" = FAILED ]; then
+  # apt could not run the detect script: take the setting back out so apt goes direct, never fails.
+  rm -f "$D" "$S"
+  echo "result=unusable"; exit 0
+fi
+[ "$got" = "http://${host}:${port}" ] && echo "reachable=1" || echo "reachable=0"
 exit 0`
 }
 
@@ -185,12 +195,14 @@ export type EnsureResult =
   | { result: 'set' | 'unchanged'; src: string | null; reachable: boolean }
   | { result: 'own-proxy'; own: string | null }
   | { result: 'no-apt' }
+  | { result: 'unusable' }
 
 /** What ensureScript printed; null when it printed nothing it would. */
 export function parseEnsure(output: string): EnsureResult | null {
-  const r = /^result=(set|unchanged|own-proxy|no-apt)$/m.exec(output)?.[1]
+  const r = /^result=(set|unchanged|own-proxy|no-apt|unusable)$/m.exec(output)?.[1]
   if (!r) return null
   if (r === 'no-apt') return { result: 'no-apt' }
+  if (r === 'unusable') return { result: 'unusable' }
   if (r === 'own-proxy') return { result: 'own-proxy', own: /^own=(\S{1,200})$/m.exec(output)?.[1] ?? null }
   const src = /^src=(\d{1,3}(?:\.\d{1,3}){3})$/m.exec(output)?.[1] ?? null
   return { result: r as 'set' | 'unchanged', src, reachable: /^reachable=1$/m.test(output) }

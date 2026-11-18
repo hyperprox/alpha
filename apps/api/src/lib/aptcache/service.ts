@@ -561,6 +561,7 @@ export function recordOf(t: { kind: 'guest' | 'node'; name: string }, e: ReturnT
   if (!e) return { kind: t.kind, name: t.name, state: 'failed', src: null, at, detail: 'the setting could not be written' }
   if (e.result === 'own-proxy') return { kind: t.kind, name: t.name, state: 'own-proxy', src: null, at, detail: e.own ? `its own proxy is set in ${e.own}` : 'it has its own proxy' }
   if (e.result === 'no-apt') return { kind: t.kind, name: t.name, state: 'no-apt', src: null, at }
+  if (e.result === 'unusable') return { kind: t.kind, name: t.name, state: 'failed', src: null, at, detail: 'apt could not run the cache check, so the setting was taken out and this guest updates directly' }
   return { kind: t.kind, name: t.name, state: 'set', src: e.src, reachable: e.reachable, at }
 }
 

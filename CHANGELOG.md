@@ -21,6 +21,12 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-18 — Package cache: updates no longer fail on some guests
+
+### Fixed
+- **Updates failed on guests using the package cache with "ProxyAutoDetect returned an error".** The folder HyperProx writes its cache check into was readable by root only, and apt runs that check as its own restricted user. The folder is now readable by everyone, the check is tested the way apt runs it, and if apt still cannot run it the setting takes itself out so the guest updates directly.
+  - Technical: `install -d -m 755` for the detect folder whatever the umask; the reachability check runs via `runuser -u _apt`; a failure removes both files and prints `result=unusable`, recorded as failed.
+
 ## 2026-11-17 — Arr Stack: a better copy, and the VPN at a glance
 
 ### New

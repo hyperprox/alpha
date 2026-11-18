@@ -221,6 +221,7 @@ test('detect script: only the archives the cache serves, only when the cache ans
 
 test('ensure, run for real in a scratch apt tree: writes its two files, or takes them out and stops when the guest has its own proxy', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-aptcache-'))
+  fs.chmodSync(root, 0o755) // the check now runs as _apt, which must be able to reach the scratch tree
   try {
     const conf = path.join(root, 'apt.conf.d'), env = path.join(root, 'environment'), lib = path.join(root, 'lib')
     fs.mkdirSync(conf); fs.writeFileSync(path.join(root, 'apt.conf'), ''); fs.writeFileSync(env, 'PATH=/usr/bin\n')
@@ -636,4 +637,32 @@ test('roles: admin for everything, re-confirmed for settings and fleet changes, 
   assert.equal(tokenForbidden('POST', '/api/plugins/apt-cacher-ng/caches/lxc-9300/actions'), true)
   assert.equal(tokenForbidden('DELETE', '/api/plugins/apt-cacher-ng/caches/lxc-9300'), true)
   assert.equal(tokenForbidden('GET', '/api/plugins/apt-cacher-ng/caches'), false)
+})
+
+test('ensure under a root-only umask (as Updates runs it): the detect folder is 755 so apt\'s _apt user can run it, and a failed check takes the setting out', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-aptperm-'))
+  fs.chmodSync(root, 0o755)
+  try {
+    const conf = path.join(root, 'apt.conf.d'), env = path.join(root, 'environment'), lib = path.join(root, 'lib')
+    fs.mkdirSync(conf); fs.writeFileSync(path.join(root, 'apt.conf'), ''); fs.writeFileSync(env, 'PATH=/usr/bin\n')
+    const D = path.join(conf, '01hyperprox-cache'), S = path.join(lib, 'apt-cache-detect')
+    const aptCfg = path.join(root, 'apt-config')
+    fs.writeFileSync(aptCfg, `Dir::Etc "${root}/"; Dir::Etc::main "apt.conf"; Dir::Etc::parts "apt.conf.d/";\n`)
+    const script = ensureScript('127.0.0.1', 9)
+      .split(DROPIN).join(D).split(DETECT).join(S)
+      .replace(/\/etc\/apt\/apt\.conf\.d/g, conf).replace(/\/etc\/apt\/apt\.conf(?![.\w])/g, path.join(root, 'apt.conf'))
+      .split('/etc/environment').join(env)
+    const r = spawnSync('bash', ['-c', 'umask 077\n' + script], { encoding: 'utf8', env: { ...process.env, APT_CONFIG: aptCfg } })
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(fs.statSync(lib).mode & 0o777, 0o755, 'the folder apt runs the script from is world-searchable')
+    assert.equal(fs.statSync(S).mode & 0o777, 0o755)
+    // With a _apt user present the check ran as _apt and succeeded, so the setting stays; without one it ran as root.
+    assert.match(r.stdout, /^result=set$/m, r.stdout)
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test('parseEnsure reads result=unusable (apt could not run the check, setting taken out) and records it as failed', () => {
+  assert.deepEqual(parseEnsure('result=unusable\n'), { result: 'unusable' })
+  assert.match(ensureScript('10.20.30.40', 3142), /runuser -u _apt/)
+  assert.match(ensureScript('10.20.30.40', 3142), /install -d -m 755/)
 })
