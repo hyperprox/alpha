@@ -27,6 +27,7 @@ export function routerService(prisma?: unknown, log?: (m: string) => void): Rout
   shared = new RouterService({
     clients: { sonarr: endpoint('default'), radarr: endpoint('radarr') },
     seerr: endpoint('seerr'),
+    mediaServer: async () => { const p = findPlugin('plex'); return p ? pluginEndpointClient(p, 'default').catch(() => null) : null },
     store: new PrismaRouterStore(prisma as any),
     audit: (action, details) => auditOrThrow(action, 'plugin:arrstack', details),
     now: () => Date.now(),

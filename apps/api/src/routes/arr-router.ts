@@ -14,6 +14,11 @@
 //                                    picked, files and all. Audited before it moves; never sorted again after.
 //    POST /router/graduate/preview   admin: the finished shows that would move from the running-shows folder.
 //    POST /router/graduate           admin, confirmed: move exactly the previewed shows and switch graduating on.
+//    POST /router/library/preview    admin: "Sort my library", the saved rules over everything already there, grouped;
+//                                    read-only, single-use, 15 minutes, for the person who asked only.
+//    POST /router/library/apply      admin, confirmed (the sentence names how many and which groups): move exactly the
+//                                    ticked items, 20 now and 20 a minute. Audited before anything is queued.
+//    POST /router/library/stop       admin, confirmed: stop a running library sort.
 //  Every POST is a signed-in admin's act: API tokens are refused by name (lib/api-tokens.ts tokenForbidden). No master
 //  password: nothing is deleted, and every move can be moved back.
 // =============================================================================
@@ -43,6 +48,7 @@ export function buildArrRouterRoutes(deps: { service?: () => RouterService | nul
     setConfirmNames({
       routerMove: (app, id, folder) => svc()?.moveNames(app, id, folder) ?? null,
       routerGraduate: id => svc()?.graduateNames(id) ?? null,
+      routerLibrary: (id, ids) => svc()?.libraryNames(id, ids) ?? null,
     })
     const need = (reply: FastifyReply): RouterService | null => {
       const s = svc()
@@ -108,6 +114,35 @@ export function buildArrRouterRoutes(deps: { service?: () => RouterService | nul
       if (!(await requireConfirm(req, reply))) return
       const s = need(reply); if (!s) return
       try { return { success: true, data: await s.graduateApply(b.previewId, by) } } catch (e) { return fail(reply, e) }
+    })
+
+    fastify.post('/router/library/preview', async (req, reply) => {
+      const by = admin(req, reply); if (!by) return
+      const s = need(reply); if (!s) return
+      const b = body(req)
+      if (!isApp(b.app)) return sendRefusal(reply, 400, 'bad_request', 'Name radarr or sonarr.')
+      if (!testLimiter.allow(by)) return sendRefusal(reply, 429, 'rate_limited', 'Too many previews in a minute. Each one reads the whole library: wait a moment.')
+      try { return { success: true, data: await s.libraryPreview(b.app, by) } } catch (e) { return fail(reply, e) }
+    })
+
+    fastify.post('/router/library/apply', async (req, reply) => {
+      const by = admin(req, reply); if (!by) return
+      const b = body(req)
+      if (typeof b.previewId !== 'string' || !/^[0-9a-f]{24}$/.test(b.previewId) || !Array.isArray(b.ids) || !b.ids.length) {
+        return sendRefusal(reply, 400, 'bad_request', 'Tick the items to move, from a preview.')
+      }
+      if (!(await requireConfirm(req, reply))) return
+      const s = need(reply); if (!s) return
+      try { return { success: true, data: await s.libraryApply(b.previewId, b.ids, by) } } catch (e) { return fail(reply, e) }
+    })
+
+    fastify.post('/router/library/stop', async (req, reply) => {
+      const by = admin(req, reply); if (!by) return
+      const b = body(req)
+      if (!isApp(b.app)) return sendRefusal(reply, 400, 'bad_request', 'Name radarr or sonarr.')
+      if (!(await requireConfirm(req, reply))) return
+      const s = need(reply); if (!s) return
+      try { return { success: true, data: await s.libraryStop(b.app, by) } } catch (e) { return fail(reply, e) }
     })
   }
 }

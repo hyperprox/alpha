@@ -23,6 +23,12 @@
 //             on for shows that finish later (looked at every six hours). Its own record keeps only that it is on and
 //             the two folders the preview showed. A show graduated once is never graduated again, so one a person moved
 //             back stays where they put it.
+//   library   "Sort my library": the saved rules over everything already there, as groups (from → to, the rule that
+//             picked it), read-only, never out of or into a hand-picked folder. The preview is single-use, lasts 15
+//             minutes and belongs to the person who asked for it. Applying it moves exactly the ticked items through
+//             the same move as above (each checked again first: still where it was, the rules still pick the same
+//             folder), 20 straight away and 20 a minute after that. The queue is kept in the database, so it carries on
+//             after a restart; it can be stopped; when it ends, a connected Plex server is asked to rescan once.
 //
 //  The routes are routes/arr-router.ts.
 // =============================================================================
@@ -30,9 +36,9 @@
 import crypto from 'node:crypto'
 import type { CoreEndpointClient } from '../plugin-host'
 import {
-  APPS, CONDITION_LABEL, ROUTED_TAG, conditionsFor, curatedFolders, defaultSettings, filmOf, folderName, graduateFolders, graduates, guessDefaultRoot, normRoot, parseSettings,
+  APPS, CONDITION_LABEL, ROUTED_TAG, conditionsFor, curatedFolders, groupWord, libraryPlan, defaultSettings, filmOf, folderName, graduateFolders, graduates, guessDefaultRoot, normRoot, parseSettings,
   pickFolder, routable, ruleFingerprint, showOf, testLibrary, whyWord,
-  type App, type AppSettings, type Condition, type Item, type LibraryTest, type Show,
+  type App, type AppSettings, type Condition, type Item, type LibraryTest, type PlanGroup, type Show,
 } from './rules'
 import type { RouterStore } from './store'
 
@@ -50,6 +56,8 @@ export interface RouterDeps {
   now(): number
   unlocked(): boolean
   log?(m: string): void
+  /** The media server (the Plex plug-in's), when connected: asked to rescan once a library sort ends. Optional. */
+  mediaServer?: () => Promise<CoreEndpointClient | null>
   /** Waits before the file move is first checked. Default: a real timer. */
   sleep?(ms: number): Promise<void>
 }
@@ -85,7 +93,7 @@ const IMPORTING = new Set(['importpending', 'importing'])
 const msg = (e: any) => String(e?.message ?? e).slice(0, 200)
 const toItem = (app: App, raw: any): Item => (app === 'radarr' ? filmOf(raw) : showOf(raw))
 
-export type MoveKind = 'sorted' | 'graduated' | 'moved'
+export type MoveKind = 'sorted' | 'graduated' | 'moved' | 'library'
 export interface Move {
   key: string; at: string; app: App; id: number; title: string; year: number
   from: string; to: string; kind: MoveKind; condition: Condition | null
@@ -135,15 +143,36 @@ export interface AppStatus {
   /** For suggested rules: whether the request folder came from Seerr's settings or from where most new items went. */
   suggestedFrom?: 'seerr' | 'guess'
   lastTick: AppState['lastTick'] | null
+  /** The latest "Sort my library" run, if any. */
+  library?: LibraryJobView | null
   error?: string
 }
 export interface RouterStatus { apps: AppStatus[]; recent: Move[]; everySeconds: number; lookbackHours: number }
+
+/** One library sort: what was confirmed, how far it got, and what is still to move (kept in the database). */
+export interface LibraryJob {
+  id: string; app: App; by: string; startedAt: string; finishedAt?: string
+  state: 'running' | 'stopped' | 'done'
+  total: number; moved: number; failed: number; skipped: number
+  /** The groups confirmed, by name ("Horror in Movies → Frights (12)"). */
+  groups: string[]
+  queue: Array<{ id: number; from: string; to: string; condition: Condition; tries?: number }>
+  stoppedBy?: string
+  /** What happened with the media server's rescan once it ended. */
+  rescan?: string
+}
+export type LibraryJobView = Omit<LibraryJob, 'queue'> & { remaining: number }
+export interface LibraryPreview { previewId: string; app: App; total: number; groups: Array<PlanGroup & { word: string }> }
+/** Moves the arr is importing are tried again later, at most this many times. */
+const MAX_LIBRARY_TRIES = 30
+const jobView = (j: LibraryJob): LibraryJobView => { const { queue, ...rest } = j; return { ...rest, remaining: queue.length } }
 export interface TestAnswer extends LibraryTest { testId: string; at: string }
 export interface GraduatePreview { previewId: string; from: string; to: string; shows: Array<{ id: number; title: string; year: number; files: number; aired: number }> }
 
 export class RouterService {
   private tests = new Map<string, { app: App; fp: string; at: number }>()
   private previews = new Map<string, { ids: Set<number>; at: number; from: string; to: string }>()
+  private libPreviews = new Map<string, { app: App; by: string; at: number; items: Map<number, { from: string; to: string; condition: Condition }>; groups: Array<{ word: string; ids: number[] }> }>()
   private suggested = new Map<App, { at: number; s: AppSettings; from: 'seerr' | 'guess' }>()
   private rootCache = new Map<App, { at: number; roots: string[] }>()
   private recentCache: Move[] = []
@@ -186,6 +215,14 @@ export class RouterService {
     return m && roots.includes(to) ? { title: m.year ? `${m.title} (${m.year})` : m.title, folder: folderName(to) } : null
   }
   /** For the confirmation's sentence: how many shows a preview moves, and where. */
+  /** For the confirmation's sentence: how many ticked items, in which groups. Only from a real preview. */
+  libraryNames(previewId: unknown, ids: unknown): { count: number; groups: string[] } | null {
+    const p = typeof previewId === 'string' ? this.libPreviews.get(previewId) : undefined
+    if (!p || !Array.isArray(ids)) return null
+    const ticked = new Set(ids.filter(x => typeof x === 'number' && p.items.has(x)) as number[])
+    const groups = p.groups.map(g => ({ word: g.word, n: g.ids.filter(x => ticked.has(x)).length })).filter(g => g.n > 0).map(g => `${g.word} (${g.n})`)
+    return { count: ticked.size, groups }
+  }
   graduateNames(previewId: unknown): { count: number; folder: string } | null {
     const p = typeof previewId === 'string' ? this.previews.get(previewId) : undefined
     return p ? { count: p.ids.size, folder: folderName(p.to) } : null
@@ -248,6 +285,8 @@ export class RouterService {
         if (app === 'sonarr') base.settings.graduate = (await this.gradRecord())?.on === true
         base.saved = !!stored
         base.lastTick = st.lastTick ?? null
+        const job = await this.libraryJob(app)
+        base.library = job ? jobView(job) : null
       } catch (e) {
         this.d.log?.(`[arr-router] ${app} could not be read: ${msg(e)}`)
         base.error = `${APP_NAME[app]} could not be read just now.`
@@ -365,18 +404,22 @@ export class RouterService {
     const s = await this.storedSettings(app)
     const grad = app === 'sonarr' ? await this.gradRecord() : null
     const pendingFiles = (await this.recent()).some(m => m.app === app && m.files === 'pending')
-    if (!s?.enabled && !grad?.on && !pendingFiles) return
+    const job = await this.libraryJob(app)
+    const sorting = job?.state === 'running'
+    if (!s?.enabled && !grad?.on && !pendingFiles && !sorting) return
     const c = await this.client(app, false)
     if (!c) return
     const st = await this.state(app)
     const now = this.d.now()
     const gradDue = !!grad?.on && (!!st.graduateQueue?.ids.length || now - st.lastGraduateAt >= GRADUATE_EVERY_MS)
-    if (!s?.enabled && !gradDue && !pendingFiles) return
+    if (!s?.enabled && !gradDue && !pendingFiles && !sorting) return
     const tick = { at: new Date(now).toISOString(), looked: 0, moved: 0, failed: 0, waiting: 0 } as NonNullable<AppState['lastTick']>
     try {
       if (pendingFiles) await this.checkFiles(c, app)
       if (s?.enabled) await this.sortNew(c, app, s, st, now, tick)
       if (gradDue && grad) await this.graduateTick(c, st, grad, now, tick)
+      // A library sort shares the minute's 20 with everything above.
+      if (sorting && job && tick.moved + tick.failed < MAX_MOVES_PER_TICK) await this.libraryBatch(c, app, st, job, MAX_MOVES_PER_TICK - tick.moved - tick.failed, tick)
     } catch (e) {
       tick.error = msg(e)
       this.d.log?.(`[arr-router] ${app}: ${tick.error}`)
@@ -565,6 +608,125 @@ export class RouterService {
       if (!m.ok && m.files !== 'pending') throw new RouterRefusal(502, 'not_moved', m.error ?? 'It was not moved.')
       return m
     })
+  }
+
+  // ── "Sort my library" ──────────────────────────────────────────────────────
+
+  async libraryJob(app: App): Promise<LibraryJob | null> { return this.d.store.get<LibraryJob>(`library:${app}`) }
+  private saveJob(j: LibraryJob) { return this.d.store.set(`library:${j.app}`, j, j.by) }
+
+  /** The saved rules over the whole library, read-only: what would move, grouped. Single-use, 15 minutes, this person only. */
+  async libraryPreview(app: App, by: string): Promise<LibraryPreview> {
+    const c = (await this.client(app))!
+    const s = await this.storedSettings(app)
+    if (!s) throw new RouterRefusal(409, 'no_rules', 'Save your rules first: sorting the library uses the rules you saved.')
+    const st = await this.state(app)
+    const groups = libraryPlan(app, s, await this.library(c, app), new Set(st.leaveAlone)).map(g => ({ ...g, word: groupWord(g) }))
+    const previewId = crypto.randomBytes(12).toString('hex')
+    const now = this.d.now()
+    for (const [k, v] of this.libPreviews) if (now - v.at > TEST_TTL_MS) this.libPreviews.delete(k)
+    const items = new Map<number, { from: string; to: string; condition: Condition }>()
+    for (const g of groups) for (const it of g.items) items.set(it.id, { from: g.from, to: g.to, condition: g.condition })
+    this.libPreviews.set(previewId, { app, by, at: now, items, groups: groups.map(g => ({ word: g.word, ids: g.items.map(i => i.id) })) })
+    return { previewId, app, total: items.size, groups }
+  }
+
+  /** Move exactly the ticked items of a preview: 20 now, the rest 20 a minute. Audited before anything moves. */
+  async libraryApply(previewId: unknown, ids: unknown, by: string): Promise<LibraryJobView> {
+    const p = typeof previewId === 'string' ? this.libPreviews.get(previewId) : undefined
+    if (!p || this.d.now() - p.at > TEST_TTL_MS || p.by !== by) throw new RouterRefusal(409, 'preview_required', 'Look at the preview first (it lasts 15 minutes and is yours only).')
+    if (!Array.isArray(ids) || !ids.length || ids.length > 20_000 || !ids.every(x => Number.isInteger(x) && p.items.has(x as number))) {
+      throw new RouterRefusal(400, 'bad_request', 'Tick the items to move, from this preview only.')
+    }
+    const names = this.libraryNames(previewId, ids)!
+    const c = (await this.client(p.app))!
+    return this.locked(async () => {
+      const cur = await this.libraryJob(p.app)
+      if (cur?.state === 'running') throw new RouterRefusal(409, 'busy', 'A library sort is already running for this app. Stop it first, or let it finish.')
+      this.libPreviews.delete(previewId as string)
+      const ticked = [...new Set(ids as number[])]
+      // No audit row, nothing queued and nothing moved.
+      await this.d.audit('arrstack.router.library', { app: p.app, by, count: ticked.length, groups: names.groups.join('; ').slice(0, 500) })
+      const job: LibraryJob = {
+        id: crypto.randomBytes(8).toString('hex'), app: p.app, by, startedAt: this.iso(), state: 'running',
+        total: ticked.length, moved: 0, failed: 0, skipped: 0, groups: names.groups,
+        queue: ticked.map(id => ({ id, ...p.items.get(id)! })),
+      }
+      await this.saveJob(job)
+      const st = await this.state(p.app)
+      await this.libraryBatch(c, p.app, st, job, MAX_MOVES_PER_TICK)
+      await this.saveState(p.app, st)
+      return jobView(job)
+    })
+  }
+
+  /** Stop a running library sort: what has moved stays moved; the rest is left where it is. */
+  async libraryStop(app: App, by: string): Promise<LibraryJobView> {
+    return this.locked(async () => {
+      const job = await this.libraryJob(app)
+      if (!job || job.state !== 'running') throw new RouterRefusal(409, 'not_running', 'No library sort is running.')
+      await this.d.audit('arrstack.router.library.stop', { app, by, moved: job.moved, remaining: job.queue.length })
+      job.state = 'stopped'; job.stoppedBy = by; job.finishedAt = this.iso()
+      await this.saveJob(job)
+      return jobView(job)
+    })
+  }
+
+  /** Up to `limit` items from the queue: each checked again, then moved through the usual move. */
+  private async libraryBatch(c: CoreEndpointClient, app: App, st: AppState, job: LibraryJob, limit: number, tick?: NonNullable<AppState['lastTick']>): Promise<void> {
+    const s = await this.storedSettings(app)
+    if (!s) {
+      job.state = 'stopped'; job.stoppedBy = 'hyperprox'; job.finishedAt = this.iso()
+      await this.saveJob(job)
+      return
+    }
+    const hand = curatedFolders(s.rules)
+    const leave = new Set(st.leaveAlone)
+    let done = 0
+    const later: LibraryJob['queue'] = []
+    while (done < limit && job.queue.length) {
+      // Re-read state each time: a person can stop the sort between two moves.
+      if ((await this.libraryJob(app))?.state === 'stopped') { job.state = 'stopped'; return }
+      const q = job.queue.shift()!
+      const live = await this.one(c, app, q.id)
+      // Checked again now: still where it was, nobody moved it back, the rules still pick the same folder, never hand-picked.
+      const p = live ? pickFolder(app, s, live) : null
+      if (!live || live.root !== q.from || leave.has(q.id) || hand.has(q.from) || hand.has(q.to) || !p || p.folder !== q.to) { job.skipped++; continue }
+      if (!(await this.roots(c, app)).includes(q.to)) { job.skipped++; continue }
+      if (await this.importing(c, app, q.id)) {
+        if ((q.tries ?? 0) + 1 >= MAX_LIBRARY_TRIES) job.skipped++
+        else later.push({ ...q, tries: (q.tries ?? 0) + 1 })
+        continue
+      }
+      done++
+      const m = await this.moveOne(c, app, st, live, q.to, { kind: 'library', condition: p.condition, why: whyWord(p.condition, q.to), detail: p.why, by: job.by })
+      if (m.ok || m.files === 'pending') { job.moved++; if (tick) tick.moved++ } else { job.failed++; if (tick) tick.failed++ }
+    }
+    job.queue.push(...later)
+    if (!job.queue.length) {
+      job.state = 'done'; job.finishedAt = this.iso()
+      if (job.moved > 0) job.rescan = await this.rescan(app)
+    }
+    await this.saveJob(job)
+  }
+
+  /** Ask the connected media server (Plex) to rescan its film or TV libraries once. Never required. */
+  private async rescan(app: App): Promise<string> {
+    const plex = this.d.mediaServer ? await this.d.mediaServer().catch(() => null) : null
+    if (!plex) return 'No Plex server is connected, so no rescan was asked for.'
+    try {
+      const body = await plex.get('/library/sections', 15_000)
+      const dirs = Array.isArray(body?.MediaContainer?.Directory) ? body.MediaContainer.Directory : []
+      const want = app === 'radarr' ? 'movie' : 'show'
+      const keys = dirs.filter((d: any) => d?.type === want && /^\d+$/.test(String(d?.key))).map((d: any) => String(d.key))
+      let n = 0
+      for (const k of keys) await plex.trigger(`/library/sections/${k}/refresh`, 15_000).then(() => { n++ }).catch(() => {})
+      await this.d.audit('arrstack.router.library.rescan', { app, sections: n }).catch(() => {})
+      return n ? `Plex was asked to rescan ${n} ${n === 1 ? 'library' : 'libraries'}.` : 'Plex has no matching library to rescan.'
+    } catch (e) {
+      this.d.log?.(`[arr-router] the Plex rescan did not work: ${msg(e)}`)
+      return 'Plex did not answer, so it was not asked to rescan.'
+    }
   }
 
   // ── "Graduate finished shows" ──────────────────────────────────────────────

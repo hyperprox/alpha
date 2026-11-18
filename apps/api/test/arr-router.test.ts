@@ -16,7 +16,7 @@ import { requiredRole, needsConfirm, needsPassword } from '../src/lib/roles'
 import { injectConfirmed } from './fakes/confirm'
 import { buildArrRouterRoutes } from '../src/routes/arr-router'
 import {
-  defaultRules, defaultSettings, filmMatch, filmOf, graduates, guessDefaultRoot, parseSettings, pickFolder, routable, ruleFingerprint, showMatch, showOf, testLibrary,
+  defaultRules, defaultSettings, filmMatch, groupWord, libraryPlan, filmOf, graduates, guessDefaultRoot, parseSettings, pickFolder, routable, ruleFingerprint, showMatch, showOf, testLibrary,
   whyWord, type AppSettings, type Film,
 } from '../src/lib/arr-router/rules'
 import { FULL_READ_MS, GRADUATE_EVERY_MS, LOOKBACK_MS, MAX_MOVES_PER_TICK, RouterRefusal, RouterService, type RouterDeps } from '../src/lib/arr-router/service'
@@ -638,5 +638,175 @@ test('routes: a viewer reads; changes need an admin and a confirmation, never a 
     assert.equal(prev.statusCode, 200, prev.body)
     const askGrad = await a.inject({ method: 'POST', url: '/api/plugins/arrstack/router/graduate', headers: { cookie: adm.cookie }, payload: { previewId: JSON.parse(prev.body).data.previewId } })
     assert.match(JSON.parse(askGrad.body).confirm.summary, /^Move 1 finished show to Finished Runs\?/)
+  } finally { await a.close() }
+})
+
+// ── "Sort my library" ────────────────────────────────────────────────────────
+
+const ADMIN = 'admin@example.com'
+
+test('library plan: everything the saved rules would move, grouped from → to by rule; never out of or into a hand-picked folder', () => {
+  const films = fx('radarr-movies.json').map(filmOf)
+  const plan = libraryPlan('radarr', filmSettings(), films)
+  assert.deepEqual(plan.map(g => [groupWord(g), g.count, g.items.map(i => i.title)]), [
+    ['Animated, for families in Kids Live Action → Kids Cartoons', 1, ['Velvet Jungle']],
+    ['Horror in Main Films → Frights', 1, ['Signal Lost']],
+    ['Live-action family in Main Films → Kids Live Action', 1, ['The Clockwork Orphan']],
+  ])
+  assert.equal(plan[1].items[0].detail, 'genre Horror')
+  assert.ok(!plan.some(g => g.items.some(i => i.title === 'Night Train Overture')), 'nothing comes out of the hand-picked folder')
+  // A rule pointing INTO a hand-picked folder (only possible in stored data from before the check): never proposed.
+  const into = filmSettings({ rules: filmSettings().rules.map(x => (x.condition === 'horror' ? { ...x, folder: `${F}Cinema Picks` } : x)) })
+  const p2 = libraryPlan('radarr', into, films)
+  assert.ok(!p2.some(g => g.to === `${F}Cinema Picks`))
+  // The hand-picked folder's own films stay out even when another rule would fit them.
+  const night = films.find((f: Film) => f.title === 'Night Train Overture')!
+  assert.deepEqual(libraryPlan('radarr', filmSettings(), [{ ...night, genres: ['Horror'] }]), [])
+  // Undone by hand: never proposed again.
+  assert.ok(!libraryPlan('radarr', filmSettings(), films, new Set([14])).some(g => g.items.some(i => i.id === 14)))
+  // Shows: ended ones still in the running folder are a group like any other, each with its episodes.
+  const shows = fx('sonarr-series.json').map(showOf)
+  const sp = libraryPlan('sonarr', defaultSettings('sonarr', SHOW_ROOTS, `${T}On Air`), shows)
+  assert.deepEqual(sp.map(g => [groupWord(g), g.items.map(i => [i.title, i.episodes])]), [
+    ['Ended in On Air → Finished Runs', [['Half Built', { files: 5, aired: 10 }], ['Tidewater', { files: 20, aired: 20 }]]],
+  ])
+})
+
+async function libRig(over: Partial<RouterDeps> = {}) {
+  const r = rig(over)
+  const s = (await r.svc.status()).apps.find(a => a.app === 'radarr')!.settings!
+  await r.svc.saveSettings('radarr', s, undefined, ADMIN)
+  return r
+}
+
+test('library preview: needs saved rules, is read-only, single-use, 15 minutes, and belongs to the person who asked', async () => {
+  const bare = rig()
+  await assert.rejects(bare.svc.libraryPreview('radarr', ADMIN), (e: any) => e.code === 'no_rules')
+  const r = await libRig()
+  const p = await r.svc.libraryPreview('radarr', ADMIN)
+  assert.equal(p.total, 3); assert.equal(p.groups.length, 3)
+  assert.equal(p.groups[1].word, 'Horror in Main Films → Frights')
+  assert.deepEqual(r.radarr.writes(), [], 'read-only')
+  assert.deepEqual(r.svc.libraryNames(p.previewId, [14, 10]), { count: 2, groups: ['Horror in Main Films → Frights (1)', 'Live-action family in Main Films → Kids Live Action (1)'] })
+  await assert.rejects(r.svc.libraryApply(p.previewId, [14], 'someone-else@example.com'), (e: any) => e.code === 'preview_required', 'another person cannot use it')
+  await assert.rejects(r.svc.libraryApply(p.previewId, [14, 11], ADMIN), (e: any) => e.code === 'bad_request', 'only items from the preview')
+  await assert.rejects(r.svc.libraryApply(p.previewId, [], ADMIN), (e: any) => e.code === 'bad_request')
+  const old = await r.svc.libraryPreview('radarr', ADMIN)
+  r.at(NOW + 16 * 60_000)
+  await assert.rejects(r.svc.libraryApply(old.previewId, [14], ADMIN), (e: any) => e.code === 'preview_required', 'too old')
+  r.at(NOW)
+  await r.svc.libraryApply(p.previewId, [14], ADMIN)
+  await assert.rejects(r.svc.libraryApply(p.previewId, [10], ADMIN), (e: any) => e.code === 'preview_required', 'used once')
+})
+
+test('library apply: audited first, moves exactly the ticked items, each checked again at move time; Recently sorted can undo', async () => {
+  const r = await libRig()
+  const p = await r.svc.libraryPreview('radarr', ADMIN)
+  // Moved by someone else after the preview: no longer where the preview saw it.
+  const orphan = r.radarr.items.find(i => i.id === 15)
+  orphan.rootFolderPath = `${F}Main Films`; orphan.path = `${F}Main Films/Velvet Jungle (2026)`
+  const job = await r.svc.libraryApply(p.previewId, [14, 15], ADMIN)
+  assert.equal(job.state, 'done'); assert.equal(job.total, 2); assert.equal(job.moved, 1); assert.equal(job.skipped, 1)
+  assert.equal(r.radarr.items.find(i => i.id === 14).rootFolderPath, `${F}Frights`)
+  assert.equal(r.radarr.items.find(i => i.id === 10).rootFolderPath, `${F}Main Films`, 'not ticked, not moved')
+  assert.equal(r.radarr.items.find(i => i.id === 15).rootFolderPath, `${F}Main Films`, 'checked again: skipped')
+  const iLib = r.audits.findIndex(a => a.action === 'arrstack.router.library')
+  const iMove = r.audits.findIndex(a => a.action === 'arrstack.router.move')
+  assert.ok(iLib >= 0 && iLib < iMove, 'the library sort is audited before the first move')
+  assert.equal(r.audits[iLib].details.count, 2)
+  const rec = await r.svc.recent()
+  assert.equal(rec[0].kind, 'library'); assert.equal(rec[0].why, 'Horror → Frights'); assert.equal(rec[0].files, 'moved')
+  const back = await r.svc.move('radarr', 14, `${F}Main Films`, ADMIN)
+  assert.equal(back.ok, true)
+  assert.ok(!(await r.svc.libraryPreview('radarr', ADMIN)).groups.some(g => g.items.some(i => i.id === 14)), 'undone by hand: not proposed again')
+  // No audit row: nothing queued, nothing moved.
+  const r2 = await libRig({ audit: async a => { if (a === 'arrstack.router.library') throw new Error('audit log down') } })
+  const p2 = await r2.svc.libraryPreview('radarr', ADMIN)
+  await assert.rejects(r2.svc.libraryApply(p2.previewId, [14], ADMIN))
+  assert.equal(await r2.svc.libraryJob('radarr'), null)
+  assert.equal(r2.radarr.writes().filter(w => w.startsWith('PUT')).length, 0)
+})
+
+test('library apply: 20 now, the rest 20 a minute, carried on after a restart; then Plex is asked to rescan once', async () => {
+  const plexCalls: string[] = []
+  const plex: Partial<CoreEndpointClient> = {
+    async get(p: string) { plexCalls.push(`GET ${p}`); return { MediaContainer: { Directory: [{ key: '3', type: 'movie' }, { key: '4', type: 'show' }] } } },
+    async trigger(p: string) { plexCalls.push(`TRIGGER ${p}`) },
+  }
+  const r = await libRig({ mediaServer: async () => plex as CoreEndpointClient })
+  for (let i = 0; i < 25; i++) r.radarr.items.push(newFilm(300 + i, `Old Fright ${i}`, ['Horror'], [], '2026-09-01T10:00:00Z'))
+  const p = await r.svc.libraryPreview('radarr', ADMIN)
+  const horror = p.groups.find(g => g.word === 'Horror in Main Films → Frights')!
+  assert.equal(horror.count, 26)
+  const job = await r.svc.libraryApply(p.previewId, horror.items.map(i => i.id), ADMIN)
+  assert.equal(job.moved, 20); assert.equal(job.remaining, 6); assert.equal(job.state, 'running')
+  assert.equal((await r.svc.status()).apps.find(a => a.app === 'radarr')!.library!.remaining, 6, 'progress on the page')
+  // A restart: a new service on the same database carries on.
+  const again = new RouterService({ clients: { radarr: async () => r.radarr, sonarr: async () => r.sonarr }, store: r.store,
+    audit: async () => {}, now: () => NOW + 60_000, unlocked: () => true, sleep: async () => {}, mediaServer: async () => plex as CoreEndpointClient })
+  await again.tick()
+  const end = (await again.libraryJob('radarr'))!
+  assert.equal(end.state, 'done'); assert.equal(end.moved, 26); assert.equal(end.queue.length, 0)
+  assert.equal(r.radarr.items.filter(i => i.rootFolderPath === `${F}Frights`).length, 27)
+  assert.deepEqual(plexCalls, ['GET /library/sections', 'TRIGGER /library/sections/3/refresh'], 'only the film libraries, once')
+  assert.match(end.rescan!, /rescan 1 library/)
+  await again.tick()
+  assert.equal(plexCalls.length, 2, 'not again')
+})
+
+test('library sort: stop leaves the rest where it is; one sort at a time per app; items being imported wait', async () => {
+  const r = await libRig()
+  for (let i = 0; i < 25; i++) r.radarr.items.push(newFilm(300 + i, `Old Fright ${i}`, ['Horror'], [], '2026-09-01T10:00:00Z'))
+  const p = await r.svc.libraryPreview('radarr', ADMIN)
+  const ids = p.groups.find(g => g.word === 'Horror in Main Films → Frights')!.items.map(i => i.id)
+  r.radarr.queue = [{ movieId: ids[0], trackedDownloadState: 'importing' }]
+  const job = await r.svc.libraryApply(p.previewId, ids, ADMIN)
+  assert.equal(job.moved, 20); assert.equal(job.remaining, 6, 'the one being imported waits at the back')
+  assert.equal(r.radarr.items.find(i => i.id === ids[0]).rootFolderPath, `${F}Main Films`)
+  const p2 = await r.svc.libraryPreview('radarr', ADMIN)
+  await assert.rejects(r.svc.libraryApply(p2.previewId, [p2.groups[0].items[0].id], ADMIN), (e: any) => e.code === 'busy')
+  const stopped = await r.svc.libraryStop('radarr', ADMIN)
+  assert.equal(stopped.state, 'stopped'); assert.equal(stopped.stoppedBy, ADMIN)
+  assert.ok(r.audits.some(a => a.action === 'arrstack.router.library.stop'))
+  const before = r.radarr.writes().length
+  r.at(NOW + 60_000)
+  await r.svc.tick()
+  assert.equal(r.radarr.writes().length, before, 'nothing more moves')
+  await assert.rejects(r.svc.libraryStop('radarr', ADMIN), (e: any) => e.code === 'not_running')
+})
+
+test('library routes: preview admin-only and unconfirmed; apply and stop confirmed with the count and groups; never a token', async () => {
+  for (const p of ['library/apply', 'library/stop']) assert.equal(needsConfirm('POST', `/api/plugins/arrstack/router/${p}`), true, p)
+  assert.equal(needsConfirm('POST', '/api/plugins/arrstack/router/library/preview'), false)
+  for (const p of ['library/preview', 'library/apply', 'library/stop']) {
+    assert.equal(requiredRole('POST', `/api/plugins/arrstack/router/${p}`), 'admin')
+    assert.equal(tokenForbidden('POST', `/api/plugins/arrstack/router/${p}`), true)
+    assert.equal(needsPassword('POST', `/api/plugins/arrstack/router/${p}`), false)
+  }
+  const r = await libRig()
+  const a = Fastify({ logger: false })
+  await registerGate(a)
+  await a.register(authRoutes, { prefix: '/api/auth' })
+  await a.register(buildArrRouterRoutes({ service: () => r.svc, limiter: new MissLimiter(100), testLimiter: new MissLimiter(100) }), { prefix: '/api/plugins/arrstack' })
+  await a.ready()
+  try {
+    const viewer = await signIn(a, 'viewer@example.com', 'viewer master password')
+    assert.equal((await a.inject({ method: 'POST', url: '/api/plugins/arrstack/router/library/preview', headers: { cookie: viewer.cookie }, payload: { app: 'radarr' } })).statusCode, 403)
+    const tok = (await createApiToken({ name: 'bot2', role: 'admin' }, 'test', tokens)).token
+    const tp = await a.inject({ method: 'POST', url: '/api/plugins/arrstack/router/library/preview', headers: { authorization: `Bearer ${tok}` }, payload: { app: 'radarr' } })
+    assert.equal(JSON.parse(tp.body).code, 'token_forbidden')
+    const adm = await signIn(a, ADMIN, 'admin master password')
+    const pv = await a.inject({ method: 'POST', url: '/api/plugins/arrstack/router/library/preview', headers: { cookie: adm.cookie }, payload: { app: 'radarr' } })
+    assert.equal(pv.statusCode, 200, pv.body)
+    const previewId = JSON.parse(pv.body).data.previewId
+    const payload = { previewId, ids: [14, 10] }
+    const ask = await a.inject({ method: 'POST', url: '/api/plugins/arrstack/router/library/apply', headers: { cookie: adm.cookie }, payload })
+    assert.equal(JSON.parse(ask.body).code, 'confirm_required')
+    assert.equal(JSON.parse(ask.body).confirm.summary, 'Move 2 items in your library into the folders your rules pick? Horror in Main Films → Frights (1); Live-action family in Main Films → Kids Live Action (1). Their files move with them, 20 a minute.')
+    assert.deepEqual(r.radarr.writes(), [], 'nothing before the confirmation')
+    const done = await injectConfirmed(a, { method: 'POST', url: '/api/plugins/arrstack/router/library/apply', headers: { cookie: adm.cookie }, payload })
+    assert.equal(done.statusCode, 200, done.body); assert.equal(JSON.parse(done.body).data.moved, 2)
+    const stopAsk = await a.inject({ method: 'POST', url: '/api/plugins/arrstack/router/library/stop', headers: { cookie: adm.cookie }, payload: { app: 'radarr' } })
+    assert.match(JSON.parse(stopAsk.body).confirm.summary, /^Stop sorting the films in your library\?/)
   } finally { await a.close() }
 })

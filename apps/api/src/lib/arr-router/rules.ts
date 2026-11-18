@@ -453,3 +453,37 @@ export function graduates(s: Pick_<AppSettings, 'rules'>, shows: Show[], leaveAl
 /** "Horror → Scary Films": the condition and the folder's own name, for the page and the audit log. */
 export function whyWord(c: Condition, folder: string): string { return `${CONDITION_LABEL[c]} → ${leaf(folder)}` }
 export { leaf as folderName }
+
+// ── "Sort my library" ───────────────────────────────────────────────────────
+
+export interface PlanItem { id: number; title: string; year: number; detail: string; episodes?: { files: number; aired: number } }
+export interface PlanGroup { key: string; from: string; to: string; condition: Condition; count: number; items: PlanItem[] }
+
+/** "Horror in Movies → Frights": a group's name, from the owner's own folder names. */
+export function groupWord(g: Pick_<PlanGroup, 'condition' | 'from' | 'to'>): string {
+  return `${CONDITION_LABEL[g.condition]} in ${leaf(g.from)} → ${leaf(g.to)}`
+}
+
+/**
+ * The saved rules over everything already in the library: every item whose pick differs from where it is, grouped by
+ * from → to and the rule that picked it. Nothing ever comes out of a hand-picked folder or goes into one, and nothing a
+ * person moved back by hand is proposed again. Read-only: this only says what would move.
+ */
+export function libraryPlan(app: App, settings: Pick_<AppSettings, 'rules' | 'photoreal'>, items: Item[], leaveAlone: ReadonlySet<number> = new Set()): PlanGroup[] {
+  const hand = curatedFolders(settings.rules)
+  const groups = new Map<string, PlanGroup>()
+  for (const it of items) {
+    if (hand.has(it.root) || leaveAlone.has(it.id)) continue
+    const p = pickFolder(app, settings, it)
+    if (!p || p.folder === it.root || hand.has(p.folder)) continue
+    const key = `${it.root}\u0000${p.folder}\u0000${p.condition}`
+    const g = groups.get(key) ?? { key, from: it.root, to: p.folder, condition: p.condition, count: 0, items: [] }
+    const row: PlanItem = { id: it.id, title: it.title, year: it.year, detail: p.why }
+    if (app === 'sonarr') row.episodes = { files: (it as Show).files, aired: (it as Show).aired }
+    g.items.push(row)
+    g.count++
+    groups.set(key, g)
+  }
+  for (const g of groups.values()) g.items.sort((a, b) => a.title.localeCompare(b.title) || a.year - b.year)
+  return [...groups.values()].sort((a, b) => b.count - a.count || a.from.localeCompare(b.from) || a.to.localeCompare(b.to))
+}

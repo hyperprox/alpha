@@ -32,6 +32,7 @@ export interface ConfirmNames {
   vpnPort?: () => number | null
   routerMove?: (app: unknown, id: unknown, folder: unknown) => { title: string; folder: string } | null
   routerGraduate?: (previewId: unknown) => { count: number; folder: string } | null
+  routerLibrary?: (previewId: unknown, ids: unknown) => { count: number; groups: string[] } | null
 }
 const names: ConfirmNames = {}
 export function setConfirmNames(n: ConfirmNames): void { Object.assign(names, n) }
@@ -68,6 +69,14 @@ function routerGraduateSentence(b: any): string {
   const n = names.routerGraduate?.(b?.previewId) ?? null
   const what = n ? `${n.count} finished ${n.count === 1 ? 'show' : 'shows'} to ${str(n.folder, 80)}` : 'the finished shows in the preview'
   return `Move ${what}? Their files move with them, and shows that finish from now on move on their own.`
+}
+
+function routerLibrarySentence(b: any): string {
+  const n = names.routerLibrary?.(b?.previewId, b?.ids) ?? null
+  if (!n || !n.count) return 'Move the items you ticked into the folders your rules pick? Their files move with them.'
+  const list = n.groups.slice(0, 6).map(g => str(g, 120)).join('; ')
+  const more = n.groups.length > 6 ? `; and ${n.groups.length - 6} more groups` : ''
+  return `Move ${n.count} ${n.count === 1 ? 'item' : 'items'} in your library into the folders your rules pick? ${list}${more}. Their files move with them, 20 a minute.`
 }
 
 const RULES: Rule[] = [
@@ -127,6 +136,8 @@ const RULES: Rule[] = [
   ['POST', /^\/api\/plugins\/arrstack\/router\/settings$/, (_m, _p, b) => routerSettingsSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/move$/, (_m, _p, b) => routerMoveSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/graduate$/, (_m, _p, b) => routerGraduateSentence(b)],
+  ['POST', /^\/api\/plugins\/arrstack\/router\/library\/apply$/, (_m, _p, b) => routerLibrarySentence(b)],
+  ['POST', /^\/api\/plugins\/arrstack\/router\/library\/stop$/, (_m, _p, b) => `Stop sorting the ${b?.app === 'sonarr' ? 'shows' : 'films'} in your library? What has moved stays moved; the rest stays where it is.`],
   ['POST', /^\/api\/local\/([^/]+)\//, m => `Run this ${m[1]} action?`],
   ['POST', /^\/api\/plugins\/apt-cacher-ng\/guests\/repair$/, () =>
     'Write the package cache setting on every guest Updates looks after, and check each can reach it?'],
