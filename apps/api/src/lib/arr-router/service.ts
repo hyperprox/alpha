@@ -313,20 +313,23 @@ export class RouterService {
     if (!c) return
     const st = await this.state(app)
     const now = this.d.now()
+    // Graduating alone: nothing to do until its next six-hourly look.
+    if (!s.enabled && (app !== 'sonarr' || now - st.lastGraduateAt < GRADUATE_EVERY_MS)) return
     const tick = { at: new Date(now).toISOString(), looked: 0, moved: 0, failed: 0 } as NonNullable<AppState['lastTick']>
     try {
       let all: Item[] | null = null
-      let found: Item[]
-      if (!st.maxId || now - st.lastFullAt >= FULL_READ_MS) {
-        all = await this.library(c, app)
-        found = all
-        st.maxId = Math.max(st.maxId, ...all.map(i => i.id), 0)
-        st.lastFullAt = now
-      } else {
-        found = await this.probe(c, app, st)
-      }
       const leave = new Set(st.leaveAlone)
       if (s.enabled) {
+        // Graduating alone needs no look for new items; sorting does.
+        let found: Item[]
+        if (!st.maxId || now - st.lastFullAt >= FULL_READ_MS) {
+          all = await this.library(c, app)
+          found = all
+          st.maxId = Math.max(st.maxId, ...all.map(i => i.id), 0)
+          st.lastFullAt = now
+        } else {
+          found = await this.probe(c, app, st)
+        }
         const pending = found.filter(i => st.seen[String(i.id)] === undefined && routable(i, s, { routedTag: st.tagId, now, lookbackMs: LOOKBACK_MS, leaveAlone: leave }))
           .sort((a, b) => a.id - b.id)
         const cands = pending.slice(0, MAX_MOVES_PER_TICK)
