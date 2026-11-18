@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { GroupCard, JobView, MoveCard, PhotorealList, RuleFlow, TestView } from '../components/plugins/arr/Router'
 import {
-  agreementWord, draftBody, groupTicked, jobWord, leftAloneWord, libraryWord, toggleGroup, toggleItem, type LibraryJob, type LibraryPreview, type PlanGroup, folderName, graduateWord, moveRule, moveState, moveWord, parseTmdb, ruleLine, suggestedWord, switchOnWord, tickWord,
+  agreementWord, draftBody, allMoves, groupTicked, jobWord, leftAloneWord, libraryWord, toggleGroup, toggleItem, type LibraryJob, type LibraryPreview, type PlanGroup, folderName, graduateWord, moveRule, moveState, moveWord, parseTmdb, ruleLine, suggestedWord, switchOnWord, tickWord,
   type LibraryTest, type Move, type RouterAppStatus, type RouterSettings,
 } from '../components/plugins/arr/router-view'
 
@@ -140,4 +140,15 @@ test('Sort my library: ticking groups and titles, the confirm, and the progress 
 test('Sort my library: folders no rule fills are listed as left alone', () => {
   assert.equal(leftAloneWord({ folder: `${F}Old Picks`, count: 18 }), 'Left alone: Old Picks (18 items) — no rule fills this folder')
   assert.equal(leftAloneWord({ folder: `${F}Old Picks`, count: 1 }), 'Left alone: Old Picks (1 item) — no rule fills this folder')
+})
+
+test('Sort my library: undo button, undo wording, waiting for Plex, and both move lists newest first', () => {
+  const j: LibraryJob = { id: 'j', app: 'radarr', by: 'a', startedAt: '', state: 'done', total: 3, moved: 3, failed: 0, skipped: 0, remaining: 0, groups: [], canUndo: 3 }
+  assert.match(renderToStaticMarkup(<JobView j={j} canAct onUndo={noop} />), /Undo this sort \(3\)/)
+  assert.ok(!/Undo this sort/.test(renderToStaticMarkup(<JobView j={{ ...j, canUndo: 0 }} canAct onUndo={noop} />)))
+  assert.ok(!/Undo this sort/.test(renderToStaticMarkup(<JobView j={j} canAct={false} onUndo={noop} />)))
+  assert.equal(jobWord({ ...j, kind: 'undo' }), 'Undo: 3 of 3 moved. Finished.')
+  assert.equal(jobWord({ ...j, rescanPending: true }), '3 of 3 moved. Finished; Plex rescans once the files have finished moving.')
+  const mv = (at: string, key: string) => ({ key, at, app: 'radarr' as const, id: 1, title: 't', year: 0, from: 'a', to: 'b', kind: 'sorted' as const, condition: null, why: '', detail: '', by: '', ok: true })
+  assert.deepEqual(allMoves({ recent: [mv('2026-11-18T10:00:00Z', 'r1')], recentLibrary: [mv('2026-11-18T11:00:00Z', 'l1')] }).map(m => m.key), ['l1', 'r1'])
 })

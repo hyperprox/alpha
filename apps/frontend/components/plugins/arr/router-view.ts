@@ -23,6 +23,10 @@ export interface RouterAppStatus {
 export interface LibraryJob {
   id: string; app: RouterApp; by: string; startedAt: string; finishedAt?: string; state: 'running' | 'stopped' | 'done'
   total: number; moved: number; failed: number; skipped: number; remaining: number; groups: string[]; stoppedBy?: string; rescan?: string
+  kind?: 'sort' | 'undo'
+  /** How many items "Undo this sort" would move back (0 when it cannot be undone). */
+  canUndo?: number
+  rescanPending?: boolean
 }
 export interface PlanItem { id: number; title: string; year: number; detail: string; episodes?: { files: number; aired: number } }
 export interface PlanGroup { key: string; from: string; to: string; condition: Condition; count: number; items: PlanItem[]; word: string }
@@ -37,7 +41,12 @@ export interface Move {
   kind: 'sorted' | 'graduated' | 'moved' | 'library'; condition: Condition | null; why: string; detail: string; by: string; ok: boolean; error?: string
   files?: 'moved' | 'none' | 'pending' | 'failed' | 'unconfirmed'
 }
-export interface RouterStatus { apps: RouterAppStatus[]; recent: Move[]; everySeconds: number; lookbackHours: number }
+export interface RouterStatus { apps: RouterAppStatus[]; recent: Move[]; recentLibrary?: Move[]; everySeconds: number; lookbackHours: number }
+
+/** Both lists (requests and library sorts keep their own last 100), newest first. */
+export function allMoves(st: Pick<RouterStatus, 'recent' | 'recentLibrary'>): Move[] {
+  return [...st.recent, ...(st.recentLibrary ?? [])].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+}
 export interface Disagreement { actual: string; pick: string; condition: Condition | null; count: number; examples: string[] }
 export interface LibraryTest {
   app: RouterApp; testId: string; at: string; scored: number; agree: number; agreement: number | null; curated: number
@@ -137,9 +146,10 @@ export function jobWord(j: LibraryJob): string {
   const parts = [`${j.moved} of ${j.total} moved`]
   if (j.failed) parts.push(`${j.failed} failed`)
   if (j.skipped) parts.push(`${j.skipped} skipped (moved or changed since the preview)`)
-  const head = parts.join(', ')
+  const head = `${j.kind === 'undo' ? 'Undo: ' : ''}${parts.join(', ')}`
   if (j.state === 'running') return `${head}. The rest move 20 a minute.`
   if (j.state === 'stopped') return `${head}. Stopped${j.stoppedBy && j.stoppedBy !== 'hyperprox' ? ` by ${j.stoppedBy}` : ''}; the rest stayed where they were.`
+  if (j.rescanPending) return `${head}. Finished; Plex rescans once the files have finished moving.`
   return `${head}. Finished.${j.rescan ? ` ${j.rescan}` : ''}`
 }
 

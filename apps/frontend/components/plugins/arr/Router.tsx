@@ -24,7 +24,7 @@ import c from './giveup.module.css'
 import r from './router.module.css'
 import { ConfirmBox } from './GiveUp'
 import {
-  agreementWord, conditionLabel, draftBody, folderName, graduateWord, groupTicked, jobWord, leftAloneWord, libraryWord, moveRule, moveState, moveWord, toggleGroup, toggleItem, parseTmdb, ruleLine, sinceWord, suggestedWord, switchOnWord, tickWord,
+  agreementWord, conditionLabel, draftBody, folderName, graduateWord, allMoves, groupTicked, jobWord, leftAloneWord, libraryWord, moveRule, moveState, moveWord, toggleGroup, toggleItem, parseTmdb, ruleLine, sinceWord, suggestedWord, switchOnWord, tickWord,
   type GraduatePreview, type LibraryJob, type LibraryPreview, type LibraryTest, type Move, type PlanGroup, type RouterApp, type RouterAppStatus, type RouterSettings, type RouterStatus, type Rule,
 } from './router-view'
 
@@ -215,7 +215,7 @@ export function GroupCard({ g, sel, open, canAct, onGroup, onItem, onOpen }: {
 }
 
 /** A running (or finished) library sort: a progress ring and the counts in words; Stop for an admin. */
-export function JobView({ j, canAct, onStop }: { j: LibraryJob; canAct: boolean; onStop?: () => void }) {
+export function JobView({ j, canAct, onStop, onUndo }: { j: LibraryJob; canAct: boolean; onStop?: () => void; onUndo?: () => void }) {
   const done = j.total ? (j.moved + j.failed + j.skipped) / j.total : 1
   return (
     <div className={r.job} data-state={j.state}>
@@ -225,6 +225,7 @@ export function JobView({ j, canAct, onStop }: { j: LibraryJob; canAct: boolean;
         <p className={c.big}>{jobWord(j)}</p>
         {j.groups.length > 0 && <p className={c.meta}>{j.groups.join(' · ')}</p>}
         {canAct && onStop && j.state === 'running' && <div className={c.row}><button type="button" className={c.ghost} onClick={onStop}>Stop</button></div>}
+        {canAct && onUndo && j.state !== 'running' && (j.canUndo ?? 0) > 0 && <div className={c.row}><button type="button" className={c.ghost} onClick={onUndo}>Undo this sort ({j.canUndo})</button></div>}
       </div>
     </div>
   )
@@ -236,7 +237,7 @@ function LibrarySort({ st, canAct, onDone }: { st: RouterAppStatus; canAct: bool
   const [open, setOpen] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [ask, setAsk] = useState<'apply' | 'stop' | null>(null)
+  const [ask, setAsk] = useState<'apply' | 'stop' | 'undo' | null>(null)
   const job = st.library ?? null
   const preview = async () => {
     setBusy(true); setErr(null)
@@ -254,6 +255,13 @@ function LibrarySort({ st, canAct, onDone }: { st: RouterAppStatus; canAct: bool
     setP(null); setSel(new Set())
     onDone(`${st.label}: ${jobWord(res.body.data)}`)
   }
+  const undo = async () => {
+    setBusy(true)
+    const res = await apiJson<{ data: LibraryJob }>(`${BASE}/library/undo`, 'POST', { app: st.app }, IN_PAGE)
+    setBusy(false); setAsk(null)
+    if (!res.ok || !res.body?.data) { setErr(res.error ?? 'It was not undone.'); return }
+    onDone(`${st.label}: ${jobWord(res.body.data)}`)
+  }
   const stop = async () => {
     setBusy(true)
     const res = await apiJson<{ data: LibraryJob }>(`${BASE}/library/stop`, 'POST', { app: st.app }, IN_PAGE)
@@ -266,8 +274,9 @@ function LibrarySort({ st, canAct, onDone }: { st: RouterAppStatus; canAct: bool
       <span className={r.stepTitle}>Sort my library</span>
       <span className={c.meta}>Your saved rules over everything you already have. Nothing moves until you tick it and confirm; nothing leaves or enters a hand-picked folder.</span>
       {err && <p className={c.bad} role="alert">{err}</p>}
-      {job && <JobView j={job} canAct={canAct} onStop={() => setAsk('stop')} />}
-      {ask === 'stop' && <ConfirmBox text={`Stop sorting the ${st.app === 'sonarr' ? 'shows' : 'films'} in your library? What has moved stays moved; the rest stays where it is.`} yes="Stop it" busy={busy} onYes={() => void stop()} onNo={() => setAsk(null)} />}
+      {job && <JobView j={job} canAct={canAct} onStop={() => setAsk('stop')} onUndo={() => setAsk('undo')} />}
+      {ask === 'undo' && job && <ConfirmBox text={`Undo the last library sort of your ${st.app === 'sonarr' ? 'shows' : 'films'}? The ${job.canUndo} ${job.canUndo === 1 ? 'item' : 'items'} it moved go back where they were, 20 a minute, each only if it is still where the sort put it.`} yes="Undo it" busy={busy} onYes={() => void undo()} onNo={() => setAsk(null)} />}
+      {ask === 'stop' && <ConfirmBox text={`Stop sorting the ${st.app === 'sonarr' ? 'shows' : 'films'} in your library? It stops before the next move; what has moved stays moved.`} yes="Stop it" busy={busy} onYes={() => void stop()} onNo={() => setAsk(null)} />}
       {canAct && job?.state !== 'running' && (
         <div className={c.row}>
           <button type="button" className={c.ghost} disabled={busy || !st.saved} onClick={() => void preview()}>{busy && !p ? 'Reading the library…' : 'Preview'}</button>
@@ -439,7 +448,8 @@ export function ArrRouter() {
     void load()
   }
 
-  const recent = (st?.recent ?? []).filter(m => app === 'all' || m.app === app)
+  const moves = st ? allMoves(st) : []
+  const recent = moves.filter(m => app === 'all' || m.app === app)
   return (
     <>
       <Panel title="Sort requests into folders" sub="EACH NEW REQUEST, INTO ITS OWN FOLDER">
@@ -454,8 +464,8 @@ export function ArrRouter() {
         )}
       </Panel>
 
-      {st && st.recent.length > 0 && (
-        <Panel title="Recently sorted" sub={`${st.recent.length} ${st.recent.length === 1 ? 'MOVE' : 'MOVES'}`} level={3}>
+      {st && moves.length > 0 && (
+        <Panel title="Recently sorted" sub={`${moves.length} ${moves.length === 1 ? 'MOVE' : 'MOVES'}`} level={3}>
           <div className={c.seg} role="group" aria-label="Show">
             {(['all', 'radarr', 'sonarr'] as const).map(k => <button key={k} type="button" aria-pressed={app === k} onClick={() => setApp(k)}>{k === 'all' ? 'All' : k === 'radarr' ? 'Films' : 'Shows'}</button>)}
           </div>

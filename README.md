@@ -2215,15 +2215,23 @@ folder it belongs in, about a minute after it is added and usually before it dow
 - **Sort my library** (admin) applies your saved rules to what you already have. **Preview** reads the whole library
   without moving anything and lists every item that is not where your rules would put it, in groups such as "Horror in
   your main folder → your horror folder (63)", each with the rule's reason. Nothing is ever proposed out of a
-  hand-picked folder or into one, nothing you moved back by hand, and nothing out of a folder that no rule fills:
-  such a folder counts as kept by hand and is listed as "Left alone", so forgetting to mark a folder hand-picked can
-  never empty it. Every group starts unticked: tick whole groups,
-  or open one and untick single titles (shows list "x of y episodes"). The preview lasts 15 minutes, works once, and
-  only for you. **Move** asks you to confirm, saying how many items in which groups; each item is checked again just
-  before it moves (still where it was, your rules still pick the same folder) and moved the same way as a new
-  request, 20 straight away and then 20 a minute. The page shows the progress as a ring ("142 of 300 moved, 3 failed")
-  with **Stop**; the sort carries on after a restart, and every move is in Recently sorted with Move to. When it ends,
-  a connected Plex server is asked to rescan its film or TV libraries once.
+  hand-picked folder or into one; nothing you moved back through HyperProx (with Move to or an undo); no show that was
+  graduated once; and nothing out of a folder that no rule fills: such a folder counts as kept by hand and is listed
+  as "Left alone", so forgetting to mark a folder hand-picked can never empty it. Every group starts unticked: tick
+  whole groups, or open one and untick single titles (shows list "x of y episodes"). The preview lasts 15 minutes,
+  works once, and only for you.
+- **Move** asks you to confirm, saying how many items in which groups. Each item is checked again just before it
+  moves (still where it was, your rules still pick the same folder) and moved the same way as a new request. All
+  moves for one app share 20 a minute (new requests, graduations and library sorts together), and a library sort looks
+  at no more than 60 items a minute, skips included. An item whose move goes wrong three times is marked failed and
+  the sort goes on. The page shows the progress as a ring ("142 of 300 moved, 3 failed"); the sort carries on after a
+  restart. **Stop** (confirmed) takes effect before the next move; what has moved stays moved.
+- **Undo this sort** (admin, confirmed, audited) moves every item the last sort moved back where it was, the same way
+  and at the same pace, but only items still where the sort put it; the sorter then leaves those items alone.
+- When a sort ends, and once none of its file moves is still running (or after 30 minutes, which it then says), a
+  connected Plex server is asked to rescan its film or TV libraries once.
+- **Recently sorted** keeps the last 100 moves for new requests, graduations and moves by hand, and separately the
+  last 100 library-sort moves, so a big library sort never pushes the others out.
 - **Graduate finished shows** (shows, off by default): a show in the running-shows folder that has ended, with every
   aired episode on disk, moves to the ended-shows folder. It needs the "Ended" and "Still running" rules on, each with
   its own folder. You see the list first; confirming it moves those shows, 20 a minute, and keeps graduating shows that
