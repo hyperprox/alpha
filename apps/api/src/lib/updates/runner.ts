@@ -97,6 +97,8 @@ export interface RunnerDeps {
   emit?:      (payload: UpdatesWsPayload) => void
   /** Called with every inventory the runner reads, so the API's cache stays current. */
   onInventory?: (r: InventoryResult) => void
+  /** Called once after a job reaches done, failed or cancelled and its lock is released. */
+  onJobFinished?: () => void
   /** The notification bus (lib/notify). Without it, nothing is announced. */
   publish?:   (e: NotifyEventInput) => Promise<void>
   log?:       (msg: string, level?: 'warn' | 'error') => void
@@ -1656,6 +1658,7 @@ export class UpdatesRunner {
     const rep = report ?? await this.buildReport(jobId, status, reason)
     const job = await this.setJob(jobId, { report: rep })
     await this.store.releaseLock(jobId)
+    try { this.deps.onJobFinished?.() } catch (e: any) { this.deps.log?.(`[updates] after-job hook: ${e?.message ?? e}`, 'warn') }
     this.runStartedAt.delete(jobId)
     this.cephKnown.delete(jobId)
     const steps = await this.store.getSteps(jobId)

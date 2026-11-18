@@ -184,14 +184,26 @@ export async function readNetworkStorage(c: { id: string; kind: string }, nodeLa
   return groupNetworkStorage(ours(size), ours(avail), pve)
 }
 
-export interface PanelUpdates { available: number; packages: number; security: number; checkedAt: string; result: 'ok' | 'partial' | 'skipped'; reason?: string }
+/** `checkedAt` is when these numbers were last read: for a skipped check that is the last full check, not the skip. */
+export interface PanelUpdates { available: number; packages: number; security: number; checkedAt: string; result: 'ok' | 'partial' | 'skipped'; reason?: string; recheck?: boolean }
+
+/** "3 days ago", "2 hours ago", "just now": how old a stored check is, in words. */
+export function agoWords(iso: string, now = Date.now()): string {
+  const m = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000))
+  if (!Number.isFinite(m)) return 'at an unknown time'
+  if (m < 2) return 'just now'
+  if (m < 120) return `${m} minutes ago`
+  if (m < 48 * 60) return `${Math.round(m / 60)} hours ago`
+  return `${Math.round(m / 1440)} days ago`
+}
 
 /** The panel's updates line, from the stored check result. */
 export function panelUpdates(id: string): PanelUpdates | null {
   const c = checkSummary(id)
   if (!c) return null
-  const out: PanelUpdates = { available: c.available, packages: c.packages, security: c.security, checkedAt: c.at, result: c.result }
+  const out: PanelUpdates = { available: c.available, packages: c.packages, security: c.security, checkedAt: c.result === 'skipped' ? (c.lastOkAt ?? c.at) : c.at, result: c.result }
   if (c.reason) out.reason = c.reason
+  if (c.recheck) out.recheck = true
   return out
 }
 
@@ -493,7 +505,7 @@ export async function commandCenter(deps: Partial<PanelDeps> = {}): Promise<{ pa
       p.attention.push({
         clusterId: p.id, clusterName: p.name, kind: p.kind, severity: u.security ? 'warn' : 'info',
         title: u.security ? `Security updates on ${u.available} machine${u.available === 1 ? '' : 's'}` : `Updates available on ${u.available} machine${u.available === 1 ? '' : 's'}`,
-        detail: `${u.packages} package${u.packages === 1 ? '' : 's'} at the last check; see the Updates page.`,
+        detail: `${u.packages} package${u.packages === 1 ? '' : 's'} when last checked ${agoWords(u.checkedAt)}${u.recheck ? ', checking again now that the update finished' : ''}; see the Updates page.`,
       })
     }
   }

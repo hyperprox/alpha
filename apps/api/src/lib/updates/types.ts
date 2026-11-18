@@ -334,6 +334,8 @@ export type UpdatesCheckCluster = {
   reason?:   string
   /** When this cluster was last read in full; a skipped run keeps the targets from then. */
   lastOkAt?: string | null
+  /** True while HyperProx is about to check again because an Updates job just ended (set when read, never stored). */
+  recheck?: boolean
   targets:   UpdatesCheckTarget[]
   /** Machines that could not be read, with a short reason. */
   unread:    string[]
@@ -356,6 +358,8 @@ export type UpdatesCheckStatus = {
   blocked?:  string | null
   /** When the next manual check may start (manual checks are at least 15 minutes apart). */
   manualAfter?: string | null
+  /** A check is owed or about to run because an Updates job ended. */
+  recheck?: boolean
 }
 
 export type UpdatesWsPayload =

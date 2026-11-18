@@ -61,6 +61,8 @@ export interface UpdatesServicesDeps {
   guards?:     () => Promise<GuardContext>
   /** The package cache step before apt (lib/updates/apt-cache.ts), for every cluster; its setting is per cluster. */
   aptCache?:   AptCacheHook
+  /** Any cluster's runner finished a job (the daily check looks again). */
+  onJobFinished?: () => void
 }
 
 /** The cluster as the registry names it now (a rename shows up without a restart). */
@@ -122,6 +124,7 @@ export class UpdatesServices {
       checkJob: store.checkJob,
       guards: remote ? undefined : d.guards,
       aptCache: d.aptCache,
+      onJobFinished: d.onJobFinished,
       // The compose projects running in each guest are found too, so each can be chosen on its own: home and remote
       // alike, through that cluster's executor (a remote's: its pinned logins and the script guard). Only where the
       // policy turns docker on, unless a person asks; `docker: none`, exclusions and hyperprox-ignore always win.

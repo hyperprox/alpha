@@ -248,7 +248,12 @@ export interface CheckDeps {
   reachMs?: number
   /** Longest one cluster's check may take (default 20 min); the rest is reported "not checked". */
   clusterCapMs?: number
+  /** Quiet time after an Updates job ends before the check looks again (default 30 s; repeated ends restart it). */
+  afterJobMs?: number
 }
+
+/** The reason stored on a cluster the check skipped because a job was running. */
+export const JOB_SKIP = 'an Updates job is running'
 
 const sleepReal = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
@@ -257,6 +262,12 @@ export class UpdatesChecker {
   private last: Date
   private current: Promise<UpdatesCheckStatus> | null = null
   private abortReason: string | null = null
+  /** A check was skipped because a job was running and no check has finished since. */
+  private owed = false
+  /** When the check after a job may run (ms); null when none is waiting. */
+  private recheckAt: number | null = null
+  private jobEndedAt: number | null = null
+  private lastStartedAt = 0
 
   constructor(private deps: CheckDeps) { this.last = this.now() }
 
@@ -285,12 +296,25 @@ export class UpdatesChecker {
     const clusters = Object.values(s.clusters)
       .filter(c => order.includes(c.cluster.id))
       .sort((a, b) => order.indexOf(a.cluster.id) - order.indexOf(b.cluster.id))
-    return { running: this.running, lastRun: s.lastRun, nextRun: next, clusters, lastNotified: s.notified.at, blocked }
+    const out: UpdatesCheckStatus = { running: this.running, lastRun: s.lastRun, nextRun: next, clusters: this.recheck ? clusters.map(c => ({ ...c, recheck: true })) : clusters, lastNotified: s.notified.at, blocked }
+    if (this.recheck) out.recheck = true
+    return out
+  }
+
+  /** A check is coming because a job ended (not while the job is still running). */
+  private get recheck(): boolean { return this.recheckAt !== null }
+
+  /** An Updates job reached done, failed or cancelled: look again shortly, once, unless a check has started since. */
+  jobEnded(): void {
+    const t = this.now().getTime()
+    this.jobEndedAt = t
+    this.recheckAt = t + (this.deps.afterJobMs ?? 30_000)
   }
 
   /** The stored result for one cluster, for the Command center. No machine is touched. */
   summary(id: string): UpdatesCheckCluster | null {
-    return this.deps.state.load().clusters[id] ?? null
+    const c = this.deps.state.load().clusters[id] ?? null
+    return c && this.recheck ? { ...c, recheck: true } : c
   }
 
   /** One check of every cluster. A second call while one runs gets the same run. */
@@ -302,6 +326,7 @@ export class UpdatesChecker {
 
   private async runOnce(trigger: 'schedule' | 'manual'): Promise<UpdatesCheckStatus> {
     this.abortReason = null
+    this.lastStartedAt = this.now().getTime()
     const state = this.deps.state.load()
     const at = this.now().toISOString()
     const fileMissing = !!this.deps.loadPolicy().missing
@@ -319,7 +344,7 @@ export class UpdatesChecker {
       let r: UpdatesCheckCluster
       try {
         if (!this.deps.isUnlocked()) r = skip('HyperProx is locked, so it has no credentials to read with')
-        else if (await this.deps.activeJob()) r = skip('an Updates job is running')
+        else if (await this.deps.activeJob()) r = skip(JOB_SKIP)
         else r = await this.checkCluster(h, at, gap, skip, state, fileMissing)
       } catch (e: any) { r = skip(`not reachable: ${shortReason(e?.message ?? String(e))}`) }
       state.clusters[h.ref.id] = r
@@ -329,6 +354,7 @@ export class UpdatesChecker {
     // Clusters that were removed leave the state.
     for (const id of Object.keys(state.clusters)) if (!handles.some(h => h.ref.id === id)) { delete state.clusters[id]; delete state.keys[id] }
     state.lastRun = at
+    this.owed = fresh.some(r => r.result === 'skipped' && r.reason === JOB_SKIP)
     await this.notify(state, fresh)
     this.deps.state.save(state)
     this.deps.log?.(`[updates] ${trigger} check finished`)
@@ -430,6 +456,25 @@ export class UpdatesChecker {
 
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = null }
 
+  /**
+   * The check owed after a job: runs once when the debounce has passed, never while locked, while another job or
+   * a check runs, and not at all when a check already started after the job ended. A check that was skipped for a
+   * running job is owed too, even if the end of that job was never announced (a restart, a recovered job).
+   */
+  private async recheckTick(now: Date): Promise<'ran' | 'busy' | 'locked' | null> {
+    if (this.recheckAt === null && this.owed && !this.running && this.deps.isUnlocked() && !(await this.deps.activeJob())) this.recheckAt = now.getTime()
+    if (this.recheckAt === null || now.getTime() < this.recheckAt) return null
+    if (!this.deps.isUnlocked()) { this.deps.log?.('[updates] check after the update waits: HyperProx is locked'); return 'locked' }
+    if (this.running || await this.deps.activeJob()) return 'busy'
+    const ended = this.jobEndedAt
+    this.recheckAt = null
+    this.jobEndedAt = null
+    if (ended !== null && this.lastStartedAt >= ended && !this.owed) return null
+    this.deps.log?.('[updates] checking again now that an update finished')
+    await this.run('schedule')
+    return 'ran'
+  }
+
   /** One scheduler tick: runs the check once when its time fell since the last tick. */
   async tick(): Promise<'off' | 'idle' | 'locked' | 'busy' | 'ran' | 'error'> {
     const now = this.now()
@@ -437,12 +482,14 @@ export class UpdatesChecker {
     this.last = now
     const load = this.deps.loadPolicy()
     const pol = load.policy.check
-    if (!pol.enabled) return 'off'
+    if (!pol.enabled) { this.owed = false; this.recheckAt = null; return 'off' }
     const blocked = this.blocked(load)
     if (blocked) { this.deps.log?.(`[updates] ${blocked}`); return 'off' }
+    const again = await this.recheckTick(now)
+    if (again === 'ran') return 'ran'
     let due: Date[]
     try { due = dueMinutes(pol.cron, since, now) } catch (e: any) { this.deps.log?.(`[updates] check schedule not understood: ${e.message}`, 'warn'); return 'error' }
-    if (!due.length) return 'idle'
+    if (!due.length) return again ?? 'idle'
     if (!this.deps.isUnlocked()) { this.deps.log?.('[updates] daily check skipped: HyperProx is locked, so it has no credentials to read with'); return 'locked' }
     if (this.running) return 'busy'
     await this.run('schedule')

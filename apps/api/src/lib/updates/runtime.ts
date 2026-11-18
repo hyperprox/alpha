@@ -45,6 +45,8 @@ export interface UpdatesRuntimeDeps {
   checkState?: CheckStateStore
   /** The daily check's pauses between machines. */
   checkGapMs?: number
+  /** Quiet time after a job ends before the check looks again (tests). */
+  checkAfterJobMs?: number
   /** How HyperProx reaches a remote now (tests); default lib/pve-env.ts connectionKey. */
   connection?: (clusterId: string) => string
   hostname?:   string
@@ -89,7 +91,7 @@ export class UpdatesRuntime {
     this.services = new UpdatesServices({
       store: d.store, exec: d.exec, remoteExec: d.remoteExec, loadPolicy: this.loadPolicy,
       hostname: d.hostname, timing: d.timing, apps: this.apps,
-      publish, emit: d.emit,
+      publish, emit: d.emit, onJobFinished: () => this.checker?.jobEnded(),
       log: d.log, connection: d.connection, guards: d.guards,
       aptCache: d.aptCache ?? (d.exec ? undefined : productionAptCacheHook()),
     })
@@ -104,7 +106,7 @@ export class UpdatesRuntime {
       state: d.checkState ?? new FileCheckState(),
       publish,
       log: d.log,
-      gapMs: d.checkGapMs, clusterGapMs: d.checkGapMs,
+      gapMs: d.checkGapMs, clusterGapMs: d.checkGapMs, afterJobMs: d.checkAfterJobMs,
     })
     // Scheduled runs are home-only. The daily check covers every cluster, read-only.
     this.scheduler = new UpdatesScheduler({ runner: this.runner, loadPolicy: this.loadPolicy, isUnlocked, busy: () => this.checker.running, log: d.log })

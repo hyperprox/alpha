@@ -24,6 +24,8 @@ know or do before they install. Newest entry at the top.
 ## 2026-11-18 — Package cache: updates no longer fail on some guests
 
 ### Fixed
+- **The Updates check no longer shows days-old results after you update.** When the daily check fell while an update was running it skipped itself and nothing ran it again, so the dashboard kept saying "Security updates on 10 machines" after everything was updated, and listed guests deleted days ago. HyperProx now checks again about half a minute after an update ends, and the dashboard says how old the last full check is and when it is checking again.
+  - Technical: `UpdatesChecker.jobEnded()` is called by the runner's `finish()` through `onJobFinished`; the check tick runs one debounced check (`afterJobMs`, 30 s), never while locked or while a job or check runs, and not when a check already started after the job ended. A check skipped with "an Updates job is running" is owed and runs once the job is gone even if no end was announced. `recheck` is added to the check status and cluster rows when read; the overview panel's `checkedAt` is the last full check for a skipped result.
 - **Updates failed on guests using the package cache with "ProxyAutoDetect returned an error".** The folder HyperProx writes its cache check into was readable by root only, and apt runs that check as its own restricted user. The folder is now readable by everyone, the check is tested the way apt runs it, and if apt still cannot run it the setting takes itself out so the guest updates directly.
   - Technical: `install -d -m 755` for the detect folder whatever the umask; the reachability check runs via `runuser -u _apt`; a failure removes both files and prints `result=unusable`, recorded as failed.
 

@@ -37,7 +37,7 @@ export interface ClusterPanel {
   networkStorage?: NetworkStorage[]
   gpus: GpuRow[]; gpuNote: string | null; lastBackup: { at: number; ok: boolean; node: string } | null; attention: Attention[]; monitoring: boolean
   /** From the last daily updates check (stored; no machine is read for this). */
-  updates?: { available: number; packages: number; security: number; checkedAt: string; result: 'ok' | 'partial' | 'skipped'; reason?: string } | null
+  updates?: { available: number; packages: number; security: number; checkedAt: string; result: 'ok' | 'partial' | 'skipped'; reason?: string; recheck?: boolean } | null
 }
 
 export function useClusters() {

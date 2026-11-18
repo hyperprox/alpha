@@ -130,9 +130,9 @@ export function PanelView({ p, houses = [] }: { p: ClusterPanel; houses?: Instan
       </p>
       <p className="text-xs" style={{ color: p.updates?.security ? 'var(--warn-2)' : 'var(--text-muted)' }}>
         {!p.updates ? 'Updates: not checked yet'
-          : p.updates.result === 'skipped' && !p.updates.available ? `Updates: not checked ${ago(Date.parse(p.updates.checkedAt))} (${p.updates.reason ?? 'skipped'})`
+          : p.updates.result === 'skipped' && !p.updates.available ? (p.updates.recheck ? `Updates: checking again now that the update finished (last checked ${ago(Date.parse(p.updates.checkedAt))})` : `Updates: last checked ${ago(Date.parse(p.updates.checkedAt))}; this time it was skipped (${p.updates.reason ?? 'skipped'})`)
           : p.updates.available
-            ? `Updates available on ${p.updates.available} machine${p.updates.available === 1 ? '' : 's'} (${p.updates.packages} package${p.updates.packages === 1 ? '' : 's'}${p.updates.security ? `, ${p.updates.security} security` : ''}) · checked ${ago(Date.parse(p.updates.checkedAt))}`
+            ? `Updates available on ${p.updates.available} machine${p.updates.available === 1 ? '' : 's'} (${p.updates.packages} package${p.updates.packages === 1 ? '' : 's'}${p.updates.security ? `, ${p.updates.security} security` : ''}) · last checked ${ago(Date.parse(p.updates.checkedAt))}${p.updates.recheck ? ', checking again now that the update finished' : ''}`
             : `Up to date · checked ${ago(Date.parse(p.updates.checkedAt))}`}
       </p>
       {houses.length > 0 && (
