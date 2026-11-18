@@ -36,7 +36,7 @@
 import crypto from 'node:crypto'
 import type { CoreEndpointClient } from '../plugin-host'
 import {
-  APPS, CONDITION_LABEL, ROUTED_TAG, conditionsFor, curatedFolders, groupWord, libraryPlan, defaultSettings, filmOf, folderName, graduateFolders, graduates, guessDefaultRoot, normRoot, parseSettings,
+  APPS, CONDITION_LABEL, ROUTED_TAG, conditionsFor, curatedFolders, filledFolders, groupWord, leftAloneFolders, libraryPlan, defaultSettings, filmOf, folderName, graduateFolders, graduates, guessDefaultRoot, normRoot, parseSettings,
   pickFolder, routable, ruleFingerprint, showOf, testLibrary, whyWord,
   type App, type AppSettings, type Condition, type Item, type LibraryTest, type PlanGroup, type Show,
 } from './rules'
@@ -162,7 +162,11 @@ export interface LibraryJob {
   rescan?: string
 }
 export type LibraryJobView = Omit<LibraryJob, 'queue'> & { remaining: number }
-export interface LibraryPreview { previewId: string; app: App; total: number; groups: Array<PlanGroup & { word: string }> }
+export interface LibraryPreview {
+  previewId: string; app: App; total: number; groups: Array<PlanGroup & { word: string }>
+  /** Folders no enabled rule fills: nothing is taken out of them. */
+  leftAlone: Array<{ folder: string; count: number }>
+}
 /** Moves the arr is importing are tried again later, at most this many times. */
 const MAX_LIBRARY_TRIES = 30
 const jobView = (j: LibraryJob): LibraryJobView => { const { queue, ...rest } = j; return { ...rest, remaining: queue.length } }
@@ -621,14 +625,16 @@ export class RouterService {
     const s = await this.storedSettings(app)
     if (!s) throw new RouterRefusal(409, 'no_rules', 'Save your rules first: sorting the library uses the rules you saved.')
     const st = await this.state(app)
-    const groups = libraryPlan(app, s, await this.library(c, app), new Set(st.leaveAlone)).map(g => ({ ...g, word: groupWord(g) }))
+    const lib = await this.library(c, app)
+    const groups = libraryPlan(app, s, lib, new Set(st.leaveAlone)).map(g => ({ ...g, word: groupWord(g) }))
+    const leftAlone = leftAloneFolders(s, lib)
     const previewId = crypto.randomBytes(12).toString('hex')
     const now = this.d.now()
     for (const [k, v] of this.libPreviews) if (now - v.at > TEST_TTL_MS) this.libPreviews.delete(k)
     const items = new Map<number, { from: string; to: string; condition: Condition }>()
     for (const g of groups) for (const it of g.items) items.set(it.id, { from: g.from, to: g.to, condition: g.condition })
     this.libPreviews.set(previewId, { app, by, at: now, items, groups: groups.map(g => ({ word: g.word, ids: g.items.map(i => i.id) })) })
-    return { previewId, app, total: items.size, groups }
+    return { previewId, app, total: items.size, groups, leftAlone }
   }
 
   /** Move exactly the ticked items of a preview: 20 now, the rest 20 a minute. Audited before anything moves. */
@@ -681,6 +687,7 @@ export class RouterService {
       return
     }
     const hand = curatedFolders(s.rules)
+    const filled = filledFolders(s.rules)
     const leave = new Set(st.leaveAlone)
     let done = 0
     const later: LibraryJob['queue'] = []
@@ -691,7 +698,7 @@ export class RouterService {
       const live = await this.one(c, app, q.id)
       // Checked again now: still where it was, nobody moved it back, the rules still pick the same folder, never hand-picked.
       const p = live ? pickFolder(app, s, live) : null
-      if (!live || live.root !== q.from || leave.has(q.id) || hand.has(q.from) || hand.has(q.to) || !p || p.folder !== q.to) { job.skipped++; continue }
+      if (!live || live.root !== q.from || leave.has(q.id) || hand.has(q.from) || hand.has(q.to) || !filled.has(q.from) || !p || p.folder !== q.to) { job.skipped++; continue }
       if (!(await this.roots(c, app)).includes(q.to)) { job.skipped++; continue }
       if (await this.importing(c, app, q.id)) {
         if ((q.tries ?? 0) + 1 >= MAX_LIBRARY_TRIES) job.skipped++

@@ -2215,7 +2215,9 @@ folder it belongs in, about a minute after it is added and usually before it dow
 - **Sort my library** (admin) applies your saved rules to what you already have. **Preview** reads the whole library
   without moving anything and lists every item that is not where your rules would put it, in groups such as "Horror in
   your main folder → your horror folder (63)", each with the rule's reason. Nothing is ever proposed out of a
-  hand-picked folder or into one, and nothing you moved back by hand. Every group starts unticked: tick whole groups,
+  hand-picked folder or into one, nothing you moved back by hand, and nothing out of a folder that no rule fills:
+  such a folder counts as kept by hand and is listed as "Left alone", so forgetting to mark a folder hand-picked can
+  never empty it. Every group starts unticked: tick whole groups,
   or open one and untick single titles (shows list "x of y episodes"). The preview lasts 15 minutes, works once, and
   only for you. **Move** asks you to confirm, saying how many items in which groups; each item is checked again just
   before it moves (still where it was, your rules still pick the same folder) and moved the same way as a new

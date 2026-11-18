@@ -52,6 +52,8 @@
 .groupHead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .count { margin-left: auto; font: 700 1.1rem var(--font-display); color: var(--warn); }
 
+.leftAlone { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font: 500 .75rem var(--font-mono); color: var(--text-muted); }
+.leftAlone li { border-left: 3px dashed var(--hx-line-hi); padding-left: 8px; }
 .titles { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 0; max-height: 18rem; overflow-y: auto; }
 .titles li { border-top: 1px solid var(--hx-line); }
 .group[data-ticked="all"], .group[data-ticked="some"] { border-left-color: var(--hx-accent); }

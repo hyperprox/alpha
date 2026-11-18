@@ -26,7 +26,12 @@ export interface LibraryJob {
 }
 export interface PlanItem { id: number; title: string; year: number; detail: string; episodes?: { files: number; aired: number } }
 export interface PlanGroup { key: string; from: string; to: string; condition: Condition; count: number; items: PlanItem[]; word: string }
-export interface LibraryPreview { previewId: string; app: RouterApp; total: number; groups: PlanGroup[] }
+export interface LibraryPreview { previewId: string; app: RouterApp; total: number; groups: PlanGroup[]; leftAlone?: Array<{ folder: string; count: number }> }
+
+/** "Left alone: Old Picks (18 items) — no rule fills this folder". */
+export function leftAloneWord(x: { folder: string; count: number }): string {
+  return `Left alone: ${folderName(x.folder)} (${x.count} ${x.count === 1 ? 'item' : 'items'}) — no rule fills this folder`
+}
 export interface Move {
   key: string; at: string; app: RouterApp; id: number; title: string; year: number; from: string; to: string
   kind: 'sorted' | 'graduated' | 'moved' | 'library'; condition: Condition | null; why: string; detail: string; by: string; ok: boolean; error?: string

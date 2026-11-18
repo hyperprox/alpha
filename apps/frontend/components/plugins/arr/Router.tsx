@@ -24,7 +24,7 @@ import c from './giveup.module.css'
 import r from './router.module.css'
 import { ConfirmBox } from './GiveUp'
 import {
-  agreementWord, conditionLabel, draftBody, folderName, graduateWord, groupTicked, jobWord, libraryWord, moveRule, moveState, moveWord, toggleGroup, toggleItem, parseTmdb, ruleLine, sinceWord, suggestedWord, switchOnWord, tickWord,
+  agreementWord, conditionLabel, draftBody, folderName, graduateWord, groupTicked, jobWord, leftAloneWord, libraryWord, moveRule, moveState, moveWord, toggleGroup, toggleItem, parseTmdb, ruleLine, sinceWord, suggestedWord, switchOnWord, tickWord,
   type GraduatePreview, type LibraryJob, type LibraryPreview, type LibraryTest, type Move, type PlanGroup, type RouterApp, type RouterAppStatus, type RouterSettings, type RouterStatus, type Rule,
 } from './router-view'
 
@@ -277,6 +277,11 @@ function LibrarySort({ st, canAct, onDone }: { st: RouterAppStatus; canAct: bool
       {p && (
         <>
           <p className={c.note}>{p.total === 0 ? 'Everything is already where your rules would put it.' : `${p.total} ${p.total === 1 ? 'item is' : 'items are'} not where your rules would put them, in ${p.groups.length} ${p.groups.length === 1 ? 'group' : 'groups'}. Tick what should move.`}</p>
+          {(p.leftAlone ?? []).length > 0 && (
+            <ul className={r.leftAlone} aria-label="Folders left alone">
+              {p.leftAlone!.map(x => <li key={x.folder}>{leftAloneWord(x)}</li>)}
+            </ul>
+          )}
           <ul className={r.groups} aria-label="What would move">
             {p.groups.map(g => (
               <GroupCard key={g.key} g={g} sel={sel} open={open === g.key} canAct={canAct}

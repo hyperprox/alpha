@@ -459,6 +459,24 @@ export { leaf as folderName }
 export interface PlanItem { id: number; title: string; year: number; detail: string; episodes?: { files: number; aired: number } }
 export interface PlanGroup { key: string; from: string; to: string; condition: Condition; count: number; items: PlanItem[] }
 
+/** The folders an enabled rule sends things to (never a hand-picked one). */
+export function filledFolders(rules: Rule[]): Set<string> {
+  const hand = curatedFolders(rules)
+  return new Set(rules.filter(r => r.enabled && r.folder && r.condition !== 'curated' && !hand.has(normRoot(r.folder))).map(r => normRoot(r.folder!)))
+}
+
+/**
+ * Folders "Sort my library" leaves alone because no enabled rule fills them (hand-picked folders are listed apart):
+ * forgetting to mark a hand-kept folder can never empty it. With how many items each holds.
+ */
+export function leftAloneFolders(settings: Pick_<AppSettings, 'rules'>, items: Item[]): Array<{ folder: string; count: number }> {
+  const hand = curatedFolders(settings.rules)
+  const filled = filledFolders(settings.rules)
+  const count = new Map<string, number>()
+  for (const it of items) if (it.root && !hand.has(it.root) && !filled.has(it.root)) count.set(it.root, (count.get(it.root) ?? 0) + 1)
+  return [...count].map(([folder, n]) => ({ folder, count: n })).sort((a, b) => b.count - a.count || a.folder.localeCompare(b.folder))
+}
+
 /** "Horror in Movies → Frights": a group's name, from the owner's own folder names. */
 export function groupWord(g: Pick_<PlanGroup, 'condition' | 'from' | 'to'>): string {
   return `${CONDITION_LABEL[g.condition]} in ${leaf(g.from)} → ${leaf(g.to)}`
@@ -471,9 +489,11 @@ export function groupWord(g: Pick_<PlanGroup, 'condition' | 'from' | 'to'>): str
  */
 export function libraryPlan(app: App, settings: Pick_<AppSettings, 'rules' | 'photoreal'>, items: Item[], leaveAlone: ReadonlySet<number> = new Set()): PlanGroup[] {
   const hand = curatedFolders(settings.rules)
+  const filled = filledFolders(settings.rules)
   const groups = new Map<string, PlanGroup>()
   for (const it of items) {
-    if (hand.has(it.root) || leaveAlone.has(it.id)) continue
+    // A folder no enabled rule fills is kept by hand, like a hand-picked one: nothing is taken out of it.
+    if (hand.has(it.root) || !filled.has(it.root) || leaveAlone.has(it.id)) continue
     const p = pickFolder(app, settings, it)
     if (!p || p.folder === it.root || hand.has(p.folder)) continue
     const key = `${it.root}\u0000${p.folder}\u0000${p.condition}`

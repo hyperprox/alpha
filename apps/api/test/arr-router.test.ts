@@ -16,7 +16,7 @@ import { requiredRole, needsConfirm, needsPassword } from '../src/lib/roles'
 import { injectConfirmed } from './fakes/confirm'
 import { buildArrRouterRoutes } from '../src/routes/arr-router'
 import {
-  defaultRules, defaultSettings, filmMatch, groupWord, libraryPlan, filmOf, graduates, guessDefaultRoot, parseSettings, pickFolder, routable, ruleFingerprint, showMatch, showOf, testLibrary,
+  defaultRules, defaultSettings, filmMatch, groupWord, leftAloneFolders, libraryPlan, filmOf, graduates, guessDefaultRoot, parseSettings, pickFolder, routable, ruleFingerprint, showMatch, showOf, testLibrary,
   whyWord, type AppSettings, type Film,
 } from '../src/lib/arr-router/rules'
 import { FULL_READ_MS, GRADUATE_EVERY_MS, LOOKBACK_MS, MAX_MOVES_PER_TICK, RouterRefusal, RouterService, type RouterDeps } from '../src/lib/arr-router/service'
@@ -809,4 +809,29 @@ test('library routes: preview admin-only and unconfirmed; apply and stop confirm
     const stopAsk = await a.inject({ method: 'POST', url: '/api/plugins/arrstack/router/library/stop', headers: { cookie: adm.cookie }, payload: { app: 'radarr' } })
     assert.match(JSON.parse(stopAsk.body).confirm.summary, /^Stop sorting the films in your library\?/)
   } finally { await a.close() }
+})
+
+test('library plan: a folder no enabled rule fills is left alone, like a hand-picked one (forgetting Hand-picked cannot empty it)', async () => {
+  const films = fx('radarr-movies.json').map(filmOf)
+  // No hand-picked rule at all: the picks folder is filled by no rule, so its film stays.
+  const noHand = filmSettings({ rules: filmSettings().rules.map(x => (x.condition === 'curated' ? { ...x, folder: null, enabled: false } : x)) })
+  const plan = libraryPlan('radarr', noHand, films)
+  assert.ok(!plan.some(g => g.from === `${F}Cinema Picks`), 'nothing out of a folder no rule fills')
+  assert.deepEqual(leftAloneFolders(noHand, films), [{ folder: `${F}Cinema Picks`, count: 1 }])
+  // A genre rule switched off: its folder is no longer filled, so nothing leaves it either.
+  const noHorror = filmSettings({ rules: filmSettings().rules.map(x => (x.condition === 'horror' ? { ...x, enabled: false } : x)) })
+  assert.ok(!libraryPlan('radarr', noHorror, films).some(g => g.from === `${F}Frights`))
+  assert.deepEqual(leftAloneFolders(noHorror, films), [{ folder: `${F}Frights`, count: 1 }])
+  assert.deepEqual(leftAloneFolders(filmSettings(), films), [], 'hand-picked folders are not listed here')
+  // The preview lists them; applying re-checks it at move time.
+  const r = rig()
+  await r.svc.saveSettings('radarr', noHorror, undefined, ADMIN)
+  const p = await r.svc.libraryPreview('radarr', ADMIN)
+  assert.deepEqual(p.leftAlone, [{ folder: `${F}Frights`, count: 1 }])
+  const ids = p.groups.find(g => g.from === `${F}Main Films` && g.to === `${F}Kids Live Action`)!.items.map(i => i.id)
+  const all = (await r.svc.status()).apps.find(a => a.app === 'radarr')!.settings!
+  await r.svc.saveSettings('radarr', { ...all, rules: all.rules.map(x => (x.condition === 'default' ? { ...x, enabled: false } : x)) }, undefined, ADMIN)
+  const job = await r.svc.libraryApply(p.previewId, ids, ADMIN)
+  assert.equal(job.skipped, 1, 'its folder is no longer filled by any rule: skipped at move time')
+  assert.equal(r.radarr.items.find(i => i.id === 10).rootFolderPath, `${F}Main Films`)
 })

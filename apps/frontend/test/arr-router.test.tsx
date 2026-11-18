@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { GroupCard, JobView, MoveCard, PhotorealList, RuleFlow, TestView } from '../components/plugins/arr/Router'
 import {
-  agreementWord, draftBody, groupTicked, jobWord, libraryWord, toggleGroup, toggleItem, type LibraryJob, type LibraryPreview, type PlanGroup, folderName, graduateWord, moveRule, moveState, moveWord, parseTmdb, ruleLine, suggestedWord, switchOnWord, tickWord,
+  agreementWord, draftBody, groupTicked, jobWord, leftAloneWord, libraryWord, toggleGroup, toggleItem, type LibraryJob, type LibraryPreview, type PlanGroup, folderName, graduateWord, moveRule, moveState, moveWord, parseTmdb, ruleLine, suggestedWord, switchOnWord, tickWord,
   type LibraryTest, type Move, type RouterAppStatus, type RouterSettings,
 } from '../components/plugins/arr/router-view'
 
@@ -135,4 +135,9 @@ test('Sort my library: ticking groups and titles, the confirm, and the progress 
   assert.ok(!/>Stop</.test(renderToStaticMarkup(<JobView j={j} canAct={false} onStop={noop} />)))
   assert.match(jobWord({ ...j, state: 'done', moved: 297, rescan: 'Plex was asked to rescan 1 library.' }), /Finished\. Plex was asked to rescan 1 library\./)
   assert.match(jobWord({ ...j, state: 'stopped', stoppedBy: 'admin@example.com' }), /Stopped by admin@example.com; the rest stayed where they were/)
+})
+
+test('Sort my library: folders no rule fills are listed as left alone', () => {
+  assert.equal(leftAloneWord({ folder: `${F}Old Picks`, count: 18 }), 'Left alone: Old Picks (18 items) — no rule fills this folder')
+  assert.equal(leftAloneWord({ folder: `${F}Old Picks`, count: 1 }), 'Left alone: Old Picks (1 item) — no rule fills this folder')
 })
