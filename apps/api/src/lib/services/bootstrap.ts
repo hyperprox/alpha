@@ -59,6 +59,11 @@
 //                         look every two minutes, an alert when the tunnel
 //                         is down or the port is wrong for ten minutes (a
 //                         look does nothing while locked).
+//   15. arr-router        The Arr Stack's folder sorter (lib/arr-router): a
+//                         look every minute for newly added films and shows
+//                         where sorting is switched on (a look does nothing
+//                         while locked). Only with the database, where its
+//                         rules live.
 //
 //  On close, everything started here is stopped, in reverse.
 //
@@ -95,12 +100,13 @@ import { removedGuests } from '../removed-guests'
 import { giveUpService, startGiveUpTimer } from '../arr-giveup/production'
 import { arrVpnService } from '../arr-vpn/production'
 import { startVpnWatch } from '../arr-vpn/service'
+import { routerService, startRouterTimer } from '../arr-router/production'
 
 /** The steps, by name, in the order they run (the list above). */
 export type BootStep =
   | 'exclusions' | 'compose-owners' | 'dismissed' | 'updates' | 'install-hook'
   | 'nextcloud' | 'homepage' | 'auto-connect' | 'removed-guests'
-  | 'updates-recover' | 'updates-timers' | 'placement' | 'arr-give-up' | 'arr-vpn'
+  | 'updates-recover' | 'updates-timers' | 'placement' | 'arr-give-up' | 'arr-vpn' | 'arr-router'
 
 /**
  * What is built. Production leaves every field out; a test passes fakes (with the same start methods) to boot the
@@ -125,6 +131,8 @@ export interface BootstrapDeps {
   arrGiveUp?: { start(): () => void } | null
   /** The Arr Stack VPN panel's watch. Default: the real one; null: none. */
   arrVpn?: { start(): () => void } | null
+  /** The Arr Stack folder sorter's timer. Default: the real one, with the database; null: none. */
+  arrRouter?: { start(): () => void } | null
   /** Registers a callback for every unlock. Default: the vault's. */
   onUnlock?: (cb: () => void) => void
 }
@@ -231,6 +239,10 @@ export function bootstrapServices(app: FastifyInstance, deps: BootstrapDeps): Bo
     steps.push('arr-vpn')
     const vpn = deps.arrVpn !== undefined ? deps.arrVpn : { start: () => startVpnWatch(arrVpnService(m => log(m, 'warn'), prisma), m => log(m, 'warn')) }
     if (vpn) stops.push(vpn.start())
+    steps.push('arr-router')
+    const sorter = deps.arrRouter !== undefined ? deps.arrRouter
+      : prisma ? { start: () => startRouterTimer(routerService(prisma, m => log(m, 'warn')), m => log(m, 'warn')) } : null
+    if (sorter) stops.push(sorter.start())
   })
 
   app.addHook('onClose', async () => {

@@ -1,0 +1,58 @@
+[
+ {
+  "id": 1,
+  "path": "/data/films/Main Films",
+  "accessible": true,
+  "freeSpace": 1000,
+  "unmappedFolders": []
+ },
+ {
+  "id": 2,
+  "path": "/data/films/Kids Cartoons",
+  "accessible": true,
+  "freeSpace": 1000,
+  "unmappedFolders": []
+ },
+ {
+  "id": 3,
+  "path": "/data/films/Kids Live Action",
+  "accessible": true,
+  "freeSpace": 1000,
+  "unmappedFolders": []
+ },
+ {
+  "id": 4,
+  "path": "/data/films/Festive",
+  "accessible": true,
+  "freeSpace": 1000,
+  "unmappedFolders": []
+ },
+ {
+  "id": 5,
+  "path": "/data/films/Frights",
+  "accessible": true,
+  "freeSpace": 1000,
+  "unmappedFolders": []
+ },
+ {
+  "id": 6,
+  "path": "/data/films/Comic Heroes",
+  "accessible": true,
+  "freeSpace": 1000,
+  "unmappedFolders": []
+ },
+ {
+  "id": 7,
+  "path": "/data/films/Docs",
+  "accessible": true,
+  "freeSpace": 1000,
+  "unmappedFolders": []
+ },
+ {
+  "id": 8,
+  "path": "/data/films/Cinema Picks DTS",
+  "accessible": true,
+  "freeSpace": 1000,
+  "unmappedFolders": []
+ }
+]

@@ -106,7 +106,11 @@ export function bypassesLock(path: string): boolean {
 // Arr Stack VPN panel (routes/arr-vpn.ts): the status is a read (viewer; the public address only for an admin); its fixes
 // (put the forwarded port into qBittorrent, reconnect the tunnel, restart qBittorrent) are admin and confirmed on the
 // page (ARR_CONFIRM). Refused to API tokens by name. No master password: nothing permanent changes.
-const ARR_CONFIRM = /^\/api\/plugins\/arrstack\/(better\/grab|vpn\/actions)$/
+// Arr Stack "Sort requests into the right folder" (routes/arr-router.ts): the rules and Recently sorted are a read
+// (viewer). The library test and the graduate preview are admin (the default for a POST) and change nothing; saving the
+// rules, "Undo / move to…" and moving the finished shows are admin and confirmed on the page (ARR_CONFIRM). Refused to
+// API tokens by name. No master password: nothing is deleted, and every move can be moved back.
+const ARR_CONFIRM = /^\/api\/plugins\/arrstack\/(better\/grab|vpn\/actions|router\/(settings|move|graduate))$/
 
 // Guest power actions. Both route families exist: /api/infra (infrastructure.ts)
 // and /api/proxmox (proxmox.ts).
@@ -575,7 +579,7 @@ export function needsConfirm(method: string, path: string, opts: { tokenPluginSc
   if (m === 'POST' && REMOVED_GUESTS_CLEAN.test(p)) return true
   if (m === 'POST' && PLEX_SIGNIN_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
-  // Arr Stack: downloading a better copy, and the VPN panel's fixes.
+  // Arr Stack: downloading a better copy, the VPN panel's fixes, and the folder sorter's changes.
   if (m === 'POST' && ARR_CONFIRM.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
   if (m === 'POST' && SETTINGS_TEST.test(p)) return true

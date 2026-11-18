@@ -30,6 +30,8 @@ const pluginName = (id: string) => PLUGIN[id] ?? id
 export interface ConfirmNames {
   betterGrab?: (target: string, releaseId: string) => { item: string; release: string; swap: string | null } | null
   vpnPort?: () => number | null
+  routerMove?: (app: unknown, id: unknown, folder: unknown) => { title: string; folder: string } | null
+  routerGraduate?: (previewId: unknown) => { count: number; folder: string } | null
 }
 const names: ConfirmNames = {}
 export function setConfirmNames(n: ConfirmNames): void { Object.assign(names, n) }
@@ -49,6 +51,23 @@ function vpnFixSentence(b: any): string {
     return Number.isInteger(p) && p! > 0 && p! < 65536 ? `Put port ${p} into qBittorrent?` : 'Put the port the VPN forwards into qBittorrent?'
   }
   return 'Run this fix on the VPN?'
+}
+
+function routerSettingsSentence(b: any): string {
+  const what = b?.app === 'sonarr' ? 'shows' : b?.app === 'radarr' ? 'films' : 'requests'
+  if (b?.settings?.enabled === true) return `Sort new ${what} into folders? From now on, each new request is moved into the folder its rules pick about a minute after it is added. Nothing already in your library moves.`
+  return `Save the folder rules for ${what}? Sorting stays off; nothing moves.`
+}
+
+function routerMoveSentence(b: any): string {
+  const n = names.routerMove?.(b?.app, b?.id, b?.folder) ?? null
+  return n ? `Move ${str(n.title, 100)} to ${str(n.folder, 80)}? Its files move with it.` : 'Move this item to the folder you picked? Its files move with it.'
+}
+
+function routerGraduateSentence(b: any): string {
+  const n = names.routerGraduate?.(b?.previewId) ?? null
+  const what = n ? `${n.count} finished ${n.count === 1 ? 'show' : 'shows'} to ${str(n.folder, 80)}` : 'the finished shows in the preview'
+  return `Move ${what}? Their files move with them, and shows that finish from now on move on their own.`
 }
 
 const RULES: Rule[] = [
@@ -105,6 +124,9 @@ const RULES: Rule[] = [
   }],
   ['POST', /^\/api\/plugins\/arrstack\/better\/grab$/, (_m, _p, b) => betterGrabSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/vpn\/actions$/, (_m, _p, b) => vpnFixSentence(b)],
+  ['POST', /^\/api\/plugins\/arrstack\/router\/settings$/, (_m, _p, b) => routerSettingsSentence(b)],
+  ['POST', /^\/api\/plugins\/arrstack\/router\/move$/, (_m, _p, b) => routerMoveSentence(b)],
+  ['POST', /^\/api\/plugins\/arrstack\/router\/graduate$/, (_m, _p, b) => routerGraduateSentence(b)],
   ['POST', /^\/api\/local\/([^/]+)\//, m => `Run this ${m[1]} action?`],
   ['POST', /^\/api\/plugins\/apt-cacher-ng\/guests\/repair$/, () =>
     'Write the package cache setting on every guest Updates looks after, and check each can reach it?'],

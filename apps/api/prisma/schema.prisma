@@ -761,3 +761,12 @@ model ArrGiveUpSetting {
   updatedBy String   @default("")
   updatedAt DateTime @updatedAt
 }
+
+// Arr Stack "Sort requests into the right folder" (lib/arr-router): each app's rules and bookmarks, and the
+// Recently sorted list, one JSON row each.
+model ArrRouterSetting {
+  id        String   @id
+  data      Json     @default("{}")
+  updatedBy String   @default("")
+  updatedAt DateTime @updatedAt
+}

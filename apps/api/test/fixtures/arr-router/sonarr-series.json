@@ -1,0 +1,172 @@
+[
+ {
+  "id": 1,
+  "tvdbId": 700001,
+  "title": "Northern Lines",
+  "year": 2022,
+  "status": "continuing",
+  "seriesType": "standard",
+  "genres": [
+   "Drama"
+  ],
+  "rootFolderPath": "/data/tv/On Air",
+  "path": "/data/tv/On Air/Northern Lines",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "monitored": true,
+  "statistics": {
+   "episodeFileCount": 10,
+   "episodeCount": 10,
+   "totalEpisodeCount": 12,
+   "percentOfEpisodes": 100.0
+  },
+  "images": [],
+  "seasons": []
+ },
+ {
+  "id": 2,
+  "tvdbId": 700002,
+  "title": "Brass Harbour",
+  "year": 2008,
+  "status": "ended",
+  "seriesType": "standard",
+  "genres": [
+   "Drama"
+  ],
+  "rootFolderPath": "/data/tv/Finished Runs",
+  "path": "/data/tv/Finished Runs/Brass Harbour",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "monitored": true,
+  "statistics": {
+   "episodeFileCount": 30,
+   "episodeCount": 30,
+   "totalEpisodeCount": 32,
+   "percentOfEpisodes": 100.0
+  },
+  "images": [],
+  "seasons": []
+ },
+ {
+  "id": 3,
+  "tvdbId": 700003,
+  "title": "Moon Rabbits",
+  "year": 2021,
+  "status": "continuing",
+  "seriesType": "anime",
+  "genres": [
+   "Animation",
+   "Fantasy"
+  ],
+  "rootFolderPath": "/data/tv/Cartoon Shows",
+  "path": "/data/tv/Cartoon Shows/Moon Rabbits",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "monitored": true,
+  "statistics": {
+   "episodeFileCount": 10,
+   "episodeCount": 10,
+   "totalEpisodeCount": 12,
+   "percentOfEpisodes": 100.0
+  },
+  "images": [],
+  "seasons": []
+ },
+ {
+  "id": 4,
+  "tvdbId": 700004,
+  "title": "Paper Lanterns",
+  "year": 1999,
+  "status": "ended",
+  "seriesType": "standard",
+  "genres": [
+   "Animation",
+   "Comedy"
+  ],
+  "rootFolderPath": "/data/tv/Cartoon Shows",
+  "path": "/data/tv/Cartoon Shows/Paper Lanterns",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "monitored": true,
+  "statistics": {
+   "episodeFileCount": 10,
+   "episodeCount": 10,
+   "totalEpisodeCount": 12,
+   "percentOfEpisodes": 100.0
+  },
+  "images": [],
+  "seasons": []
+ },
+ {
+  "id": 5,
+  "tvdbId": 700005,
+  "title": "Tidewater",
+  "year": 2015,
+  "status": "ended",
+  "seriesType": "standard",
+  "genres": [
+   "Crime"
+  ],
+  "rootFolderPath": "/data/tv/On Air",
+  "path": "/data/tv/On Air/Tidewater",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "monitored": true,
+  "statistics": {
+   "episodeFileCount": 20,
+   "episodeCount": 20,
+   "totalEpisodeCount": 22,
+   "percentOfEpisodes": 100.0
+  },
+  "images": [],
+  "seasons": []
+ },
+ {
+  "id": 6,
+  "tvdbId": 700006,
+  "title": "Half Built",
+  "year": 2019,
+  "status": "ended",
+  "seriesType": "standard",
+  "genres": [
+   "Comedy"
+  ],
+  "rootFolderPath": "/data/tv/On Air",
+  "path": "/data/tv/On Air/Half Built",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "monitored": true,
+  "statistics": {
+   "episodeFileCount": 5,
+   "episodeCount": 10,
+   "totalEpisodeCount": 12,
+   "percentOfEpisodes": 50.0
+  },
+  "images": [],
+  "seasons": []
+ },
+ {
+  "id": 7,
+  "tvdbId": 700007,
+  "title": "Late Arrivals",
+  "year": 2026,
+  "status": "upcoming",
+  "seriesType": "standard",
+  "genres": [
+   "Drama"
+  ],
+  "rootFolderPath": "/data/tv/On Air",
+  "path": "/data/tv/On Air/Late Arrivals",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "monitored": true,
+  "statistics": {
+   "episodeFileCount": 0,
+   "episodeCount": 0,
+   "totalEpisodeCount": 2,
+   "percentOfEpisodes": 0.0
+  },
+  "images": [],
+  "seasons": []
+ }
+]

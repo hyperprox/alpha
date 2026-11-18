@@ -1,0 +1,433 @@
+[
+ {
+  "id": 1,
+  "tmdbId": 900001,
+  "title": "Harbour of Ghosts",
+  "year": 2019,
+  "genres": [
+   "Horror",
+   "Mystery"
+  ],
+  "keywords": [
+   "haunted house"
+  ],
+  "certification": "R",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Frights",
+  "path": "/data/films/Frights/Harbour of Ghosts (2019)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 2,
+  "tmdbId": 900002,
+  "title": "The Lantern Parade",
+  "year": 2021,
+  "genres": [
+   "TV Movie",
+   "Romance"
+  ],
+  "keywords": [
+   "christmas",
+   "small town"
+  ],
+  "certification": null,
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Festive",
+  "path": "/data/films/Festive/The Lantern Parade (2021)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 3,
+  "tmdbId": 900003,
+  "title": "Mistletoe Junction",
+  "year": 2022,
+  "genres": [
+   "Romance",
+   "TV Movie"
+  ],
+  "keywords": [],
+  "certification": null,
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Festive",
+  "path": "/data/films/Festive/Mistletoe Junction (2022)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 4,
+  "tmdbId": 900004,
+  "title": "Snowbound Heist",
+  "year": 2018,
+  "genres": [
+   "Action",
+   "Thriller"
+  ],
+  "keywords": [
+   "christmas",
+   "heist"
+  ],
+  "certification": "R",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Main Films",
+  "path": "/data/films/Main Films/Snowbound Heist (2018)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 5,
+  "tmdbId": 900005,
+  "title": "Paper Moon Kingdom",
+  "year": 1995,
+  "genres": [
+   "Animation",
+   "Family"
+  ],
+  "keywords": [
+   "cartoon",
+   "musical"
+  ],
+  "certification": "G",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Kids Cartoons",
+  "path": "/data/films/Kids Cartoons/Paper Moon Kingdom (1995)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 6,
+  "tmdbId": 900006,
+  "title": "The Meadow King",
+  "year": 2027,
+  "genres": [
+   "Adventure",
+   "Family",
+   "Animation"
+  ],
+  "keywords": [
+   "live action remake",
+   "remake"
+  ],
+  "certification": "PG",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Kids Live Action",
+  "path": "/data/films/Kids Live Action/The Meadow King (2027)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 7,
+  "tmdbId": 900007,
+  "title": "Copper Comet",
+  "year": 2023,
+  "genres": [
+   "Action",
+   "Science Fiction"
+  ],
+  "keywords": [
+   "superhero",
+   "dc extended universe (dceu)"
+  ],
+  "certification": "PG-13",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Comic Heroes",
+  "path": "/data/films/Comic Heroes/Copper Comet (2023)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 8,
+  "tmdbId": 900008,
+  "title": "Starling Squad",
+  "year": 2020,
+  "genres": [
+   "Action",
+   "Adventure"
+  ],
+  "keywords": [
+   "team"
+  ],
+  "certification": "PG-13",
+  "studio": "Marvel Studios",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Comic Heroes",
+  "path": "/data/films/Comic Heroes/Starling Squad (2020)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 9,
+  "tmdbId": 900009,
+  "title": "Quiet Waters: A Life",
+  "year": 2020,
+  "genres": [
+   "Documentary"
+  ],
+  "keywords": [
+   "nature"
+  ],
+  "certification": null,
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Docs",
+  "path": "/data/films/Docs/Quiet Waters: A Life (2020)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 10,
+  "tmdbId": 900010,
+  "title": "The Clockwork Orphan",
+  "year": 2015,
+  "genres": [
+   "Family",
+   "Adventure"
+  ],
+  "keywords": [
+   "orphan"
+  ],
+  "certification": "PG",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Main Films",
+  "path": "/data/films/Main Films/The Clockwork Orphan (2015)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 11,
+  "tmdbId": 900011,
+  "title": "Riverside Detective",
+  "year": 2010,
+  "genres": [
+   "Crime",
+   "Drama"
+  ],
+  "keywords": [
+   "detective"
+  ],
+  "certification": "R",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Main Films",
+  "path": "/data/films/Main Films/Riverside Detective (2010)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 12,
+  "tmdbId": 900012,
+  "title": "Night Train Overture",
+  "year": 1999,
+  "genres": [
+   "Drama"
+  ],
+  "keywords": [
+   "train"
+  ],
+  "certification": "R",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Cinema Picks DTS",
+  "path": "/data/films/Cinema Picks DTS/Night Train Overture (1999)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 13,
+  "tmdbId": 900013,
+  "title": "Little Rocket Heroes",
+  "year": 2016,
+  "genres": [
+   "Animation",
+   "Family",
+   "Action"
+  ],
+  "keywords": [
+   "superhero",
+   "cartoon"
+  ],
+  "certification": "PG",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Kids Cartoons",
+  "path": "/data/films/Kids Cartoons/Little Rocket Heroes (2016)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 14,
+  "tmdbId": 900014,
+  "title": "Signal Lost",
+  "year": 1986,
+  "genres": [
+   "Science Fiction",
+   "Horror"
+  ],
+  "keywords": [
+   "space",
+   "alien"
+  ],
+  "certification": "R",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Main Films",
+  "path": "/data/films/Main Films/Signal Lost (1986)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 15,
+  "tmdbId": 900015,
+  "title": "Velvet Jungle",
+  "year": 2026,
+  "genres": [
+   "Animation",
+   "Family"
+  ],
+  "keywords": [],
+  "certification": "PG",
+  "studio": "Northwind Pictures",
+  "collection": null,
+  "overview": "",
+  "rootFolderPath": "/data/films/Kids Live Action",
+  "path": "/data/films/Kids Live Action/Velvet Jungle (2026)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 16,
+  "tmdbId": 900016,
+  "title": "The Gotham Ledger",
+  "year": 2024,
+  "genres": [
+   "Crime",
+   "Drama"
+  ],
+  "keywords": [
+   "based on comic",
+   "villain"
+  ],
+  "certification": "R",
+  "studio": "Northwind Pictures",
+  "collection": {
+   "title": "The Gotham Ledger Collection",
+   "tmdbId": 800016
+  },
+  "overview": "",
+  "rootFolderPath": "/data/films/Comic Heroes",
+  "path": "/data/films/Comic Heroes/The Gotham Ledger (2024)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ },
+ {
+  "id": 17,
+  "tmdbId": 900017,
+  "title": "Holly Hollow",
+  "year": 2023,
+  "genres": [
+   "Comedy",
+   "Romance",
+   "TV Movie"
+  ],
+  "keywords": [],
+  "certification": null,
+  "studio": "Hallmarked Films",
+  "collection": null,
+  "overview": "A baker returns home to save the bakery before Christmas Eve.",
+  "rootFolderPath": "/data/films/Festive",
+  "path": "/data/films/Festive/Holly Hollow (2023)",
+  "added": "2026-09-01T10:00:00Z",
+  "tags": [],
+  "hasFile": true,
+  "monitored": true,
+  "images": [],
+  "alternateTitles": []
+ }
+]
