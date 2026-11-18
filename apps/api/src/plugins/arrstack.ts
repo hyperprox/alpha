@@ -387,6 +387,9 @@ export const arrstackPlugin: Plugin = {
     endpoints: [
       { key: 'radarr',   label: 'Radarr',   baseUrlSetting: 'radarr_url',
         auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'radarr_key' } },
+      // Seerr (or Overseerr, Jellyseerr): only its settings are read, to know which folders requests arrive in.
+      { key: 'seerr',    label: 'Seerr',    baseUrlSetting: 'seerr_url',
+        auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'seerr_key' } },
       // Music. Lidarr's API is v1 (/api/v1/...), not v3.
       { key: 'lidarr',   label: 'Lidarr',   baseUrlSetting: 'lidarr_url',
         auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'lidarr_key' } },
@@ -403,6 +406,9 @@ export const arrstackPlugin: Plugin = {
       { key: 'lidarr_url',   label: 'Lidarr address',   type: 'url',    required: false,
         hint: 'Optional, for music: http://example-host:8686. Leave blank if you do not run Lidarr; add it from the Catalogue and this fills itself in.' },
       { key: 'lidarr_key',   label: 'Lidarr API key',   type: 'secret', required: false, hint: 'Settings → General → API Key. Use "Test Lidarr" after saving to check it.' },
+      { key: 'seerr_url',    label: 'Seerr address',    type: 'url',    required: false,
+        hint: 'Optional: Seerr, Overseerr or Jellyseerr. Lets the folder sorter see which folders requests arrive in.' },
+      { key: 'seerr_key',    label: 'Seerr API key',    type: 'secret', required: false, hint: 'Seerr → Settings → General → API Key.' },
       { key: 'prowlarr_url', label: 'Prowlarr address', type: 'url',    required: false, hint: 'Enables Search across every indexer.' },
       { key: 'prowlarr_key', label: 'Prowlarr API key', type: 'secret', required: false },
       { key: 'qbit_url',     label: 'qBittorrent WebUI', type: 'url',   required: false,

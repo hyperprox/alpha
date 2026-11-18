@@ -271,6 +271,27 @@ test('status: off by default, the suggested rules matched to the library\'s fold
   assert.deepEqual(r.radarr.writes(), []); assert.deepEqual(r.sonarr.writes(), [])
 })
 
+test('the request folder comes from Seerr\'s settings when it is connected (its default, non-4K server), else from the latest additions', async () => {
+  const seerr: Partial<CoreEndpointClient> & { calls: string[] } = {
+    calls: [],
+    async get(p: string) {
+      this.calls.push(p)
+      if (p === '/api/v1/settings/radarr') return [{ id: 0, isDefault: true, is4k: true, activeDirectory: `${F}Frights` }, { id: 1, isDefault: true, is4k: false, activeDirectory: `${F}Docs/` }]
+      if (p === '/api/v1/settings/sonarr') return [{ id: 0, isDefault: true, is4k: false, activeDirectory: '/not/a/root/folder' }]
+      throw new Error('unexpected')
+    },
+  }
+  const r = rig({ seerr: async () => seerr as CoreEndpointClient })
+  const st = await r.svc.status()
+  const films = st.apps.find(a => a.app === 'radarr')!, shows = st.apps.find(a => a.app === 'sonarr')!
+  assert.equal(films.settings!.defaultRoot, `${F}Docs`); assert.equal(films.suggestedFrom, 'seerr')
+  assert.equal(shows.settings!.defaultRoot, `${T}On Air`, 'a Seerr folder that is not a root folder is not used')
+  assert.equal(shows.suggestedFrom, 'guess')
+  assert.deepEqual(seerr.calls.sort(), ['/api/v1/settings/radarr', '/api/v1/settings/sonarr'], 'only its settings are read')
+  const off = await rig({ seerr: async () => null }).svc.status()
+  assert.equal(off.apps.find(a => a.app === 'radarr')!.suggestedFrom, 'guess')
+})
+
 test('the library test moves nothing; switching on needs a test of exactly those rules, from the last 15 minutes', async () => {
   const r = rig()
   const s = (await r.svc.status()).apps.find(a => a.app === 'radarr')!.settings!

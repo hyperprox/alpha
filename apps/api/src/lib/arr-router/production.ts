@@ -26,6 +26,7 @@ export function routerService(prisma?: unknown, log?: (m: string) => void): Rout
   if (!prisma) throw new Error('The folder sorter needs the database.')
   shared = new RouterService({
     clients: { sonarr: endpoint('default'), radarr: endpoint('radarr') },
+    seerr: endpoint('seerr'),
     store: new PrismaRouterStore(prisma as any),
     audit: (action, details) => auditOrThrow(action, 'plugin:arrstack', details),
     now: () => Date.now(),

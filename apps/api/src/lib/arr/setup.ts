@@ -461,6 +461,8 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
     if (has(s, 'lidarr')) Object.assign(values, { lidarr_url: hostUrl(ip, 'lidarr'), lidarr_key: keys.lidarr! })
     if (has(s, 'prowlarr')) Object.assign(values, { prowlarr_url: hostUrl(ip, 'prowlarr'), prowlarr_key: keys.prowlarr! })
     if (has(s, 'qbittorrent')) values.qbit_url = hostUrl(ip, 'qbittorrent')
+    // Seerr, once it is connected: the folder sorter reads which folders it sends requests to.
+    if (has(s, 'seerr') && keys.seerr) Object.assign(values, { seerr_url: hostUrl(ip, 'seerr'), seerr_key: keys.seerr })
     await d.savePluginSettings('arrstack', values)
     const back = await d.pluginSettings('arrstack')
     const lost = Object.keys(values).filter(k => back[k] !== values[k])

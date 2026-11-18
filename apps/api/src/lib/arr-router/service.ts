@@ -38,6 +38,8 @@ export class RouterRefusal extends Error {
 
 export interface RouterDeps {
   clients: Record<App, () => Promise<CoreEndpointClient | null>>
+  /** Seerr (or Overseerr, Jellyseerr), when connected: its settings say which folder requests arrive in. Optional. */
+  seerr?: () => Promise<CoreEndpointClient | null>
   store: RouterStore
   /** Must throw when the row cannot be written: then nothing is moved. */
   audit(action: string, details: Record<string, unknown>): Promise<void>
@@ -100,6 +102,8 @@ export interface AppStatus {
   settings: AppSettings | null
   /** False when these are the suggested rules, not yet saved. */
   saved: boolean
+  /** For suggested rules: whether the request folder came from Seerr's settings or from where most new items went. */
+  suggestedFrom?: 'seerr' | 'guess'
   lastTick: AppState['lastTick'] | null
   error?: string
 }
@@ -110,7 +114,7 @@ export interface GraduatePreview { previewId: string; from: string; to: string; 
 export class RouterService {
   private tests = new Map<string, { app: App; fp: string; at: number }>()
   private previews = new Map<string, { ids: Set<number>; at: number; from: string; to: string }>()
-  private suggested = new Map<App, { at: number; s: AppSettings }>()
+  private suggested = new Map<App, { at: number; s: AppSettings; from: 'seerr' | 'guess' }>()
   private rootCache = new Map<App, { at: number; roots: string[] }>()
   private recentCache: Move[] = []
   private busy = false
@@ -169,14 +173,30 @@ export class RouterService {
     this.rootCache.set(app, { at: this.d.now(), roots })
     return roots
   }
-  /** The suggested rules: the default ones matched to this library's folders by name. */
-  private async suggest(c: CoreEndpointClient, app: App): Promise<AppSettings> {
+  /** The folder Seerr sends this app's requests to (its default, non-4K server), or null when it cannot say. */
+  private async seerrFolder(app: App): Promise<string | null> {
+    const c = this.d.seerr ? await this.d.seerr().catch(() => null) : null
+    if (!c) return null
+    try {
+      const servers = await c.get(`/api/v1/settings/${app}`)
+      const list = Array.isArray(servers) ? servers.filter((x: any) => !x?.is4k) : []
+      const main = list.find((x: any) => x?.isDefault) ?? (list.length === 1 ? list[0] : null)
+      return typeof main?.activeDirectory === 'string' && main.activeDirectory ? normRoot(main.activeDirectory) : null
+    } catch (e) {
+      this.d.log?.(`[arr-router] Seerr's ${app} settings could not be read: ${msg(e)}`)
+      return null
+    }
+  }
+
+  /** The suggested rules: the default ones matched to this library's folders by name; requests arrive in Seerr's folder. */
+  private async suggest(c: CoreEndpointClient, app: App): Promise<{ s: AppSettings; from: 'seerr' | 'guess' }> {
     const hit = this.suggested.get(app)
-    if (hit && this.d.now() - hit.at < SUGGEST_TTL_MS) return hit.s
-    const [roots, items] = await Promise.all([this.roots(c, app), this.library(c, app)])
-    const s = defaultSettings(app, roots, guessDefaultRoot(items))
-    this.suggested.set(app, { at: this.d.now(), s })
-    return s
+    if (hit && this.d.now() - hit.at < SUGGEST_TTL_MS) return { s: hit.s, from: hit.from }
+    const [roots, items, seerr] = await Promise.all([this.roots(c, app), this.library(c, app), this.seerrFolder(app)])
+    const from = seerr && roots.includes(seerr) ? 'seerr' as const : 'guess' as const
+    const s = defaultSettings(app, roots, from === 'seerr' ? seerr : guessDefaultRoot(items))
+    this.suggested.set(app, { at: this.d.now(), s, from })
+    return { s, from }
   }
 
   async status(): Promise<RouterStatus> {
@@ -192,7 +212,8 @@ export class RouterService {
       try {
         const [stored, st] = await Promise.all([this.storedSettings(app), this.state(app)])
         base.roots = await this.roots(c, app)
-        base.settings = stored ?? await this.suggest(c, app)
+        if (stored) base.settings = stored
+        else { const sg = await this.suggest(c, app); base.settings = sg.s; base.suggestedFrom = sg.from }
         base.saved = !!stored
         base.lastTick = st.lastTick ?? null
       } catch (e) {
@@ -409,7 +430,7 @@ export class RouterService {
   // ── "Graduate finished shows" ──────────────────────────────────────────────
 
   private async showSettings(c: CoreEndpointClient): Promise<AppSettings> {
-    return (await this.storedSettings('sonarr')) ?? await this.suggest(c, 'sonarr')
+    return (await this.storedSettings('sonarr')) ?? (await this.suggest(c, 'sonarr')).s
   }
 
   async graduatePreview(): Promise<GraduatePreview> {
