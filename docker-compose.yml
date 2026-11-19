@@ -189,7 +189,7 @@ services:
   # wizard - systemd services on the host - are reached on loopback and can stay bound to 127.0.0.1
   # instead of every interface. It listens on 80 and 443 directly; there is no port mapping.
   nginx:
-    image: nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    image: nginx:1.30.7-alpine@sha256:bef154735288bc38d99fac41ae63730684bcc661503673a04a0f9bc526ba8598
     container_name: hyperprox-nginx
     restart: unless-stopped
     network_mode: host
