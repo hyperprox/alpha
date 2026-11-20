@@ -32,6 +32,8 @@ import { lastComposeOwnership } from '../compose-owners'
 import { busyJobs } from '../long-jobs'
 import { productionAptCacheHook, type AptCacheHook } from './apt-cache'
 import type { UpdatesInventory, UpdatesWsPayload } from './types'
+import { AutoReboots } from './auto-reboots'
+import { FileRebootState, type RebootStateStore } from './reboots'
 
 export interface UpdatesRuntimeDeps {
   store:       UpdatesStore
@@ -62,6 +64,12 @@ export interface UpdatesRuntimeDeps {
   /** The package cache step before apt. Default: the package cache's service, but only with the production executor. */
   aptCache?:   AptCacheHook
   log:         (msg: string, level?: 'warn' | 'error') => void
+  /** Automatic reboot settings, per cluster. Default data/updates-reboots.json. */
+  rebootState?: RebootStateStore
+  /** Whether HyperProx is unlocked (tests). Default the vault's state. */
+  isUnlocked?: () => boolean
+  /** The clock automatic reboots read their window with (tests). */
+  now?:        () => number
 }
 
 export class UpdatesRuntime {
@@ -76,6 +84,8 @@ export class UpdatesRuntime {
   readonly runner: UpdatesRunner
   readonly hostname: string | undefined
   private readonly scheduler: UpdatesScheduler
+  /** Automatic reboots: the window timer, the card's status and its actions. */
+  readonly reboots: AutoReboots
   private readonly guardsDep: (() => Promise<GuardContext>) | undefined
   private readonly log: UpdatesRuntimeDeps['log']
 
@@ -110,6 +120,10 @@ export class UpdatesRuntime {
     })
     // Scheduled runs are home-only. The daily check covers every cluster, read-only.
     this.scheduler = new UpdatesScheduler({ runner: this.runner, loadPolicy: this.loadPolicy, isUnlocked, busy: () => this.checker.running, log: d.log })
+    this.reboots = new AutoReboots({
+      service: id => this.services.get(id), state: d.rebootState ?? new FileRebootState(),
+      isUnlocked: d.isUnlocked ?? isUnlocked, busy: () => this.checker.running, now: d.now, log: d.log,
+    })
   }
 
   /** The service for one cluster. */
@@ -164,7 +178,8 @@ export class UpdatesRuntime {
   start(): () => void {
     this.scheduler.start()
     this.checker.start()
-    return () => { this.scheduler.stop(); this.checker.stop() }
+    this.reboots.start()
+    return () => { this.scheduler.stop(); this.checker.stop(); this.reboots.stop() }
   }
 }
 

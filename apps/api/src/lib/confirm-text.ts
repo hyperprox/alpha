@@ -91,12 +91,18 @@ const RULES: Rule[] = [
   ['POST', /^\/api\/updates\/nodes\/([^/]+)\/reboot$/, m =>
     `Reboot ${m[1]}? Its HA guests move to other nodes first, then it restarts. This usually takes about 5 minutes.`],
   ['POST', /^\/api\/updates\/jobs$/, (_m, _p, b) =>
-    Array.isArray(b?.select) ? `Install the updates on the ${b.select.length} chosen target${b.select.length === 1 ? '' : 's'}? Guests may restart.`
+    Array.isArray(b?.select) ? `Install the updates on the ${b.select.length} chosen target${b.select.length === 1 ? '' : 's'}? Guests may restart.${b?.autoReboot === true ? ' Whatever then needs a reboot restarts on its own in the next reboot window.' : ''}`
       : 'Run the updates now? Nodes and guests may restart while they install.'],
   ['POST', /^\/api\/updates\/jobs\/[^/]+\/confirm$/, () => 'Carry on with this update run? The next step starts as soon as you confirm.'],
   ['POST', /^\/api\/updates\/jobs\/[^/]+\/resume$/, () => 'Resume this update run from where it stopped?'],
   ['POST', /^\/api\/updates\/jobs\/[^/]+\/rollback$/, (_m, _p, b) =>
     `Roll back guest ${str(b?.target, 12) || 'this guest'} to the snapshot taken before its update? Changes made since then are lost.`],
+  ['PUT', /^\/api\/updates\/reboots\/settings$/, (_m, _p, b) =>
+    b?.nodes || b?.guests ? 'Save the automatic reboot settings? Machines that need a reboot will restart on their own in the window, one at a time.' : 'Save the automatic reboot settings?'],
+  ['POST', /^\/api\/updates\/reboots\/now$/, (_m, _p, b) =>
+    b?.all === true ? 'Reboot every node now, one at a time? HA guests move first; guests that cannot move restart with their node.'
+      : 'Reboot everything that is waiting for a reboot now, one at a time? HA guests move first; guests that cannot move restart with their node.'],
+  ['POST', /^\/api\/updates\/reboots\/make-safe$/, () => 'Clear what the stopped reboot left on? HA maintenance comes off; Ceph noout comes off only if every OSD is up.'],
   ['POST', /^\/api\/self-update\/install$/, () => 'Update HyperProx now? It restarts and you will need to sign in again.'],
   ['PUT', /^\/api\/self-update\/settings$/, () => 'Save how HyperProx updates itself?'],
   // ── Guests ──

@@ -44,6 +44,7 @@ import { buildSelectedPlan, parseTargetId, MAX_SELECTION, type GuardContext } fr
 import { jobLog } from '../lib/log-once'
 import { UpdatesRuntime, updatesRuntime } from '../lib/updates/runtime'
 import { addSubscriber, broadcast, closeAllSubscribers, removeSubscriber, subscriberCount } from '../lib/updates/broadcast'
+import { RebootSettingsError, type RebootStateStore } from '../lib/updates/reboots'
 
 /**
  * What a test builds the routes from when it passes no runtime: a runtime is made from these and its read-only sources
@@ -80,6 +81,12 @@ export interface UpdatesRouteDeps {
   publish?:    (e: NotifyEventInput) => Promise<void>
   /** What the plug-ins say about home guests (lib/updates/guards.ts); default read live. Tests set it. */
   guards?:     () => Promise<GuardContext>
+  /** Automatic reboot settings (tests); default data/updates-reboots.json. */
+  rebootState?: RebootStateStore
+  /** Whether HyperProx is unlocked, for the reboot timer (tests). */
+  isUnlocked?: () => boolean
+  /** The reboot window's clock (tests). */
+  now?:        () => number
 }
 
 // Sockets on /ws/updates, each opened by an admin (lib/updates/broadcast.ts).
@@ -138,6 +145,7 @@ const isTokenSession = (req: FastifyRequest) => String(req.session?.sid ?? '').s
 function sendError(reply: FastifyReply, e: any) {
   if (e instanceof ActiveJobError) return sendRefusal(reply, 409, 'job_active', e.message, { runningJobId: e.runningJobId })
   if (e instanceof PolicyRequiredError) return sendRefusal(reply, 400, 'policy_required', e.message)
+  if (e instanceof RebootSettingsError) return sendRefusal(reply, 400, 'invalid_request', e.message)
   if (e instanceof JobStateError) return /^No (job|node)/.test(e.message) ? sendRefusal(reply, 404, 'not_found', e.message) : sendRefusal(reply, 409, 'job_state', e.message)
   return sendFailure(reply.request, reply, e, undefined, { status: 503 })
 }
@@ -155,6 +163,7 @@ function runtimeFromDeps(deps: UpdatesRouteDeps, fastify: { prisma?: unknown; lo
     loadPolicy: deps.loadPolicy, checkState: deps.checkState, checkGapMs: deps.checkGapMs, connection: deps.connection,
     hostname: deps.hostname, timing: deps.timing, apps: deps.apps, publish: deps.publish, emit: broadcast,
     guards: deps.guards, log: jobLog(fastify.log),
+    rebootState: deps.rebootState, isUnlocked: deps.isUnlocked, now: deps.now,
   })
   rt.installSources()
   return rt
@@ -266,7 +275,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       } catch (e) { return sendError(reply, e) }
     })
 
-    fastify.post<{ Body: { mode?: string; scope?: string; approve?: unknown; select?: unknown } }>('/jobs', async (req, reply) => {
+    fastify.post<{ Body: { mode?: string; scope?: string; approve?: unknown; select?: unknown; autoReboot?: unknown } }>('/jobs', async (req, reply) => {
       const mode = req.body?.mode
       if (mode !== 'run' && mode !== 'dry-run') return sendRefusal(reply, 400, 'invalid_request', "mode must be 'run' or 'dry-run'")
       const scope = req.body?.scope ?? 'all'
@@ -277,8 +286,12 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       }
       const select = req.body?.select === undefined ? undefined : selectionFrom(req.body.select)
       if (select === null) return sendRefusal(reply, 400, 'invalid_request', `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets`)
+      // "Reboot automatically in the next window": a run only, home only, and confirmed with the run it rides on.
+      const autoReboot = req.body?.autoReboot
+      if (autoReboot !== undefined && typeof autoReboot !== 'boolean') return sendRefusal(reply, 400, 'invalid_request', 'autoReboot is true or false')
       const s = svc()
-      if (mode === 'run' && (s.remote || select) && !(await confirmed(req, reply))) return reply
+      if (autoReboot && (mode !== 'run' || s.remote)) return sendRefusal(reply, 400, 'invalid_request', s.remote ? 'HyperProx does not reboot the nodes of a remote cluster on its own.' : 'Only a real run can ask for a reboot in the next window.')
+      if (mode === 'run' && (s.remote || select || autoReboot) && !(await confirmed(req, reply))) return reply
       if (select) {
         // Refused before anything starts when nothing chosen could run (a held kernel package, unknown holds...).
         try {
@@ -296,6 +309,11 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       }
       try {
         const job = await s.runner.start(mode, 'manual', req.session?.email, scope, approve as string[], select)
+        if (autoReboot) {
+          // Audited before it is saved: whatever this run leaves needing a reboot goes in the next window, once.
+          await s.store.audit('updates.reboots.queued', job.id, { ...auditBy(actorOf(req)) })
+          rt.reboots.queueNext(s.ref.id, req.session?.email ?? 'an admin', job.id)
+        }
         return reply.status(201).send({ job: jobView(job, await s.store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }
     })
@@ -357,6 +375,50 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
         const job = await s.runner.rebootNode(req.params.node, req.session?.email)
         return reply.status(202).send({ job: jobView(job, await s.store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }
+    })
+
+    // --- Automatic reboots ------------------------------------------------------------------------
+    // The card: settings, the window, what waits for it, a run in progress and the last ten. Read-only.
+    fastify.get('/reboots', async (_req, reply) => {
+      try { return await rt.reboots.status(svc().ref.id) }
+      catch (e) { return sendError(reply, e) }
+    })
+
+    // Change the settings: admin, confirmed on the page (never an API token), audited with before and after.
+    fastify.put<{ Body: unknown }>('/reboots/settings', async (req, reply) => {
+      const s = svc()
+      if (s.remote) return sendRefusal(reply, 400, 'not_available', 'HyperProx does not reboot the nodes of a remote cluster on its own.')
+      if (!(await confirmed(req, reply))) return reply
+      try {
+        const before = rt.reboots.settings(s.ref.id)
+        const after = rt.reboots.checkSettings(s.ref.id, req.body)
+        await s.store.audit('updates.reboots.settings', s.ref.id, { before, after, ...auditBy(actorOf(req)) })
+        rt.reboots.saveSettings(s.ref.id, after)
+        return { settings: after }
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    // "Reboot now (rolling)": the same engine as the window, now. `all`: every node, not only those that need it.
+    fastify.post<{ Body: { all?: unknown } }>('/reboots/now', async (req, reply) => {
+      const all = req.body?.all
+      if (all !== undefined && typeof all !== 'boolean') return sendRefusal(reply, 400, 'invalid_request', 'all is true or false')
+      const s = svc()
+      if (s.remote) return sendRefusal(reply, 400, 'not_available', 'HyperProx does not reboot the nodes of a remote cluster on its own.')
+      if (!(await confirmed(req, reply))) return reply
+      if (checker.running) return sendRefusal(reply, 409, 'check_busy', CHECK_BUSY)
+      try {
+        const job = await rt.reboots.rebootNow(s.ref.id, { all: all === true, actor: req.session?.email })
+        return reply.status(202).send({ job: jobView(job, await s.store.getSteps(job.id)) })
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    // The one-tap fix after a stopped rolling reboot: HA maintenance off, noout off once every OSD is up.
+    fastify.post('/reboots/make-safe', async (req, reply) => {
+      const s = svc()
+      if (s.remote) return sendRefusal(reply, 400, 'not_available', 'HyperProx does not reboot the nodes of a remote cluster on its own.')
+      if (!(await confirmed(req, reply))) return reply
+      try { return await s.runner.makeSafe(req.session?.email) }
+      catch (e) { return sendError(reply, e) }
     })
 
     // The daily check: its last result for every cluster, and "Check now". Read-only on every machine.
