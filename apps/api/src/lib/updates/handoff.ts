@@ -104,12 +104,17 @@ if mine:
 print('safe')
 `
 
-export function selfNodeRebootScript(jobId: string, stepId: string, target: string, opts: { ceph: boolean; osds?: number[]; waitMinutes?: number; drainMinutes?: number }): string {
+/**
+ * `maintenance: false` (Automatic reboots, a node with guests that cannot move): no HA maintenance and no drain; HA
+ * restarts those guests in place when the node is back. noout still goes on around the reboot when Ceph runs.
+ */
+export function selfNodeRebootScript(jobId: string, stepId: string, target: string, opts: { ceph: boolean; osds?: number[]; waitMinutes?: number; drainMinutes?: number; maintenance?: boolean }): string {
   const file = resultFile(jobId, stepId)
   const wait = opts.waitMinutes ?? 15
   const drain = opts.drainMinutes ?? 10
   const t = shq(target)
-  const flags = opts.ceph ? 'noout and HA maintenance' : 'HA maintenance'
+  const maint = opts.maintenance !== false
+  const flags = maint ? (opts.ceph ? 'noout and HA maintenance' : 'HA maintenance') : (opts.ceph ? 'noout' : 'no flags')
   const unsetNoout = opts.ceph ? 'ceph osd unset noout || left="$left noout"' : ''
   return `#!/bin/bash
 ${writeResult(file)}
@@ -117,13 +122,13 @@ target=${t}
 ssh_t() { ssh -o BatchMode=yes -o ConnectTimeout=10 root@"$target" "$@"; }
 clear_flags() {  # sets $left to whatever could not be cleared
   left=""
-  ha-manager crm-command node-maintenance disable "$target" || left="$left maintenance"
+  ${maint ? 'ha-manager crm-command node-maintenance disable "$target" || left="$left maintenance"' : ''}
   ${unsetNoout}
 }
 boot_before=$(ssh_t cat /proc/sys/kernel/random/boot_id 2>/dev/null)
 [ -n "$boot_before" ] || { result false "could not read the boot id of $target; nothing changed"; exit 1; }
 ${opts.ceph ? 'ceph osd set noout || { result false "could not set noout; nothing changed"; exit 1; }' : ''}
-if ! ha-manager crm-command node-maintenance enable "$target"; then
+${maint ? `if ! ha-manager crm-command node-maintenance enable "$target"; then
   ${opts.ceph ? 'ceph osd unset noout || { result false "could not enable HA maintenance, and noout is LEFT ON"; exit 1; }' : ''}
   result false "could not enable HA maintenance; nothing rebooted"; exit 1
 fi
@@ -140,6 +145,7 @@ if [ "$drained" != "1" ]; then
   else result false "HA did not move every guest off $target; not rebooted; ${flags} cleared"; fi
   exit 1
 fi
+` : '# No HA maintenance: the guests that cannot move restart in place when the node is back.'}
 ${opts.ceph ? `# The drain can take minutes: the full Ceph safety check again, right before the reboot.
 why=$(echo ${Buffer.from(REBOOT_CHECK_PY).toString('base64')} | base64 -d | python3 - "$target" ${shq((opts.osds ?? []).map(n => String(Math.trunc(n))).join(','))} 2>&1); rc=$?
 if [ "$rc" != "0" ]; then
