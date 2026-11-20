@@ -123,7 +123,7 @@ not the one running: its pinned kernel if it pins one, otherwise the newest inst
 "never look inside" guests are never touched. While automatic reboots are on, such a node's row says *Waiting for
 its automatic reboot at (the time)* instead of offering the Reboot button.
 
-**When.** HyperProx looks every 30 seconds. In the window, once per window, when it is unlocked, no Updates job is
+**When.** HyperProx looks every 30 seconds. In the window, at most once per local day (changing the start time mid-window does not give the day a second run), when it is unlocked, no Updates job is
 active and the daily check is not reading, it reads the inventory again and, if anything needs a reboot, starts
 one rolling reboot job. One job at a time still holds for every cluster. When you start an update run, its confirmation offers
 **Reboot automatically in the next window**, off unless you tick it (it says when the run will probably need a
@@ -149,11 +149,11 @@ database), with the nodes one at a time in policy order and HyperProx's own node
    (a bind mount without `shared=1`, a passed-through device, GPU, PCI or USB, a disk on storage only that node
    reaches, or a strict HA rule that holds it to that node), the node gets **no** maintenance: HA restarts those
    guests in place when it is back (`noout` still guards Ceph). That needs HA's shutdown policy (Datacenter, Options)
-   to be `freeze` or `conditional`, the default; with `failover` or `migrate`, or when it cannot be read, the run
-   stops before changing anything and says so. Afterwards every guest that was running is checked back: HA guests come back by themselves, and a
+   to be `freeze` or `conditional` (the default when none is set); with `failover` or `migrate`, or anything it cannot
+   read or does not recognise, the run stops before changing anything and says so. Afterwards every guest that was running is checked back: HA guests come back by themselves, and a
    guest outside HA that was running is started again (unless it is left alone; that is reported).
 4. **HyperProx's own node** goes through the handoff from another node, as the Reboot button does. What was running
-   there is written into the job first. The handoff checks quorum the same way right before it reboots the node.
+   there is written into the job first. For an automatic reboot the handoff checks quorum the same way (votes left with the node gone) right before it reboots the node; for a Reboot a person presses it checks only that the cluster is quorate and every node online, as before.
    HyperProx goes away while its node reboots; when it is back and unlocked, the run carries on by itself: it
    collects the handoff's result, checks the guests back and finishes. If HyperProx stays locked for an hour, the run
    is stopped instead of holding the one-job lock, and the card offers Make safe if anything was left on.
