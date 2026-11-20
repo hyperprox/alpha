@@ -91,6 +91,33 @@ export const HFR = token('48[\\W_]?fps|HFR')
 export const EXECUTABLE = /\.(exe|scr|bat|cmd|com|msi|lnk|js|vbs|ps1|jar|apk)$/i
 export const isProgramFile = (name: string) => EXECUTABLE.test(String(name ?? '').split(/[\\/]/).pop()!.trim())
 
+/**
+ * What is never offered, whatever the arr says and whatever the person picks: the one list. "See what's available"
+ * hides the first four (counted); "Find a better copy" hides those too and shows the last two as "Not offered", with
+ * the reason and no button, and its grab refuses them however the request is written.
+ */
+export const NEVER_OFFERED = {
+  av1: 'AV1, which many players cannot play',
+  threeD: 'A 3D copy',
+  hfr: 'A 48 fps copy',
+  zeroSeed: 'Nobody is sharing it (no seeders)',
+  executable: 'It has a program file in it',
+  disc: "A raw disc copy most players can't play",
+} as const
+export type NeverOffered = keyof typeof NEVER_OFFERED
+
+/** A raw disc image (BR-DISK, ISO, BDMV, a DVD folder), by its quality, custom formats, name or the arr's own reasons. */
+const DISC = token('BR-?DISK|BDMV|ISO|IMG|VIDEO_TS|BD(?:25|50|66|100)|DVD(?:5|9)|DVD-?R|COMPLETE[\\W_]+(?:UHD[\\W_]+)?BLU-?RAY')
+export function isDiscImage(r: any): boolean {
+  const q = r?.quality?.quality ?? {}
+  if (/BR-?DISK/i.test(String(q.name ?? '')) || String(q.modifier ?? '').toLowerCase() === 'brdisk') return true
+  const formats = Array.isArray(r?.customFormats) ? r.customFormats.map((f: any) => String(f?.name ?? '')) : []
+  if (formats.some((f: string) => DISC.test(f))) return true
+  if (DISC.test(String(r?.title ?? ''))) return true
+  const rej = (Array.isArray(r?.rejections) ? r.rejections : []).map((x: any) => (typeof x === 'string' ? x : String(x?.reason ?? '')))
+  return rej.some((s: string) => /BR-?DISK/i.test(s))
+}
+
 /** Is this a hard-rule release (never offered)? */
 export function hardRule(title: string, formats: string[] = []): 'av1' | 'threeD' | 'hfr' | null {
   const all = [title, ...formats].join(' ')
@@ -121,19 +148,25 @@ export function codecOf(title: string): string {
 export const IN_QUEUE = /release in queue|already in (?:the )?queue|another release is queued|queued release/i
 export const QUEUED_TEXT = 'Something as good is already downloading'
 
+/** A custom format name that means "low quality" (the common LQ and Low Quality formats). */
+const LOW_QUALITY = /(?<![A-Za-z0-9])LQ(?![A-Za-z0-9])|low[\s_-]?quality/i
+
 /** One of the arr's rejection strings in plain English. Unknown ones are passed through as written. */
 export function plainRejection(raw: string): string {
   const s = String(raw ?? '').trim()
   let m: RegExpExecArray | null
+  if (/BR-?DISK/i.test(s)) return NEVER_OFFERED.disc
   if ((m = /^(.+?) is not wanted in profile/i.exec(s))) return `Below your quality profile (${m[1]})`
-  if ((m = /Custom Formats? (.+?) ha(?:ve|s) score (-?\d+) below .*minimum/i.exec(s))) return `Custom format score too low (${m[1]}: ${m[2]})`
+  if ((m = /Custom Formats? (.+?) ha(?:ve|s) score (-?\d+) below .*minimum/i.exec(s))) {
+    return LOW_QUALITY.test(m[1]) ? `Tagged low quality by your custom formats (${m[1]})` : `Custom format score too low (${m[1]}: ${m[2]})`
+  }
   if (/Custom Formats? .*score .*below/i.test(s)) return 'Custom format score too low'
   if ((m = /Not enough seeders: (\d+)\. Minimum seeders: (\d+)/i.exec(s))) return `Too few seeders (${m[1]}; your indexer setting needs ${m[2]})`
-  if (/smaller than minimum allowed/i.test(s)) return 'Too small for its quality (likely a poor copy)'
-  if (/larger than maximum allowed/i.test(s)) return 'Too large'
+  if (/smaller than minimum allowed/i.test(s)) return 'Smaller than your size limit (likely a poor copy)'
+  if (/larger than maximum allowed/i.test(s)) return 'Larger than your size limit'
   if ((m = /Language .* is wanted, but found (.+)$/i.exec(s))) return `Wrong language (${m[1]})`
   if (/language/i.test(s) && /not wanted|unwanted|wanted/i.test(s)) return 'Wrong language'
-  if (/hardcode(d)? subs/i.test(s)) return 'Has burned-in subtitles'
+  if (/hardcode(d)? subs/i.test(s)) return 'Has burned-in (hardcoded) subtitles'
   if (/blocklist/i.test(s)) return 'You blocklisted this release before'
   if (IN_QUEUE.test(s)) return QUEUED_TEXT
   if (/already meets cutoff|not an upgrade|existing file/i.test(s)) return 'Not better than what you already have'

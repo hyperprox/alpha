@@ -12,6 +12,9 @@
 //                            single-use token and audits it before this runs): download the picked release and move it
 //                            to the top of qBittorrent's queue; for a queue download, then remove the slow one
 //                            (blocklisted). Audited. The confirmation names the release (setConfirmNames below).
+//                            With override: true, a release the arr refuses is downloaded anyway: the confirmation
+//                            names the arr's reasons, and it is audited as arrstack.better.override. Never a release
+//                            on the never-offered list (lib/arr-release/releases.ts NEVER_OFFERED), whatever the body says.
 //  Every POST is a signed-in admin's act: API tokens are refused by name (lib/api-tokens.ts tokenForbidden).
 //  No master password: no library file is ever deleted, and nothing a person cannot undo is changed.
 // =============================================================================
@@ -89,7 +92,8 @@ export function buildArrBetterRoutes(deps: { service?: () => BetterCopyService |
       const b = body(req)
       if (!parseBetterTarget(b.target) || typeof b.releaseId !== 'string' || !/^[0-9a-f]{24}$/.test(b.releaseId)) return sendRefusal(reply, 400, 'bad_request', 'Name the release.')
       if (b.anyway !== undefined && typeof b.anyway !== 'boolean') return sendRefusal(reply, 400, 'bad_request', 'Bad "grab anyway" value.')
-      try { return { success: true, data: await s.grab(b.target as string, b.releaseId, by, { anyway: b.anyway === true }) } } catch (e) { return fail(reply, e) }
+      if (b.override !== undefined && typeof b.override !== 'boolean') return sendRefusal(reply, 400, 'bad_request', 'Bad "download anyway" value.')
+      try { return { success: true, data: await s.grab(b.target as string, b.releaseId, by, { anyway: b.anyway === true, override: b.override === true }) } } catch (e) { return fail(reply, e) }
     })
   }
 }

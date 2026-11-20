@@ -17,21 +17,24 @@
 //             show up, the old one is left alone. The file already in the library stays until the arr imports the new
 //             one (its normal upgrade); no library file is ever deleted.
 //
-//  What the profile refuses is refused here too, in plain words. The one exception: when the arr's only objection is
-//  that something for the item is already downloading, and the person is swapping that download out, an explicit
-//  "grab anyway" is allowed (the swap is what resolves it).
+//  What the profile refuses is shown with its reasons in plain words. When the arr's only objection is that something
+//  for the item is already downloading, and the person is swapping that download out, an explicit "grab anyway" is
+//  allowed (the swap is what resolves it). Anything else the arr refuses can still be downloaded on purpose with
+//  "Download anyway" (an override): the confirmation names the arr's reasons, and it is audited as
+//  arrstack.better.override, with the reasons, before the arr is asked. A swap works the same way with an override.
+//  What is never offered (lib/arr-release/releases.ts NEVER_OFFERED) is never downloaded, whatever the request says.
 //
 //  Every search and grab is audited before it runs (no entry, nothing done). The routes are routes/arr-better.ts.
 // =============================================================================
 
 import type { CoreEndpointClient } from '../plugin-host'
-import { profileInfo } from '../arr-release/releases'
+import { NEVER_OFFERED, QUEUED_TEXT, profileInfo } from '../arr-release/releases'
 import { API, ARR_NAME, ID_FIELD, READ_MS, ReleaseGrabber, type ArrApp, type GrabSubject } from '../arr-release/grab'
 import { readAllQueue } from '../arr-queue/logic'
 import { ActionRefusal, resolveDownload } from '../arr-queue/actions'
 import { stripPaths } from '../arr-queue/logic'
 import { parseTarget } from '../arr-giveup/service'
-import { betterView, type BetterView } from './rank'
+import { APP_WORD, betterView, hardStop, type BetterView, type Verdict } from './rank'
 
 export class BetterRefusal extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); this.name = 'BetterRefusal' }
@@ -208,7 +211,7 @@ export class BetterCopyService {
     }
     const v = betterView(s.raw, { app: s.app, profile: s.profile, swap: !!s.swap })
     return {
-      rows: v.rows, found: v.found, accepted: v.accepted, hidden: v.hidden,
+      rows: v.rows, found: v.found, accepted: v.accepted, groups: v.groups, hidden: v.hidden,
       target: s.key, label: s.label, have: s.have, swap: s.swap ? { name: s.swap.name } : null,
       searchedAt: new Date(s.at).toISOString(), reused, nextSearchAt: new Date(s.at + SEARCH_COOLDOWN_MS).toISOString(),
     }
@@ -293,19 +296,24 @@ export class BetterCopyService {
   // ── grab ───────────────────────────────────────────────────────────────────
 
   /** What a download from the last search would be, for its confirmation (lib/confirm-text.ts). Never searches. */
-  namesFor(target: string, releaseId: string): { item: string; release: string; swap: string | null } | null {
+  namesFor(target: string, releaseId: string): { item: string; release: string; swap: string | null; app: string; verdict: Verdict; reasons: string[] } | null {
     const t = parseBetterTarget(target)
     const s = t ? this.searches.get(t.key) : undefined
     if (!s || this.d.now() - s.at > GRAB_WINDOW_MS) return null
     const row = betterView(s.raw, { app: s.app, profile: s.profile, swap: !!s.swap }).all.find(r => r.id === releaseId)
-    return row ? { item: s.label, release: row.title, swap: s.swap?.name ?? null } : null
+    return row ? { item: s.label, release: row.title, swap: s.swap?.name ?? null, app: APP_WORD[s.app], verdict: row.verdict, reasons: this.overridden(row, !!s.swap) } : null
+  }
+
+  /** The arr's objections an override goes past, in plain words (the one a swap resolves is left out). */
+  private overridden(row: { reasons: string[] }, swap: boolean): string[] {
+    return row.reasons.filter(r => !(swap && r === QUEUED_TEXT))
   }
 
   /**
    * Download one release from the last search, by HyperProx's row id, and move it to the top of qBittorrent's queue.
    * For a swap, the slow download is removed (blocklisted, no re-search) once the new one is in the queue.
    */
-  async grab(target: string, releaseId: string, by: string, o: { anyway?: boolean } = {}): Promise<GrabAnswer> {
+  async grab(target: string, releaseId: string, by: string, o: { anyway?: boolean; override?: boolean } = {}): Promise<GrabAnswer> {
     const t = parseBetterTarget(target)
     if (!t) throw new BetterRefusal(400, 'bad_request', 'Name one item or one download.')
     const s = this.searches.get(t.key)
@@ -313,8 +321,13 @@ export class BetterCopyService {
     if (s.used) throw new BetterRefusal(409, 'search_used', 'Something was already downloaded from this search. Search again once the next search is allowed.')
     const row = betterView(s.raw, { app: s.app, profile: s.profile, swap: !!s.swap }).all.find(r => r.id === releaseId)
     if (!row) throw new BetterRefusal(404, 'no_release', 'That release is not one HyperProx can offer.')
-    if (row.verdict === 'refused') throw new BetterRefusal(409, 'profile_refuses', row.why ?? 'Your quality profile refuses it.')
-    if (row.verdict === 'anyway' && o.anyway !== true) throw new BetterRefusal(409, 'confirm_anyway', `${ARR_NAME[s.app]} only refuses it because the slow download is still queued. Confirm "grab anyway" to swap it.`)
+    // Never offered: checked again from the arr's own record, not only from the row's verdict.
+    const raw = s.raw.find(r => typeof r?.guid === 'string' && r.guid === row.guid && Number(r?.indexerId) === row.indexerId)
+    const stop = hardStop(row, raw) ?? (row.verdict === 'never' ? 'disc' : null)
+    if (stop) throw new BetterRefusal(409, 'never_offered', `HyperProx never downloads this: ${NEVER_OFFERED[stop].charAt(0).toLowerCase()}${NEVER_OFFERED[stop].slice(1)}.`)
+    if (row.verdict === 'refused' && o.override !== true) throw new BetterRefusal(409, 'profile_refuses', `${row.why ?? 'Your quality profile refuses it.'} Choose "Download anyway" to download it on purpose.`)
+    if (row.verdict === 'anyway' && o.anyway !== true && o.override !== true) throw new BetterRefusal(409, 'confirm_anyway', `${ARR_NAME[s.app]} only refuses it because the slow download is still queued. Confirm "grab anyway" to swap it.`)
+    const override = row.verdict === 'refused'
     // Taken at once, so two clicks cannot both grab; given back only if nothing was sent to the arr.
     s.used = true
     let grabbed = false
@@ -327,8 +340,9 @@ export class BetterCopyService {
         oldRows = await this.downloadRows(c, s.app, s.swap.downloadId)
         if (oldRows && !oldRows.every(r => rowIsFor(r, s))) throw new BetterRefusal(409, 'selection_mismatch', 'That download now covers something else, so nothing was changed. Open it again from the queue.')
       }
-      await this.audit('arrstack.better.grab', {
+      await this.audit(override ? 'arrstack.better.override' : 'arrstack.better.grab', {
         app: s.app, by, item: s.label, release: row.title, quality: row.quality, approved: row.approved, anyway: row.verdict === 'anyway', indexer: row.indexer,
+        ...(override ? { reasons: this.overridden(row, !!s.swap), arrReasons: row.rawReasons } : {}),
         ...(s.swap ? { replacing: s.swap.name, replacingInQueue: !!oldRows } : {}),
       })
       const subject: GrabSubject = { app: s.app, wanted: s.wanted, seriesId: s.seriesId, season: s.season }
@@ -348,7 +362,7 @@ export class BetterCopyService {
         answer.summary = `Downloading ${row.title}${answer.top ? ', at the top of qBittorrent\'s queue' : ''}.${answer.swapped ? ' The slow download is removed and blocklisted.' : ''}`
         if (s.have) answer.notes.push(`What you have now (${s.have}) stays until ${ARR_NAME[s.app]} imports the new copy.`)
       }
-      await this.d.audit('arrstack.better.grab.done', { app: s.app, by, item: s.label, result: out.result, swapped: answer.swapped, top: answer.top, filesChecked: out.filesChecked })
+      await this.d.audit('arrstack.better.grab.done', { app: s.app, by, item: s.label, result: out.result, override, swapped: answer.swapped, top: answer.top, filesChecked: out.filesChecked })
         .catch(e => this.d.log?.(`[arr-better] the after-grab audit entry could not be written: ${msg(e)}`))
       return answer
     } catch (e) {

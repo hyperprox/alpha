@@ -225,12 +225,12 @@ test('releases: best first, the arr top pick marked, hard rules hidden with coun
 
 test('rejection strings in plain English', () => {
   assert.equal(plainRejection('DVD is not wanted in profile'), 'Below your quality profile (DVD)')
-  assert.equal(plainRejection("Custom Formats LQ have score -10000 below Movie's profile minimum 0"), 'Custom format score too low (LQ: -10000)')
+  assert.equal(plainRejection("Custom Formats LQ have score -10000 below Movie's profile minimum 0"), 'Tagged low quality by your custom formats (LQ)')
   assert.equal(plainRejection('Not enough seeders: 1. Minimum seeders: 5'), 'Too few seeders (1; your indexer setting needs 5)')
-  assert.equal(plainRejection('1.6 GB is smaller than minimum allowed 1.7 GB (for Harbour Lights)'), 'Too small for its quality (likely a poor copy)')
-  assert.equal(plainRejection('25.1 GB is larger than maximum allowed 20 GB'), 'Too large')
+  assert.equal(plainRejection('1.6 GB is smaller than minimum allowed 1.7 GB (for Harbour Lights)'), 'Smaller than your size limit (likely a poor copy)')
+  assert.equal(plainRejection('25.1 GB is larger than maximum allowed 20 GB'), 'Larger than your size limit')
   assert.equal(plainRejection('Original Language (English) is wanted, but found Russian'), 'Wrong language (Russian)')
-  assert.equal(plainRejection('Hardcode subs found: ESUB'), 'Has burned-in subtitles')
+  assert.equal(plainRejection('Hardcode subs found: ESUB'), 'Has burned-in (hardcoded) subtitles')
   assert.equal(plainRejection('Something new'), 'Something new')
   assert.equal(hardRule('Film.2012.HFR.1080p'), 'hfr')
   assert.equal(hardRule('Film.2012.1080p', ['AV1']), 'av1')
