@@ -17,7 +17,7 @@ const base = (over: Partial<UpdatesRebootStatus> = {}): UpdatesRebootStatus => (
   settings: { nodes: true, guests: false, window: { start: '03:00', hours: 3, days: [0, 1, 2, 3, 4, 5, 6] }, timezone: 'UTC', quiet: true },
   inWindow: false, nextWindow: { start: '2027-01-15T03:00:00.000Z', end: '2027-01-15T06:00:00.000Z' }, queued: null,
   waiting: { nodes: [{ node: 'node-b', why: 'a new kernel or a package asks for a reboot' }], guests: [], at: '2027-01-15T03:00:00.000Z', guestsAt: null },
-  never: [], active: null, leftOn: null, history: [], ...over,
+  never: [], byHand: [{ target: 'node-c', reason: 'your policy says reboot by hand (reboot: manual)' }, { target: '150', reason: 'HyperProx itself — reboot it by hand or with a HyperProx update' }], active: null, leftOn: null, history: [], ...over,
 })
 
 test('the window in words', () => {
@@ -42,7 +42,7 @@ test('a waiting node says when it reboots instead of offering a Reboot button', 
   assert.equal((html.match(/aria-label="Reboot node-/g) ?? []).length, 1, 'only node-a keeps its Reboot button')
 })
 
-test('the next-window tick is on when the run will need a reboot', () => {
+test('the next-window tick starts off; the hint says when the run will probably need a reboot', () => {
   const inv: any = { refreshedAt: '', nodes: [{ node: 'node-a', kernelPending: true, rebootRequired: false, rebootPending: false, pending: [] }, { node: 'node-c', kernelPending: false, rebootRequired: false, rebootPending: false, pending: [] }], guests: [{ vmid: 101, rebootRequired: false, pending: [{ name: 'libc6', from: '1', to: '2' }] }, { vmid: 102, rebootRequired: false, pending: [{ name: 'curl', from: '1', to: '2' }] }] }
   const plan = (steps: any[]): any => ({ steps, warnings: [] })
   assert.equal(rebootLikely(plan([{ seq: 1, target: 'node-a', action: 'node-upgrade' }]), inv), true)
@@ -50,8 +50,10 @@ test('the next-window tick is on when the run will need a reboot', () => {
   assert.equal(rebootLikely(plan([{ seq: 1, target: '101', action: 'apt' }]), inv), true)
   assert.equal(rebootLikely(plan([{ seq: 1, target: '102', action: 'apt' }]), inv), false)
   const src = fs.readFileSync(path.join(__dirname, '../app/updates/page.tsx'), 'utf8')
-  assert.match(src, /Reboot automatically in the next window/)
+  assert.match(src, />Reboot automatically in the next window</)
   assert.match(src, /autoReboot: true/)
+  assert.match(src, /setRebootNext\(false\); setConfirmRun/, 'the tick starts off')
+  assert.ok(!/setRebootNext\(!remote && rebootLikely/.test(src))
 })
 
 test('the card: waiting list with its time, a run in progress node by node, Make safe, the history', () => {
@@ -75,6 +77,8 @@ test('the card: waiting list with its time, a run in progress node by node, Make
   assert.match(html, /HA maintenance on node-c and Ceph noout/)
   assert.match(html, /Stopped: node-c did not come back/)
   assert.match(html, /Reboot now \(rolling\)/)
+  assert.match(html, /node-c<\/span> needs a reboot, but not automatically: your policy says reboot by hand/)
+  assert.match(html, /guest 150<\/span> needs a reboot, but not automatically: HyperProx itself/)
 })
 
 test('a remote cluster: the card says HyperProx does not reboot its nodes on its own, and offers nothing', () => {

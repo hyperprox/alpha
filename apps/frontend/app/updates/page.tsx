@@ -283,8 +283,8 @@ export default function UpdatesPage() {
     setBusy(true); setNotice(null)
     const r = await previewOf(ids)
     setBusy(false)
-    // Ticked for you when this run will leave something needing a reboot (a new kernel, a guest asking for one).
-    if (r.plan) { setRebootNext(!remote && rebootLikely(r.plan, inv)); setConfirmRun({ ids, plan: r.plan }) }
+    // Never ticked for you: a person chooses it on the confirmation.
+    if (r.plan) { setRebootNext(false); setConfirmRun({ ids, plan: r.plan }) }
     else setNotice({ tone: 'crit', text: r.error ?? 'Could not read the order of the run' })
   }
 
@@ -598,7 +598,13 @@ export default function UpdatesPage() {
           {!remote && (
             <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
               <input type="checkbox" className="mt-1" checked={rebootNext} onChange={e => setRebootNext(e.target.checked)} />
-              <span>Reboot automatically in the next window{reboots?.nextWindow ? ` (${new Date(reboots.nextWindow.start).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })})` : ''}: whatever this run leaves needing a reboot restarts on its own, one machine at a time, with no Reboot button to press.</span>
+              <span>
+                <span style={{ color: 'var(--text-bright)' }}>Reboot automatically in the next window</span>
+                <span className="block text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {rebootLikely(confirmRun.plan, inv) ? 'This run will probably need a reboot. ' : ''}
+                  Only the nodes and guests in this run, one at a time{reboots?.nextWindow ? `, from ${new Date(reboots.nextWindow.start).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}, and only where your policy allows it (reboot: auto).
+                </span>
+              </span>
             </label>
           )}
           <div className="flex justify-end gap-2">

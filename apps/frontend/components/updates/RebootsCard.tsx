@@ -109,6 +109,11 @@ export function RebootsCard({ status, error, busy, jobActive, tag, onSave, onReb
             ))}
           </ul>
         )}
+        {status.byHand.length > 0 && (
+          <ul className="mt-2 space-y-0.5 text-xs" aria-label="Not rebooted automatically" style={{ color: 'var(--text-muted)' }}>
+            {status.byHand.map(x => <li key={x.target}><span className="font-semibold">{/^\d+$/.test(x.target) ? `guest ${x.target}` : x.target}</span> needs a reboot, but not automatically: {x.reason}.</li>)}
+          </ul>
+        )}
         {status.never.length > 0 && (
           <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Never rebooted automatically (policy <span className="font-mono">auto_reboot: false</span>): {status.never.join(', ')}.</p>
         )}

@@ -43,7 +43,7 @@ export function summaryText(s: UpdatesRebootStatus): string {
   if (!s.available) return s.unavailable ?? 'Automatic reboots are not available here.'
   const on = [s.settings.nodes ? 'nodes' : '', s.settings.guests ? 'guests' : ''].filter(Boolean)
   const win = `${windowText(s.settings.window)} ${daysText(s.settings.window.days)} (${s.settings.timezone})`
-  if (!on.length && !s.queued) return `Off. Machines that need a reboot wait for you to press Reboot. Window when on: ${win}.`
+  if (!on.length && !s.queued) return `Off. Machines that need a reboot wait for you to press Reboot. Window when on: ${win}. Only nodes and guests your policy sets to reboot: auto are ever rebooted on their own.`
   const what = on.length ? `On for ${on.join(' and ')}` : 'Off, but the next window was asked for once by an update run'
   return `${what}. Window ${win}${s.settings.quiet ? ', waiting while anyone is watching' : ''}.`
 }
