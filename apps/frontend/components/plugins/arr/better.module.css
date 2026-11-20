@@ -45,3 +45,11 @@
 .problem p { margin: 0; color: var(--text); font-size: .88rem; line-height: 1.45; }
 
 @media (max-width: 480px) { .vpn { grid-template-columns: 1fr; justify-items: start; } .ports { grid-template-columns: 1fr; } .link { width: 2px; height: 14px; min-width: 0; justify-self: center; } }
+
+/* "Download anyway" on a refused release: a secondary, warning-coloured button, never the main one. */
+.anyway { min-height: 38px; padding: 0 14px; border-radius: 8px; border: 1px dashed color-mix(in srgb, var(--warn) 70%, transparent); color: var(--warn); background: transparent; font: 600 .78rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
+.anyway:hover { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.anyway:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+.details { font-size: .78rem; color: var(--text-muted); }
+.details summary { cursor: pointer; min-height: 32px; display: inline-flex; align-items: center; font: 600 .7rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; }
+.details ul { margin: 2px 0 0; padding-left: 1.1rem; font: 500 .72rem/1.4 var(--font-mono); overflow-wrap: anywhere; }

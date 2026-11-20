@@ -5,10 +5,12 @@
 //
 //  For any film, episode, season or album (found by title in the library), or for a download in the queue that crawls
 //  ("find a faster copy"): ONE release search (the server allows one per item every ten minutes), ranked: what your
-//  profile accepts first, then quality, then seeders. AV1, 3D, program files and dead torrents are never shown; few
-//  seeders are marked slow. One tap downloads the pick and moves it to the top of qBittorrent's queue; for a queue
-//  download the slow one is then removed and blocklisted. What the profile refuses is shown with its reason and no
-//  button, except "Grab anyway" when the only objection is the slow download being swapped out.
+//  profile accepts (and what is only refused because something is already downloading) first, then the mildest
+//  refusals, then quality and seeders inside each. AV1, 3D, program files and dead torrents are never shown; raw disc
+//  copies are listed last as "Not offered" with no button; few seeders are marked slow. One tap downloads the pick and
+//  moves it to the top of qBittorrent's queue; for a queue download the slow one is then removed and blocklisted.
+//  What the profile refuses is shown with its reasons in plain words (the arr's own words under "Details"), and an
+//  admin can still choose "Download anyway"; "Grab anyway" when the only objection is the slow download being swapped.
 //  The download is confirmed here, in the page's own box, and sent with IN_PAGE: the server's confirmation token
 //  (lib/confirm-bus.ts) is then exchanged without a second dialog.
 //  Admins only: the server refuses everyone else. Everything comes from routes/arr-better.ts.
@@ -23,7 +25,7 @@ import { Panel, Pill, styles as s } from '@/components/visual/kit'
 import c from './giveup.module.css'
 import b from './better.module.css'
 import { APP_NAME, sizeWord, swarm, type App } from './giveup-view'
-import { betterConfirm, betterHidden, verdictWord, type BetterAnswer, type BetterGrab, type BetterRelease, type FoundItem, type FoundShow } from './better-view'
+import { betterConfirm, betterHidden, betterSummary, verdictWord, type BetterAnswer, type BetterGrab, type BetterRelease, type FoundItem, type FoundShow } from './better-view'
 import { ConfirmBox } from './GiveUp'
 
 // ── presentational parts (rendered in tests) ─────────────────────────────────
@@ -53,10 +55,18 @@ export function BetterCard({ r, canGrab, onGrab }: { r: BetterRelease; canGrab: 
             <span>{r.seeders ?? '?'} seeders · {r.peers ?? '?'} peers</span>
           </div>
         )}
-        {r.why && <p className={r.verdict === 'refused' ? c.bad : c.note}>{r.why}</p>}
-        {canGrab && r.verdict !== 'refused' && (
+        {r.why && <p className={r.verdict === 'refused' || r.verdict === 'never' ? c.bad : c.note}>{r.why}</p>}
+        {r.rawReasons && r.rawReasons.length > 0 && (
+          <details className={b.details}>
+            <summary>Details</summary>
+            <ul>{r.rawReasons.map(x => <li key={x}>{x}</li>)}</ul>
+          </details>
+        )}
+        {canGrab && r.verdict !== 'never' && (
           <div className={c.row}>
-            <button type="button" className={c.primary} onClick={() => onGrab(r)}>{r.verdict === 'anyway' ? 'Grab anyway' : 'Get this one'}</button>
+            {r.verdict === 'refused'
+              ? <button type="button" className={b.anyway} onClick={() => onGrab(r)}>Download anyway</button>
+              : <button type="button" className={c.primary} onClick={() => onGrab(r)}>{r.verdict === 'anyway' ? 'Grab anyway' : 'Get this one'}</button>}
           </div>
         )}
       </div>
@@ -73,7 +83,7 @@ export function BetterList({ a, app, canGrab, onGrab }: { a: BetterAnswer; app: 
         <b>{a.swap ? a.swap.name : a.have ?? 'nothing yet'}</b>
       </div>
       <p className={c.note}>
-        {a.found === 0 ? 'No release found at all on your indexers.' : `${a.found} found, ${a.accepted} your profile accepts. Best first: accepted, then quality, then seeders.`}
+        {betterSummary(a)}{a.found > 0 ? ' Best first: accepted, then the mildest refusals, then quality and seeders.' : ''}
         {a.reused ? ` Results from a few minutes ago; a new search is possible after ${new Date(a.nextSearchAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''}
       </p>
       {hidden && <p className={c.note} role="note">{hidden}</p>}
@@ -107,7 +117,7 @@ export function BetterDialog({ target, app, title, onClose }: { target: string; 
   const grab = async () => {
     if (!pick) return
     setBusy(true)
-    const r = await apiJson<{ data: BetterGrab }>('/api/plugins/arrstack/better/grab', 'POST', { target, releaseId: pick.id, ...(pick.verdict === 'anyway' ? { anyway: true } : {}) }, IN_PAGE)
+    const r = await apiJson<{ data: BetterGrab }>('/api/plugins/arrstack/better/grab', 'POST', { target, releaseId: pick.id, ...(pick.verdict === 'anyway' ? { anyway: true } : {}), ...(pick.verdict === 'refused' ? { override: true } : {}) }, IN_PAGE)
     setBusy(false); setPick(null)
     if (!r.ok || !r.body?.data) { setErr(r.error ?? 'The download could not be started.'); return }
     setDone(r.body.data)
@@ -120,7 +130,7 @@ export function BetterDialog({ target, app, title, onClose }: { target: string; 
       {!a && !err && <p className={s.empty}>Asking every indexer… this can take a minute.</p>}
       {err && <p className={c.bad} role="alert">{err}</p>}
       {done && <div className={c.result} data-result={done.result} role="status"><p>{done.summary}</p>{done.notes.map(n => <p key={n} className={c.note}>{n}</p>)}</div>}
-      {pick && a && <ConfirmBox text={betterConfirm(pick, a, app)} yes={pick.verdict === 'anyway' ? 'Grab anyway' : 'Download it'} busy={busy} onYes={grab} onNo={() => setPick(null)} />}
+      {pick && a && <ConfirmBox text={betterConfirm(pick, a, app)} yes={pick.verdict === 'anyway' ? 'Grab anyway' : pick.verdict === 'refused' ? 'Download anyway' : 'Download it'} busy={busy} onYes={grab} onNo={() => setPick(null)} />}
       {a && !done && <BetterList a={a} app={app} canGrab={!pick} onGrab={r => setPick(r)} />}
     </ModalFrame>
   )

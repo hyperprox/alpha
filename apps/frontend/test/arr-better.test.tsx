@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { BetterCard, BetterList, FoundRow } from '../components/plugins/arr/BetterCopy'
 import { VpnView } from '../components/plugins/arr/Vpn'
-import { betterConfirm, betterHidden, fixConfirm, portWord, queueTarget, type BetterAnswer, type BetterRelease, type VpnStatus } from '../components/plugins/arr/better-view'
+import { betterConfirm, betterHidden, betterSummary, fixConfirm, portWord, queueTarget, type BetterAnswer, type BetterRelease, type VpnStatus } from '../components/plugins/arr/better-view'
 
 const noop = () => {}
 const rel = (o: Partial<BetterRelease> = {}): BetterRelease => ({
@@ -36,9 +36,15 @@ test('a release the profile takes: the quality big, the swarm, one button', () =
   assert.match(slow, /Slow: 2 seeds/)
 })
 
-test('refused: its reason, and no button; only-the-slow-one: "Grab anyway"; a viewer sees no button at all', () => {
-  const refused = renderToStaticMarkup(<BetterCard r={rel({ approved: false, verdict: 'refused', why: 'Radarr refuses it: Too small for its quality (likely a poor copy).' })} canGrab onGrab={noop} />)
-  assert.match(refused, /Refused/); assert.match(refused, /Too small for its quality/); assert.ok(!/<button/.test(refused))
+test('refused: its reason, the arr\'s own words under Details, and a secondary "Download anyway"; never offered: why, and no button; only-the-slow-one: "Grab anyway"; a viewer sees no button at all', () => {
+  const refused = renderToStaticMarkup(<BetterCard r={rel({ approved: false, verdict: 'refused', group: 'mild', reasons: ['Smaller than your size limit (likely a poor copy)'], rawReasons: ['WEBDL-1080p is smaller than minimum allowed 1.2 GB'], why: 'Radarr refuses it: Smaller than your size limit (likely a poor copy).' })} canGrab onGrab={noop} />)
+  assert.match(refused, /Refused/); assert.match(refused, /Smaller than your size limit/)
+  assert.match(refused, /<details[^>]*><summary>Details<\/summary><ul><li>WEBDL-1080p is smaller than minimum allowed 1\.2 GB<\/li>/)
+  assert.equal((refused.match(/<button/g) ?? []).length, 1); assert.match(refused, /<button type="button" class="anyway">Download anyway<\/button>/, 'secondary warning style, not the main button')
+  const never = renderToStaticMarkup(<BetterCard r={rel({ approved: false, verdict: 'never', group: 'never', why: "Not offered: A raw disc copy most players can't play.", rawReasons: [] })} canGrab onGrab={noop} />)
+  assert.match(never, /Not offered/); assert.match(never, /raw disc copy most players can(&#x27;|')t play/); assert.ok(!/<button/.test(never)); assert.ok(!/<details/.test(never))
+  const queued = renderToStaticMarkup(<BetterCard r={rel({ approved: false, verdict: 'refused', group: 'queue', why: 'Something as good is already downloading.' })} canGrab onGrab={noop} />)
+  assert.match(queued, /Refused: already downloading/); assert.match(queued, /Download anyway/)
   const anyway = renderToStaticMarkup(<BetterCard r={rel({ approved: false, verdict: 'anyway', why: 'Only refused because the slow download is still in the queue; swapping it out resolves that.' })} canGrab onGrab={noop} />)
   assert.match(anyway, /Grab anyway/); assert.match(anyway, /Only refused because of the slow one/)
   assert.ok(!/<button/.test(renderToStaticMarkup(<BetterCard r={rel()} canGrab={false} onGrab={noop} />)))
@@ -47,12 +53,31 @@ test('refused: its reason, and no button; only-the-slow-one: "Grab anyway"; a vi
 test('the list: what you have, what was found, what was left out, and that nothing is deleted', () => {
   const html = renderToStaticMarkup(<BetterList a={answer()} app="radarr" canGrab onGrab={noop} />)
   assert.match(html, /You have/); assert.match(html, /WEBDL-1080p/)
-  assert.match(html, /10 found, 2 your profile accepts/)
+  assert.match(html, /10 found, 2 your profile accepts/, 'an older answer without groups still reads')
   assert.match(html, /4 left out: 1 AV1, 1 3D, 1 with a program file, 1 with no seeders\. These are never offered\./)
   assert.match(html, /No file in your library is deleted/)
   const swap = renderToStaticMarkup(<BetterList a={answer({ swap: { name: 'Paper.Lanterns.2011.1080p.WEB-DL-SLOW' } })} app="radarr" canGrab onGrab={noop} />)
   assert.match(swap, /Replacing/); assert.match(swap, /WEB-DL-SLOW/)
   assert.equal(betterHidden({ av1: 0, threeD: 0, hfr: 0, zeroSeed: 0, executable: 0 }), null)
+})
+
+test('the summary line: every group, mildest first', () => {
+  const groups = { accepted: 0, queue: 222, mild: 4, refused: 1, never: 3 }
+  assert.equal(betterSummary({ found: 230, accepted: 0, groups, swap: null, hidden: { av1: 0, threeD: 0, hfr: 0, zeroSeed: 0, executable: 0 } }),
+    '230 found: 0 accepted, 222 only refused because something is already downloading, 4 refused for a size, seeder, subtitle or custom format reason, 1 refused for other reasons, 3 never offered.')
+  assert.match(betterSummary({ found: 230, accepted: 0, groups, swap: { name: 'x' }, hidden: { av1: 1, threeD: 0, hfr: 0, zeroSeed: 2, executable: 0 } }), /222 only refused because the slow one is still downloading.*6 never offered\.$/)
+  assert.equal(betterSummary({ found: 0, accepted: 0, groups, swap: null, hidden: { av1: 0, threeD: 0, hfr: 0, zeroSeed: 0, executable: 0 } }), 'No release found at all on your indexers.')
+  const html = renderToStaticMarkup(<BetterList a={answer({ groups: { accepted: 2, queue: 1, mild: 0, refused: 0, never: 0 } })} app="radarr" canGrab onGrab={noop} />)
+  assert.match(html, /10 found: 2 accepted, 1 only refused because something is already downloading, 4 never offered\./)
+})
+
+test('download anyway: the confirm names the arr and its reasons in plain words', () => {
+  const r = rel({ approved: false, verdict: 'refused', reasons: ['Smaller than your size limit (likely a poor copy)', 'Tagged low quality by your custom formats (LQ)', 'Something as good is already downloading'] })
+  const t = betterConfirm(r, { label: 'Paper Lanterns (2011)', have: null, swap: null }, 'radarr')
+  assert.match(t, /^Radarr refuses this because: smaller than your size limit \(likely a poor copy\); tagged low quality by your custom formats \(LQ\); something as good is already downloading\. Download it anyway\?/)
+  const sw = betterConfirm(r, { label: 'Paper Lanterns (2011)', have: null, swap: { name: 'Old.Slow.Copy' } }, 'radarr')
+  assert.doesNotMatch(sw, /already downloading/, 'in a swap, the queued one is what the swap resolves')
+  assert.match(sw, /the slow download \(Old\.Slow\.Copy\) is removed and blocklisted/)
 })
 
 test('the confirm says what happens: the top of the queue, the swap, grab anyway, what stays, slow', () => {

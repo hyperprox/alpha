@@ -7,14 +7,18 @@
 
 import type { App } from './giveup-view'
 
-export type Verdict = 'ok' | 'anyway' | 'refused'
+export type Verdict = 'ok' | 'anyway' | 'refused' | 'never'
+export type Group = 'accepted' | 'queue' | 'mild' | 'refused' | 'never'
 export interface BetterRelease {
   id: string; title: string; quality: string; resolution: number | null; source: string; codec: string; size: number
   protocol: 'torrent' | 'usenet' | 'unknown'; seeders: number | null; peers: number | null; ageDays: number | null; grabs: number | null
   indexer: string; languages: string[]; approved: boolean; reasons: string[]; slow: boolean; verdict: Verdict; why?: string
+  /** Where it ranks, and the arr's own words for the "details" toggle (both missing from an older server). */
+  group?: Group; rawReasons?: string[]
 }
 export interface BetterAnswer {
   rows: BetterRelease[]; found: number; accepted: number
+  groups?: Record<Group, number>
   hidden: { av1: number; threeD: number; hfr: number; zeroSeed: number; executable: number }
   target: string; label: string; have: string | null; swap: { name: string } | null; searchedAt: string; reused: boolean; nextSearchAt: string
 }
@@ -37,10 +41,31 @@ export function betterHidden(h: BetterAnswer['hidden']): string | null {
   return n ? `${n} left out: ${parts.join(', ')}. These are never offered.` : null
 }
 
+/**
+ * The search in one line: how many were found, and how many of them are in each group, mildest first.
+ * "230 found: 0 accepted, 205 only refused because something is already downloading, ..."
+ */
+export function betterSummary(a: Pick<BetterAnswer, 'found' | 'accepted' | 'groups' | 'hidden' | 'swap'>): string {
+  if (a.found === 0) return 'No release found at all on your indexers.'
+  if (!a.groups) return `${a.found} found, ${a.accepted} your profile accepts.`
+  const g = a.groups
+  const left = a.hidden.av1 + a.hidden.threeD + a.hidden.hfr + a.hidden.executable + a.hidden.zeroSeed
+  const parts = [
+    `${a.accepted} accepted`,
+    g.queue ? `${g.queue} only refused because ${a.swap ? 'the slow one is still downloading' : 'something is already downloading'}` : '',
+    g.mild ? `${g.mild} refused for a size, seeder, subtitle or custom format reason` : '',
+    g.refused ? `${g.refused} refused for other reasons` : '',
+    g.never + left ? `${g.never + left} never offered` : '',
+  ].filter(Boolean)
+  return `${a.found} found: ${parts.join(', ')}.`
+}
+
 /** The badge a release wears. */
-export function verdictWord(r: BetterRelease): { text: string; tone: 'good' | 'warn' | 'accent' } {
+export function verdictWord(r: BetterRelease): { text: string; tone: 'good' | 'warn' | 'accent' | 'bad' } {
   if (r.verdict === 'ok') return { text: 'Your profile accepts it', tone: 'good' }
   if (r.verdict === 'anyway') return { text: 'Only refused because of the slow one', tone: 'accent' }
+  if (r.verdict === 'never') return { text: 'Not offered', tone: 'bad' }
+  if (r.group === 'queue') return { text: 'Refused: already downloading', tone: 'accent' }
   return { text: 'Refused', tone: 'warn' }
 }
 
@@ -52,7 +77,16 @@ export function betterConfirm(r: BetterRelease, a: Pick<BetterAnswer, 'label' | 
   const anyway = r.verdict === 'anyway' ? ` ${name} only objects because the slow download is still queued; this grabs it anyway.` : ''
   const keep = a.have ? ` What you have now (${a.have}) stays until ${name} imports the new copy.` : ''
   const slow = r.slow ? ' Note: it has few seeders, so it may be slow too.' : ''
+  if (r.verdict === 'refused') {
+    const why = overrideReasons(r, !!a.swap).map(x => x.charAt(0).toLowerCase() + x.slice(1)).join('; ') || 'no reason given'
+    return `${name} refuses this because: ${why}. Download it anyway? It goes to the top of qBittorrent's queue.${swap}${keep}${slow}`
+  }
   return `${what}${swap}${anyway}${keep}${slow}`
+}
+
+/** The reasons a "Download anyway" goes past (in a swap, the slow one being queued is what the swap resolves). */
+export function overrideReasons(r: Pick<BetterRelease, 'reasons'>, swap: boolean): string[] {
+  return r.reasons.filter(x => !(swap && x === 'Something as good is already downloading'))
 }
 
 // ── the VPN panel ────────────────────────────────────────────────────────────
