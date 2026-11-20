@@ -27,7 +27,7 @@ import { type PolicyLoad, type Policy, guestPolicy, nodePolicy, effectiveUpgrade
 import { shortReason } from '../redact-addresses'
 import { readInventory, findSelfGuest, selfVmidOf, type InventoryResult } from './inventory'
 import { buildPlan, detailKey, DETAIL, orderNodes } from './planner'
-import { immovableReason, newestKernel, nodeRebootNeeded, rebootQuorumGate, type HaRule } from './reboots'
+import { guestPolicyRefusal, nodePolicyRefusal, immovableReason, inPlaceAllowed, newestKernel, nodeRebootNeeded, parseQuorumTool, QUORUM_VOTES_COMMAND, rebootQuorumGate, SELF_GUEST_WORDS, type HaRule, type QuorumVotes } from './reboots'
 import {
   preflight, quorumGate, cephGate, haGate, holdsPinGate, freeSpaceGate, streamGate, judgeCeph, judgeCephSettled,
   unknownPolicyNodes, quorumHaGates, type GateResult,
@@ -436,17 +436,26 @@ export class UpdatesRunner {
       steps: planSteps, warnings: [], stepOffset: 1, reboots,
       ...(opts.forceNodes ? { forced: planSteps.filter(x => x.action !== 'guest-reboot').map(x => x.seq) } : {}),
     }
-    const job = await this.store.createJob({ trigger: opts.kind === 'window' ? 'schedule' : 'manual', status: 'running', plan })
-    // Written before anything happens: who or what started it, and exactly what it will touch.
-    await this.store.audit('updates.reboots.start', job.id, {
+    // Written before anything exists: who or what asks, and exactly what it will touch. A failed audit starts nothing.
+    await this.store.audit('updates.reboots.start', 'reboots', {
       kind: opts.kind, nodes: ordered, guests: reboots.guests, windowEnd: reboots.windowEnd, quiet: opts.quiet,
       ...(opts.forceNodes ? { everyNode: true } : {}), ...auditBy(opts.actor ?? 'reboot window'),
     })
-    await this.store.addSteps(job.id, [
-      { seq: 1, target: 'cluster', action: 'preflight', detail: 'every node online, quorum, Ceph health, HA settled, noout not set' },
-      ...planSteps.map(x => ({ ...x, seq: x.seq + 1 })),
-    ])
-    await this.emitJob(job)
+    // Created as planned and only then claimed as running by this process, so the reboot timer can never take up a
+    // run that is just starting (continueRebootRun takes running jobs no one drives).
+    const created = await this.store.createJob({ trigger: opts.kind === 'window' ? 'schedule' : 'manual', status: 'planned', plan })
+    this.live.add(created.id)
+    try {
+      await this.store.addSteps(created.id, [
+        { seq: 1, target: 'cluster', action: 'preflight', detail: 'every node online, quorum, Ceph health, HA settled, noout not set' },
+        ...planSteps.map(x => ({ ...x, seq: x.seq + 1 })),
+      ])
+    } catch (e) {
+      await this.finish(created.id, 'failed', `Could not write the run's steps: ${(e as any)?.message ?? e}`).catch(() => {})
+      this.live.delete(created.id)
+      throw e
+    }
+    const job = (await this.transition(created.id, ['planned'], { status: 'running' })) ?? created
     this.drive(job.id, async () => {
       const pre = await this.runStep(job.id, (await this.store.getSteps(job.id))[0], async () => {
         const g = await this.clusterGates(job.id, load.policy)
@@ -499,6 +508,24 @@ export class UpdatesRunner {
   }
 
   /**
+   * A run waiting for HyperProx to be unlocked must not hold the one-job lock for ever: past `maxMs` since its last
+   * step moved, it is stopped (what it set is reported, Make safe offered). Returns the job id it stopped, or null.
+   */
+  async expireStrandedRebootRun(maxMs: number): Promise<string | null> {
+    if (this.remote) return null
+    const job = await this.store.activeJob()
+    if (!job || job.status !== 'running' || !job.plan?.reboots || this.live.has(job.id)) return null
+    const steps = await this.store.getSteps(job.id)
+    const last = Math.max(job.startedAt.getTime(), ...steps.flatMap(x => [x.startedAt, x.endedAt]).filter((d): d is Date => !!d).map(d => new Date(d).getTime()))
+    if (this.exec.now() - last < maxMs) return null
+    for (const s of steps.filter(x => x.status === 'running')) {
+      await this.setStep(s, { status: 'failed', reason: 'HyperProx stayed locked after its restart, so the run could not finish its checks', endedAt: new Date(this.exec.now()) })
+    }
+    await this.finish(job.id, 'failed', `HyperProx stayed locked for ${Math.round(maxMs / 60_000)} minutes after its restart, so the rolling reboot could not finish its checks. Sign in, check the nodes, and use Make safe if it shows anything left on`)
+    return job.id
+  }
+
+  /**
    * The one-tap fix after a rolling reboot stopped with something left on: HA maintenance off for the node the run
    * left in it, and Ceph noout off — but noout only when every OSD is up and in, since clearing it with an OSD down
    * lets Ceph start moving data. Never while an Updates job runs. Audited before anything changes.
@@ -510,8 +537,11 @@ export class UpdatesRunner {
     const last = (await this.store.listJobs(20)).find(j => j.plan?.reboots)
     const left = last?.plan?.reboots?.leftOn
     if (!last || !left) throw new JobStateError('No rolling reboot left anything on.')
-    await this.store.audit('updates.reboots.make-safe', last.id, { node: left.node, maintenance: left.maintenance, noout: left.noout, ...auditBy(actor) })
     const status = await this.exec.clusterStatus()
+    // Only once the node is back and the cluster quorate: clearing either earlier lets guests or data move toward a sick node.
+    if (!status.quorate) throw new JobStateError('The cluster is not quorate. Make safe waits until it is.')
+    if (!status.nodes.find(n => n.name === left.node)?.online) throw new JobStateError(`${left.node} is not online. Make safe waits until it is back; until then HA maintenance and noout keep guests and data where they are.`)
+    await this.store.audit('updates.reboots.make-safe', last.id, { node: left.node, maintenance: left.maintenance, noout: left.noout, ...auditBy(actor) })
     const peer = status.nodes.filter(n => n.online).map(n => n.name).sort((a, b) => (a === left.node ? 1 : b === left.node ? -1 : a.localeCompare(b)))[0]
     if (!peer) throw new JobStateError('No node is online to run the commands from.')
     const cleared: string[] = [], still: string[] = []
@@ -551,13 +581,43 @@ export class UpdatesRunner {
     const ha = new Set(await this.exec.haResources())
     let rules: HaRule[] = []
     try { rules = this.exec.haRules ? await this.exec.haRules() : [] } catch { rules = [] }
+    // Disks on storage only this node reaches: judged when the storage list can be read, else left to the drain.
+    let storages: Map<string, boolean> | null = null
+    try { storages = this.exec.sharedStorages ? await this.exec.sharedStorages() : null } catch { storages = null }
     const out: string[] = []
     for (const g of (await this.exec.listGuests()).filter(x => x.node === node && x.running && !x.template)) {
       if (!ha.has(`${g.type === 'lxc' ? 'ct' : 'vm'}:${g.vmid}`)) continue   // not HA: it stops with the node either way
-      const why = immovableReason(g, await this.exec.guestConfig(g), rules)
+      const why = immovableReason(g, await this.exec.guestConfig(g), rules, storages)
       if (why) out.push(`${g.vmid} (${g.name || g.type}): ${why}`)
     }
     return out
+  }
+
+  /** Corosync's votes, read on a peer; null when they cannot be read (then one vote per node is counted). */
+  private async votesNow(peer: string): Promise<QuorumVotes | null> {
+    try { const r = await this.exec.nodeExec(peer, QUORUM_VOTES_COMMAND, undefined, 30_000); return parseQuorumTool(r.output) } catch { return null }
+  }
+
+  /** Quorum now, and still with `node` gone: every node online. Asked again right before the reboot command. */
+  private async quorumNow(node: string, peer: string, rr: boolean): Promise<GateResult> {
+    const q = await quorumGate(this.exec)
+    if (!q.ok || !rr) return q
+    try { return rebootQuorumGate(await this.exec.clusterStatus(), node, await this.votesNow(peer)) }
+    catch (e: any) { return { ok: false, reason: `could not read cluster status: ${e?.message ?? e}` } }
+  }
+
+  /**
+   * Restarting guests in place relies on HA freezing them while the node reboots (shutdown_policy freeze, or
+   * conditional, Proxmox's default). With failover or migrate HA would try to start them elsewhere, which they
+   * cannot do: refused, with nothing changed. Unreadable is refused too.
+   */
+  private async inPlaceGate(): Promise<GateResult> {
+    if (!this.exec.haShutdownPolicy) return { ok: false, reason: "HA's shutdown policy could not be read" }
+    try {
+      const p = await this.exec.haShutdownPolicy()
+      return inPlaceAllowed(p) ? { ok: true, reason: `HA shutdown policy ${p}` }
+        : { ok: false, reason: `HA's shutdown policy is ${p}, so HA would not restart these guests on this node; set it to freeze or conditional (Datacenter, Options, HA settings), or reboot this node by hand` }
+    } catch (e: any) { return { ok: false, reason: `HA's shutdown policy could not be read (${e?.message ?? e})` } }
   }
 
   /**
@@ -607,6 +667,10 @@ export class UpdatesRunner {
     // Leave-alone, read now: tagged, excluded in the policy, or on Remote access's "never look inside" list.
     if (hasIgnoreTag(guest.tags)) return { status: 'skipped', reason: 'tagged hyperprox-ignore: left alone' }
     if (guestPolicy(policy, guest.vmid).excluded) return { status: 'skipped', reason: 'excluded in the Updates policy: left alone' }
+    // HyperProx's own guest: rebooting it would stop this run. Its policy, read now, must still opt in.
+    if (findSelfGuest(await this.exec.listGuests(), policy, this.deps.hostname)?.vmid === guest.vmid) return { status: 'skipped', reason: SELF_GUEST_WORDS }
+    const refusal = guestPolicyRefusal(policy, guest.vmid)
+    if (refusal) return { status: 'skipped', reason: refusal }
     const notInside = lookInsideReason(await lookInsideList(this.exec), guest)
     if (notInside) return { status: 'skipped', reason: `${LOOK_INSIDE_WORDS[notInside]}: left alone` }
     // Asked again now: a node reboot earlier in this run may already have restarted it.
@@ -1536,7 +1600,7 @@ export class UpdatesRunner {
     // An automatic reboot run waits within its own window, as its settings say ("only when nobody is watching").
     const rr = await this.rebootRunOf(jobId)
     const windowEnd = rr ? Date.parse(rr.windowEnd) : (this.runStartedAt.get(jobId) ?? this.exec.now()) + policy.schedule.windowHours * 3_600_000
-    const pol = rr ? { ...policy, plexBlocksReboots: rr.quiet } : policy
+    const pol = rr ? { ...policy, plexBlocksReboots: rr.quiet || policy.plexBlocksReboots } : policy
     const every = rr ? (this.timing.rebootStreamRecheckMs ?? DEFAULT_TIMING.rebootStreamRecheckMs!) : this.timing.streamRecheckMs
     for (;;) {
       const g = await streamGate(this.exec, pol)
@@ -1558,6 +1622,8 @@ export class UpdatesRunner {
     if (detailKey(step) === DETAIL.rebootStandalone) return this.standaloneReboot(step, policy, log)
     // A remote node is never rebooted as part of a run, whatever a stored plan says.
     if (this.remote) { this.rebootPending.add(node); return { status: 'skipped', reason: 'reboot: manual — reboot pending' } }
+    // Automatic reboots: the node's policy, read now, must still opt in (reboot: auto, and not auto_reboot: false).
+    if (await this.rebootRunOf(jobId)) { const refusal = nodePolicyRefusal(policy, node); if (refusal) return { status: 'skipped', reason: refusal } }
     const resumed = Boolean(step.startedAt)   // a previous attempt began; flags may be set
     const gate = await this.rebootGate(node, policy)
     if ('stop' in gate) return resumed ? { ...gate.stop, reason: `${(gate.stop as { reason: string }).reason} An earlier attempt may have left HA maintenance or noout on; check before clearing them.` } as Outcome : gate.stop
@@ -1593,9 +1659,13 @@ export class UpdatesRunner {
       if (!q.ok) return { status: 'failed', reason: `${q.reason}; ${node} was not rebooted` }
       log(q.reason)
       const stuck = await this.immovableOn(node)
-      if (stuck.length) { maintenance = false; log(`guests that cannot move: ${stuck.join('; ')} — no HA maintenance; HA restarts them on ${node} when it is back`) }
+      if (stuck.length) {
+        const sp = await this.inPlaceGate()
+        if (!sp.ok) return { status: 'failed', reason: `guests on ${node} cannot move (${stuck.join('; ')}) and ${sp.reason}; nothing was changed` }
+        maintenance = false; log(`guests that cannot move: ${stuck.join('; ')} — no HA maintenance; HA restarts them on ${node} when it is back (${sp.reason})`)
+      }
       before = await this.snapshotRunning(node)
-      await this.noteReboot(jobId, node, { kernelBefore: fresh.facts.runningKernel, inPlace: !maintenance })
+      await this.noteReboot(jobId, node, { kernelBefore: fresh.facts.runningKernel, inPlace: !maintenance, flags: { maintenance, noout: ceph } })
     }
     const flagWords = [maintenance ? 'maintenance' : '', ceph ? 'noout' : ''].filter(Boolean).join(' and ') || 'nothing to clear'
     const bootBefore = await this.bootId(node)
@@ -1620,6 +1690,12 @@ export class UpdatesRunner {
     if ('stop' in atReboot) {
       await this.clearFlags(peer, node, ceph, log, maintenance)
       return { ...atReboot.stop, reason: `${(atReboot.stop as { reason: string }).reason} (checked again after HA moved the guests; ${flagWords} cleared)` } as Outcome
+    }
+    // Right before the command: quorum, every node online, and (automatic reboots) still quorate with it gone.
+    const lastQ = await this.quorumNow(node, peer, !!rr)
+    if (!lastQ.ok) {
+      await this.clearFlags(peer, node, ceph, log, maintenance)
+      return { status: 'failed', reason: `${lastQ.reason}; ${flagWords} cleared, ${node} not rebooted` }
     }
     log(`rebooting ${node}`)
     const sentAt = this.exec.now()
@@ -1791,6 +1867,7 @@ export class UpdatesRunner {
     }
     if (detailKey(step) === DETAIL.selfReboot) {
       const node = step.target
+      if (await this.rebootRunOf(jobId)) { const refusal = nodePolicyRefusal(policy, node); if (refusal) return { status: 'skipped', reason: refusal } }
       const forced = await this.forced(jobId, step)
       const gate = await this.rebootGate(node, policy)
       if ('stop' in gate) return gate.stop
@@ -1815,8 +1892,12 @@ export class UpdatesRunner {
         if (!q.ok) return { status: 'failed', reason: `${q.reason}; ${node} was not rebooted` }
         log(q.reason)
         const stuck = await this.immovableOn(node)
-        if (stuck.length) { maintenance = false; log(`guests that cannot move: ${stuck.join('; ')} — no HA maintenance; HA restarts them on ${node} when it is back`) }
-        await this.noteReboot(jobId, node, { kernelBefore: fresh.facts.runningKernel, inPlace: !maintenance, before: await this.snapshotRunning(node) })
+        if (stuck.length) {
+          const sp = await this.inPlaceGate()
+          if (!sp.ok) return { status: 'failed', reason: `guests on ${node} cannot move (${stuck.join('; ')}) and ${sp.reason}; nothing was changed` }
+          maintenance = false; log(`guests that cannot move: ${stuck.join('; ')} — no HA maintenance; HA restarts them on ${node} when it is back (${sp.reason})`)
+        }
+        await this.noteReboot(jobId, node, { kernelBefore: fresh.facts.runningKernel, inPlace: !maintenance, before: await this.snapshotRunning(node), flags: { maintenance, noout: ceph } })
       }
       await this.setStep(step, { detail: `${step.detail} · ${handoffTag(peer)}` })
       await startHandoff(this.exec, peer, jobId, step.id, selfNodeRebootScript(jobId, step.id, node, { ceph, osds: first.osds, waitMinutes: Math.round(this.timing.nodeReturnMs / 60_000), maintenance }))
@@ -2042,15 +2123,20 @@ export class UpdatesRunner {
     if (!job || !rr) return
     let leftOn: UpdatesRebootRun['leftOn'] = null
     if (status === 'failed') {
+      // Only what this run itself set: the node whose step failed if it set flags, else the last node it set them on.
       const failed = steps.find(x => x.status === 'failed' && (x.action === 'node-reboot' || x.action === 'self'))
-      try {
-        const maint = (await this.exec.haStatus()).maintenanceNodes
-        const noout = await this.ceph(jobId) ? await this.nooutSet() : false
-        const node = maint[0] ?? failed?.target ?? null
-        if (node && (maint.length || noout)) leftOn = { node, maintenance: maint.includes(node), noout }
-      } catch {
-        // Could not read: assume the worst for the node that failed; Make safe reads the real state before clearing.
-        if (failed) leftOn = { node: failed.target, maintenance: true, noout: true }
+      const withFlags = steps.filter(x => rr.results[x.target]?.flags && (x.action === 'node-reboot' || x.action === 'self') && x.status !== 'pending')
+      const mine = (failed && rr.results[failed.target]?.flags ? failed : withFlags.at(-1)) ?? null
+      const set = mine ? rr.results[mine.target].flags! : null
+      if (mine && set && (set.maintenance || set.noout)) {
+        try {
+          const maint = set.maintenance && (await this.exec.haStatus()).maintenanceNodes.includes(mine.target)
+          const noout = set.noout && await this.nooutSet()
+          if (maint || noout) leftOn = { node: mine.target, maintenance: maint, noout }
+        } catch {
+          // Could not read: name what it set; Make safe reads the real state before clearing anything.
+          leftOn = { node: mine.target, ...set }
+        }
       }
       await this.store.updateJob(jobId, { plan: { ...job.plan, reboots: { ...rr, leftOn } } })
     }

@@ -13,8 +13,13 @@ import { readInventory } from '../src/lib/updates/inventory'
 import { AutoReboots } from '../src/lib/updates/auto-reboots'
 import {
   windowState, mergeRebootSettings, defaultRebootSettings, RebootSettingsError, rebootQuorumGate, immovableReason,
-  nodeRebootNeeded, rebootTargets, FileRebootState, MemoryRebootState, parseHaRules,
+  nodeRebootNeeded, rebootTargets, FileRebootState, MemoryRebootState, parseHaRules, windowKey, parseQuorumTool, sharedStorages,
+  parseHaShutdownPolicy, SELF_GUEST_WORDS,
 } from '../src/lib/updates/reboots'
+import { selfNodeRebootScript, QUORUM_CHECK_PY } from '../src/lib/updates/handoff'
+import { NODE_FACTS_COMMAND } from '../src/lib/updates/commands'
+import { tokenForbidden } from '../src/lib/api-tokens'
+import { MemoryStore as Store2 } from '../src/lib/updates/store'
 import { orderNodes } from '../src/lib/updates/planner'
 import { parsePolicy } from '../src/lib/updates/policy'
 import type { ClusterUpdates } from '../src/lib/updates/service'
@@ -23,7 +28,9 @@ import { FakeCluster, node, guest, policyLoad, FAST } from './updates-fake'
 
 const POLICY = `
 nodes:
-  default: { upgrade: upgrade, reboot: manual }
+  default: { upgrade: upgrade, reboot: auto }
+guests:
+  default: { reboot: auto }
 self: { vmid: 150 }
 `
 const NEWER = ['proxmox-kernel-7.0.1-1-pve-signed', 'proxmox-kernel-7.0.2-1-pve-signed']
@@ -281,15 +288,13 @@ test('a node that does not come back: the run stops, noout and maintenance stay 
   assert.equal(stops[0].severity, 'critical')
   assert.match(stops[0].lines!.join(' '), /Make safe/)
 
-  // Still down: maintenance comes off, noout stays (OSDs are down).
-  const first = await runner.makeSafe('admin@example.com')
-  assert.deepEqual(first.cleared, ['HA maintenance on node-b'])
-  assert.match(first.left.join(' '), /noout: 2 OSD\(s\) still down/)
-  assert.equal(fake.noout, true)
-  // Back: noout comes off, and nothing is left on any more.
+  // Still down: Make safe waits; nothing is cleared while the node is away.
+  await assert.rejects(runner.makeSafe('admin@example.com'), /node-b is not online/)
+  assert.equal(fake.noout, true); assert.ok(fake.maintenance.has('node-b'))
+  // Back: both come off, and nothing is left on any more.
   fake.nodes[1].offlineUntil = fake.t
   const second = await runner.makeSafe('admin@example.com')
-  assert.deepEqual(second.cleared, ['Ceph noout'])
+  assert.deepEqual(second.cleared, ['HA maintenance on node-b', 'Ceph noout'])
   assert.equal(fake.noout, false)
   assert.equal((await store.getJob(job.id))!.plan.reboots!.leftOn, null)
   assert.ok(store.audits.some(a => a.action === 'updates.reboots.make-safe'))
@@ -327,7 +332,7 @@ test('viewers: waits, asking again every 10 minutes, then reboots; past the wind
   assert.equal(fake2.ran(/systemctl reboot/), false)
   // "Only when nobody is watching" off: viewers do not hold it back.
   const fake3 = cluster(); fake3.plex = [3]
-  const s3 = setup(fake3)
+  const s3 = setup(fake3, POLICY + 'quiet: { plex_streams_block_reboots: false }\n')
   const job3 = await run(s3.runner, fake3, { quiet: false }); await settle(s3.runner)
   assert.equal((await s3.store.getJob(job3.id))!.status, 'done')
   assert.ok(fake3.ran(/systemctl reboot/, 'node-b'))
@@ -421,4 +426,162 @@ test('the plan of a rolling reboot is the record: results survive in the job', a
   const kept = (await store.getJob(job.id))!
   assert.ok(kept.plan.reboots!.results['node-b'].kernelAfter)
   assert.equal(kept.plan.reboots!.kind, 'window')
+})
+
+// --- review fixes -----------------------------------------------------------------------------------------
+
+test('B1: HyperProx\'s own guest is never a reboot target, and the step refuses it too', async () => {
+  const fake = cluster()
+  fake.guests.push(guest(150, 'node-a', { pending: [] }), guest(160, 'node-a', { pending: [] }))
+  const policy = parsePolicy(POLICY)
+  const inv = (await readInventory(fake, policy, { rebootPending: new Set(), hostname: 'x' })).inventory
+  for (const g of inv.guests) g.rebootRequired = true
+  const t = rebootTargets(inv, policy, { nodes: false, guests: true }, n => orderNodes(n, policy), { selfVmid: 150 })
+  assert.deepEqual(t.guests, [101, 160])
+  assert.deepEqual(t.skipped.find(x => x.target === '150'), { target: '150', reason: SELF_GUEST_WORDS })
+  fake.inject = (_w, c) => (c === 'guest:other' ? { code: 0, output: 'HP_REBOOT_REQUIRED', timedOut: false } : undefined)
+  const { runner, store } = setup(fake)
+  const job = await run(runner, fake, { nodes: [], guests: [150] }); await settle(runner)
+  const step = (await store.getSteps(job.id)).find(s => s.target === '150')!
+  assert.equal(step.status, 'skipped'); assert.equal(step.reason, SELF_GUEST_WORDS)
+  assert.equal(fake.ran(/pct reboot 150|ha-manager set 'ct:150'/), false)
+})
+
+test('B2: the policy decides — reboot: manual nodes and reboot: never guests are left for a person, and said so', async () => {
+  const fake = cluster()
+  fake.nodes[2].kernelPkgs = [...NEWER]
+  fake.guests.push(guest(170, 'node-a', { pending: [] }))
+  const yaml = `
+nodes:
+  default: { upgrade: upgrade, reboot: manual }
+  node-c: { reboot: auto }
+guests:
+  "170": { reboot: auto }
+self: { vmid: 150 }
+`
+  const policy = parsePolicy(yaml)
+  const inv = (await readInventory(fake, policy, { rebootPending: new Set(), hostname: 'x' })).inventory
+  for (const g of inv.guests) g.rebootRequired = true
+  const t = rebootTargets(inv, policy, { nodes: true, guests: true }, n => orderNodes(n, policy))
+  assert.deepEqual(t.nodes, ['node-c'])
+  assert.match(t.skipped.find(x => x.target === 'node-b')!.reason, /your policy says reboot by hand \(reboot: manual\)/)
+  assert.deepEqual(t.guests, [170])
+  assert.match(t.skipped.find(x => x.target === '101')!.reason, /your policy says reboot by hand \(reboot: never\)/)
+  // And at step time: a run that names a manual node does not reboot it.
+  const { runner, store } = setup(fake, yaml)
+  const job = await run(runner, fake, { nodes: ['node-b'] }); await settle(runner)
+  const step = (await store.getSteps(job.id)).find(s => s.target === 'node-b')!
+  assert.equal(step.status, 'skipped')
+  assert.match(step.reason!, /reboot by hand/)
+  assert.equal(fake.ran(/systemctl reboot|noout/), false)
+  assert.throws(() => parsePolicy('guests:\n  "170": { reboot: sometimes }\n'))
+})
+
+test('B3: a queued request reboots only its own run\'s targets, with the switches off, and the policy still decides', async () => {
+  const fake = cluster()
+  fake.nodes[2].kernelPkgs = [...NEWER]
+  fake.t = Date.parse('2027-01-15T03:05:00Z')
+  const { auto, store, runner } = service(fake)
+  auto.queueNext('home', 'admin@example.com', 'job1', { nodes: ['node-b'], guests: [] })
+  assert.equal(await auto.tick(), 'started')
+  await settle(runner)
+  const job = (await store.listJobs(1))[0]
+  assert.deepEqual(job.plan.reboots!.nodes, ['node-b'], 'node-c also needs one, but was not in that run')
+  assert.equal(fake.ran(/systemctl reboot/, 'node-c'), false)
+})
+
+test('B4: quorum is asked again right before the reboot command; a node gone meanwhile means no reboot and flags cleared', async () => {
+  const fake = cluster()
+  // node-c drops out after the last safety reads (the third read of node-b's facts), just before the reboot command.
+  let facts = 0
+  fake.inject = (w, c) => { if (w === 'node-b' && c === NODE_FACTS_COMMAND && ++facts === 3) { fake.nodes[2].online = false; fake.nodes[2].offlineUntil = Infinity } return undefined }
+  const { runner, store } = setup(fake)
+  const job = await run(runner, fake); await settle(runner)
+  const j = (await store.getJob(job.id))!
+  assert.equal(j.status, 'failed')
+  assert.match(j.pauseReason!, /node-c/)
+  assert.equal(fake.ran(/^systemctl reboot$/), false)
+  const off = idx(fake, /node-maintenance disable 'node-b'/), unset = idx(fake, /^ceph osd unset noout$/)
+  assert.ok(off >= 0 && off < unset, 'maintenance off, then noout off')
+  assert.equal(fake.noout, false); assert.equal(fake.maintenance.size, 0)
+  // The handoff for HyperProx's own node checks the same right before it reboots.
+  const script = selfNodeRebootScript('j', 's', 'node-b', { ceph: true, osds: [2, 3] })
+  assert.ok(script.includes(Buffer.from(QUORUM_CHECK_PY).toString('base64')))
+  assert.ok(script.indexOf('qrc') < script.indexOf('ssh_t systemctl reboot'))
+  assert.match(QUORUM_CHECK_PY, /not every node is online/)
+})
+
+test('notes: viewers block when either the setting or the policy says so; HA shutdown policy failover refuses the in-place path', async () => {
+  const fake = cluster(); fake.plex = [2, 0]
+  const { runner } = setup(fake)
+  const t0 = fake.t
+  await run(runner, fake, { quiet: false }); await settle(runner)
+  assert.ok(fake.t - t0 >= 10 * 60_000, 'the policy still asks to wait')
+
+  const f2 = cluster()
+  f2.guests.push(guest(120, 'node-b', { pending: [], config: { mp0: '/srv/media,mp=/media' } }))
+  f2.haSids = ['ct:120']; f2.haServices = [{ sid: 'ct:120', node: 'node-b', state: 'started' }]
+  f2.haShutdown = 'failover'
+  const s2 = setup(f2)
+  const job = await run(s2.runner, f2); await settle(s2.runner)
+  const j = (await s2.store.getJob(job.id))!
+  assert.equal(j.status, 'failed')
+  assert.match(j.pauseReason!, /shutdown policy is failover/)
+  assert.equal(f2.ran(/noout|node-maintenance|systemctl reboot/), false, 'nothing was changed')
+  assert.equal(parseHaShutdownPolicy('shutdown_policy=freeze'), 'freeze')
+  assert.equal(parseHaShutdownPolicy(undefined), 'conditional')
+})
+
+test('notes: a failed audit starts nothing and leaves no job holding the lock', async () => {
+  const fake = cluster()
+  const store = new Store2()
+  store.audit = async () => { throw new Error('audit log unavailable') }
+  const { runner } = setup(fake, POLICY, store)
+  await assert.rejects(run(runner, fake), /audit log unavailable/)
+  assert.equal(await store.activeJob(), null)
+  assert.equal((await store.listJobs(5)).length, 0)
+})
+
+test('notes: a run waiting for an unlock is stopped after the limit instead of holding the lock', async () => {
+  const fake = cluster()
+  fake.guests.push(guest(150, 'node-b', { pending: [] }))
+  fake.handoffResults.set('*', '{"ok":true,"message":"done"}')
+  const store = new MemoryStore()
+  const s1 = setup(fake, POLICY, store)
+  const job = await run(s1.runner, fake); await settle(s1.runner)
+  const self = (await store.getSteps(job.id)).find(s => s.action === 'self')!
+  await store.updateStep(self.id, { status: 'running', startedAt: new Date(fake.t), endedAt: null })
+  await store.updateJob(job.id, { status: 'running', finishedAt: null }); store.lock = job.id
+  const s2 = setup(fake, POLICY, store)
+  await s2.runner.recoverAfterRestart()
+  assert.equal(await s2.runner.expireStrandedRebootRun(60 * 60_000), null, 'not yet')
+  fake.t += 61 * 60_000
+  assert.equal(await s2.runner.expireStrandedRebootRun(60 * 60_000), job.id)
+  assert.equal((await store.getJob(job.id))!.status, 'failed')
+  assert.equal(await store.activeJob(), null)
+})
+
+test('notes: a window keyed by its local date and start runs once when the clocks go back', () => {
+  const w = { start: '01:30', hours: 1, days: [0, 1, 2, 3, 4, 5, 6] }
+  const tz = 'America/New_York'
+  assert.equal(windowKey(Date.parse('2027-11-07T05:30:00Z'), w, tz), windowKey(Date.parse('2027-11-07T06:30:00Z'), w, tz))
+  assert.notEqual(windowKey(Date.parse('2027-11-07T05:30:00Z'), w, tz), windowKey(Date.parse('2027-11-08T06:30:00Z'), w, tz))
+})
+
+test('notes: disks on local storage keep a guest in place; corosync votes count when they can be read', () => {
+  const st = sharedStorages([{ storage: 'local-lvm', type: 'lvmthin' }, { storage: 'fast-pool', type: 'rbd' }, { storage: 'nas', type: 'nfs' }])
+  assert.match(immovableReason({ vmid: 220, type: 'qemu' }, { scsi0: 'local-lvm:vm-220-disk-0,size=8G' }, [], st)!, /local storage \(scsi0 on local-lvm\)/)
+  assert.equal(immovableReason({ vmid: 220, type: 'qemu' }, { scsi0: 'fast-pool:vm-220-disk-0', ide2: 'nas:iso/x.iso,media=cdrom' }, [], st), null)
+  assert.match(immovableReason({ vmid: 120, type: 'lxc' }, { rootfs: 'local-lvm:subvol-120-disk-0' }, [], st)!, /local storage/)
+  const two = { quorate: true, nodes: [{ name: 'node-a', online: true }, { name: 'node-b', online: true }] }
+  const votes = parseQuorumTool('Quorum:           2\nTotal votes:      3\nHP_SPLIT\n    Nodeid      Votes Name\n0x00000001          1 node-a\n0x00000002          1 node-b (local)\n0x00000000          1 Qdevice\n')
+  assert.deepEqual(votes, { quorum: 2, total: 3, byNode: { 'node-a': 1, 'node-b': 1, Qdevice: 1 } })
+  assert.equal(rebootQuorumGate(two, 'node-b', votes).ok, true, 'a QDevice keeps a two-node cluster quorate')
+  assert.equal(rebootQuorumGate(two, 'node-b', null).ok, false, 'unread: one vote per node')
+  assert.equal(parseQuorumTool('garbage'), null)
+})
+
+test('notes: the new reboot routes are refused to API tokens by name', () => {
+  for (const [m, p] of [['PUT', '/api/updates/reboots/settings'], ['POST', '/api/updates/reboots/now'], ['POST', '/api/updates/reboots/make-safe']]) assert.equal(tokenForbidden(m, p), true, p)
+  assert.equal(tokenForbidden('GET', '/api/updates/reboots'), false)
 })

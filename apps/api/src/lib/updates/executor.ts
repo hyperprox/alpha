@@ -19,7 +19,7 @@ import { plexPlugin } from '../../plugins/plex'
 import { parsePveAptList } from './commands'
 import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, guestLeftAloneReason, parseTags } from '../guest-guard'
 import { taskRunning, taskVmid } from '../pve/tasks'
-import { parseHaRules, type HaRule } from './reboots'
+import { parseHaRules, parseHaShutdownPolicy, sharedStorages, type HaRule } from './reboots'
 
 export type { ExecResult }
 
@@ -79,6 +79,10 @@ export interface UpdatesExecutor {
   backupTasks?(): Promise<BackupTask[]>
   /** HA rules (/cluster/ha/rules). Optional: without it no guest is held to a node by a rule. Throws when unreadable. */
   haRules?(): Promise<HaRule[]>
+  /** datacenter.cfg's HA shutdown policy (freeze, failover, conditional, migrate). Throws when unreadable. */
+  haShutdownPolicy?(): Promise<string>
+  /** Which storages every node reaches, by storage id (/storage). Throws when unreadable. */
+  sharedStorages?(): Promise<Map<string, boolean>>
 
   // -- actions --------------------------------------------------------------------
   /** `apt update` on a node, through the Proxmox API, waiting for the task. */
@@ -214,6 +218,14 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
 
     async haRules() {
       return parseHaRules(mustArray(await pve.fetchStrict<any[]>('/cluster/ha/rules'), 'HA rules'))
+    },
+
+    async haShutdownPolicy() {
+      return parseHaShutdownPolicy(mustObject(await pve.fetchStrict<any>('/cluster/options'), 'cluster options').ha)
+    },
+
+    async sharedStorages() {
+      return sharedStorages(mustArray(await pve.fetchStrict<any[]>('/storage'), 'storage list'))
     },
 
     async haResources() {
@@ -373,7 +385,7 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
 const EXECUTOR_METHODS: (keyof UpdatesExecutor)[] = [
   'clusterStatus', 'haStatus', 'haResources', 'cephPresent', 'cephHealth', 'listGuests', 'guestConfig', 'nodeAptPending',
   'plexStreams', 'backupTasks', 'nodeAptRefresh', 'nodeExec', 'guestExec', 'snapshot', 'listSnapshots', 'deleteSnapshot',
-  'rollbackSnapshot', 'now', 'sleep', 'lookInsideExclusions', 'haRules',
+  'rollbackSnapshot', 'now', 'sleep', 'lookInsideExclusions', 'haRules', 'haShutdownPolicy', 'sharedStorages',
 ]
 
 /**

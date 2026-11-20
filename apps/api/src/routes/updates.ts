@@ -311,8 +311,13 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
         const job = await s.runner.start(mode, 'manual', req.session?.email, scope, approve as string[], select)
         if (autoReboot) {
           // Audited before it is saved: whatever this run leaves needing a reboot goes in the next window, once.
-          await s.store.audit('updates.reboots.queued', job.id, { ...auditBy(actorOf(req)) })
-          rt.reboots.queueNext(s.ref.id, req.session?.email ?? 'an admin', job.id)
+          await s.store.audit('updates.reboots.queued', job.id, { ...auditBy(actorOf(req)), ...(select ? { select } : {}) })
+          // Only this run's own targets: a chosen run's nodes and guests (Ceph moves every node), or everything.
+          const picked = select ? select.map(parseTargetId).filter((t): t is NonNullable<typeof t> => !!t) : null
+          const only = picked && !picked.some(t => t.kind === 'ceph')
+            ? { nodes: [...new Set(picked.flatMap(t => ('node' in t ? [t.node] : [])))], guests: [...new Set(picked.flatMap(t => ('vmid' in t ? [t.vmid] : [])))] }
+            : null
+          rt.reboots.queueNext(s.ref.id, req.session?.email ?? 'an admin', job.id, only)
         }
         return reply.status(201).send({ job: jobView(job, await s.store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }

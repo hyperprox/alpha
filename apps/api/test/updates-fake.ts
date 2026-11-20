@@ -119,6 +119,9 @@ export class FakeCluster implements UpdatesExecutor {
   pgReady = true
   /** Extra OSD map flags (besides noout) that appear once an OSD has been restarted. */
   flagsAfterRestart: string[] = []
+  /** datacenter.cfg's HA shutdown policy, as /cluster/options reports it. */
+  haShutdown = 'conditional'
+  async haShutdownPolicy(): Promise<string> { this.failIf('haShutdownPolicy'); return this.haShutdown }
   /** vzdump tasks (set by a test to have the executor report backups; absent, none are read). */
   declare backupTasks?: () => Promise<BackupTask[]>
 

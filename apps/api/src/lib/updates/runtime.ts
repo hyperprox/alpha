@@ -122,7 +122,7 @@ export class UpdatesRuntime {
     this.scheduler = new UpdatesScheduler({ runner: this.runner, loadPolicy: this.loadPolicy, isUnlocked, busy: () => this.checker.running, log: d.log })
     this.reboots = new AutoReboots({
       service: id => this.services.get(id), state: d.rebootState ?? new FileRebootState(),
-      isUnlocked: d.isUnlocked ?? isUnlocked, busy: () => this.checker.running, now: d.now, log: d.log,
+      isUnlocked: d.isUnlocked ?? isUnlocked, busy: () => this.checker.running, now: d.now, log: d.log, hostname: d.hostname,
     })
   }
 

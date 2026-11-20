@@ -91,8 +91,9 @@ const RULES: Rule[] = [
   ['POST', /^\/api\/updates\/nodes\/([^/]+)\/reboot$/, m =>
     `Reboot ${m[1]}? Its HA guests move to other nodes first, then it restarts. This usually takes about 5 minutes.`],
   ['POST', /^\/api\/updates\/jobs$/, (_m, _p, b) =>
-    Array.isArray(b?.select) ? `Install the updates on the ${b.select.length} chosen target${b.select.length === 1 ? '' : 's'}? Guests may restart.${b?.autoReboot === true ? ' Whatever then needs a reboot restarts on its own in the next reboot window.' : ''}`
-      : 'Run the updates now? Nodes and guests may restart while they install.'],
+    (Array.isArray(b?.select) ? `Install the updates on the ${b.select.length} chosen target${b.select.length === 1 ? '' : 's'}? Guests may restart.`
+      : 'Run the updates now? Nodes and guests may restart while they install.')
+      + (b?.autoReboot === true ? ' Then, in the next reboot window, whatever this run leaves needing a reboot restarts on its own, where your policy allows it (reboot: auto).' : '')],
   ['POST', /^\/api\/updates\/jobs\/[^/]+\/confirm$/, () => 'Carry on with this update run? The next step starts as soon as you confirm.'],
   ['POST', /^\/api\/updates\/jobs\/[^/]+\/resume$/, () => 'Resume this update run from where it stopped?'],
   ['POST', /^\/api\/updates\/jobs\/[^/]+\/rollback$/, (_m, _p, b) =>

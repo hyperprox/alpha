@@ -47,7 +47,9 @@ const nodeSchema = z.object({
 const guestSchema = z.object({
   apt:          z.boolean().optional(),
   docker:       z.enum(['none', 'auto', 'manual']).optional(),
-  reboot:       z.enum(['never', 'if-required']).optional(),
+  // auto: Automatic reboots may reboot it when it asks for a reboot (in the window). if-required: a VM is rebooted
+  // straight after its update run when it asks; Automatic reboots treat it as allowed too.
+  reboot:       z.enum(['never', 'if-required', 'auto']).optional(),
   compose_dirs: z.array(z.string().startsWith('/')).optional(),
   check:        z.string().url().optional(),
   apps:         z.boolean().optional(),
@@ -129,7 +131,7 @@ export interface NodePolicy {
 export interface GuestPolicy {
   apt:         boolean
   docker:      'none' | 'auto' | 'manual'
-  reboot:      'never' | 'if-required'
+  reboot:      'never' | 'if-required' | 'auto'
   composeDirs: string[]
   check?:      string
   /** Look for apps (plug-in app-update providers) in this guest. */

@@ -27,7 +27,7 @@ before(async () => {
   app = Fastify({ logger: false })
   app.addHook('onRequest', async req => { (req as any).session = { ...session } })
   await app.register(buildUpdatesRoutes({
-    store, exec: fake, loadPolicy: policyLoad('nodes:\n  default: { upgrade: upgrade, reboot: manual }\n'), timing: FAST,
+    store, exec: fake, loadPolicy: policyLoad('nodes:\n  default: { upgrade: upgrade, reboot: auto }\n'), timing: FAST,
     rebootState: state, isUnlocked: () => true, now: () => fake.t, hostname: 'not-a-guest',
     onRunner: r => { runner = r },
   }), { prefix: '/api/updates' })
@@ -113,7 +113,8 @@ test('an update run can ask for the next window; it is confirmed with the run an
   const r = await confirmed('POST', '/api/updates/jobs', { mode: 'run', select: ['guest:101'], autoReboot: true })
   assert.notEqual(r.first.statusCode, 201, 'never without a confirmation')
   assert.equal(r.res.statusCode, 201, r.res.body)
-  assert.match(r.first.json().confirm.summary, /restarts on its own in the next reboot window/)
+  assert.match(r.first.json().confirm.summary, /in the next reboot window, whatever this run leaves needing a reboot restarts on its own/)
+  assert.deepEqual(state.get('home').queued!.only, { nodes: [], guests: [101] }, 'only this run\'s own targets')
   assert.equal(state.get('home').queued!.by, 'admin@example.com')
   assert.ok(store.audits.some(x => x.action === 'updates.reboots.queued'))
   await runner.idle()

@@ -19,7 +19,7 @@ import path from 'node:path'
 import type { ClusterStatus } from './executor'
 import type { NodeFacts } from './commands'
 import type { GateResult } from './gates'
-import { nodePolicy, type Policy } from './policy'
+import { guestPolicy, nodePolicy, type Policy } from './policy'
 import { localParts } from '../placement/windows'
 import type { UpdatesInventory, UpdatesRebootSettings, UpdatesRebootWindow } from './types'
 
@@ -84,7 +84,7 @@ export function mergeRebootSettings(base: UpdatesRebootSettings, patch: unknown)
 export interface ClusterRebootState {
   settings?:   UpdatesRebootSettings
   /** "Reboot automatically in the next window", ticked when an update run was started. Used once. */
-  queued?:     { at: string; by: string; jobId?: string } | null
+  queued?:     { at: string; by: string; jobId?: string; only?: { nodes: string[]; guests: number[] } | null } | null
   /** Start (ISO) of the last window a rolling reboot was considered in: one run per window. */
   lastWindow?: string | null
 }
@@ -179,6 +179,17 @@ export function windowState(now: number, w: UpdatesRebootWindow, tz: string): Wi
   return { inWindow: !!current, current, next }
 }
 
+/**
+ * The window's name: its local date and start time, in its time zone. A window is run once per key, so a start time
+ * that happens twice when the clocks go back still runs once.
+ */
+export function windowKey(start: number, w: UpdatesRebootWindow, tz: string): string {
+  let date: string
+  try { date = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(start)) }
+  catch { date = new Date(start).toISOString().slice(0, 10) }
+  return `${date} ${w.start} ${tz}`
+}
+
 // --- what needs a reboot ------------------------------------------------------------------------
 
 /** Versions of the installed kernels, newest last. */
@@ -209,25 +220,44 @@ export interface RebootTargets {
   guests:  number[]
   /** Needed a reboot, but left out, with the reason. */
   skipped: { target: string; reason: string }[]
-  /** Nodes the policy says never to reboot automatically. */
+  /** Nodes the policy says never to reboot automatically (auto_reboot: false). */
   never:   string[]
 }
 
+/** Why a node's policy keeps it out of automatic reboots, or null when it opts in (`reboot: auto`). */
+export function nodePolicyRefusal(policy: Policy, node: string): string | null {
+  const pol = nodePolicy(policy, node)
+  if (pol.autoReboot === false) return 'the policy says never to reboot it automatically (auto_reboot: false)'
+  if (pol.reboot !== 'auto') return `your policy says reboot by hand (reboot: ${pol.reboot}); set reboot: auto for this node to let it reboot on its own`
+  return null
+}
+
+/** The same for a guest: `reboot: auto` (or `if-required`) opts in; `never`, the default, keeps it out. */
+export function guestPolicyRefusal(policy: Policy, vmid: number): string | null {
+  const r = guestPolicy(policy, vmid).reboot
+  return r === 'auto' || r === 'if-required' ? null : 'your policy says reboot by hand (reboot: never); set reboot: auto for this guest to let it reboot on its own'
+}
+
+export const SELF_GUEST_WORDS = 'HyperProx itself — reboot it by hand or with a HyperProx update'
+
 /**
  * What a rolling reboot would take on, from the inventory as last read. Nodes in the order a run updates them
- * (HyperProx's own node last); guests only those Updates manages (leave-alone, excluded and ignored guests are not
- * managed) that are running and ask for a reboot.
+ * (HyperProx's own node last), only where the policy opts in (`reboot: auto`); guests only those Updates manages
+ * (leave-alone, excluded and ignored guests are not managed) that are running, ask for a reboot, and whose policy
+ * opts in. HyperProx's own guest is never one. `only` narrows it to a run's own targets.
  */
 export function rebootTargets(inv: UpdatesInventory, policy: Policy, want: { nodes: boolean; guests: boolean; allNodes?: boolean },
-                              order: (nodes: UpdatesInventory['nodes']) => UpdatesInventory['nodes']): RebootTargets {
+                              order: (nodes: UpdatesInventory['nodes']) => UpdatesInventory['nodes'],
+                              opts: { selfVmid?: number | null; only?: { nodes: string[]; guests: number[] } | null } = {}): RebootTargets {
   const out: RebootTargets = { nodes: [], guests: [], skipped: [], never: [] }
   for (const n of order(inv.nodes)) {
-    const never = nodePolicy(policy, n.node).autoReboot === false
-    if (never) out.never.push(n.node)
+    if (nodePolicy(policy, n.node).autoReboot === false) out.never.push(n.node)
     if (!want.nodes) continue
+    if (opts.only && !opts.only.nodes.includes(n.node)) continue
     const needs = want.allNodes || n.rebootRequired || n.rebootPending
     if (!needs) continue
-    if (never) { out.skipped.push({ target: n.node, reason: 'the policy says never to reboot it automatically (auto_reboot: false)' }); continue }
+    const refusal = nodePolicyRefusal(policy, n.node)
+    if (refusal) { out.skipped.push({ target: n.node, reason: refusal }); continue }
     if (!n.online) { out.skipped.push({ target: n.node, reason: 'offline' }); continue }
     if (n.factsUnknown) { out.skipped.push({ target: n.node, reason: 'its holds and kernel pin could not be read' }); continue }
     out.nodes.push(n.node)
@@ -235,8 +265,12 @@ export function rebootTargets(inv: UpdatesInventory, policy: Policy, want: { nod
   if (want.guests) {
     for (const g of [...inv.guests].sort((a, b) => a.vmid - b.vmid)) {
       if (!g.rebootRequired) continue
+      if (opts.only && !opts.only.guests.includes(g.vmid)) continue
+      if (opts.selfVmid != null && g.vmid === opts.selfVmid) { out.skipped.push({ target: String(g.vmid), reason: SELF_GUEST_WORDS }); continue }
       if (!g.managed) { out.skipped.push({ target: String(g.vmid), reason: 'left alone (not managed by Updates)' }); continue }
       if (!g.running) continue
+      const refusal = guestPolicyRefusal(policy, g.vmid)
+      if (refusal) { out.skipped.push({ target: String(g.vmid), reason: refusal }); continue }
       out.guests.push(g.vmid)
     }
   }
@@ -270,8 +304,38 @@ function rawLxc(cfg: Record<string, any>): [string, string][] {
  * device (GPU, USB, PCI) and a strict HA rule holding it to one node all keep it where it is: HA maintenance could
  * never move it, so a node holding one is rebooted without maintenance and HA restarts it in place.
  */
-export function immovableReason(g: { vmid: number; type: 'lxc' | 'qemu' }, cfg: Record<string, any>, rules: HaRule[]): string | null {
+/** Proxmox storage types that every node reaches: a disk on one of these moves with its guest. */
+const SHARED_TYPES = new Set(['rbd', 'cephfs', 'nfs', 'cifs', 'glusterfs', 'iscsi', 'iscsidirect', 'zfs', 'pbs'])
+
+/** /storage rows into "is this storage reachable from every node", by storage id. */
+export function sharedStorages(rows: unknown): Map<string, boolean> {
+  const out = new Map<string, boolean>()
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!r || typeof r !== 'object' || !(r as any).storage) continue
+    const t = String((r as any).type ?? '')
+    out.set(String((r as any).storage), (r as any).shared === 1 || (r as any).shared === true || SHARED_TYPES.has(t))
+  }
+  return out
+}
+
+const DISK_KEY = /^(rootfs|mp\d+|(scsi|virtio|sata|ide)\d+|efidisk\d+|tpmstate\d+|unused\d+)$/
+
+/**
+ * Why a guest cannot be moved to another node, in words, or null. A plain bind mount (no shared=1), a passed-through
+ * device (GPU, USB, PCI), a disk on storage only its node reaches, and a strict HA rule holding it to one node all
+ * keep it where it is: HA maintenance could never move it, so a node holding one is rebooted without maintenance
+ * and HA restarts it in place. `storages` (by id, shared or not) is optional: without it disks are not judged.
+ */
+export function immovableReason(g: { vmid: number; type: 'lxc' | 'qemu' }, cfg: Record<string, any>, rules: HaRule[], storages?: Map<string, boolean> | null): string | null {
   for (const [k, v] of Object.entries(cfg)) {
+    if (storages && DISK_KEY.test(k) && !/^unused/.test(k)) {
+      const s = String(v)
+      const vol = s.split(',')[0]
+      if (!/media=cdrom/.test(s) && vol !== 'none' && !vol.startsWith('/') && vol.includes(':')) {
+        const store = vol.split(':')[0]
+        if (storages.get(store) === false) return `a disk on local storage (${k} on ${store})`
+      }
+    }
     if (g.type === 'lxc' && /^mp\d+$/.test(k)) {
       const s = String(v)
       if (s.split(',')[0].startsWith('/') && !/(^|,)shared=1(,|$)/.test(s)) return `a local bind mount (${k})`
@@ -295,14 +359,46 @@ export function immovableReason(g: { vmid: number; type: 'lxc' | 'qemu' }, cfg: 
  * Before a node goes down: every node online, the cluster quorate, and still quorate with this node gone. Counted
  * in nodes (one vote each), so a two-node cluster never reboots a node on its own.
  */
-export function rebootQuorumGate(s: ClusterStatus, node: string): GateResult {
+export interface QuorumVotes { quorum: number; total: number; byNode: Record<string, number> }
+
+/** `corosync-quorumtool -s` then `-l` (names), or null when it is not a whole answer. */
+export function parseQuorumTool(out: string): QuorumVotes | null {
+  const text = String(out ?? '')
+  const quorum = Number(/^Quorum:\s+(\d+)/m.exec(text)?.[1])
+  const total = Number(/^Total votes:\s+(\d+)/m.exec(text)?.[1])
+  if (!Number.isFinite(quorum) || !Number.isFinite(total) || quorum <= 0 || total <= 0) return null
+  const byNode: Record<string, number> = {}
+  for (const m of text.matchAll(/^\s*0x[0-9a-f]+\s+(\d+)\s+(\S+)/gim)) byNode[m[2]] = Number(m[1])
+  return Object.keys(byNode).length ? { quorum, total, byNode } : null
+}
+
+export const QUORUM_VOTES_COMMAND = 'corosync-quorumtool -s 2>&1; echo HP_SPLIT; corosync-quorumtool -l -n 2>/dev/null || corosync-quorumtool -l 2>&1'
+
+export function rebootQuorumGate(s: ClusterStatus, node: string, votes?: QuorumVotes | null): GateResult {
   if (s.standalone) return { ok: true, reason: 'one-node server: no quorum to keep' }
   if (!s.quorate) return { ok: false, reason: 'the cluster is not quorate' }
   const off = s.nodes.filter(n => !n.online).map(n => n.name)
   if (off.length) return { ok: false, reason: `not every node is online (${off.join(', ')})` }
+  // Corosync's own votes when they could be read (a QDevice counts), else one vote per node.
+  if (votes && votes.byNode[node] !== undefined) {
+    const left = votes.total - votes.byNode[node]
+    if (left < votes.quorum) return { ok: false, reason: `rebooting ${node} would leave ${left} of ${votes.total} votes, fewer than the ${votes.quorum} the cluster needs for quorum` }
+    return { ok: true, reason: `${left} of ${votes.total} votes stay while ${node} reboots (quorum needs ${votes.quorum})` }
+  }
   const total = s.nodes.length
   const need = Math.floor(total / 2) + 1
   const left = s.nodes.filter(n => n.online && n.name !== node).length
   if (left < need) return { ok: false, reason: `rebooting ${node} would leave ${left} of ${total} nodes, fewer than the ${need} the cluster needs for quorum` }
   return { ok: true, reason: `${left} of ${total} nodes stay up while ${node} reboots (quorum needs ${need})` }
 }
+
+// --- HA's shutdown policy ------------------------------------------------------------------------
+
+/** datacenter.cfg `ha: shutdown_policy=...` as /cluster/options returns it; Proxmox's default is conditional. */
+export function parseHaShutdownPolicy(ha: unknown): string {
+  const m = /(?:^|,)\s*shutdown_policy=([a-z]+)/.exec(String(ha ?? ''))
+  return m ? m[1] : 'conditional'
+}
+
+/** Restarting guests in place needs HA to freeze them on a reboot (freeze, or conditional on a reboot). */
+export function inPlaceAllowed(policy: string): boolean { return policy === 'freeze' || policy === 'conditional' }

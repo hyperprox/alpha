@@ -232,6 +232,8 @@ export type UpdatesRebootResult = {
   back?:         string[]
   /** Restarted in place (guests that cannot move: no HA maintenance). */
   inPlace?:      boolean
+  /** What this run set on the node before rebooting it, so a stop names only what it left on itself. */
+  flags?:        { maintenance: boolean; noout: boolean }
   /** The guests running on the node before its reboot, for the check after it (kept with the job across a restart). */
   before?:       { vmid: number; type: 'lxc' | 'qemu'; name: string; onboot: boolean; ha: boolean }[]
 }
@@ -283,6 +285,8 @@ export type UpdatesRebootStatus = {
   waiting:     UpdatesRebootWaiting
   /** Nodes the policy says never to reboot automatically. */
   never:       string[]
+  /** Machines that need a reboot but will not get one on their own, and why (your policy says by hand, HyperProx itself...). */
+  byHand:      { target: string; reason: string }[]
   /** The rolling reboot running now, with its steps. */
   active:      UpdatesJob | null
   /** The last stopped run left HA maintenance or noout on: what "Make safe" would clear. */

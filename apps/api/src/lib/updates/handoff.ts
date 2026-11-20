@@ -105,6 +105,46 @@ print('safe')
 `
 
 /**
+ * Right before HyperProx's own node is rebooted, in the handoff: the cluster quorate, every node online, and still
+ * quorate with the target gone (corosync's votes when they can be read, else one vote per node). Exit 0 to go on.
+ */
+export const QUORUM_CHECK_PY = String.raw`import json, re, subprocess, sys
+t = sys.argv[1]
+def run(*a):
+    try:
+        r = subprocess.run(list(a), capture_output=True, text=True, timeout=60)
+        return r.returncode, r.stdout
+    except Exception:
+        return 1, ''
+rc, out = run('pvesh', 'get', '/cluster/status', '--output-format', 'json')
+try:
+    rows = json.loads(out) if rc == 0 else None
+except Exception:
+    rows = None
+if not isinstance(rows, list):
+    print('the cluster status could not be read'); sys.exit(2)
+cl = [r for r in rows if r.get('type') == 'cluster']
+nodes = [r for r in rows if r.get('type') == 'node']
+if cl and cl[0].get('quorate') != 1:
+    print('the cluster is not quorate'); sys.exit(1)
+off = [str(n.get('name')) for n in nodes if n.get('online') != 1]
+if off:
+    print('not every node is online (%s)' % ', '.join(off)); sys.exit(1)
+_, s = run('corosync-quorumtool', '-s')
+_, l = run('corosync-quorumtool', '-l')
+q = re.search(r'^Quorum:\s+(\d+)', s, re.M)
+tv = re.search(r'^Total votes:\s+(\d+)', s, re.M)
+mine = re.search(r'^\s*0x[0-9a-f]+\s+(\d+)\s+' + re.escape(t) + r'(\s|$)', l, re.M | re.I)
+if q and tv and mine:
+    left = int(tv.group(1)) - int(mine.group(1))
+    if left < int(q.group(1)):
+        print('rebooting %s would leave %d votes, fewer than the %s quorum needs' % (t, left, q.group(1))); sys.exit(1)
+elif len(nodes) - 1 < len(nodes) // 2 + 1:
+    print('rebooting %s would leave %d of %d nodes, too few for quorum' % (t, len(nodes) - 1, len(nodes))); sys.exit(1)
+print('quorum kept')
+`
+
+/**
  * `maintenance: false` (Automatic reboots, a node with guests that cannot move): no HA maintenance and no drain; HA
  * restarts those guests in place when the node is back. noout still goes on around the reboot when Ceph runs.
  */
@@ -154,6 +194,13 @@ if [ "$rc" != "0" ]; then
   else result false "the reboot was refused: $why; $target was not rebooted\${left:+; could not clear:$left (LEFT ON)}"; fi
   exit 1
 fi` : ''}
+# Right before the reboot: still quorate, every node online, and quorate with the target gone. Else nothing reboots.
+qwhy=$(echo ${Buffer.from(QUORUM_CHECK_PY).toString('base64')} | base64 -d | python3 - "$target" 2>&1); qrc=$?
+if [ "$qrc" != "0" ]; then
+  clear_flags
+  result false "the reboot was refused: $qwhy; $target was not rebooted; ${flags} cleared\${left:+, except:$left (LEFT ON)}"
+  exit 1
+fi
 ssh_t systemctl reboot || true   # the connection drops as it goes down
 sleep 90
 deadline=$(( $(date +%s) + ${wait} * 60 ))
