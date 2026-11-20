@@ -31,11 +31,13 @@ export function PendingCell({ count, open, onToggle, label }: { count: number; o
   )
 }
 
-export function NodesTable({ nodes, canReboot, rebootWhy, onReboot }: {
+export function NodesTable({ nodes, canReboot, rebootWhy, onReboot, waitText }: {
   nodes: UpdatesNode[]
   canReboot: boolean
   rebootWhy?: string
   onReboot: (n: UpdatesNode) => void
+  /** Automatic reboots: what a node that waits for its reboot says instead of the Reboot button (null: the button). */
+  waitText?: (node: string) => string | null
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   return (
@@ -103,11 +105,15 @@ export function NodesTable({ nodes, canReboot, rebootWhy, onReboot }: {
                   </div>
                 </td>
                 <td className="px-4 py-2.5 text-right">
+                  {waitText?.(n.node) ? (
+                    <span className="text-xs" style={{ color: 'var(--accent)' }}>{waitText(n.node)}</span>
+                  ) : (
                   <span title={!canReboot ? rebootWhy : !n.online ? 'Node is offline' : undefined}>
                     <Btn small kind="danger" disabled={!canReboot || !n.online} onClick={() => onReboot(n)} aria-label={`Reboot ${n.node}`}>
                       <Icon name="reboot" />Reboot
                     </Btn>
                   </span>
+                  )}
                 </td>
               </tr>
               {open[n.node] && (

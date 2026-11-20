@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   UpdatesInventory, UpdatesJob, UpdatesNode, UpdatesPlan, UpdatesPolicyStatus, UpdatesWsPayload, UpdatesScope,
-  UpdatesCheckStatus, UpdatesRebootPreview, UpdatesTargetTree } from '@hyperprox/types'
+  UpdatesCheckStatus, UpdatesRebootPreview, UpdatesTargetTree, UpdatesRebootStatus, UpdatesRebootSettings } from '@hyperprox/types'
 import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { wsBase } from '@/lib/ws'
@@ -25,6 +25,8 @@ import { clusterColor } from '@/lib/clusters'
 import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
 import { isNoLoginText } from '@/lib/node-login'
 import { updatesPageParts } from '@/lib/updates-cluster'
+import { RebootsCard } from '@/components/updates/RebootsCard'
+import { nodeWaitText, rebootLikely } from '@/lib/auto-reboots'
 
 const ACTIVE = ['running', 'paused', 'awaiting-confirm']
 const LOG_CAP = 500
@@ -78,6 +80,10 @@ export default function UpdatesPage() {
   // The order the ticked rows run in, read again whenever the ticks change; and the confirmation before a run.
   const [order, setOrder] = useState<UpdatesPlan | null>(null)
   const [confirmRun, setConfirmRun] = useState<{ ids: string[]; plan: UpdatesPlan } | null>(null)
+  // Automatic reboots: the card, and "Reboot automatically in the next window" on the run's confirmation.
+  const [reboots, setReboots] = useState<UpdatesRebootStatus | null>(null)
+  const [rebootsErr, setRebootsErr] = useState<string | null>(null)
+  const [rebootNext, setRebootNext] = useState(false)
 
   // The socket handlers outlive any one render, so they read the active job through a ref.
   const activeRef = useRef<UpdatesJob | null>(null)
@@ -88,6 +94,11 @@ export default function UpdatesPage() {
   const loadCheck = useCallback(async () => {
     const r = await apiJson<UpdatesCheckStatus>('/api/updates/check')
     if (r.ok && r.body) { setCheck(r.body); setCheckErr(null) } else setCheckErr(apiError(r, 'the daily check'))
+  }, [])
+
+  const loadReboots = useCallback(async () => {
+    const r = await apiJson<UpdatesRebootStatus>('/api/updates/reboots')
+    if (r.ok && r.body) { setReboots(r.body); setRebootsErr(null) } else setRebootsErr(apiError(r, 'automatic reboots'))
   }, [])
 
   const loadPolicy = useCallback(async () => {
@@ -153,8 +164,15 @@ export default function UpdatesPage() {
 
   useEffect(() => {
     if (!allowed) return
-    loadPolicy(); loadInventory(false); loadPlan(); loadJobs(); loadCheck()
-  }, [allowed, loadPolicy, loadInventory, loadPlan, loadJobs, loadCheck])
+    loadPolicy(); loadInventory(false).then(() => loadReboots()); loadPlan(); loadJobs(); loadCheck()
+  }, [allowed, loadPolicy, loadInventory, loadPlan, loadJobs, loadCheck, loadReboots])
+
+  // The reboot card follows a rolling reboot closely, and otherwise looks again every minute (the window moves on).
+  useEffect(() => {
+    if (!allowed) return
+    const t = setInterval(loadReboots, reboots?.active || active ? 8000 : 60_000)
+    return () => clearInterval(t)
+  }, [allowed, loadReboots, reboots?.active, active])
 
   // While a check runs, follow it.
   useEffect(() => {
@@ -265,7 +283,9 @@ export default function UpdatesPage() {
     setBusy(true); setNotice(null)
     const r = await previewOf(ids)
     setBusy(false)
-    if (r.plan) setConfirmRun({ ids, plan: r.plan }); else setNotice({ tone: 'crit', text: r.error ?? 'Could not read the order of the run' })
+    // Ticked for you when this run will leave something needing a reboot (a new kernel, a guest asking for one).
+    if (r.plan) { setRebootNext(!remote && rebootLikely(r.plan, inv)); setConfirmRun({ ids, plan: r.plan }) }
+    else setNotice({ tone: 'crit', text: r.error ?? 'Could not read the order of the run' })
   }
 
   const runChosen = async (given?: { ids: string[]; plan: UpdatesPlan }) => {
@@ -273,7 +293,7 @@ export default function UpdatesPage() {
     if (!c) return
     setConfirmRun(null); setBusy(true); setNotice(null)
     const approve = tree ? approvalsFor(tree.targets, new Set(c.ids)) : []
-    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode: 'run', select: c.ids, approve }, IN_PAGE)
+    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode: 'run', select: c.ids, approve, ...(rebootNext && !remote ? { autoReboot: true } : {}) }, IN_PAGE)
     setBusy(false)
     if (!r.ok || !r.body?.job) {
       if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'the run') })
@@ -281,6 +301,32 @@ export default function UpdatesPage() {
     }
     setChosen(new Set())
     setLogs([]); setActive(r.body.job)
+    if (rebootNext) loadReboots()
+  }
+
+  // --- automatic reboots ---
+  const saveReboots = async (patch: Partial<UpdatesRebootSettings>) => {
+    setBusy(true); setNotice(null)
+    // The API's own confirmation is shown (it says what turning this on means), then audited.
+    const r = await apiJson<{ settings: UpdatesRebootSettings }>('/api/updates/reboots/settings', 'PUT', patch)
+    setBusy(false)
+    if (!r.ok) setNotice({ tone: 'crit', text: apiError(r, 'the reboot settings') })
+    loadReboots()
+  }
+  const rebootNow = async (all: boolean) => {
+    setBusy(true); setNotice(null)
+    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/reboots/now', 'POST', { all }, IN_PAGE)
+    setBusy(false)
+    if (!r.ok || !r.body?.job) { if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'the rolling reboot') }); return }
+    setLogs([]); setActive(r.body.job); loadReboots()
+  }
+  const makeSafe = async () => {
+    setBusy(true); setNotice(null)
+    const r = await apiJson<{ cleared: string[]; left: string[] }>('/api/updates/reboots/make-safe', 'POST')
+    setBusy(false)
+    if (!r.ok || !r.body) setNotice({ tone: 'crit', text: apiError(r, 'Make safe') })
+    else setNotice({ tone: r.body.left.length ? 'warn' : 'info', text: [r.body.cleared.length ? `Cleared: ${r.body.cleared.join(', ')}.` : 'Nothing needed clearing.', r.body.left.length ? `Still on: ${r.body.left.join('; ')}.` : ''].filter(Boolean).join(' ') })
+    loadReboots()
   }
 
   const runEverything = () => {
@@ -451,8 +497,11 @@ export default function UpdatesPage() {
         {errs.inv ? <Notice tone="warn">{errs.inv}</Notice>
           : !inv ? <Empty>Reading inventory...</Empty>
           : inv.nodes.length === 0 ? <Empty>No nodes reported.</Empty>
-          : <NodesTable nodes={inv.nodes} canReboot={canReboot} rebootWhy={rebootWhy} onReboot={n => void openReboot(n)} />}
+          : <NodesTable nodes={inv.nodes} canReboot={canReboot} rebootWhy={rebootWhy} onReboot={n => void openReboot(n)} waitText={n => nodeWaitText(reboots, n)} />}
       </Panel>
+
+      <RebootsCard status={reboots} error={rebootsErr} busy={busy} jobActive={jobActive} tag={tag}
+                   onSave={p => void saveReboots(p)} onRebootNow={all => void rebootNow(all)} onMakeSafe={() => void makeSafe()} />
 
       <Panel title="Choose what to update" tag={tag} edge={edge} right={
         <span className="flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -546,6 +595,12 @@ export default function UpdatesPage() {
             read again after <span className="font-mono">apt update</span>, and you confirm it once more before anything changes.
           </p>
           <ItemOrder plan={confirmRun.plan} />
+          {!remote && (
+            <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
+              <input type="checkbox" className="mt-1" checked={rebootNext} onChange={e => setRebootNext(e.target.checked)} />
+              <span>Reboot automatically in the next window{reboots?.nextWindow ? ` (${new Date(reboots.nextWindow.start).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })})` : ''}: whatever this run leaves needing a reboot restarts on its own, one machine at a time, with no Reboot button to press.</span>
+            </label>
+          )}
           <div className="flex justify-end gap-2">
             <Btn kind="primary" onClick={() => void runChosen()} disabled={!confirmRun.plan.items?.length}>Start</Btn>
             <Btn onClick={() => setConfirmRun(null)}>Cancel</Btn>

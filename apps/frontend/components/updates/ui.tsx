@@ -139,5 +139,5 @@ export const ACTION_LABEL: Record<string, string> = {
   'preflight': 'Preflight', 'refresh': 'Refresh', 'snapshot': 'Snapshot', 'apt': 'apt upgrade', 'docker': 'Docker images',
   'check': 'Health check', 'ceph': 'Ceph packages', 'node-upgrade': 'Node upgrade', 'node-reboot': 'Node reboot',
   'kernel-cleanup': 'Kernel cleanup', 'self': 'HyperProx itself', 'app': 'App update', 'app-config': 'App config change',
-  'node-packages': 'Chosen packages', 'apt-packages': 'Chosen packages',
+  'node-packages': 'Chosen packages', 'apt-packages': 'Chosen packages', 'guest-reboot': 'Guest reboot',
 }
