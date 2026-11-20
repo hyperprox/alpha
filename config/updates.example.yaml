@@ -31,9 +31,11 @@ nodes:
   # A node that hosts something you are using: updated last, rebooted by a person.
   node-a:    { reboot: manual, order: last }
 
-  # Never rebooted by Automatic reboots (the Updates page's window); listed there as skipped.
-  # A person can still reboot it. Default: allowed.
-  # node-b:  { auto_reboot: false }
+  # Automatic reboots (the Updates page's window) reboot only nodes whose policy says reboot: auto, and only
+  # guests whose policy says reboot: auto (or if-required). reboot: manual / never, the defaults, leave it to you.
+  # node-b:  { reboot: auto }
+  # A node kept out of Automatic reboots even with reboot: auto (listed there as skipped):
+  # node-c:  { reboot: auto, auto_reboot: false }
 
   # A node with a pinned kernel (for a GPU driver, say). `upgrade` here means
   # apt-get upgrade ONLY: HyperProx cannot give this node a dist-upgrade. The

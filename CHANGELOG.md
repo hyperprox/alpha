@@ -24,7 +24,7 @@ know or do before they install. Newest entry at the top.
 ## 2026-11-20 — Updates: automatic reboots
 
 ### New
-- **Automatic reboots.** Nodes and guests that need a reboot after an update now reboot on their own in a window you choose, so there is no Reboot button to press. It is off until you turn it on, for nodes, guests or both, with a window of 03:00 to 06:00 every day by default in the cluster's time zone.
+- **Automatic reboots.** Nodes and guests that need a reboot after an update now reboot on their own in a window you choose, so there is no Reboot button to press. It is off until you turn it on, for nodes, guests or both, with a window of 03:00 to 06:00 every day by default in the cluster's time zone. Only nodes and guests your update policy sets to reboot automatically are ever rebooted on their own; the rest are listed with the reason, and HyperProx's own guest is never one.
   - Technical: settings per cluster in `data/updates-reboots.json`; `GET /api/updates/reboots`, `PUT /api/updates/reboots/settings` (confirmed in the page, audited with before and after); runs are ordinary Updates jobs with `plan.reboots`, persisted in the database; new step action `guest-reboot`.
 - **Safe, one at a time.** Each node reboots only when every node is online, the cluster stays quorate without it, and Ceph is healthy with every placement group clean. Ceph is told not to move data while the node is away, and HA guests move off first. HyperProx's own node goes last and the run finishes its checks when HyperProx is back.
   - Technical: reuses the runner's node reboot and self handoff; `rebootQuorumGate`; a node with HA guests that cannot move (bind mount without `shared=1`, device or PCI passthrough, a strict one-node affinity rule) gets no HA maintenance; a run cut off by HyperProx's own node reboot carries on once unlocked (`continueRebootRun`), any other interruption stops it.
@@ -32,8 +32,8 @@ know or do before they install. Newest entry at the top.
 - **Stops safely at the first problem.** One message says what happened and what was left on, and **Make safe** on the card clears it (Ceph's no-move flag only once every disk is back). A finished run sends one summary with the kernel before and after and how long each node was away.
   - Technical: `POST /api/updates/reboots/make-safe` and `POST /api/updates/reboots/now`, both confirmed in the page and refused for API tokens; events `updates.reboots.started`, `updates.reboots.finished`, `updates.reboots.stopped`.
 - **Reboot now (rolling)** on the new Automatic reboots card runs the same thing straight away, and the card shows a running reboot node by node and the last ten runs.
-- **Reboot in the next window.** When you start an update run that will need a reboot, the confirmation ticks this for you.
-  - Technical: `POST /api/updates/jobs` takes `autoReboot: true`, audited as `updates.reboots.queued`.
+- **Reboot in the next window.** When you start an update run, the confirmation offers this (off unless you tick it); it reboots only that run's own machines.
+  - Technical: `POST /api/updates/jobs` takes `autoReboot: true`, audited as `updates.reboots.queued`; it names only that run's nodes and guests. Policy opt-in is `reboot: auto` for nodes and guests.
 
 ### Improved
 - **A node that waits for its automatic reboot** shows when it will happen instead of a Reboot button.

@@ -1059,12 +1059,13 @@ the same safe path as the Reboot button: every node online, quorum kept with the
 every placement group clean, `noout` set and HA maintenance on so HA guests move first. A node whose guests
 cannot move (a bind mount, a passed-through GPU, a strict HA rule) is rebooted without maintenance and HA
 starts them again on it. Guests that were running are checked back afterwards. With **Only when nobody is
-watching**, it waits while Plex has streams. A pinned kernel stays pinned, a node the policy marks
-`auto_reboot: false` is skipped, and guests left alone are never touched. The first problem stops the run
+watching**, it waits while Plex has streams. Your policy decides what may reboot on its own: only nodes and guests set to
+`reboot: auto` (the default is by hand), and the card lists the rest with the reason. A pinned kernel stays pinned,
+HyperProx's own guest is never rebooted this way, and guests left alone are never touched. The first problem stops the run
 safely and sends one message, with **Make safe** on the card to clear what was left on; otherwise you get one
 message when it starts and a summary when it ends (kernel before and after, how long each node was away).
-**Reboot now (rolling)** runs the same thing straight away. When you start an update run, **Reboot
-automatically in the next window** is ticked for you if the run will need a reboot. Remote clusters are not
+**Reboot now (rolling)** runs the same thing straight away. When you start an update run, you can tick **Reboot
+automatically in the next window** (off unless you do) to have that run's own machines rebooted then. Remote clusters are not
 rebooted on their own.
 
 **Daily check.** Once a day, and on **Check now**, HyperProx checks every cluster read-only (it refreshes
