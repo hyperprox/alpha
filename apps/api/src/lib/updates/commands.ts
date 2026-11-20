@@ -663,3 +663,6 @@ export function composeProjectScript(p: { name?: string; dir: string; files?: st
 export function tail(text: string, max = 4000): string {
   return text.length <= max ? text : '…' + text.slice(-max)
 }
+
+/** Inside a guest: does it ask for a reboot? Read-only. */
+export const GUEST_REBOOT_REQUIRED_SCRIPT = '[ -f /var/run/reboot-required ] && echo HP_REBOOT_REQUIRED || echo HP_NO_REBOOT'

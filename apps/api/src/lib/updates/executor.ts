@@ -19,6 +19,7 @@ import { plexPlugin } from '../../plugins/plex'
 import { parsePveAptList } from './commands'
 import { ExclusionsUnknownRefusal, GuestExcludedRefusal, excludedMachineIds, guestExcluded, guestLeftAloneReason, parseTags } from '../guest-guard'
 import { taskRunning, taskVmid } from '../pve/tasks'
+import { parseHaRules, type HaRule } from './reboots'
 
 export type { ExecResult }
 
@@ -76,6 +77,8 @@ export interface UpdatesExecutor {
   plexStreams(): Promise<number | null>
   /** Recent vzdump tasks on every online node, newest first. Optional: without it no backup is reported. */
   backupTasks?(): Promise<BackupTask[]>
+  /** HA rules (/cluster/ha/rules). Optional: without it no guest is held to a node by a rule. Throws when unreadable. */
+  haRules?(): Promise<HaRule[]>
 
   // -- actions --------------------------------------------------------------------
   /** `apt update` on a node, through the Proxmox API, waiting for the task. */
@@ -207,6 +210,10 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
         services: rows.filter(r => r.type === 'service').map(r => ({ sid: String(r.sid), node: String(r.node), state: String(r.state ?? r.crm_state ?? '') })),
         maintenanceNodes: rows.filter(r => r.type === 'lrm' && /maintenance/i.test(String(r.status))).map(r => String(r.node)),
       }
+    },
+
+    async haRules() {
+      return parseHaRules(mustArray(await pve.fetchStrict<any[]>('/cluster/ha/rules'), 'HA rules'))
     },
 
     async haResources() {
@@ -366,7 +373,7 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
 const EXECUTOR_METHODS: (keyof UpdatesExecutor)[] = [
   'clusterStatus', 'haStatus', 'haResources', 'cephPresent', 'cephHealth', 'listGuests', 'guestConfig', 'nodeAptPending',
   'plexStreams', 'backupTasks', 'nodeAptRefresh', 'nodeExec', 'guestExec', 'snapshot', 'listSnapshots', 'deleteSnapshot',
-  'rollbackSnapshot', 'now', 'sleep', 'lookInsideExclusions',
+  'rollbackSnapshot', 'now', 'sleep', 'lookInsideExclusions', 'haRules',
 ]
 
 /**

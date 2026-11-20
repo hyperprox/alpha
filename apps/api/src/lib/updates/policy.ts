@@ -40,6 +40,8 @@ const nodeSchema = z.object({
   order:         z.enum(['first', 'last']).optional(),
   require_holds: z.array(z.string().min(1)).optional(),
   require_pin:   z.string().min(1).optional(),
+  // false: Automatic reboots never reboot this node (it is listed as skipped). A person's Reboot still can.
+  auto_reboot:   z.boolean().optional(),
 }).strict()
 
 const guestSchema = z.object({
@@ -120,6 +122,8 @@ export interface NodePolicy {
   order?:       'first' | 'last'
   requireHolds: string[]
   requirePin?:  string
+  /** false: Automatic reboots skip this node (policy `auto_reboot: false`). Absent: allowed. */
+  autoReboot?:  boolean
 }
 
 export interface GuestPolicy {
@@ -218,8 +222,9 @@ export interface PolicyLoad {
   policy: Policy
 }
 
-function nodeFrom(raw: z.infer<typeof nodeSchema>): Partial<NodePolicy> {
+function nodeFrom(raw: z.infer<typeof nodeSchema> | z.infer<typeof remoteNodeSchema>): Partial<NodePolicy> {
   const out: Partial<NodePolicy> = {}
+  if ('auto_reboot' in raw && raw.auto_reboot !== undefined) out.autoReboot = raw.auto_reboot
   if (raw.upgrade)       out.upgrade = raw.upgrade
   if (raw.reboot)        out.reboot = raw.reboot
   if (raw.order)         out.order = raw.order

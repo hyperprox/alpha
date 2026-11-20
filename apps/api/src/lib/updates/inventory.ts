@@ -8,6 +8,7 @@
 //  `apt update` — that is the run's `refresh` step, never a page load.
 // =============================================================================
 
+import { nodeRebootNeeded } from './reboots'
 import os from 'node:os'
 import type { UpdatesGuest, UpdatesInventory, UpdatesNode } from './types'
 import type { UpdatesExecutor, GuestListing } from './executor'
@@ -159,7 +160,8 @@ async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: str
   const f = facts as NodeFacts | null
   if (!f) out.factsUnknown = true
   if (f) {
-    out.rebootRequired = f.rebootRequired
+    // The node says so, or the kernel it would boot (its pinned one, else the newest installed) is not the one running.
+    out.rebootRequired = nodeRebootNeeded(f)
     if (f.holds.length) out.held = [...f.holds].sort()
     out.pinned = f.pinned
     if (pol.requireHolds.length) out.holdsOk = pol.requireHolds.every(h => f.holds.includes(h))

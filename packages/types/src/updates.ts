@@ -158,6 +158,8 @@ export type UpdatesStepAction =
   | 'node-upgrade' | 'node-reboot' | 'kernel-cleanup' | 'self' | 'app' | 'app-config'
   /** Chosen packages only: `apt-get install --only-upgrade`, never on a held or pinned package. */
   | 'node-packages' | 'apt-packages'
+  /** Automatic reboots: a guest that asks for a reboot (/run/reboot-required), rebooted on its own. */
+  | 'guest-reboot'
 
 export type UpdatesStepStatus = 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
 
@@ -197,6 +199,95 @@ export type UpdatesPlan = {
    * the node does not say it needs one. Kept apart from the step's words, which other checks append to.
    */
   forced?:   number[]
+  /** An automatic (or "Reboot now") rolling reboot: what it is for, and what it found. Absent on update runs. */
+  reboots?:  UpdatesRebootRun
+}
+
+// --- Automatic reboots ------------------------------------------------------------------
+
+/** The reboot window: a start time (HH:MM, in the cluster's time zone), how long it lasts, and on which days. */
+export type UpdatesRebootWindow = { start: string; hours: number; days: number[] }
+
+export type UpdatesRebootSettings = {
+  /** Reboot nodes that need it, in the window, one at a time. */
+  nodes:    boolean
+  /** Reboot guests that ask for it (/run/reboot-required), in the window. */
+  guests:   boolean
+  window:   UpdatesRebootWindow
+  /** IANA time zone the window is read in. */
+  timezone: string
+  /** Wait while a media plug-in reports people watching. */
+  quiet:    boolean
+}
+
+/** What one machine's reboot did, for the summary and the history. */
+export type UpdatesRebootResult = {
+  kernelBefore?: string | null
+  kernelAfter?:  string | null
+  /** Seconds from the reboot command until it answered again with a new boot id. */
+  downSeconds?:  number | null
+  /** Guests started again by HyperProx after the node came back (not HA, were running before). */
+  started?:      string[]
+  /** Guests that were running before and are running again. */
+  back?:         string[]
+  /** Restarted in place (guests that cannot move: no HA maintenance). */
+  inPlace?:      boolean
+  /** The guests running on the node before its reboot, for the check after it (kept with the job across a restart). */
+  before?:       { vmid: number; type: 'lxc' | 'qemu'; name: string; onboot: boolean; ha: boolean }[]
+}
+
+export type UpdatesRebootRun = {
+  /** `window`: started by the reboot window; `now`: a person pressed "Reboot now (rolling)". */
+  kind:      'window' | 'now'
+  /** No reboot starts after this (ISO). */
+  windowEnd: string
+  quiet:     boolean
+  nodes:     string[]
+  guests:    number[]
+  /** Machines that needed a reboot but were left out, and why (policy says never, leave-alone, ...). */
+  skipped:   { target: string; reason: string }[]
+  results:   Record<string, UpdatesRebootResult>
+  /** The run stopped with something left on for safety; the "Make safe" action names these. */
+  leftOn?:   { node: string; maintenance: boolean; noout: boolean } | null
+}
+
+export type UpdatesRebootWaiting = {
+  nodes:  { node: string; why: string }[]
+  guests: { vmid: number; name: string; node: string }[]
+  /** When the nodes reboot on their own: the window start (ISO), or null when automatic reboots are off for nodes. */
+  at:       string | null
+  /** The same for the guests. */
+  guestsAt: string | null
+}
+
+export type UpdatesRebootHistoryRow = {
+  id:         string
+  kind:       'window' | 'now'
+  status:     UpdatesJobStatus
+  startedAt:  string
+  finishedAt: string | null
+  summary:    string
+  machines:   { target: string; kind: 'node' | 'guest'; status: UpdatesStepStatus; reason?: string | null; result?: UpdatesRebootResult }[]
+}
+
+export type UpdatesRebootStatus = {
+  cluster:     UpdatesClusterRef
+  /** False on a cluster HyperProx does not reboot on its own (a remote), with the reason. */
+  available:   boolean
+  unavailable?: string
+  settings:    UpdatesRebootSettings
+  inWindow:    boolean
+  nextWindow:  { start: string; end: string } | null
+  /** A one-off "reboot automatically in the next window" from an update run, whatever the switches say. */
+  queued:      { at: string; by: string } | null
+  waiting:     UpdatesRebootWaiting
+  /** Nodes the policy says never to reboot automatically. */
+  never:       string[]
+  /** The rolling reboot running now, with its steps. */
+  active:      UpdatesJob | null
+  /** The last stopped run left HA maintenance or noout on: what "Make safe" would clear. */
+  leftOn:      { jobId: string; node: string; maintenance: boolean; noout: boolean } | null
+  history:     UpdatesRebootHistoryRow[]
 }
 
 /** One thing a person chose, as the plan runs it: its steps (plan seqs) and the items it waits for. */
