@@ -180,14 +180,14 @@ export function windowState(now: number, w: UpdatesRebootWindow, tz: string): Wi
 }
 
 /**
- * The window's name: its local date and start time, in its time zone. A window is run once per key, so a start time
- * that happens twice when the clocks go back still runs once.
+ * The window's name: the cluster and the local date the window started on. One run per key, so a start time that
+ * happens twice when the clocks go back, or a start time changed in the middle of a window, still runs once that day.
  */
-export function windowKey(start: number, w: UpdatesRebootWindow, tz: string): string {
+export function windowKey(start: number, tz: string, clusterId: string): string {
   let date: string
   try { date = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(start)) }
   catch { date = new Date(start).toISOString().slice(0, 10) }
-  return `${date} ${w.start} ${tz}`
+  return `${clusterId} ${date}`
 }
 
 // --- what needs a reboot ------------------------------------------------------------------------
@@ -368,11 +368,12 @@ export function parseQuorumTool(out: string): QuorumVotes | null {
   const total = Number(/^Total votes:\s+(\d+)/m.exec(text)?.[1])
   if (!Number.isFinite(quorum) || !Number.isFinite(total) || quorum <= 0 || total <= 0) return null
   const byNode: Record<string, number> = {}
-  for (const m of text.matchAll(/^\s*0x[0-9a-f]+\s+(\d+)\s+(\S+)/gim)) byNode[m[2]] = Number(m[1])
+  // Membership rows: "<nodeid> <votes> <name>", the id in decimal (`-l`) or hex (`-s`); the header row has no digits.
+  for (const m of text.matchAll(/^\s*(?:0x[0-9a-f]+|\d+)\s+(\d+)\s+(\S+)/gim)) byNode[m[2]] = Number(m[1])
   return Object.keys(byNode).length ? { quorum, total, byNode } : null
 }
 
-export const QUORUM_VOTES_COMMAND = 'corosync-quorumtool -s 2>&1; echo HP_SPLIT; corosync-quorumtool -l -n 2>/dev/null || corosync-quorumtool -l 2>&1'
+export const QUORUM_VOTES_COMMAND = 'corosync-quorumtool -s 2>&1; echo HP_SPLIT; corosync-quorumtool -l 2>&1'
 
 export function rebootQuorumGate(s: ClusterStatus, node: string, votes?: QuorumVotes | null): GateResult {
   if (s.standalone) return { ok: true, reason: 'one-node server: no quorum to keep' }
@@ -394,10 +395,27 @@ export function rebootQuorumGate(s: ClusterStatus, node: string, votes?: QuorumV
 
 // --- HA's shutdown policy ------------------------------------------------------------------------
 
-/** datacenter.cfg `ha: shutdown_policy=...` as /cluster/options returns it; Proxmox's default is conditional. */
+const SHUTDOWN_POLICIES = new Set(['freeze', 'failover', 'conditional', 'migrate'])
+
+/**
+ * datacenter.cfg's HA shutdown policy from /cluster/options' `ha`: an object (`{ shutdown_policy: 'migrate' }`, as the
+ * API returns it) or the property string (`shutdown_policy=migrate`). No `ha` or no shutdown_policy in it means
+ * Proxmox's default, conditional. Anything else is 'unknown', which refuses the in-place path (fails closed).
+ */
 export function parseHaShutdownPolicy(ha: unknown): string {
-  const m = /(?:^|,)\s*shutdown_policy=([a-z]+)/.exec(String(ha ?? ''))
-  return m ? m[1] : 'conditional'
+  if (ha === undefined || ha === null || ha === '') return 'conditional'
+  let v: unknown
+  if (typeof ha === 'object' && !Array.isArray(ha)) {
+    if (!('shutdown_policy' in (ha as object))) return 'conditional'
+    v = (ha as Record<string, unknown>).shutdown_policy
+  } else if (typeof ha === 'string') {
+    const parts = ha.split(',').map(x => x.trim()).filter(Boolean)
+    if (parts.some(p => !/^[a-z_]+=[^=]*$/.test(p))) return 'unknown'
+    const kv = parts.find(p => p.startsWith('shutdown_policy='))
+    if (!kv) return 'conditional'
+    v = kv.slice('shutdown_policy='.length)
+  } else return 'unknown'
+  return typeof v === 'string' && SHUTDOWN_POLICIES.has(v) ? v : 'unknown'
 }
 
 /** Restarting guests in place needs HA to freeze them on a reboot (freeze, or conditional on a reboot). */

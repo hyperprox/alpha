@@ -105,11 +105,14 @@ print('safe')
 `
 
 /**
- * Right before HyperProx's own node is rebooted, in the handoff: the cluster quorate, every node online, and still
- * quorate with the target gone (corosync's votes when they can be read, else one vote per node). Exit 0 to go on.
+ * Right before HyperProx's own node is rebooted, in the handoff: the cluster quorate and every node online. With
+ * `votes` (automatic reboots) also still quorate with the target gone: corosync's votes when they can be read, else
+ * one vote per node. A reboot a person asked for (`plain`) checks only quorate and online, as the API does.
+ * Exit 0 to go on.
  */
 export const QUORUM_CHECK_PY = String.raw`import json, re, subprocess, sys
 t = sys.argv[1]
+mode = sys.argv[2] if len(sys.argv) > 2 else 'votes'
 def run(*a):
     try:
         r = subprocess.run(list(a), capture_output=True, text=True, timeout=60)
@@ -130,11 +133,13 @@ if cl and cl[0].get('quorate') != 1:
 off = [str(n.get('name')) for n in nodes if n.get('online') != 1]
 if off:
     print('not every node is online (%s)' % ', '.join(off)); sys.exit(1)
+if mode == 'plain':
+    print('quorate, every node online'); sys.exit(0)
 _, s = run('corosync-quorumtool', '-s')
 _, l = run('corosync-quorumtool', '-l')
 q = re.search(r'^Quorum:\s+(\d+)', s, re.M)
 tv = re.search(r'^Total votes:\s+(\d+)', s, re.M)
-mine = re.search(r'^\s*0x[0-9a-f]+\s+(\d+)\s+' + re.escape(t) + r'(\s|$)', l, re.M | re.I)
+mine = re.search(r'^\s*(?:0x[0-9a-f]+|\d+)\s+(\d+)\s+' + re.escape(t) + r'(\s|$)', l, re.M | re.I)
 if q and tv and mine:
     left = int(tv.group(1)) - int(mine.group(1))
     if left < int(q.group(1)):
@@ -148,7 +153,7 @@ print('quorum kept')
  * `maintenance: false` (Automatic reboots, a node with guests that cannot move): no HA maintenance and no drain; HA
  * restarts those guests in place when the node is back. noout still goes on around the reboot when Ceph runs.
  */
-export function selfNodeRebootScript(jobId: string, stepId: string, target: string, opts: { ceph: boolean; osds?: number[]; waitMinutes?: number; drainMinutes?: number; maintenance?: boolean }): string {
+export function selfNodeRebootScript(jobId: string, stepId: string, target: string, opts: { ceph: boolean; osds?: number[]; waitMinutes?: number; drainMinutes?: number; maintenance?: boolean; quorum?: 'votes' | 'plain' }): string {
   const file = resultFile(jobId, stepId)
   const wait = opts.waitMinutes ?? 15
   const drain = opts.drainMinutes ?? 10
@@ -195,7 +200,7 @@ if [ "$rc" != "0" ]; then
   exit 1
 fi` : ''}
 # Right before the reboot: still quorate, every node online, and quorate with the target gone. Else nothing reboots.
-qwhy=$(echo ${Buffer.from(QUORUM_CHECK_PY).toString('base64')} | base64 -d | python3 - "$target" 2>&1); qrc=$?
+qwhy=$(echo ${Buffer.from(QUORUM_CHECK_PY).toString('base64')} | base64 -d | python3 - "$target" ${opts.quorum ?? 'plain'} 2>&1); qrc=$?
 if [ "$qrc" != "0" ]; then
   clear_flags
   result false "the reboot was refused: $qwhy; $target was not rebooted; ${flags} cleared\${left:+, except:$left (LEFT ON)}"

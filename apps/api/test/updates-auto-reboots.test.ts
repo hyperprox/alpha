@@ -428,6 +428,39 @@ test('the plan of a rolling reboot is the record: results survive in the job', a
   assert.equal(kept.plan.reboots!.kind, 'window')
 })
 
+// corosync-quorumtool as it prints on a two-node cluster with a QDevice (addresses from the documentation range).
+const QUORUMTOOL_S = `Quorum information
+------------------
+Date:             Fri Jan 15 03:00:00 2027
+Quorum provider:  corosync_votequorum
+Nodes:            2
+Node ID:          0x00000002
+Ring ID:          1.2c
+Quorate:          Yes
+
+Votequorum information
+----------------------
+Expected votes:   3
+Highest expected: 3
+Total votes:      3
+Quorum:           2
+Flags:            Quorate Qdevice
+
+Membership information
+----------------------
+    Nodeid      Votes    Qdevice Name
+0x00000001          1    A,V,NMW 192.0.2.11
+0x00000002          1    A,V,NMW 192.0.2.12 (local)
+0x00000000          1            Qdevice
+`
+const QUORUMTOOL_L = `
+Membership information
+----------------------
+    Nodeid      Votes Name
+         1          1 node-a
+         2          1 node-b (local)
+`
+
 // --- review fixes -----------------------------------------------------------------------------------------
 
 test('B1: HyperProx\'s own guest is never a reboot target, and the step refuses it too', async () => {
@@ -564,8 +597,10 @@ test('notes: a run waiting for an unlock is stopped after the limit instead of h
 test('notes: a window keyed by its local date and start runs once when the clocks go back', () => {
   const w = { start: '01:30', hours: 1, days: [0, 1, 2, 3, 4, 5, 6] }
   const tz = 'America/New_York'
-  assert.equal(windowKey(Date.parse('2027-11-07T05:30:00Z'), w, tz), windowKey(Date.parse('2027-11-07T06:30:00Z'), w, tz))
-  assert.notEqual(windowKey(Date.parse('2027-11-07T05:30:00Z'), w, tz), windowKey(Date.parse('2027-11-08T06:30:00Z'), w, tz))
+  assert.equal(windowKey(Date.parse('2027-11-07T05:30:00Z'), tz, 'home'), windowKey(Date.parse('2027-11-07T06:30:00Z'), tz, 'home'))
+  assert.notEqual(windowKey(Date.parse('2027-11-07T05:30:00Z'), tz, 'home'), windowKey(Date.parse('2027-11-08T06:30:00Z'), tz, 'home'))
+  assert.notEqual(windowKey(Date.parse('2027-11-07T05:30:00Z'), tz, 'home'), windowKey(Date.parse('2027-11-07T05:30:00Z'), tz, 'c0123456789'))
+  void w
 })
 
 test('notes: disks on local storage keep a guest in place; corosync votes count when they can be read', () => {
@@ -574,8 +609,9 @@ test('notes: disks on local storage keep a guest in place; corosync votes count 
   assert.equal(immovableReason({ vmid: 220, type: 'qemu' }, { scsi0: 'fast-pool:vm-220-disk-0', ide2: 'nas:iso/x.iso,media=cdrom' }, [], st), null)
   assert.match(immovableReason({ vmid: 120, type: 'lxc' }, { rootfs: 'local-lvm:subvol-120-disk-0' }, [], st)!, /local storage/)
   const two = { quorate: true, nodes: [{ name: 'node-a', online: true }, { name: 'node-b', online: true }] }
-  const votes = parseQuorumTool('Quorum:           2\nTotal votes:      3\nHP_SPLIT\n    Nodeid      Votes Name\n0x00000001          1 node-a\n0x00000002          1 node-b (local)\n0x00000000          1 Qdevice\n')
-  assert.deepEqual(votes, { quorum: 2, total: 3, byNode: { 'node-a': 1, 'node-b': 1, Qdevice: 1 } })
+  const votes = parseQuorumTool(QUORUMTOOL_S + 'HP_SPLIT\n' + QUORUMTOOL_L)
+  assert.equal(votes!.quorum, 2); assert.equal(votes!.total, 3)
+  assert.equal(votes!.byNode['node-a'], 1); assert.equal(votes!.byNode['node-b'], 1)
   assert.equal(rebootQuorumGate(two, 'node-b', votes).ok, true, 'a QDevice keeps a two-node cluster quorate')
   assert.equal(rebootQuorumGate(two, 'node-b', null).ok, false, 'unread: one vote per node')
   assert.equal(parseQuorumTool('garbage'), null)
@@ -584,4 +620,67 @@ test('notes: disks on local storage keep a guest in place; corosync votes count 
 test('notes: the new reboot routes are refused to API tokens by name', () => {
   for (const [m, p] of [['PUT', '/api/updates/reboots/settings'], ['POST', '/api/updates/reboots/now'], ['POST', '/api/updates/reboots/make-safe']]) assert.equal(tokenForbidden(m, p), true, p)
   assert.equal(tokenForbidden('GET', '/api/updates/reboots'), false)
+})
+
+test('re-review: the HA shutdown policy in the shape Proxmox returns it; anything unrecognised refuses the in-place path', async () => {
+  const { inPlaceAllowed } = await import('../src/lib/updates/reboots')
+  const { productionExecutor } = await import('../src/lib/updates/executor')
+  const cases: Array<[unknown, string, boolean]> = [
+    [{ shutdown_policy: 'migrate' }, 'migrate', false], [{ shutdown_policy: 'failover' }, 'failover', false],
+    [{ shutdown_policy: 'freeze' }, 'freeze', true], [{ shutdown_policy: 'conditional' }, 'conditional', true],
+    [undefined, 'conditional', true], [{}, 'conditional', true], ['shutdown_policy=migrate', 'migrate', false],
+    [{ shutdown_policy: 'sometimes' }, 'unknown', false], [42, 'unknown', false], ['[object Object]', 'unknown', false],
+  ]
+  for (const [ha, want, ok] of cases) {
+    assert.equal(parseHaShutdownPolicy(ha), want, JSON.stringify(ha))
+    assert.equal(inPlaceAllowed(parseHaShutdownPolicy(ha)), ok, JSON.stringify(ha))
+  }
+  // Through the production executor, with /cluster/options answering as Proxmox does.
+  const pve: any = { fetchStrict: async (p: string) => (p === '/cluster/options' ? { keyboard: 'en-us', ha: { shutdown_policy: 'migrate' } } : null) }
+  assert.equal(await productionExecutor(pve).haShutdownPolicy!(), 'migrate')
+})
+
+test('re-review: changing the window start in the middle of a window does not give the day a second run', async () => {
+  const fake = cluster()
+  fake.t = Date.parse('2027-01-15T03:05:00Z')
+  const { auto, state, runner } = service(fake)
+  state.set('home', { settings: { ...defaultRebootSettings('UTC'), nodes: true } })
+  assert.equal(await auto.tick(), 'started'); await settle(runner)
+  fake.nodes[1].kernelPkgs.push('proxmox-kernel-7.0.3-1-pve-signed')
+  const st = state.get('home')
+  state.set('home', { ...st, settings: { ...st.settings!, window: { ...st.settings!.window, start: '03:30' } } })
+  fake.t = Date.parse('2027-01-15T03:40:00Z')
+  assert.equal(await auto.tick(), 'done')
+  fake.t = Date.parse('2027-01-16T03:40:00Z')
+  assert.equal(await auto.tick(), 'started', 'the next day runs again')
+  await settle(runner)
+})
+
+test('re-review: the handoff quorum check reads corosync as it prints; manual reboots of HyperProx\'s node check only quorate and online', async () => {
+  const { execFileSync } = await import('node:child_process')
+  try { execFileSync('python3', ['-c', 'pass']) } catch { return }   // no python3 here: the script itself is covered above
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hp-quorum-'))
+  const status = (n: number) => JSON.stringify([{ type: 'cluster', quorate: 1 }, ...Array.from({ length: n }, (_, i) => ({ type: 'node', name: `node-${'ab'[i] ?? i}`, online: 1 }))])
+  const fakeBin = (name: string, body: string) => { fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 }) }
+  const script = path.join(dir, 'check.py'); fs.writeFileSync(script, QUORUM_CHECK_PY)
+  const runCheck = (mode: string) => {
+    try { return { code: 0, out: execFileSync('python3', [script, 'node-b', mode], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: 'utf8' }) } }
+    catch (e: any) { return { code: e.status as number, out: String(e.stdout) } }
+  }
+  fs.writeFileSync(path.join(dir, 'status.json'), status(2))
+  fs.writeFileSync(path.join(dir, 's.txt'), QUORUMTOOL_S); fs.writeFileSync(path.join(dir, 'l.txt'), QUORUMTOOL_L)
+  fakeBin('pvesh', `cat ${dir}/status.json`)
+  fakeBin('corosync-quorumtool', `if [ "$1" = "-s" ]; then cat ${dir}/s.txt; else cat ${dir}/l.txt; fi`)
+  try {
+    assert.equal(runCheck('votes').code, 0, 'the QDevice vote keeps two nodes quorate')
+    fakeBin('corosync-quorumtool', 'exit 1')
+    const r = runCheck('votes')
+    assert.equal(r.code, 1); assert.match(r.out, /would leave 1 of 2 nodes/, 'unread votes: one per node')
+    assert.equal(runCheck('plain').code, 0, 'a person\'s reboot: quorate and online is enough')
+    fs.writeFileSync(path.join(dir, 'status.json'), JSON.stringify([{ type: 'cluster', quorate: 1 }, { type: 'node', name: 'node-a', online: 0 }, { type: 'node', name: 'node-b', online: 1 }]))
+    assert.equal(runCheck('plain').code, 1)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  // Automatic runs pass votes; the Reboot button does not.
+  assert.match(selfNodeRebootScript('j', 's', 'node-b', { ceph: false, quorum: 'votes' }), /python3 - "\$target" votes/)
+  assert.match(selfNodeRebootScript('j', 's', 'node-b', { ceph: false }), /python3 - "\$target" plain/)
 })

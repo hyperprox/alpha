@@ -1900,7 +1900,7 @@ export class UpdatesRunner {
         await this.noteReboot(jobId, node, { kernelBefore: fresh.facts.runningKernel, inPlace: !maintenance, before: await this.snapshotRunning(node), flags: { maintenance, noout: ceph } })
       }
       await this.setStep(step, { detail: `${step.detail} · ${handoffTag(peer)}` })
-      await startHandoff(this.exec, peer, jobId, step.id, selfNodeRebootScript(jobId, step.id, node, { ceph, osds: first.osds, waitMinutes: Math.round(this.timing.nodeReturnMs / 60_000), maintenance }))
+      await startHandoff(this.exec, peer, jobId, step.id, selfNodeRebootScript(jobId, step.id, node, { ceph, osds: first.osds, waitMinutes: Math.round(this.timing.nodeReturnMs / 60_000), maintenance, quorum: rr ? 'votes' : 'plain' }))
       log(`handoff started on ${peer}; HyperProx may go away while ${node} reboots`)
       const out = await this.pollHandoff(jobId, step, peer)
       if (out.status === 'ok') this.rebootPending.delete(node)

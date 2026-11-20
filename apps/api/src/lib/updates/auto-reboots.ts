@@ -116,7 +116,7 @@ export class AutoReboots {
     const now = this.now()
     const w = windowState(now, s.window, s.timezone)
     if (!w.current) return 'outside'
-    const key = windowKey(w.current.start, s.window, s.timezone)
+    const key = windowKey(w.current.start, s.timezone, HOME_ID)
     if (st.lastWindow === key) return 'done'
     if (!this.deps.isUnlocked()) return 'locked'
     if (this.deps.busy?.()) return 'busy'
@@ -171,7 +171,7 @@ export class AutoReboots {
     // Everything that needs a reboot and may get one on its own; the rest (policy says by hand, HyperProx itself) listed.
     const t = inv ? rebootTargets(inv, load.policy, { nodes: true, guests: true }, nodes => orderNodes(nodes, load.policy), { selfVmid: selfVmidOf(inv, load.policy, this.deps.hostname) }) : null
     // The window that will take them: this one if it has not run yet, else the next.
-    const thisOne = w.current && st.lastWindow !== windowKey(w.current.start, s.window, s.timezone) ? w.current : null
+    const thisOne = w.current && st.lastWindow !== windowKey(w.current.start, s.timezone, clusterId) ? w.current : null
     const when = (thisOne ?? w.next)
     const iso = (ms: number | undefined) => (ms === undefined ? null : new Date(ms).toISOString())
     const jobs = (await svc.store.listJobs(60)).filter(j => j.plan?.reboots)
