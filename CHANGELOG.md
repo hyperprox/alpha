@@ -21,6 +21,18 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-20 — Arr Stack: download a refused release anyway
+
+### New
+- **Download anyway.** In Find a better copy and Find a faster copy, an admin can now download a release Sonarr, Radarr or Lidarr refuses. The confirmation names the release and the app's reasons in plain words, and the choice is written to the audit log before anything is downloaded. A faster copy picked this way swaps out the slow download as usual.
+  - Technical: `POST /better/grab` takes `override: true` for a `refused` row; the confirm sentence (lib/confirm-text.ts) lists the reasons; audited as `arrstack.better.override` with the plain and raw reasons before the arr's `POST /release` (guid and indexer only). API tokens are refused.
+
+### Improved
+- **A better order when everything is refused.** Releases only refused because something is already downloading now rank with the accepted ones, then the mild refusals (size, seeders, custom formats, burned-in subtitles), then the rest. A line at the top counts each group, and each refusal is said in plain words, with the app's own words under Details.
+  - Technical: rank.ts groups rows (`accepted`, `queue`, `mild`, `refused`, `never`) and returns `groups` and `rawReasons`; plainRejection wording for size, low-quality custom formats and hardcoded subs.
+- **Raw disc copies are never offered.** Disc images such as BR-DISK and ISO, which most players can't play, are listed last as Not offered, with no button. AV1, 3D, 48 fps, program files and torrents with no seeders stay left out.
+  - Technical: one `NEVER_OFFERED` constant in lib/arr-release/releases.ts with `isDiscImage`; the grab refuses these with `never_offered` whatever the body says.
+
 ## 2026-11-18 — Arr Stack: sort the films and shows you already have
 
 ### New

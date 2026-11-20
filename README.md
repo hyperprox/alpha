@@ -2121,22 +2121,34 @@ name, pick the film, album, a whole season or one episode, and HyperProx runs on
 **Have it** in the schedule have the same button.
 
 - **The list** shows each release's quality, size, seeders, indexer and codec, and whether your quality profile accepts
-  it. What the profile accepts comes first, then the better quality, then more seeders. A torrent with three seeders or
-  fewer is marked **Slow**. AV1, 3D, 48 fps, torrents with no seeders and anything with a program file in its name are
-  never offered, and the list says how many were left out.
+  it. A line at the top counts them, for example "230 found: 0 accepted, 222 only refused because something is already
+  downloading, 4 refused for a size, seeder, subtitle or custom format reason, 1 refused for other reasons, 3 never
+  offered". What the profile accepts comes first, together with what is only refused because something for it is
+  already downloading; then what is refused for a mild reason (the size limit, too few seeders, a custom format,
+  burned-in subtitles); then everything else that is refused. Inside each group, the better quality comes first, then
+  more seeders. A torrent with three seeders or fewer is marked **Slow**.
+- **Never offered.** AV1, 3D, 48 fps, torrents with no seeders and anything with a program file in its name are left
+  out, and the list says how many. Raw disc copies (BR-DISK, ISO and the like, which most players can't play) are
+  listed last as **Not offered**, with that reason and no button. Nothing on this list can be downloaded from here.
 - **Get this one** asks you to confirm, naming the release, then downloads it and moves it to the top of
   qBittorrent's queue. What you have now stays
   until Sonarr, Radarr or Lidarr imports the new copy, the normal upgrade; HyperProx never deletes a file in your
   library. The program-file check after a download starts is the same as for See what's available.
-- **What the profile refuses is refused here too**, with its reason in plain words ("Not better than what you already
-  have", "Too small for its quality"). HyperProx does not change your quality profile to get around it.
+- **What the profile refuses** is marked **Refused**, with its reasons in plain words ("Something as good is already
+  downloading", "Smaller than your size limit", "Tagged low quality by your custom formats", "Has burned-in
+  (hardcoded) subtitles"). **Details** shows Sonarr's, Radarr's or Lidarr's own words.
+- **Download anyway.** An admin can still download a refused release on purpose. The confirmation names the release
+  and the app's reasons ("Radarr refuses this because: smaller than your size limit; tagged low quality by your custom
+  formats. Download it anyway?"), and the choice is written to the audit log, with those reasons, before anything is
+  downloaded. API tokens cannot do it. HyperProx does not change your quality profile to get around a refusal.
 - **This download is too slow: Find a faster copy.** On the Queue tab, each download has **Find a faster copy**. It
   searches for what that download is for (the film, the album, the episode or the season), from a fresh read of the
   queue. When you pick a release, it is downloaded and moved to the top first; once it shows in the queue, the slow
   download is removed from qBittorrent and blocklisted, without starting another search. Only that download's own
   queue rows are removed, each checked against the film, episodes or album it is for. If the new one does not show up,
   the slow one is left alone. When the only objection to a release is that the slow download is still queued, you can
-  choose **Grab anyway**; the swap is what clears that objection. Any other objection still refuses.
+  choose **Grab anyway**; the swap is what clears that objection. For any other objection, **Download anyway** works
+  here too, and the swap happens the same way: the new one first, then the slow one removed and blocklisted.
 - A search is limited to one per item every ten minutes (you see the last answer in between), and six a minute per
   person. A second click while a search is still running waits for that same search. Every search and download is written to the audit log first; if the entry cannot be written, nothing runs.
   API tokens cannot use it.
