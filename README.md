@@ -1051,6 +1051,22 @@ guest** work there too, through that server's own node logins. HyperProx's own u
 updates are only on the home cluster's page. A remote's rules go in its own `clusters:` section of the
 same policy file; without one, safe defaults apply.
 
+**Automatic reboots.** The point is not to press Reboot after a kernel update. Turn on **Automatic
+reboots** on the Updates page (off for a new install), for nodes, guests or both, and pick a window
+(03:00 to 06:00 every day by default, in the cluster's time zone). In the window, every node that needs a
+reboot (a new kernel, or the node asks for one) is rebooted one at a time, HyperProx's own node last, through
+the same safe path as the Reboot button: every node online, quorum kept with the node gone, Ceph healthy and
+every placement group clean, `noout` set and HA maintenance on so HA guests move first. A node whose guests
+cannot move (a bind mount, a passed-through GPU, a strict HA rule) is rebooted without maintenance and HA
+starts them again on it. Guests that were running are checked back afterwards. With **Only when nobody is
+watching**, it waits while Plex has streams. A pinned kernel stays pinned, a node the policy marks
+`auto_reboot: false` is skipped, and guests left alone are never touched. The first problem stops the run
+safely and sends one message, with **Make safe** on the card to clear what was left on; otherwise you get one
+message when it starts and a summary when it ends (kernel before and after, how long each node was away).
+**Reboot now (rolling)** runs the same thing straight away. When you start an update run, **Reboot
+automatically in the next window** is ticked for you if the run will need a reboot. Remote clusters are not
+rebooted on their own.
+
 **Daily check.** Once a day, and on **Check now**, HyperProx checks every cluster read-only (it refreshes
 package lists and asks apt to simulate; nothing is installed) and sends one message to the channels that
 take Updates events when it finds something new: per cluster, security fixes first, then package counts

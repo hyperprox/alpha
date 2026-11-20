@@ -96,6 +96,70 @@ One job runs at a time, enforced in the database, across all clusters: a job on 
 home never run together. Asking for another while one is running, awaiting confirmation or paused
 answers `409` with the id of the active job, and names its cluster when it is another one.
 
+## Automatic reboots
+
+The **Automatic reboots** card on the Updates page reboots, on its own, what needs a reboot after updates, so
+nobody has to press Reboot. Home cluster only: a remote's nodes are never rebooted on their own.
+
+**Settings** (per cluster, admin only; every change is confirmed on the page and written to the audit log with
+before and after; an API token is refused): **nodes** on or off, **guests** on or off (both off for a new
+install), the **window** (a start time, 1 to 12 hours long, on chosen days; default 03:00 to 06:00 every day),
+the **time zone** it is read in (default the one HyperProx runs in, shown on the card), and **Only when nobody
+is watching**. A window that runs past midnight belongs to the day it starts on. They are kept in
+`data/updates-reboots.json` (`UPDATES_REBOOTS_PATH`), with no secrets.
+
+**What needs a reboot.** A node, when it says so (`/run/reboot-required`) or when the kernel it would boot is
+not the one running: its pinned kernel if it pins one, otherwise the newest installed. A node a run left
+*reboot pending* counts too. A guest, when it is managed by Updates, running, and has `/run/reboot-required`
+(Debian and Ubuntu), read through the same path Updates already uses to look inside it. A node whose policy says
+`auto_reboot: false` is never rebooted automatically and is listed on the card; excluded, `hyperprox-ignore` and
+"never look inside" guests are never touched. While automatic reboots are on, such a node's row says *Waiting for
+its automatic reboot at (the time)* instead of offering the Reboot button.
+
+**When.** HyperProx looks every 30 seconds. In the window, once per window, when it is unlocked, no Updates job is
+active and the daily check is not reading, it reads the inventory again and, if anything needs a reboot, starts
+one rolling reboot job. One job at a time still holds for every cluster. When you start an update run that will
+need a reboot, its confirmation offers **Reboot automatically in the next window**, ticked for you; that asks the
+next window to reboot what needs it once, even with the switches off.
+
+**How a rolling reboot runs.** It is an ordinary Updates job (in the history, live on `/ws/updates`, kept in the
+database), with the nodes one at a time in policy order and HyperProx's own node last, then the guests.
+
+1. **Preflight**: quorum, every node online, Ceph health within `ceph.accepted_warnings`, HA settled with no node
+   in maintenance, and `noout` not already set. A failure ends the run before anything changes.
+2. Before each machine the same gates run again, waiting up to 10 minutes for HA and Ceph to settle after the
+   machine before. No reboot starts after the window's end; what is left waits for the next window.
+3. **Each node**: the holds and kernel pin are read and must be what the policy requires (a node reboots into its
+   pinned kernel; HyperProx never changes pins or holds). Viewers are waited for (below). The cluster must stay
+   quorate with the node gone; a two-node cluster never reboots a node on its own. The Ceph safety check runs for
+   every OSD on the node (see below). The guests running on it are recorded. `noout` is set and the node goes into
+   HA maintenance so its HA guests move off, then it reboots and HyperProx waits for a new boot id, every OSD up and
+   every placement group active+clean, then maintenance off and `noout` cleared. If an HA guest on it cannot move
+   (a bind mount without `shared=1`, a passed-through device, GPU, PCI or USB, or a strict HA rule that holds it to
+   that node), the node gets **no** maintenance: HA restarts those guests in place when it is back (`noout` still
+   guards Ceph). Afterwards every guest that was running is checked back: HA guests come back by themselves, and a
+   guest outside HA that was running is started again (unless it is left alone; that is reported).
+4. **HyperProx's own node** goes through the handoff from another node, as the Reboot button does. What was running
+   there is written into the job first. HyperProx goes away while its node reboots; when it is back and unlocked,
+   the run carries on by itself: it collects the handoff's result, checks the guests back and finishes.
+5. **Each guest** that still asks for a reboot (asked again right then: a node reboot may already have restarted
+   it): HA guests through `ha-manager`, never `pct`/`qm`; others with `pct reboot` or `qm reboot`.
+
+**Only when nobody is watching.** With it on and the Plex plug-in connected, each reboot waits while Plex reports
+streams, asking again every 10 minutes; a Plex that does not answer counts as viewers. When the window ends first,
+that reboot and the rest wait for the next window.
+
+**When something goes wrong** the run **stops** (it never pauses half-done waiting for a person), leaves the
+cluster as safe as it can, and sends one message saying what happened. A node that did not come back keeps `noout`
+and HA maintenance on, as always. The card then shows what was left on and **Make safe**: it turns HA maintenance
+off for that node, and clears `noout` only when every OSD is up and in. It is confirmed on the page and audited
+before it runs. A HyperProx restart in the middle of any other step stops the run with that reason.
+
+**Messages**: `updates.reboots.started` when a run begins (which nodes and guests, what was left out and why), and
+`updates.reboots.finished` with each machine, kernel before and after, and roughly how long it was away, or
+`updates.reboots.stopped`. **Reboot now (rolling)** on the card runs the same engine straight away, waiting for
+viewers at most the window's length; optionally every node, not only those that need it.
+
 ## Choosing what to update
 
 The Updates page lists everything that can be updated as a tree: Ceph, each node (its packages one by
@@ -368,6 +432,7 @@ from restarting services after a library upgrade.
 | `nodes.<name>.order` | | `first` or `last`. Otherwise alphabetical. |
 | `nodes.<name>.require_holds` | | Packages that must be on hold (`apt-mark showhold`). |
 | `nodes.<name>.require_pin` | | The kernel `proxmox-boot-tool kernel list` must show as pinned. |
+| `nodes.<name>.auto_reboot` | `true` | `false`: Automatic reboots never reboot this node; it is listed on the card. A person's Reboot still can. Home only. |
 | `guests.default` | `{ apt: true, docker: none, reboot: never }` | Applies to every guest. |
 | `guests.exclude` | none | VMIDs HyperProx must never touch. |
 | `guests.<vmid>.apt` | | Run apt in this guest. |
