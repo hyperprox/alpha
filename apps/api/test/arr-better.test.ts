@@ -434,12 +434,25 @@ test('the never-offered list is one constant, and disc images are told apart fro
     { title: 'Film 2019 1080p ISO', quality: { quality: { name: 'Bluray-1080p' } } },
     { title: 'Film 2019 1080p BluRay', customFormats: [{ name: 'BR-DISK' }], quality: { quality: { name: 'Bluray-1080p' } } },
     { title: 'Film 2019 1080p BluRay', rejections: ["Custom Formats BR-DISK have score -10000 below Movie's profile minimum 0"] },
+    // Separated spellings.
+    { title: 'Film.2019.1080p.BD-50.AVC.DTS-HD.MA-GRP' },
+    { title: 'Film 2019 DVD-9 PAL-GRP' },
+    { title: 'Film.2019.1080p.Blu-ray.Disc.AVC-GRP' },
+    { title: 'Film.2019.2160p.UHD.BluRay.M2TS-GRP' },
+    { title: 'Film.2019.1080p.bdiso' },
+    { title: 'Film.2019.1080p.BD_ISO-GRP' },
+    { title: 'Film.2019.FULL.BLURAY-GRP' },
+    { title: 'Film 2019 Full UHD Blu-ray HEVC' },
   ]) assert.equal(isDiscImage(r), true, r.title)
   for (const r of [
     { title: 'Film 2019 1080p BluRay REMUX AVC DTS-HD MA-GRP', quality: { quality: { name: 'Remux-1080p' } } },
     { title: 'Film 2019 1080p BluRay x264-GRP', quality: { quality: { name: 'Bluray-1080p' } } },
     { title: 'Film 2019 DVDRip x264-GRP', quality: { quality: { name: 'DVD' } } },
     { title: 'Isolation 2019 1080p WEB-DL', quality: { quality: { name: 'WEBDL-1080p' } } },
+    { title: 'Film.2019.1080p.BluRay.REMUX.AVC.DTS-HD.MA-GRP' },
+    { title: 'Film.2019.1080p.BluRay.x265-GRP' },
+    { title: 'Film.2019.DVDRip.x264-GRP' },
+    { title: 'Film.2019.1080p.BDRip.x264-GRP' },
   ]) assert.equal(isDiscImage(r), false, r.title)
   assert.equal(plainRejection("Custom Formats BR-DISK have score -10000 below Movie's profile minimum 0"), NEVER_OFFERED.disc)
 })
@@ -453,6 +466,8 @@ test('download anyway: refused without the override; with it, audited first as a
   await assert.rejects(svc.grab('radarr:7', tiny.id, 'admin@example.com'), (e: any) => e.code === 'profile_refuses')
   await assert.rejects(svc.grab('radarr:7', tiny.id, 'admin@example.com', { anyway: true }), (e: any) => e.code === 'profile_refuses', '"grab anyway" is not an override')
   assert.ok(!fa.calls.some(c => c.method === 'POST'))
+  await assert.rejects(svc.grab('radarr:7', tiny.id, 'admin@example.com', { override: true }), (e: any) => e.code === 'confirm_stale', 'no confirmation listed its reasons yet')
+  assert.equal(svc.namesFor('radarr:7', tiny.id, true)!.verdict, 'refused')
   const g = await svc.grab('radarr:7', tiny.id, 'admin@example.com', { override: true })
   assert.equal(g.result, 'queued')
   assert.deepEqual(audits.map(x => x.action), ['arrstack.better.search', 'arrstack.better.override', 'arrstack.better.grab.done'])
@@ -472,6 +487,7 @@ test('download anyway fails closed: no audit entry, nothing is asked of the arr'
   const a = await svc.search('radarr:7', 'admin@example.com')
   ok = false
   const tiny = a.rows.find(r => r.title.endsWith('TINY'))!
+  svc.namesFor('radarr:7', tiny.id, true)
   await assert.rejects(svc.grab('radarr:7', tiny.id, 'admin@example.com', { override: true }), (e: any) => e.code === 'audit_unavailable')
   assert.ok(!fa.calls.some(c => c.method === 'POST'))
 })
@@ -484,6 +500,7 @@ test('download anyway in a swap: the same swap rules (the new one first, then on
   const a = await svc.search(target, 'admin@example.com')
   const tiny = a.rows.find(r => r.title.endsWith('TINY'))!
   assert.equal(tiny.verdict, 'refused')
+  svc.namesFor(target, tiny.id, true)
   const g = await svc.grab(target, tiny.id, 'admin@example.com', { override: true })
   assert.equal(g.result, 'queued'); assert.equal(g.swapped, true)
   const post = fa.calls.findIndex(c => c.method === 'POST'), rm = fa.calls.findIndex(c => c.method === 'DELETEBODY')
@@ -549,4 +566,62 @@ test('routes: download anyway is confirmed with the arr\'s reasons, refused to A
     assert.equal(g.statusCode, 200, g.body); assert.equal(JSON.parse(g.body).data.result, 'queued')
     assert.ok(audits.some(x => x.action === 'arrstack.better.override' && x.details.release === smallRow.title))
   } finally { await a.close() }
+})
+
+test('an override runs only under the verdict its confirmation was built from', async () => {
+  const fa = radarr()
+  const { svc, setNow } = rig({ radarr: fa.client })
+  let a = await svc.search('radarr:7', 'admin@example.com')
+  const ok = a.rows.find(r => r.verdict === 'ok')!, tiny = a.rows.find(r => r.title.endsWith('TINY'))!
+  // A confirmation built for an accepted row (no reasons listed) cannot carry an override.
+  svc.namesFor('radarr:7', ok.id, true)
+  await assert.rejects(svc.grab('radarr:7', ok.id, 'admin@example.com', { override: true }), (e: any) => e.code === 'confirm_stale')
+  // Confirmed with its reasons, then a new search: the old confirmation does not carry over.
+  svc.namesFor('radarr:7', tiny.id, true)
+  setNow(NOW + 11 * 60_000)
+  a = await svc.search('radarr:7', 'admin@example.com')
+  assert.equal(a.reused, false)
+  await assert.rejects(svc.grab('radarr:7', tiny.id, 'admin@example.com', { override: true }), (e: any) => e.code === 'confirm_stale')
+  // A plain (non-override) confirmation sentence does not count either.
+  svc.namesFor('radarr:7', tiny.id, false)
+  await assert.rejects(svc.grab('radarr:7', tiny.id, 'admin@example.com', { override: true }), (e: any) => e.code === 'confirm_stale')
+  assert.ok(!fa.calls.some(c => c.method === 'POST'))
+})
+
+test('routes: an override confirmed without its reasons is refused; a queue-only override says it starts a second download', async () => {
+  const fa = radarr()
+  const { svc } = rig({ radarr: fa.client })
+  const a = Fastify({ logger: false })
+  await registerGate(a)
+  await a.register(authRoutes, { prefix: '/api/auth' })
+  await a.register(buildArrBetterRoutes({ service: () => svc, limiter: new MissLimiter(50) }), { prefix: '/api/plugins/arrstack' })
+  await a.ready()
+  try {
+    const adm = await signIn(a, 'admin@example.com', 'admin master password')
+    const post = (url: string, payload: any) => a.inject({ method: 'POST', url: `/api/plugins/arrstack/better/${url}`, headers: { cookie: adm.cookie }, payload })
+    const confirmed = (payload: any) => injectConfirmed(a, { method: 'POST', url: '/api/plugins/arrstack/better/grab', headers: { cookie: adm.cookie }, payload })
+    const rows = JSON.parse((await post('search', { target: 'radarr:7' })).body).data.rows
+    const queued = rows.find((r: any) => r.title.endsWith('GRPC')), ok = rows.find((r: any) => r.verdict === 'ok')
+    assert.equal(queued.group, 'queue'); assert.equal(queued.verdict, 'refused')
+    const ask = JSON.parse((await post('grab', { target: 'radarr:7', releaseId: queued.id, override: true })).body).confirm.summary
+    assert.equal(ask, `Radarr refuses "${queued.title}" for Paper Lanterns (2011) because: something as good is already downloading. Download it anyway and move it to the top of the queue? This starts a second download alongside the one already downloading. To replace it, use Find a faster copy.`)
+    const forged = await confirmed({ target: 'radarr:7', releaseId: ok.id, override: true })
+    assert.equal(forged.statusCode, 409, forged.body); assert.equal(JSON.parse(forged.body).code, 'confirm_stale')
+    assert.ok(!fa.calls.some(c => c.method === 'POST'))
+  } finally { await a.close() }
+})
+
+test('the hard rules read the whole release name, not only the part that is shown', () => {
+  seq = 300
+  const long = 'Paper Lanterns 2011 ' + 'Extended.Directors.Cut.'.repeat(14)
+  assert.ok(long.length > 300)
+  const v = betterView([
+    release({ title: `${long}1080p AV1-GRP`, approved: true, rejections: [] }),
+    release({ title: `${long}1080p HFR-GRP`, approved: true, rejections: [] }),
+    release({ title: `${long}setup.exe`, approved: true, rejections: [] }),
+    release({ title: `${long}1080p WEB-DL x264-OK`, approved: true, rejections: [] }),
+  ], { app: 'radarr', profile: null, swap: false })
+  assert.equal(v.rows.length, 1)
+  assert.deepEqual(v.hidden, { av1: 1, threeD: 0, hfr: 1, zeroSeed: 0, executable: 1 })
+  assert.equal(v.rows[0].title.length, 300, 'the shown copy is still shortened')
 })

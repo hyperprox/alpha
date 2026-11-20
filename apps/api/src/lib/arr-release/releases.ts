@@ -106,8 +106,13 @@ export const NEVER_OFFERED = {
 } as const
 export type NeverOffered = keyof typeof NEVER_OFFERED
 
+// Separators vary ("BD-50", "DVD.9", "Blu-ray.Disc"), so they are allowed between the parts; BDRip, DVDRip and REMUX
+// (playable files) never match.
+const DISC = token([
+  'BR-?DISK', 'BDMV', 'BD[\\W_]?ISO', 'ISO', 'IMG', 'VIDEO_TS', 'M2TS', 'BD[\\W_]?(?:25|50|66|100)', 'DVD[\\W_]?(?:5|9)', 'DVD-?R',
+  '(?:FULL|COMPLETE)[\\W_]+(?:UHD[\\W_]+)?BLU[\\W_]?RAY', 'BLU[\\W_]?RAY[\\W_]+DIS[CK]',
+].join('|'))
 /** A raw disc image (BR-DISK, ISO, BDMV, a DVD folder), by its quality, custom formats, name or the arr's own reasons. */
-const DISC = token('BR-?DISK|BDMV|ISO|IMG|VIDEO_TS|BD(?:25|50|66|100)|DVD(?:5|9)|DVD-?R|COMPLETE[\\W_]+(?:UHD[\\W_]+)?BLU-?RAY')
 export function isDiscImage(r: any): boolean {
   const q = r?.quality?.quality ?? {}
   if (/BR-?DISK/i.test(String(q.name ?? '')) || String(q.modifier ?? '').toLowerCase() === 'brdisk') return true
@@ -194,7 +199,10 @@ export function releaseView(raw: any[], o: { app: 'sonarr' | 'radarr' | 'lidarr'
     const guid = typeof r?.guid === 'string' ? r.guid : ''
     const indexerId = Number(r?.indexerId)
     if (!guid || !Number.isInteger(indexerId)) continue
-    const title = String(r.title ?? '').slice(0, 300)
+    // The hard rules and the program-file check read the whole name (an extension is at its very end); only the row's
+    // own copy is shortened.
+    const fullTitle = String(r.title ?? '')
+    const title = fullTitle.slice(0, 300)
     const q = r.quality?.quality ?? {}
     const formats = Array.isArray(r.customFormats) ? r.customFormats.map((f: any) => String(f?.name ?? '')) : []
     const reasons = (Array.isArray(r.rejections) ? r.rejections : []).map((x: any) => plainRejection(typeof x === 'string' ? x : String(x?.reason ?? '')))
@@ -214,12 +222,12 @@ export function releaseView(raw: any[], o: { app: 'sonarr' | 'radarr' | 'lidarr'
       indexer: String(r.indexer ?? '').replace(/\s*\(Prowlarr\)$/, '').slice(0, 60),
       languages: Array.isArray(r.languages) ? r.languages.map((l: any) => String(l?.name ?? '')).filter(Boolean).slice(0, 4) : [],
       approved: r.approved === true, topPick: false, reasons: r.approved ? [] : [...new Set<string>(reasons)],
-      executable: isProgramFile(title), belowProfile: below,
+      executable: isProgramFile(fullTitle), belowProfile: below,
       ...(below ? { belowNote: belowNote(String(q.name ?? 'this quality'), o.profile!, appWord) } : {}),
       weight: Number.isFinite(Number(r.releaseWeight)) ? Number(r.releaseWeight) : 1e9,
       qWeight: Number(r.qualityWeight) || 0,
     }
-    const hard = hardRule(title, formats)
+    const hard = hardRule(fullTitle, formats)
     if (hard) { hidden[hard] += 1; continue }
     if (protocol === 'torrent' && seeders === 0 && !o.showZeroSeed) { hidden.zeroSeed += 1; continue }
     all.push(row)

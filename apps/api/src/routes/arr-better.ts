@@ -39,7 +39,7 @@ export function buildArrBetterRoutes(deps: { service?: () => BetterCopyService |
   const searchLimiter = deps.searchLimiter ?? new MissLimiter(6)
 
   return async (fastify) => {
-    setConfirmNames({ betterGrab: (target, releaseId) => svc()?.namesFor(target, releaseId) ?? null })
+    setConfirmNames({ betterGrab: (target, releaseId, override) => svc()?.namesFor(target, releaseId, override) ?? null })
     const need = (reply: FastifyReply): BetterCopyService | null => {
       const s = svc()
       if (!s) { sendRefusal(reply, 503, 'not_ready', 'This is not available yet. Try again in a minute.'); return null }

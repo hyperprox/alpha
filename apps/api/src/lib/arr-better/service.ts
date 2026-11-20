@@ -89,6 +89,8 @@ interface Swap { downloadId: string; name: string }
 interface Search {
   key: string; app: ArrApp; at: number; used?: boolean; raw: any[]; profile: ReturnType<typeof profileInfo>
   label: string; have: string | null; wanted: Set<number>; seriesId?: number; season?: number; swap?: Swap
+  /** Releases whose "Download anyway" confirmation listed the arr's reasons (namesFor with override): only those can be overridden. */
+  overrideShown?: Set<string>
 }
 
 export interface FoundItem { target: string; title: string; detail: string; have: string }
@@ -295,13 +297,19 @@ export class BetterCopyService {
 
   // ── grab ───────────────────────────────────────────────────────────────────
 
-  /** What a download from the last search would be, for its confirmation (lib/confirm-text.ts). Never searches. */
-  namesFor(target: string, releaseId: string): { item: string; release: string; swap: string | null; app: string; verdict: Verdict; reasons: string[] } | null {
+  /**
+   * What a download from the last search would be, for its confirmation (lib/confirm-text.ts). Never searches.
+   * `override`: the confirmation is for "Download anyway". When the row is refused, that sentence lists the arr's
+   * reasons, and this search remembers it did: the grab overrides only a release whose confirmation said why.
+   */
+  namesFor(target: string, releaseId: string, override = false): { item: string; release: string; swap: string | null; app: string; verdict: Verdict; group: string; reasons: string[] } | null {
     const t = parseBetterTarget(target)
     const s = t ? this.searches.get(t.key) : undefined
     if (!s || this.d.now() - s.at > GRAB_WINDOW_MS) return null
     const row = betterView(s.raw, { app: s.app, profile: s.profile, swap: !!s.swap }).all.find(r => r.id === releaseId)
-    return row ? { item: s.label, release: row.title, swap: s.swap?.name ?? null, app: APP_WORD[s.app], verdict: row.verdict, reasons: this.overridden(row, !!s.swap) } : null
+    if (!row) return null
+    if (override && row.verdict === 'refused') (s.overrideShown ??= new Set()).add(row.id)
+    return { item: s.label, release: row.title, swap: s.swap?.name ?? null, app: APP_WORD[s.app], verdict: row.verdict, group: row.group, reasons: this.overridden(row, !!s.swap) }
   }
 
   /** The arr's objections an override goes past, in plain words (the one a swap resolves is left out). */
@@ -326,7 +334,12 @@ export class BetterCopyService {
     const stop = hardStop(row, raw) ?? (row.verdict === 'never' ? 'disc' : null)
     if (stop) throw new BetterRefusal(409, 'never_offered', `HyperProx never downloads this: ${NEVER_OFFERED[stop].charAt(0).toLowerCase()}${NEVER_OFFERED[stop].slice(1)}.`)
     if (row.verdict === 'refused' && o.override !== true) throw new BetterRefusal(409, 'profile_refuses', `${row.why ?? 'Your quality profile refuses it.'} Choose "Download anyway" to download it on purpose.`)
-    if (row.verdict === 'anyway' && o.anyway !== true && o.override !== true) throw new BetterRefusal(409, 'confirm_anyway', `${ARR_NAME[s.app]} only refuses it because the slow download is still queued. Confirm "grab anyway" to swap it.`)
+    // An override runs only under a confirmation that listed this row's reasons, and only while the row is still
+    // refused: never for a row whose verdict changed in between, nor one confirmed without its reasons.
+    if (o.override === true && (row.verdict !== 'refused' || !s.overrideShown?.has(row.id))) {
+      throw new BetterRefusal(409, 'confirm_stale', 'What was confirmed no longer matches this release. Look at the list again and confirm again.')
+    }
+    if (row.verdict === 'anyway' && o.anyway !== true) throw new BetterRefusal(409, 'confirm_anyway', `${ARR_NAME[s.app]} only refuses it because the slow download is still queued. Confirm "grab anyway" to swap it.`)
     const override = row.verdict === 'refused'
     // Taken at once, so two clicks cannot both grab; given back only if nothing was sent to the arr.
     s.used = true

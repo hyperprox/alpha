@@ -28,7 +28,7 @@ const pluginName = (id: string) => PLUGIN[id] ?? id
  * when it finds nothing, the sentence uses plain words instead. The names come from the server, never from the body.
  */
 export interface ConfirmNames {
-  betterGrab?: (target: string, releaseId: string) => { item: string; release: string; swap: string | null; app?: string; verdict?: string; reasons?: string[] } | null
+  betterGrab?: (target: string, releaseId: string, override: boolean) => { item: string; release: string; swap: string | null; app?: string; verdict?: string; group?: string; reasons?: string[] } | null
   vpnPort?: () => number | null
   routerMove?: (app: unknown, id: unknown, folder: unknown) => { title: string; folder: string } | null
   routerGraduate?: (previewId: unknown) => { count: number; folder: string } | null
@@ -39,13 +39,14 @@ const names: ConfirmNames = {}
 export function setConfirmNames(n: ConfirmNames): void { Object.assign(names, n) }
 
 function betterGrabSentence(b: any): string {
-  const n = typeof b?.target === 'string' && typeof b?.releaseId === 'string' ? names.betterGrab?.(b.target, b.releaseId) ?? null : null
+  const n = typeof b?.target === 'string' && typeof b?.releaseId === 'string' ? names.betterGrab?.(b.target, b.releaseId, b?.override === true) ?? null : null
   const what = n && str(n.release, 120) ? `"${str(n.release, 120)}"${str(n.item, 80) ? ` for ${str(n.item, 80)}` : ''}` : 'the release you picked'
   const swap = n?.swap && str(n.swap, 120) ? ` Then the slow download, "${str(n.swap, 120)}", is removed and blocklisted.` : ''
   // "Download anyway": the arr's own reasons, said before anything is asked of it.
   if (b?.override === true && n?.verdict === 'refused') {
     const why = (n.reasons ?? []).map(r => str(r, 120)).filter(Boolean).slice(0, 6).map(r => r.charAt(0).toLowerCase() + r.slice(1)).join('; ')
-    return `${str(n.app, 20) || 'The app'} refuses ${what} because: ${why || 'no reason given'}. Download it anyway and move it to the top of the queue?${swap}`
+    const second = n.group === 'queue' && !n.swap ? ' This starts a second download alongside the one already downloading. To replace it, use Find a faster copy.' : ''
+    return `${str(n.app, 20) || 'The app'} refuses ${what} because: ${why || 'no reason given'}. Download it anyway and move it to the top of the queue?${swap}${second}`
   }
   return `Download ${what} and move it to the top of the queue?${swap}`
 }

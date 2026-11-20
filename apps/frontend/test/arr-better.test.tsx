@@ -78,6 +78,9 @@ test('download anyway: the confirm names the arr and its reasons in plain words'
   const sw = betterConfirm(r, { label: 'Paper Lanterns (2011)', have: null, swap: { name: 'Old.Slow.Copy' } }, 'radarr')
   assert.doesNotMatch(sw, /already downloading/, 'in a swap, the queued one is what the swap resolves')
   assert.match(sw, /the slow download \(Old\.Slow\.Copy\) is removed and blocklisted/)
+  const second = betterConfirm(rel({ approved: false, verdict: 'refused', group: 'queue', reasons: ['Something as good is already downloading'] }), { label: 'x', have: null, swap: null }, 'radarr')
+  assert.match(second, /This starts a second download alongside the one already downloading\. To replace it, use Find a faster copy\./)
+  assert.doesNotMatch(t, /second download/, 'only for a queue-only refusal')
 })
 
 test('the confirm says what happens: the top of the queue, the swap, grab anyway, what stays, slow', () => {

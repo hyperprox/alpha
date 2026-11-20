@@ -79,7 +79,8 @@ export function betterConfirm(r: BetterRelease, a: Pick<BetterAnswer, 'label' | 
   const slow = r.slow ? ' Note: it has few seeders, so it may be slow too.' : ''
   if (r.verdict === 'refused') {
     const why = overrideReasons(r, !!a.swap).map(x => x.charAt(0).toLowerCase() + x.slice(1)).join('; ') || 'no reason given'
-    return `${name} refuses this because: ${why}. Download it anyway? It goes to the top of qBittorrent's queue.${swap}${keep}${slow}`
+    const second = r.group === 'queue' && !a.swap ? ' This starts a second download alongside the one already downloading. To replace it, use Find a faster copy.' : ''
+    return `${name} refuses this because: ${why}. Download it anyway? It goes to the top of qBittorrent's queue.${swap}${second}${keep}${slow}`
   }
   return `${what}${swap}${anyway}${keep}${slow}`
 }
