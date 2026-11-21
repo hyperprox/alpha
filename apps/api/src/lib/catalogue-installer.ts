@@ -22,12 +22,13 @@ import {
 } from './wizard-placement'
 import { archOfKernel, archOfTemplate } from './ai/facts'
 import {
-  arrPreview, arrPrepare, arrInstallEnv, arrRunSetup, arrJobSteps, arrCleanup, arrFinishSeerr, stopApps, stoppedSentence, realHttp, localAddressTo,
+  arrPreview, arrPrepare, arrInstallEnv, arrRunSetup, arrJobSteps, arrCleanup, arrFinishSeerr, mediaPreferOf, stopApps, stoppedSentence, realHttp, localAddressTo,
   type ArrDeps, type ArrPublishInput, type ArrPublishPlan,
 } from './arr/catalogue'
 import { isTranscode, kindOf, nodeHardwareFacts, tcPreview, tcPrepare, tcInstallEnv, tcJobSteps, tcRunSetup, tcCleanup } from './transcode/catalogue'
 import type { LinkRecord } from './transcode/setup'
 import { sharedPlexSignin } from './plex-signin-shared'
+import { pickMediaServer, serversFromSettings } from './arr/media-server'
 import { managedSecret, type ManagedProxyRegistration } from './proxy/managed-recipes'
 import { execOnNode } from './node-exec'
 import type { CreatePVE } from './wizard-executor'
@@ -107,6 +108,8 @@ export interface InstallJob {
   arrLedgers?: Record<string, PublishLedger>
   /** An Arr Stack whose Seerr waits for a Plex server: "Finish Seerr" connects it later. */
   arrSeerrWaiting?: boolean
+  /** The media server the owner chose for Seerr (blank: Plex first), kept for "Finish Seerr". */
+  arrMediaPrefer?: 'plex' | 'jellyfin' | ''
   /** What was set on an Arr Stack's container over the node login (keyctl, tun, the library), in words. */
   arrPrepared?: string
   /** An Arr Stack's apps and their addresses, for the finished page. (A transcoder's link to open uses it too.) */
@@ -722,7 +725,7 @@ async function runJob(
       })
       job.url = out.url
       job.arrApps = out.apps
-      if (job.steps.find(x => x.id === 'arr-seerr')?.status === 'skipped') job.arrSeerrWaiting = true
+      if (job.steps.find(x => x.id === 'arr-seerr')?.status === 'skipped') { job.arrSeerrWaiting = true; job.arrMediaPrefer = mediaPreferOf(options) }
       job.adminCredential = { user: admin.user, vault: { category: job.vaultItem.category, provider: job.vaultItem.provider, key: 'admin_password' }, issuedAt: Date.now() }
       job.status = 'completed'
       return
@@ -2097,10 +2100,13 @@ function realArrDeps(): ArrDeps {
     },
     localAddressTo,
     plexClaim: sharedPlexSignin(),
-    // The Plex plug-in's own server and token, when it has them: Seerr signs in with that Plex account.
-    mediaServer: async () => {
-      const p = await getSettings('plex').catch(() => ({} as Record<string, string>))
-      return p.plex_url && p.plex_token ? { kind: 'plex' as const, url: p.plex_url, token: p.plex_token } : null
+    // The Plex plug-in's own server and token, or the Jellyfin plug-in's address, API key and administrator sign-in (all in
+    // the vault), when it has them: Seerr signs in with that account. The owner's choice wins; with none, Plex.
+    mediaServer: async prefer => {
+      const none = {} as Record<string, string>
+      const [p, j] = await Promise.all([getSettings('plex').catch(() => none), getSettings('jellyfin').catch(() => none)])
+      const k = serversFromSettings(p, j)
+      return pickMediaServer(prefer, k.plex, k.jellyfin)
     },
   }
 }
@@ -2127,7 +2133,7 @@ export async function finishSeerr(jobId: string, owner: string, over: Partial<Wi
   const cred = await deps.credential(job.node)
   if (!cred) throw new Error(`No node login is stored for ${job.node}.`)
   const host = await nodeAddress(deps.client, job.node)
-  const detail = await arrFinishSeerr({ ip: job.ip, vault: { category: job.vaultItem.category, provider: job.vaultItem.provider } }, {
+  const detail = await arrFinishSeerr({ prefer: job.arrMediaPrefer, ip: job.ip, vault: { category: job.vaultItem.category, provider: job.vaultItem.provider } }, {
     arr: deps.arr, wait: deps.wait, readSecrets: deps.readSecrets, saveSecrets: deps.saveSecrets,
     sh: (script, timeoutMs) => deps.exec({ host, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} }),
   })

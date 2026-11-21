@@ -377,7 +377,7 @@ export const arrstackPlugin: Plugin = {
   manifest: {
     id:   'arrstack',
     name: 'Arr Stack',
-    description: 'The whole pipeline — Sonarr, Radarr, Prowlarr, qBittorrent and (optionally) Lidarr — as one view, with search across every indexer.',
+    description: 'The whole pipeline — Sonarr, Radarr, Prowlarr, qBittorrent and (optionally) Lidarr — as one view, with search across every indexer and the requests people make in Seerr.',
     kind: 'device',
     icon: '📺',
     // The whole page every 30 s; the grouped queue every few seconds through /api/plugins/arrstack/queue.
@@ -387,8 +387,8 @@ export const arrstackPlugin: Plugin = {
     endpoints: [
       { key: 'radarr',   label: 'Radarr',   baseUrlSetting: 'radarr_url',
         auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'radarr_key' } },
-      // Seerr (or Overseerr, Jellyseerr): only its settings are read, to know which folders requests arrive in.
-      { key: 'seerr',    label: 'Seerr',    baseUrlSetting: 'seerr_url',
+      // Seerr (formerly Jellyseerr and Overseerr): its requests and settings are read for the Requests tab and the folder sorter.
+      { key: 'seerr',    label: 'Seerr (formerly Jellyseerr and Overseerr)',    baseUrlSetting: 'seerr_url',
         auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'seerr_key' } },
       // Music. Lidarr's API is v1 (/api/v1/...), not v3.
       { key: 'lidarr',   label: 'Lidarr',   baseUrlSetting: 'lidarr_url',
@@ -406,9 +406,9 @@ export const arrstackPlugin: Plugin = {
       { key: 'lidarr_url',   label: 'Lidarr address',   type: 'url',    required: false,
         hint: 'Optional, for music: http://example-host:8686. Leave blank if you do not run Lidarr; add it from the Catalogue and this fills itself in.' },
       { key: 'lidarr_key',   label: 'Lidarr API key',   type: 'secret', required: false, hint: 'Settings → General → API Key. Use "Test Lidarr" after saving to check it.' },
-      { key: 'seerr_url',    label: 'Seerr address',    type: 'url',    required: false,
-        hint: 'Optional: Seerr, Overseerr or Jellyseerr. Lets the folder sorter see which folders requests arrive in.' },
-      { key: 'seerr_key',    label: 'Seerr API key',    type: 'secret', required: false, hint: 'Seerr → Settings → General → API Key.' },
+      { key: 'seerr_url',    label: 'Seerr address (formerly Jellyseerr and Overseerr)', type: 'url', required: false,
+        hint: 'Optional. Shows people\'s requests on the Requests tab, and lets the folder sorter see which folders they arrive in.' },
+      { key: 'seerr_key',    label: 'Seerr API key (formerly Jellyseerr and Overseerr)',    type: 'secret', required: false, hint: 'Seerr → Settings → General → API Key.' },
       { key: 'prowlarr_url', label: 'Prowlarr address', type: 'url',    required: false, hint: 'Enables Search across every indexer.' },
       { key: 'prowlarr_key', label: 'Prowlarr API key', type: 'secret', required: false },
       { key: 'qbit_url',     label: 'qBittorrent WebUI', type: 'url',   required: false,

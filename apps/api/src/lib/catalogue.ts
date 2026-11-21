@@ -148,6 +148,11 @@ export interface CatalogueRecipe {
    */
   setup?:      'pbs' | 'ghost' | 'haproxy' | 'fwdproxy' | 'k3s' | 'aptcache'
   /**
+   * Words people search for that the name does not hold ("google photos" for Immich). The Catalogue page's search reads
+   * these with the name and the summary.
+   */
+  keywords?:   string[]
+  /**
    * A reverse proxy HyperProx can drive: once it answers, the install adds it to the Proxy page as a Managed instance
    * of this kind (lib/proxy/managed-recipes.ts managedInstanceInput), so apps can be published through it from
    * HyperProx. The script gets a fresh secret in HPX_PROXY_SECRET for an API login it sets up (the instance keeps it

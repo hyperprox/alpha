@@ -23,7 +23,8 @@ import {
 } from './components'
 import { scriptEnv, vpnEnv, type VpnSettings } from './compose'
 import { configProblems, hostPathRefusal, judgeProbe, layoutOf, parseProbe, prepareScript, probeScript, sameFilesystem, unmountScript, type Layout, LAYOUT_LINE } from './storage'
-import { connectSeerr, runArrSetup, setupSteps, type ArrSetupDeps, type Http, type StepRef } from './setup'
+import type { MediaPrefer } from './media-server'
+import { connectSeerr, runArrSetup, seerrBlocker, setupSteps, type ArrSetupDeps, type Http, type StepRef } from './setup'
 
 export { ARR_RECIPE_ID, ARR_OPTIONS, ARR_RECIPE } from './recipe'
 export { realHttp, localAddressTo } from './net'
@@ -54,10 +55,14 @@ const CIDR_LIST = /^\s*[0-9a-fA-F:.]+\/\d{1,3}(\s*,\s*[0-9a-fA-F:.]+\/\d{1,3})*\
 const ONE_LINE = /^[^\u0000-\u001f\u007f]+$/
 
 /** Every rule across the options, after each passed its own kind. */
+/** The media server the owner chose for Seerr: plex, jellyfin, or blank for "whichever HyperProx knows, Plex first". */
+export const mediaPreferOf = (v: Record<string, string> | undefined): MediaPrefer => (v?.ARR_MEDIA_SERVER === 'plex' || v?.ARR_MEDIA_SERVER === 'jellyfin' ? v.ARR_MEDIA_SERVER : '')
+
 export function checkArrOptions(v: Record<string, string>): { errors: string[]; warnings: string[]; selection: Selection; layout?: Layout; vpn?: VpnSettings } {
   const selection = selectionOf(v)
   const sp = selectionProblems(selection)
   const errors = [...sp.errors], warnings = [...sp.warnings]
+  if (v.ARR_MEDIA_SERVER && v.ARR_MEDIA_SERVER !== 'plex' && v.ARR_MEDIA_SERVER !== 'jellyfin') errors.push('Seerr reads Plex or Jellyfin: pick one, or leave it to HyperProx.')
   const lo = layoutOf(v)
   errors.push(...lo.errors)
   let vpn: VpnSettings | undefined
@@ -331,6 +336,7 @@ async function setupAndPublish(o: Parameters<typeof arrRunSetup>[0], step: (id: 
   if (!arr) throw new Error('The Arr Stack\'s setup is not available here.')
   const out = await runArrSetup({
     ip: o.ip, selection: c.selection, admin: o.admin, vault: o.vault, vpnPortForwarding: Boolean(c.vpn?.portForwarding),
+    mediaPrefer: mediaPreferOf(o.options),
   }, step, { ...arr, sh: d.sh, wait: d.wait, saveSecrets: d.saveSecrets, readSecrets: d.readSecrets })
   for (const p of o.publish ?? []) {
     const app = appById(p.app)!
@@ -382,20 +388,22 @@ export function pickerFacts() {
  * "Finish Seerr", after the install: Seerr was left unstarted because no Plex server was known. With one now in the
  * Plex plug-in, start it, sign it in with that Plex account and connect it, all at once. The keys come from the vault.
  */
-export async function arrFinishSeerr(o: { ip: string; vault: { category: string; provider: string } }, d: {
+export async function arrFinishSeerr(o: { ip: string; vault: { category: string; provider: string }; prefer?: MediaPrefer }, d: {
   arr?: () => ArrDeps; sh: ArrSetupDeps['sh']; wait(ms: number): Promise<unknown>
   readSecrets: ArrSetupDeps['readSecrets']; saveSecrets: ArrSetupDeps['saveSecrets']
 }): Promise<string> {
   const arr = d.arr?.()
   if (!arr) throw new Error('HyperProx cannot reach this Arr Stack.')
-  const ms = await arr.mediaServer().catch(() => null)
-  if (!ms) throw new Error('HyperProx still knows no Plex server with a token. Add your Plex server and token to the Plex plug-in first.')
+  const ms = await arr.mediaServer(o.prefer).catch(() => null)
+  if (!ms) throw new Error('HyperProx still knows no Plex or Jellyfin server to sign Seerr in with. Add your Plex server and token to the Plex plug-in, or your Jellyfin server to the Jellyfin plug-in, first.')
+  const blocked = seerrBlocker(ms)
+  if (blocked) throw new Error(blocked)
   const v = await d.readSecrets(o.vault.category, o.vault.provider)
   const keys: Partial<Record<ArrAppId, string>> = {}
   for (const id of ['sonarr', 'radarr'] as const) if (v[`${id}_api_key`]) keys[id] = v[`${id}_api_key`]
   if (!keys.sonarr && !keys.radarr) throw new Error('This stack\'s Sonarr and Radarr keys are not in the vault.')
   const sel: Selection = { apps: [...(keys.sonarr ? ['sonarr' as const] : []), ...(keys.radarr ? ['radarr' as const] : []), 'seerr'], vpn: false }
-  const secrets = [...Object.values(v), ms.token]
+  const secrets = [...Object.values(v), ...(ms.kind === 'plex' ? [ms.token] : [ms.apiKey, ms.password ?? ''])].filter(Boolean)
   try {
     const detail = await connectSeerr(o.ip, sel, keys, ms, { ...arr, sh: d.sh, wait: d.wait, saveSecrets: d.saveSecrets, readSecrets: d.readSecrets })
     await d.saveSecrets(o.vault.category, o.vault.provider, { seerr_api_key: keys.seerr! })

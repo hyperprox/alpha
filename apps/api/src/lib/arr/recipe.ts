@@ -31,6 +31,8 @@ export const ARR_OPTIONS: RecipeOption[] = [
   { key: 'ARR_DOWNLOAD_GB', label: 'Room for downloads (GB)', kind: 'number', default: '100', min: 10, max: 100_000 },
   // Set by the preview only (a request's own value is dropped): the vault item holding this plan's VPN login.
   { key: 'ARR_VPN_REF', label: 'VPN login reference', kind: 'text', maxLength: 40 },
+  // Seerr reads one media server. Blank: whichever HyperProx knows, Plex first. Never a secret.
+  { key: 'ARR_MEDIA_SERVER', label: 'Media server for Seerr', kind: 'text', maxLength: 10 },
   { key: 'ARR_ADMIN_USER', label: 'Sign-in name', kind: 'username', maxLength: 32,
     hint: 'One sign-in for every app. Blank makes one up; the password is always generated.' },
 ]
@@ -41,6 +43,8 @@ export const ARR_RECIPE: CatalogueRecipe = {
   name: 'Arr Stack',
   summary: 'Sonarr, Radarr, Prowlarr and qBittorrent (and more if you want), in one container, set up and connected to each other for you.',
   category: 'media',
+  // Seerr is what people used to call Jellyseerr or Overseerr: they search for those names, or for "requests".
+  keywords: ['seerr', 'jellyseerr', 'overseerr', 'requests', 'request films and shows', 'media requests', 'sonarr', 'radarr', 'prowlarr', 'qbittorrent', 'torrent', 'downloader'],
   satisfies: { kind: 'plugin', id: 'arrstack', setting: 'sonarr_url' },
   port: 8989,
   healthPath: '/ping',

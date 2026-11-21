@@ -612,7 +612,7 @@ test("wizard: Seerr waiting is never told to be started by hand", async () => {
   const f = new FakeStack()
   const st = stepper()
   await runArrSetup(INPUT_S(sel(["sonarr", "prowlarr", "seerr"])), st.step, setupDeps(f))
-  assert.match(st.steps["arr-seerr"].detail!, /Connect Plex in HyperProx, then press "Finish Seerr"/)
+  assert.match(st.steps["arr-seerr"].detail!, /Connect Plex or Jellyfin in HyperProx, then press "Finish Seerr"/)
   assert.doesNotMatch(st.steps["arr-seerr"].detail!, /docker compose up/)
 })
 

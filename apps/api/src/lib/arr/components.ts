@@ -66,7 +66,7 @@ export const APPS: readonly ArrApp[] = [
   { id: 'lidarr', name: 'Lidarr', blurb: 'Finds and downloads music.',
     option: 'ARR_LIDARR', default: false, image: 'ghcr.io/linuxserver/lidarr:3.1.6.5079-ls48', port: 8686, hostPort: 8686,
     cost: { cores: 0.5, memoryMb: 512, diskGb: 2 }, health: '/ping', healthOk: [200] },
-  { id: 'seerr', name: 'Seerr', blurb: 'A page where family and friends ask for films and shows. It follows on from Overseerr and Jellyseerr.',
+  { id: 'seerr', name: 'Seerr', blurb: 'Seerr (formerly Jellyseerr and Overseerr): a page where family and friends ask for films and shows.',
     option: 'ARR_SEERR', default: false, image: 'ghcr.io/seerr-team/seerr:v3.5.1', port: 5055, hostPort: 5055,
     cost: { cores: 0.25, memoryMb: 384, diskGb: 1 }, health: '/api/v1/status', healthOk: [200] },
   { id: 'flaresolverr', name: 'FlareSolverr', blurb: 'Gets Prowlarr past the "checking your browser" page some indexers show.',

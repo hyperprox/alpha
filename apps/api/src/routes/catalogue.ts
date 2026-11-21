@@ -9,6 +9,7 @@
 
 import { sendFailure } from '../lib/failure'
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
+import { pickMediaServer, serversFromSettings } from '../lib/arr/media-server'
 import { CATALOGUE, CATEGORY_LABELS, findRecipe } from '../lib/catalogue'
 import {
   getInstallJob, readAdminCredential, previewInstall, applyPreview, removeFailedInstall, getPreview, cleanupCandidates,
@@ -142,6 +143,8 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       stack: r.stack ?? null,
       sizes: r.sizes ?? null,
       pointNetwork: Boolean(r.pointNetwork),
+      // The words people search for that the name does not hold.
+      keywords: r.keywords ?? [],
       // A recipe whose integration already has an address is not offered as a
       // fix for a problem the user does not have.
       installedAt,
@@ -378,16 +381,20 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
   // GET /wizard/arr — what the Arr Stack's picker shows: its apps, VPN providers, whether a Plex server is known for
   // Seerr, whether the Arr Stack plug-in already reads a stack, and the NFS storages the cluster already mounts.
   fastify.get('/wizard/arr', async (_req, reply) => {
-    const [plex, arr, storages] = await Promise.all([
+    const [plex, jelly, arr, storages] = await Promise.all([
       getSettings('plex').catch(() => ({} as Record<string, string>)),
+      getSettings('jellyfin').catch(() => ({} as Record<string, string>)),
       getSettings('arrstack').catch(() => ({} as Record<string, string>)),
       pve().fetchStrict<any[]>('/storage').catch(() => [] as any[]),
     ])
     const nas = (storages ?? []).filter((x: any) => x?.type === 'nfs' && typeof x.server === 'string' && typeof x.export === 'string')
       .map((x: any) => ({ storage: String(x.storage), server: String(x.server), export: String(x.export) }))
+    const known = serversFromSettings(plex, jelly)
     return reply.send({ success: true, data: {
       ...pickerFacts(),
-      mediaServer: plex.plex_url && plex.plex_token ? { kind: 'plex', url: plex.plex_url } : null,
+      // The server Seerr would sign in with if the owner chooses nothing (Plex first), and which ones HyperProx knows.
+      mediaServer: (() => { const m = pickMediaServer('', known.plex, known.jellyfin); return m ? { kind: m.kind, url: m.url } : null })(),
+      mediaServers: { plex: Boolean(known.plex), jellyfin: Boolean(known.jellyfin), jellyfinLogin: Boolean(known.jellyfin?.user) },
       pluginConfigured: Boolean(arr.sonarr_url),
       nas,
     } })

@@ -17,6 +17,7 @@
 
 import { APPS, CATEGORY, LIBRARY, appById, has, type ArrAppId, type Selection } from './components'
 import { ARR_DIR, qbitHost } from './compose'
+import { MEDIA_NAME, hostParts, mediaSettingsBody, type MediaPrefer, type MediaServer } from './media-server'
 
 export interface HttpAnswer { status: number; headers: Record<string, string>; body: string }
 export interface HttpRequest {
@@ -42,8 +43,11 @@ export interface ArrSetupDeps {
   savePluginSettings(id: string, values: Record<string, string>): Promise<void>
   /** The address HyperProx's own requests to ip:port come from, or null when it cannot tell. */
   localAddressTo(ip: string, port: number): Promise<string | null>
-  /** A Plex server HyperProx knows a token for, for Seerr's sign-in. */
-  mediaServer(): Promise<{ kind: 'plex'; url: string; token: string } | null>
+  /**
+   * The media server Seerr signs in with: a Plex server HyperProx knows a token for, or a Jellyfin server it knows an API key
+   * and an administrator's sign-in for. `prefer` is what the owner chose; with no choice, Plex when both are known.
+   */
+  mediaServer(prefer?: MediaPrefer): Promise<MediaServer | null>
   wait(ms: number): Promise<unknown>
 }
 
@@ -54,6 +58,8 @@ export interface ArrSetupInput {
   vault: { category: string; provider: string }
   /** Port forwarding through the VPN: qBittorrent is told its port from inside the shared network. */
   vpnPortForwarding?: boolean
+  /** Which media server the owner chose for Seerr; blank means Plex if known, else Jellyfin. */
+  mediaPrefer?: MediaPrefer
 }
 
 export interface ArrSetupResult { url: string; apps: Array<{ id: ArrAppId; name: string; url: string }>; notes: string[] }
@@ -78,7 +84,15 @@ export function setupSteps(s: Selection): Array<{ id: string; label: string }> {
 }
 
 /** Seerr is left unstarted until it can be claimed: a Seerr nobody has signed in to belongs to whoever opens it first. */
-export const SEERR_WAITING = 'Seerr is installed but not started: HyperProx knows no Plex server to sign it in with, and a Seerr nobody has signed in to belongs to whoever opens it first. Connect Plex in HyperProx, then press "Finish Seerr".'
+export const SEERR_WAITING = 'Seerr is installed but not started: HyperProx knows no Plex or Jellyfin server to sign it in with, and a Seerr nobody has signed in to belongs to whoever opens it first. Connect Plex or Jellyfin in HyperProx, then press "Finish Seerr".'
+export const SEERR_NEEDS_JELLYFIN_LOGIN = 'Seerr is installed but not started: Seerr\'s owner has to be a Jellyfin account, and the Jellyfin plug-in has no administrator sign-in saved yet. Add it to the Jellyfin plug-in (it is kept in the vault), then press "Finish Seerr".'
+
+/** Why Seerr cannot be signed in with this media server yet, or null when it can. */
+export function seerrBlocker(ms: MediaServer | null): string | null {
+  if (!ms) return SEERR_WAITING
+  if (ms.kind === 'jellyfin' && !(ms.user && ms.password)) return SEERR_NEEDS_JELLYFIN_LOGIN
+  return null
+}
 
 /** v3 for Sonarr and Radarr, v1 for Prowlarr and Lidarr. */
 const API: Partial<Record<ArrAppId, string>> = { sonarr: '/api/v3', radarr: '/api/v3', prowlarr: '/api/v1', lidarr: '/api/v1' }
@@ -427,10 +441,11 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
   // ── 11. Seerr ────────────────────────────────────────────────────────────
   if (has(s, 'seerr')) {
     st = step('arr-seerr')
-    const ms = await d.mediaServer().catch(() => null)
-    if (!ms) {
+    const ms = await d.mediaServer(input.mediaPrefer).catch(() => null)
+    const blocked = seerrBlocker(ms)
+    if (blocked || !ms) {
       st.status = 'skipped'
-      st.detail = SEERR_WAITING
+      st.detail = blocked ?? SEERR_WAITING
       notes.push(st.detail)
     } else {
       st.detail = await connectSeerr(ip, s, keys, ms, d)
@@ -498,28 +513,33 @@ async function provedClosed(id: ArrAppId, url: string, d: ArrSetupDeps, restart:
   fail(`${appById(id)!.name} still answers without signing in.`)
 }
 
-/** Seerr: its admin is the Plex account, then Plex, Sonarr and Radarr. Returns the step's detail. */
-export async function connectSeerr(ip: string, s: Selection, keys: Partial<Record<ArrAppId, string>>, ms: { url: string; token: string },
+/** Seerr: its admin is the media server's account (Plex or Jellyfin), then the media server, Sonarr and Radarr. Returns the step's detail. */
+export async function connectSeerr(ip: string, s: Selection, keys: Partial<Record<ArrAppId, string>>, ms: MediaServer,
   d: ArrSetupDeps): Promise<string> {
   const base = hostUrl(ip, 'seerr')
+  const blocked = seerrBlocker(ms)
+  if (blocked) fail(blocked)
   const start = await d.sh(`cd ${ARR_DIR} && docker compose up -d seerr >/dev/null && echo "@@up seerr yes"\n`, 180_000)
   if (!/@@up seerr yes/.test(start.output)) fail('Seerr did not start.')
   let up = false
   for (let i = 0; i < 36 && !up; i++) { await d.wait(5000); up = (await d.http({ method: 'GET', url: `${base}/api/v1/status` }).catch(() => null))?.status === 200 }
   if (!up) fail('Seerr did not answer within three minutes.')
-  // Signing in with the Plex token makes that Plex account Seerr's owner. Done at once, before anyone else can.
-  const auth = await d.http({ method: 'POST', url: `${base}/api/v1/auth/plex`, json: { authToken: ms.token } })
-  if (auth.status !== 200) fail(`Seerr did not accept the Plex sign-in (${auth.status}).`)
+  // Signing in with the media server's account makes that account Seerr's owner. Done at once, before anyone else can.
+  const host = hostParts(ms.url, ms.kind)
+  const auth = ms.kind === 'plex'
+    ? await d.http({ method: 'POST', url: `${base}/api/v1/auth/plex`, json: { authToken: ms.token } })
+    : await d.http({ method: 'POST', url: `${base}/api/v1/auth/jellyfin`, json: { username: ms.user, password: ms.password, hostname: host.ip, port: host.port, useSsl: host.useSsl, urlBase: host.urlBase } })
+  if (auth.status !== 200) fail(`Seerr did not accept the ${MEDIA_NAME[ms.kind]} sign-in (${auth.status}).`)
   const cookie = (auth.headers['set-cookie'] ?? '').split(';')[0]
   const key = markers((await d.sh(`grep -o '"apiKey": *"[^"]*"' ${ARR_DIR}/config/seerr/settings.json | head -n1 | sed 's/.*"\\([^"]*\\)"$/@@key seerr \\1/'\n`, 30_000)).output, 'key').seerr
   if (!key) fail('Seerr\'s API key could not be read.')
   keys.seerr = key
   const h = { 'X-Api-Key': key, ...(cookie ? { Cookie: cookie } : {}) }
-  const pu = new URL(ms.url)
   const ok = (a: HttpAnswer, what: string) => { if (a.status < 200 || a.status >= 300) fail(`${what} answered ${a.status}`); return parse(a) }
-  ok(await d.http({ method: 'POST', url: `${base}/api/v1/settings/plex`, headers: h, json: { ip: pu.hostname, port: Number(pu.port || (pu.protocol === 'https:' ? 443 : 32400)), useSsl: pu.protocol === 'https:' } }), 'Seerr\'s Plex settings')
-  const libs: any[] = ok(await d.http({ method: 'GET', url: `${base}/api/v1/settings/plex/library?sync=true`, headers: h }), 'Seerr\'s Plex libraries') ?? []
-  if (libs.length) ok(await d.http({ method: 'GET', url: `${base}/api/v1/settings/plex/library?enable=${libs.map(l => encodeURIComponent(String(l.id))).join(',')}`, headers: h }), 'Seerr\'s Plex libraries')
+  const name = MEDIA_NAME[ms.kind]
+  ok(await d.http({ method: 'POST', url: `${base}/api/v1/settings/${ms.kind}`, headers: h, json: mediaSettingsBody(ms) }), `Seerr's ${name} settings`)
+  const libs: any[] = ok(await d.http({ method: 'GET', url: `${base}/api/v1/settings/${ms.kind}/library?sync=true`, headers: h }), `Seerr's ${name} libraries`) ?? []
+  if (libs.length) ok(await d.http({ method: 'GET', url: `${base}/api/v1/settings/${ms.kind}/library?enable=${libs.map(l => encodeURIComponent(String(l.id))).join(',')}`, headers: h }), `Seerr's ${name} libraries`)
   const linked: string[] = []
   for (const id of (['sonarr', 'radarr'] as const)) {
     if (!has(s, id)) continue
@@ -540,7 +560,7 @@ export async function connectSeerr(ip: string, s: Selection, keys: Partial<Recor
   ok(await d.http({ method: 'POST', url: `${base}/api/v1/settings/initialize`, headers: h }), 'Finishing Seerr\'s setup')
   const pub = ok(await d.http({ method: 'GET', url: `${base}/api/v1/settings/public` }), 'Seerr\'s public settings')
   if (pub?.initialized !== true) fail('Seerr did not finish its setup.')
-  return `Signed in with your Plex account (its owner), reading Plex at ${pu.host}, sending requests to ${linked.join(' and ')}.`
+  return `Signed in with your ${name} account (its owner), reading ${name} at ${host.ip}:${host.port}, sending requests to ${linked.join(' and ')}.`
 }
 
 /** Asks an internal app (no port outside Docker) on its Compose-network address, from the container. */
