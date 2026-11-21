@@ -20,6 +20,7 @@ import {
 import pg from './pages.module.css'
 import { PlexSignIn } from '@/components/plugins/plex/SignIn'
 import { LanGuard } from './LanGuard'
+import { RouterControl } from './RouterControl'
 
 // ── Plex ─────────────────────────────────────────────────────────────────────
 
@@ -349,6 +350,7 @@ export function RouterView({ v, onChanged }: { v: RouterVisual; onChanged?: () =
         {v.subnets.length > 4 && <p className={s.note} style={{ color: 'var(--text-muted)' }}>{v.subnets.length - 4} more subnets are in Details.</p>}
       </Panel>
       <LanGuard lan={v.lan} onChanged={onChanged} />
+      <RouterControl onChanged={onChanged} />
       <Cols>
         <Panel title="Router health">
           <div className={s.rings}>

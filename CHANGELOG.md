@@ -21,6 +21,21 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-21 — MikroTik: manage the router from HyperProx
+
+### New
+- **Fixed addresses.** Every device on the MikroTik page that does not have a fixed address has a "Make this address permanent" button, so the router always gives it the same address. You can also edit or remove a fixed address. HyperProx refuses an address that is already taken, that belongs to the router, or that is outside the network the router hands out.
+  - Technical: `POST /api/plugins/mikrotik/change/plan` and `/change/apply` with `lease.make-static|add|edit|remove`; the router's `make-static` command, or a static lease added on the DHCP server that serves the device's link.
+- **Port forwards you can read and change.** Forwards are listed in plain words, like "Outside port 443 → nas (10.0.0.20) port 443, TCP". You can add one by picking a device, switch one off or on, edit it, and remove it. HyperProx warns about forwards that clash with an existing one, and asks for an extra tick before opening a risky port such as Remote Desktop, SSH, file sharing, a database, Proxmox or Docker. If the router has no rule that lets your own devices reach a forward through the public address, it tells you; it does not add one.
+  - Technical: `forward.add|edit|toggle|remove`, `dst-nat` rules on the router's `WAN` interface list (or its one internet link). The risky-port tick travels in the request body (`riskTick`), so the confirmation covers it.
+- **Block the internet for one device, optionally on a schedule.** The device keeps its own network and the router; only its way out is cut, for example 22:00 to 06:00 on school nights. Give it back with one button.
+  - Technical: `block.block|unblock|schedule`: a forward-chain drop by MAC (or address) towards the internet, at the top of the chain, with the schedule in the rule's `time` field, found again by a `HyperProx block:` comment.
+- **A safety net under every change.** Before anything is changed HyperProx saves the router's settings (the last 20 are kept) and puts a safety switch on the router itself: if HyperProx cannot confirm the change within 90 seconds, the router undoes it by itself. After the change HyperProx checks that it can still reach the router, that its own way in is still on, that the change really shows, and that the internet still works if it did before; if not, it puts everything back.
+  - Technical: a `/system/script` holding the inverse commands plus a `/system/scheduler` entry commented `HyperProx auto-undo <id>`, removed on success. Backups are `POST /rest/export` text kept in `data/mikrotik/<router>/backups`, never sent to the page.
+- **A lock-out guard.** HyperProx refuses a change that would cut it off from the router, such as turning off the router's web or API service, removing the address or link it reaches the router on, changing its own router user, or adding a firewall rule that drops your network's access to the router's management services.
+- **Change history with Undo.** The MikroTik page lists every change HyperProx made, newest first, with who made it, the settings backup, and an Undo button that puts back exactly what that change did, with the same safety net.
+  - Technical: `GET /api/plugins/mikrotik/control` and `POST /api/plugins/mikrotik/changes/<id>/undo`. Admin only, confirmed in the page with a summary of the exact plan, bound to the request body, audited before the first change, and refused for API tokens.
+
 ## 2026-11-21 — MikroTik: where each device is plugged in
 
 ### New
