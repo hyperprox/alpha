@@ -27,6 +27,8 @@ import { isNoLoginText } from '@/lib/node-login'
 import { updatesPageParts } from '@/lib/updates-cluster'
 import { RebootsCard } from '@/components/updates/RebootsCard'
 import { nodeWaitText, rebootLikely } from '@/lib/auto-reboots'
+import { SimpleUpdates } from '@/components/updates/SimpleUpdates'
+import { CHECKING_NOW_TEXT, planFacts, EMPTY_SELECTION_TEXT, UP_TO_DATE_TEXT, autoInstallLine, confirmSentence, freshness, plainRefusal, rowFor, statusLine, updateNow } from '@/lib/updates-simple'
 
 const ACTIVE = ['running', 'paused', 'awaiting-confirm']
 const LOG_CAP = 500
@@ -34,8 +36,7 @@ const LOG_CAP = 500
 // The backend may land after this page; a 404 is "not there yet", not a failure to alarm about.
 function apiError(r: ApiResult, what: string): string {
   if (r.status === 404) return `The Updates API is not available on this server yet (${what}).`
-  if (r.status === 403) return 'Updates is limited to admins.'
-  return r.error ?? `Could not load ${what}`
+  return plainRefusal(r, `load ${what}`)
 }
 
 // Whether any of a guest's docker images has a newer one waiting.
@@ -84,6 +85,15 @@ export default function UpdatesPage() {
   const [reboots, setReboots] = useState<UpdatesRebootStatus | null>(null)
   const [rebootsErr, setRebootsErr] = useState<string | null>(null)
   const [rebootNext, setRebootNext] = useState(false)
+  // The simple view: what "Update now" is doing, its one confirmation, the automatic-install switch, and Advanced.
+  const [phase, setPhase] = useState<string | null>(null)
+  const [simpleConfirm, setSimpleConfirm] = useState<{ ids: string[]; plan: UpdatesPlan; planHash: string } | null>(null)
+  const freshTree = useRef<UpdatesTargetTree | null>(null)
+  const confirmAnswer = useRef<((yes: boolean) => void) | null>(null)
+  const latestCheck = useRef<UpdatesCheckStatus | null>(null)
+  const [auto, setAuto] = useState<{ enabled: boolean; time: string } | null>(null)
+  const [advanced, setAdvanced] = useState(false)
+  useEffect(() => { try { setAdvanced(localStorage.getItem('hx-updates-advanced') === '1') } catch { /* private window */ } }, [])
 
   // The socket handlers outlive any one render, so they read the active job through a ref.
   const activeRef = useRef<UpdatesJob | null>(null)
@@ -93,12 +103,17 @@ export default function UpdatesPage() {
 
   const loadCheck = useCallback(async () => {
     const r = await apiJson<UpdatesCheckStatus>('/api/updates/check')
-    if (r.ok && r.body) { setCheck(r.body); setCheckErr(null) } else setCheckErr(apiError(r, 'the daily check'))
+    if (r.ok && r.body) { latestCheck.current = r.body; setCheck(r.body); setCheckErr(null) } else setCheckErr(apiError(r, 'the daily check'))
   }, [])
 
   const loadReboots = useCallback(async () => {
     const r = await apiJson<UpdatesRebootStatus>('/api/updates/reboots')
     if (r.ok && r.body) { setReboots(r.body); setRebootsErr(null) } else setRebootsErr(apiError(r, 'automatic reboots'))
+  }, [])
+
+  const loadAuto = useCallback(async () => {
+    const r = await apiJson<{ enabled: boolean; time: string }>('/api/updates/auto-install')
+    setAuto(r.ok && r.body ? { enabled: r.body.enabled, time: r.body.time } : null)
   }, [])
 
   const loadPolicy = useCallback(async () => {
@@ -164,8 +179,8 @@ export default function UpdatesPage() {
 
   useEffect(() => {
     if (!allowed) return
-    loadPolicy(); loadInventory(false).then(() => loadReboots()); loadPlan(); loadJobs(); loadCheck()
-  }, [allowed, loadPolicy, loadInventory, loadPlan, loadJobs, loadCheck, loadReboots])
+    loadPolicy(); loadInventory(false).then(() => loadReboots()); loadPlan(); loadJobs(); loadCheck(); loadAuto()
+  }, [allowed, loadAuto, loadPolicy, loadInventory, loadPlan, loadJobs, loadCheck, loadReboots])
 
   // The reboot card follows a rolling reboot closely, and otherwise looks again every minute (the window moves on).
   useEffect(() => {
@@ -181,6 +196,13 @@ export default function UpdatesPage() {
     return () => clearInterval(t)
   }, [check?.running, loadCheck])
 
+  // A check that just finished leaves the page's machine list current too (Update everything reads it).
+  const wasChecking = useRef(false)
+  useEffect(() => {
+    if (wasChecking.current && check && !check.running) { loadInventory(true); loadPlan() }
+    wasChecking.current = !!check?.running
+  }, [check?.running, check, loadInventory, loadPlan])
+
   useEffect(() => { if (allowed) loadPlan() }, [allowed, loadPlan])
 
   // A ticked row the tree no longer offers (its update landed, or it can no longer be chosen) is unticked.
@@ -192,6 +214,7 @@ export default function UpdatesPage() {
 
   // The order the ticked rows would run in, from the inventory as last read. Read-only; shown live under the tree.
   const previewOf = useCallback(async (ids: string[]): Promise<{ plan?: UpdatesPlan; error?: string }> => {
+    if (!ids.length) return { error: EMPTY_SELECTION_TEXT }
     const approve = tree ? approvalsFor(tree.targets, new Set(ids)) : []
     const r = await apiJson<UpdatesPlan>('/api/updates/preview', 'POST', { select: ids, approve })
     return r.ok && r.body ? { plan: r.body } : { error: apiError(r, 'the order of the run') }
@@ -279,7 +302,7 @@ export default function UpdatesPage() {
   // "Update this", "Update selected", and the old "Run updates" (now: choose everything, then the same): the order
   // first, in a confirmation, then the run once you confirm it.
   const askToRun = async (ids: string[]) => {
-    if (!ids.length) { setNotice({ tone: 'info', text: 'Nothing can be updated right now.' }); return }
+    if (!ids.length) { void nothingToUpdate(); return }
     setBusy(true); setNotice(null)
     const r = await previewOf(ids)
     setBusy(false)
@@ -288,12 +311,13 @@ export default function UpdatesPage() {
     else setNotice({ tone: 'crit', text: r.error ?? 'Could not read the order of the run' })
   }
 
-  const runChosen = async (given?: { ids: string[]; plan: UpdatesPlan }) => {
+  const runChosen = async (given?: { ids: string[]; plan: UpdatesPlan }, autoReboot?: boolean) => {
     const c = given ?? confirmRun
     if (!c) return
+    const rb = autoReboot ?? rebootNext
     setConfirmRun(null); setBusy(true); setNotice(null)
     const approve = tree ? approvalsFor(tree.targets, new Set(c.ids)) : []
-    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode: 'run', select: c.ids, approve, ...(rebootNext && !remote ? { autoReboot: true } : {}) }, IN_PAGE)
+    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode: 'run', select: c.ids, approve, ...(rb && !remote ? { autoReboot: true } : {}) }, IN_PAGE)
     setBusy(false)
     if (!r.ok || !r.body?.job) {
       if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'the run') })
@@ -301,7 +325,7 @@ export default function UpdatesPage() {
     }
     setChosen(new Set())
     setLogs([]); setActive(r.body.job)
-    if (rebootNext) loadReboots()
+    if (rb) loadReboots()
   }
 
   // --- automatic reboots ---
@@ -329,13 +353,23 @@ export default function UpdatesPage() {
     loadReboots()
   }
 
+  // Nothing is ticked or offered. Never send an empty selection: say so in plain words and read the machines again
+  // (a check, as Check now does) unless a complete, recent check already found nothing.
+  const nothingToUpdate = async () => {
+    const row = rowFor(latestCheck.current ?? check, cluster.id)
+    if (freshness(row) === 'fresh' && !(row?.available)) { setNotice({ tone: 'info', text: UP_TO_DATE_TEXT }); return }
+    setNotice({ tone: 'info', text: CHECKING_NOW_TEXT })
+    if (!check?.running) await checkNow(true)
+  }
+
   const runEverything = () => {
-    if (!tree) return
+    if (!tree) { void nothingToUpdate(); return }
     void askToRun(helperSelection(tree.targets, scope === 'guests' ? 'guests' : 'everything'))
   }
 
   const start = async (mode: 'run' | 'dry-run') => {
     if (mode === 'run') return runEverything()
+    if (tree && !helperSelection(tree.targets, scope === 'guests' ? 'guests' : 'everything').length) return void nothingToUpdate()
     setBusy(true); setNotice(null)
     const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode, scope })
     setBusy(false)
@@ -392,12 +426,70 @@ export default function UpdatesPage() {
     setActive(a => (a ? { ...r.body!.job, steps: r.body!.job.steps?.length ? r.body!.job.steps : a.steps } : r.body!.job))
   }
 
-  const checkNow = async () => {
-    setNotice(null)
+  const checkNow = async (keepNotice = false) => {
+    if (!keepNotice) setNotice(null)
     const r = await apiJson<UpdatesCheckStatus>('/api/updates/check', 'POST')
-    if (r.ok && r.body) setCheck(r.body)
+    if (r.ok && r.body) { latestCheck.current = r.body; setCheck(r.body) }
     else if (r.status === 409) loadCheck()
-    else setNotice({ tone: 'crit', text: apiError(r, 'the check') })
+    else setNotice({ tone: 'crit', text: plainRefusal(r, 'start the check') })
+    return r
+  }
+
+  // --- the simple view ---
+  const sleepMs = (ms: number) => new Promise<void>(res => setTimeout(res, ms))
+  const checkAndWait = async (): Promise<boolean> => {
+    const r = await apiJson<UpdatesCheckStatus>('/api/updates/check', 'POST')
+    if (!r.ok && r.status !== 409 && r.status !== 429) { setNotice({ tone: 'crit', text: plainRefusal(r, 'start the check') }); return false }
+    if (r.ok && r.body) { latestCheck.current = r.body; setCheck(r.body) }
+    // Follow it until it is over (at most half an hour); a check that is too soon after the last one is used as it is.
+    for (let i = 0; i < 600; i++) {
+      const s = await apiJson<UpdatesCheckStatus>('/api/updates/check')
+      if (s.ok && s.body) { latestCheck.current = s.body; setCheck(s.body); if (!s.body.running) return true }
+      await sleepMs(3000)
+    }
+    return false
+  }
+  const readSelection = async (): Promise<string[]> => {
+    const t = await apiJson<UpdatesTargetTree>('/api/updates/targets?refresh=1')
+    if (!t.ok || !t.body) { setNotice({ tone: 'crit', text: plainRefusal(t, 'read the machines') }); return [] }
+    freshTree.current = t.body
+    setTree(t.body); setTreeErr(null)
+    loadInventory(false)
+    return helperSelection(t.body.targets, 'everything')
+  }
+  const updateNowPressed = async () => {
+    if (busy || phase) return
+    await updateNow({
+      row: () => rowFor(latestCheck.current ?? check, cluster.id),
+      checkAndWait, readSelection,
+      rowAfter: async () => rowFor(latestCheck.current, cluster.id),
+      preview: async ids => {
+        const approve = approvalsFor((freshTree.current ?? tree)?.targets ?? [], new Set(ids))
+        const r = await apiJson<UpdatesPlan & { planHash?: string }>('/api/updates/preview', 'POST', { select: ids, approve })
+        if (!r.ok || !r.body?.planHash) { if (!r.ok) setNotice({ tone: 'crit', text: plainRefusal(r, 'work out the plan') }); return null }
+        return { plan: r.body, planHash: r.body.planHash }
+      },
+      confirm: (ids, pv) => new Promise<boolean>(res => { confirmAnswer.current = res; setSimpleConfirm({ ids, plan: pv.plan, planHash: pv.planHash }) }),
+      start: async (ids, planHash) => {
+        setBusy(true)
+        // The tree read just now, not the one this render closed over (it may be older).
+        const approve = approvalsFor((freshTree.current ?? tree)?.targets ?? [], new Set(ids))
+        const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode: 'run', select: ids, approve, planHash, ...(!remote ? { autoReboot: true } : {}) }, IN_PAGE)
+        setBusy(false)
+        if (!r.ok || !r.body?.job) { if (!adoptConflict(r)) setNotice({ tone: 'crit', text: plainRefusal(r, 'start the update') }); return }
+        setChosen(new Set()); setLogs([]); setActive(r.body.job); loadReboots()
+      },
+      say: (text, kind) => setNotice(text ? { tone: kind ?? 'info', text } : null),
+      phase: setPhase,
+    })
+  }
+  const answerSimple = (yes: boolean) => { const f = confirmAnswer.current; confirmAnswer.current = null; setSimpleConfirm(null); f?.(yes) }
+  const toggleAuto = async (on: boolean) => {
+    setBusy(true); setNotice(null)
+    const r = await apiJson<{ enabled: boolean; time: string }>('/api/updates/auto-install', 'PUT', { enabled: on })
+    setBusy(false)
+    if (!r.ok) setNotice({ tone: 'crit', text: plainRefusal(r, 'change that setting') })
+    loadAuto()
   }
 
 
@@ -437,8 +529,26 @@ export default function UpdatesPage() {
   const level: Tone = security ? 'crit' : behind || appsWith.length ? 'warn' : 'good'
   const verdict = !inv ? 'Reading the inventory' : inv.notice ? 'Not every guest could be read' : security ? 'Security updates waiting' : behind || appsWith.length ? 'Updates are waiting' : 'Everything is current'
 
+  const row = rowFor(check, cluster.id)
+  const shown = statusLine({ row, checking: !!check?.running, phase, job: active, loaded: !!check || !!checkErr })
+  const lastJob = inactiveJobs.find(j => j.trigger !== 'dry-run') ?? null
+  const buttonLabel = phase ?? (active?.status === 'running' ? 'Updating…' : check?.running ? 'Checking…' : 'Update now')
+
   return (
     <Page remote={remote}>
+      <ClusterHeader c={cluster} />
+
+      <SimpleUpdates status={shown} buttonLabel={buttonLabel} message={notice}
+        canUpdate={!!policy?.loaded && !jobActive && !check?.running && !phase}
+        onUpdateNow={() => void updateNowPressed()}
+        auto={!remote && auto ? { enabled: auto.enabled, line: autoInstallLine(auto.time, reboots), canChange: true } : null}
+        onToggleAuto={on => void toggleAuto(on)}
+        job={active} lastJob={lastJob} onJobAction={v => void jobAction(v)} busy={busy} />
+      {policy && !policy.loaded && <Notice tone="warn">Updates are off until the policy file loads.</Notice>}
+
+      <details open={advanced} onToggle={e => { const o = (e.currentTarget as HTMLDetailsElement).open; setAdvanced(o); try { localStorage.setItem('hx-updates-advanced', o ? '1' : '0') } catch { /* ignore */ } }}>
+        <summary className="cursor-pointer select-none py-2 text-sm font-semibold" style={{ color: 'var(--text-soft)' }}>Advanced</summary>
+        <div className="mt-3 space-y-5">
       <HudHeader level={2} eyebrow={`Manage · ${cluster.name}`} title={<>{verdict} {tag}</>} label="Updates overview"
         ring={{ value: total ? (total - behind) / total : 0, text: inv ? `${behind}` : '…', label: 'machines with updates pending' }}
         chips={[
@@ -454,12 +564,8 @@ export default function UpdatesPage() {
         </p>
       </HudHeader>
 
-      <ClusterHeader c={cluster} />
-
       <PolicyStrip policy={policy} error={errs.policy ?? null} busy={busy} activeJob={jobActive} refreshing={refreshing}
                    onRefresh={refresh} onRun={start} scope={scope} onScope={setScope} />
-
-      {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
 
       {inv?.notice && <Notice tone="warn">{inv.notice}</Notice>}
 
@@ -472,7 +578,7 @@ export default function UpdatesPage() {
         </Notice>
       )}
 
-      <CheckPanel status={check} error={checkErr} busy={busy} onCheck={checkNow} current={cluster.id} />
+      <CheckPanel status={check} error={checkErr} busy={busy} onCheck={() => void checkNow()} current={cluster.id} />
 
       {/* HyperProx's own version and update: not on a remote's page (it updates this install, nothing on a remote). */}
       {parts.selfUpdate && <SelfUpdatePanel />}
@@ -544,6 +650,8 @@ export default function UpdatesPage() {
         {errs.jobs ? <Notice tone="warn">{errs.jobs}</Notice>
           : <History jobs={inactiveJobs} detail={detail} expanded={expanded} onToggle={toggleHistory} />}
       </Panel>
+        </div>
+      </details>
 
       {rollback && active && (
         <ConfirmDialog title={`Roll ${rollback} back on ${cluster.name}?`} onClose={() => setRollback(null)}>
@@ -582,6 +690,19 @@ export default function UpdatesPage() {
           <div className="flex justify-end gap-2">
             <Btn kind="danger" onClick={() => void doReboot()} disabled={remote && (!rebootPv || !rebootPv.standalone)}>Reboot {reboot.node}</Btn>
             <Btn onClick={() => setReboot(null)}>Cancel</Btn>
+          </div>
+        </ConfirmDialog>
+      )}
+
+      {simpleConfirm && (
+        <ConfirmDialog title="Update now?" onClose={() => answerSimple(false)}>
+          <div>{tag}</div>
+          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
+            {confirmSentence({ facts: planFacts(simpleConfirm.plan, t => { const g = (freshTree.current ?? tree)?.targets.find(x => String(x.vmid) === t); return g ? g.label : t }), remote, reboots })}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Btn kind="primary" onClick={() => answerSimple(true)}>Update now</Btn>
+            <Btn onClick={() => answerSimple(false)}>Cancel</Btn>
           </div>
         </ConfirmDialog>
       )}

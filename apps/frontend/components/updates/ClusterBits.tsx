@@ -9,6 +9,7 @@ import { usePathname } from 'next/navigation'
 import type { UpdatesCheckCluster, UpdatesCheckStatus, UpdatesClusterRef, UpdatesRebootPreview } from '@hyperprox/types'
 import { pageClusterId } from '@/lib/api'
 import { useClusters, clusterColor, clusterInk, ago } from '@/lib/clusters'
+import { partialWhy, rowFor } from '@/lib/updates-simple'
 import { Badge, Btn, Empty, Notice, Panel, fmtTime } from './ui'
 
 export function useUpdatesCluster(): UpdatesClusterRef & { loaded: boolean; all: UpdatesClusterRef[] } {
@@ -70,6 +71,8 @@ function checkLine(r: UpdatesCheckCluster): string {
 export function CheckPanel({ status, error, busy, onCheck, current }: {
   status: UpdatesCheckStatus | null; error: string | null; busy: boolean; onCheck: () => void; current: string
 }) {
+  const mine = rowFor(status, current)
+  const incomplete = !!mine && (mine.result !== 'ok' || mine.unread.length > 0 || !!mine.notice)
   return (
     <Panel title="Daily check" right={
       <div className="flex flex-wrap items-center gap-2">
@@ -77,7 +80,7 @@ export function CheckPanel({ status, error, busy, onCheck, current }: {
           Read-only: refreshes package lists and asks apt what it would do. {status?.nextRun ? `Next ${fmtTime(status.nextRun)}.` : ''}
         </span>
         <span title={status?.manualAfter && Date.parse(status.manualAfter) > Date.now() ? `Manual checks are at least 15 minutes apart; the next can start ${fmtTime(status.manualAfter)}.` : undefined}>
-          <Btn small onClick={onCheck} disabled={busy || !!status?.running || !!status?.blocked || (!!status?.manualAfter && Date.parse(status.manualAfter) > Date.now())}>{status?.running ? 'Checking…' : 'Check now'}</Btn>
+          <Btn small kind={incomplete ? 'primary' : 'ghost'} onClick={onCheck} disabled={busy || !!status?.running || !!status?.blocked || (!!status?.manualAfter && Date.parse(status.manualAfter) > Date.now())}>{status?.running ? 'Checking…' : 'Check now'}</Btn>
         </span>
       </div>
     }>
@@ -92,6 +95,9 @@ export function CheckPanel({ status, error, busy, onCheck, current }: {
                 <ClusterTag c={r.cluster} />
                 {r.security > 0 && <Badge tone="crit">security</Badge>}
                 <span style={{ color: r.result === 'skipped' ? 'var(--warn-2)' : 'var(--text)' }}>{checkLine(r)}{r.reason && r.result === 'partial' ? ` ${r.reason}.` : ''}{r.note ? ` ${r.note}` : ''}</span>
+                {(r.result !== 'ok' || r.unread.length > 0 || r.notice) && partialWhy(r) && (
+                  <span className="basis-full text-xs" style={{ color: 'var(--text-muted)' }}>Why: {partialWhy(r)}</span>
+                )}
                 {r.cluster.id !== current && <Link href={updatesHref(r.cluster)} className="ml-auto text-xs font-semibold" style={{ color: clusterColor(r.cluster.kind) }}>Open ›</Link>}
               </li>
             ))}
