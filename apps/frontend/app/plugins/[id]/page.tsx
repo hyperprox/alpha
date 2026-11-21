@@ -24,6 +24,8 @@ import { WebProxyPage } from '@/components/plugins/webproxy/WebProxyPage'
 import { ThreeProxyPage } from '@/components/plugins/fwdproxy/ThreeProxyPage'
 import { K3sPage } from '@/components/plugins/k3s/K3sPage'
 import { AptCachePage } from '@/components/plugins/aptcache/AptCachePage'
+import { ImmichPage } from '@/components/plugins/immich/ImmichPage'
+import { OpenWebuiPage } from '@/components/plugins/openwebui/OpenWebuiPage'
 import { HudHeader, styles as vs, type StatChip } from '@/components/visual/kit'
 import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
@@ -545,5 +547,7 @@ export default function PluginPage(props: { params: Promise<{ id: string }> }) {
   if (params.id === '3proxy') return <ThreeProxyPage />
   if (params.id === 'k3s') return <K3sPage />
   if (params.id === 'apt-cacher-ng') return <AptCachePage />
+  if (params.id === 'immich') return <ImmichPage />
+  if (params.id === 'openwebui') return <OpenWebuiPage />
   return params.id === 'home-assistant' ? <HomeAssistantPage /> : <PluginDetailPage params={params} />
 }

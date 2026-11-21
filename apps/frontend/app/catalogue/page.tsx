@@ -17,6 +17,7 @@ import { alpha } from '@/lib/theme'
 import { IN_PAGE } from '@/lib/confirm-bus'
 import { apiJson } from '@/lib/api'
 import { InstallWizard, type WizardRecipe } from '@/components/catalogue/InstallWizard'
+import { matchesSearch } from '@/components/catalogue/search'
 import { Page, HudHeader, Panel, Pill, Tiles, styles } from '@/components/visual/kit'
 import { RunSteps, HORIZONTAL_MAX } from '@/components/visual/RunSteps'
 import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
@@ -74,6 +75,7 @@ export default function CataloguePage() {
   // Settings the wizard starts from: an extra Unmanic worker or Tdarr node starts from the main one's address.
   const [wizardOpts, setWizardOpts] = useState<Record<string, string> | undefined>(undefined)
   const [category, setCategory] = useState<string>('all')
+  const [query, setQuery] = useState('')
   const [cleaning, setCleaning] = useState(false)
   // Arr Stacks whose Seerr waits for a Plex server, and the one being finished.
   const [seerrJobs, setSeerrJobs] = useState<Array<{ jobId: string; vmid?: number; node?: string; ip?: string }>>([])
@@ -176,7 +178,7 @@ export default function CataloguePage() {
   const configured = recipes.filter(r => r.installedAt || (running?.[r.id]?.length ?? 0) > 0).length
   const unfinished = leftovers.filter(l => l.jobId !== job?.jobId)
   const categories = [...new Set(recipes.map(r => r.category))]
-  const shown = category === 'all' ? recipes : recipes.filter(r => r.category === category)
+  const shown = (category === 'all' ? recipes : recipes.filter(r => r.category === category)).filter(r => matchesSearch(r, query))
 
   return (
     <Page>
@@ -392,6 +394,12 @@ export default function CataloguePage() {
         <span style={{ flex: 1 }}><b>Websites</b> have their own section: a new static site, WordPress or Ghost, adding one you already run, and their metrics.</span>
         <span aria-hidden style={{ color: ACCENT }}>→</span>
       </Link>
+      <div style={{ marginBottom: 12 }}>
+        <input type="search" value={query} onChange={e => setQuery(e.target.value)} aria-label="Search the catalogue"
+          placeholder="Search: photos, chatgpt, smart home…" autoCapitalize="none" spellCheck={false}
+          style={{ width: '100%', maxWidth: 420, minHeight: 40, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--ground-inset)', color: 'var(--text)' }} />
+        {query.trim() && shown.length === 0 && <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--text-dim)' }}>Nothing matches &ldquo;{query.trim()}&rdquo;. Try a plainer word, or clear the search.</p>}
+      </div>
       {categories.length > 1 && (
         <div role="group" aria-label="Filter by category" className={styles.row} style={{ flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
           {['all', ...categories].map(c => (
@@ -422,7 +430,7 @@ export default function CataloguePage() {
                 { label: 'GB disk', value: r.defaults.diskGb },
                 { label: 'port', value: r.port },
               ]} />
-              {r.needsDocker && <div style={{ marginTop: 8 }}><Pill tone="violet">docker</Pill></div>}
+              {(r.needsDocker || r.vm) && <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>{r.needsDocker && <Pill tone="violet">docker</Pill>}{r.vm && <Pill tone="violet">virtual machine</Pill>}</div>}
             </div>
 
             {r.notes.length > 0 && (

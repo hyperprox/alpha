@@ -17,6 +17,7 @@ import { ArrPicker, type ArrNames, type ArrVpn } from './ArrPicker'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 import { PbsLocation } from './PbsLocation'
 import { PublishBlock, type PublishChoice } from './PublishBlock'
+import { UsbPicker } from './UsbPicker'
 import { BalanceOnInstall } from '@/components/plugins/haproxy/BalanceOnInstall'
 import { lbBody, lbProblems, type LbForm } from '@/components/plugins/haproxy/logic'
 import { NodeHardware, TranscodePicker, isTcRecipe, type TcKind } from './TranscodePicker'
@@ -37,12 +38,27 @@ export interface WizardRecipe {
   stack?: string | null
   /** A DNS blocker: the result page says how to point the network at it. */
   pointNetwork?: boolean
+  /** The words people search for, and whether the wizard offers a public name; a virtual machine says so. */
+  keywords?: string[]
+  publishable?: boolean
+  vm?: boolean
 }
 
 export interface RecipeOption {
   key: string; label: string; hint?: string; placeholder?: string
   kind: 'text' | 'url' | 'email' | 'username' | 'gitref' | 'path' | 'number' | 'boolean'
   required?: boolean; default?: string; min?: number; max?: number; maxLength?: number
+  /** A fixed list of answers, shown as a menu. */
+  choices?: Array<{ value: string; label: string }>
+  /** Set by the server's own preview: never asked. */
+  hidden?: boolean
+  /** Asked only while another option has one of these values. */
+  showWhen?: { key: string; value: string | string[] }
+}
+
+/** The options the person is asked: not the ones the preview fills in, and not the ones another answer hides. */
+export function visibleOptions(all: RecipeOption[], values: Record<string, string>): RecipeOption[] {
+  return all.filter(o => !o.hidden && (!o.showWhen || ([] as string[]).concat(o.showWhen.value).includes(values[o.showWhen.key] ?? '')))
 }
 
 interface Storage { storage: string; type: string; shared: boolean; freeGb: number; totalGb?: number; content: string[] }
@@ -118,7 +134,8 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
   // Step 1: the recipe's own settings, if it has any (a site title, a git repository).
   // The Arr Stack picks its apps and library in a panel of its own (ArrPicker), with its options held apart.
   const isTc = isTcRecipe(recipe)
-  const options = recipe.id === 'arr-stack' || isTc ? [] : recipe.options ?? []
+  // The USB devices are picked from the node's own list in step 3 (UsbPicker), not typed here.
+  const options = (recipe.id === 'arr-stack' || isTc ? [] : recipe.options ?? []).filter(o => !o.hidden && o.key !== 'HA_USB')
   const [opts, setOpts] = useState<Record<string, string>>(() => Object.fromEntries(options.map(o => [o.key, o.default ?? ''])))
   // Proxmox Backup Server asks where its backups live in a panel of its own (PbsLocation).
   const isPbs = recipe.id === 'proxmox-backup-server'
@@ -303,7 +320,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
     if (step === 2) return Boolean(selected?.verdict.eligible && storage)
     if (step === 3) {
       if (typeof vmid !== 'number' || !hostname || !bridge) return false
-      if (recipe.pointNetwork && publish === undefined) return false
+      if ((recipe.pointNetwork || recipe.publishable) && publish === undefined) return false
       if (identity?.vmid && !identity.vmid.free) return false
       if (mode === 'static' && (!ip || (identity?.ip?.problems.length ?? 0) > 0)) return false
       if (unknowns.length && !addressAck) return false
@@ -321,7 +338,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
       ...(mode === 'static' && ackedKeys?.length ? { addressAck: ackedKeys } : {}),
       ...(vlan !== '' ? { vlan } : {}),
       ...(overrideNeed ? { namingConfirm } : {}),
-      ...(recipe.pointNetwork && publish ? { publish } : {}),
+      ...((recipe.pointNetwork || recipe.publishable) && publish ? { publish } : {}),
       ...(options.length ? { options: opts } : {}),
       ...(isHaproxy && balance ? { balance: lbBody(balance) } : {}),
       // The VPN login goes to the vault at the preview, never into the plan; names only when some are given.
@@ -403,7 +420,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
                 <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border-soft)', background: 'var(--ground-inset)' }}>
                   <p className="font-display text-[17px] font-semibold mb-2" style={{ color: 'var(--text-bright)' }}>What it needs</p>
                   <ul className="space-y-1 text-sm" style={{ color: 'var(--text-muted)' }}>
-                    <li>Its own container, unprivileged{recipe.needsDocker ? ', running Docker inside' : ''}.</li>
+                    <li>{recipe.vm ? 'Its own virtual machine (UEFI, VirtIO disk and network, the guest agent on).' : `Its own container, unprivileged${recipe.needsDocker ? ', running Docker inside' : ''}.`}</li>
                     <li>At least {recipe.minimum.cores} core{recipe.minimum.cores > 1 ? 's' : ''}, {recipe.minimum.memoryMb} MB RAM and {recipe.minimum.diskGb} GB disk.
                       We suggest {recipe.defaults.cores} / {recipe.defaults.memoryMb} MB / {recipe.defaults.diskGb} GB.</li>
                     <li>It answers on port <span className={MONO}>{recipe.port}</span>.</li>
@@ -426,18 +443,24 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
                 <div className="rounded-lg border p-4 space-y-3" style={{ borderColor: 'var(--border-soft)', background: 'var(--ground-inset)' }}>
                   <p className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>Settings</p>
                   <div className="grid gap-4 sm:grid-cols-2">
-                    {options.map(o => o.kind === 'boolean' ? (
+                    {visibleOptions(options, opts).map(o => o.kind === 'boolean' ? (
                       <label key={o.key} className="flex items-start gap-2 text-sm min-w-0" style={{ color: 'var(--text)' }}>
                         <input type="checkbox" checked={opts[o.key] === '1'} onChange={e => setOpts(v => ({ ...v, [o.key]: e.target.checked ? '1' : '0' }))} />
                         <span>{o.label}{o.hint && <span className="block text-[12px]" style={{ color: 'var(--text-dim)' }}>{o.hint}</span>}</span>
                       </label>
                     ) : (
                       <Field key={o.key} label={`${o.label}${o.required ? ' *' : ''}`} hint={o.hint}>
+                        {o.choices ? (
+                          <select value={opts[o.key] ?? o.default ?? ''} onChange={e => setOpts(v => ({ ...v, [o.key]: e.target.value }))} style={INPUT} aria-label={o.label}>
+                            {o.choices.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                          </select>
+                        ) : (
                         <input value={opts[o.key] ?? ''} onChange={e => setOpts(v => ({ ...v, [o.key]: e.target.value }))}
                           type={o.kind === 'number' ? 'number' : o.kind === 'email' ? 'email' : o.kind === 'url' ? 'url' : 'text'}
                           min={o.min} max={o.max} maxLength={o.maxLength} placeholder={o.placeholder}
                           inputMode={o.kind === 'number' ? 'numeric' : undefined}
                           autoCapitalize="none" spellCheck={o.kind === 'text'} style={INPUT} required={o.required} />
+                        )}
                       </Field>
                     ))}
                   </div>
@@ -590,6 +613,8 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
                 })}
               </div>
               {isTc && selected?.verdict.eligible && <NodeHardware node={selected.node} choice={tcOpts.TC_ACCEL} />}
+              {recipe.id === 'immich' && selected?.verdict.eligible && <NodeHardware node={selected.node} choice={opts.IMMICH_ACCEL || 'cpu'} />}
+              {recipe.id === 'home-assistant' && selected?.verdict.eligible && <UsbPicker node={selected.node} value={opts.HA_USB ?? ''} onChange={v => setOpts(o => ({ ...o, HA_USB: v }))} />}
               {selected?.verdict.eligible && (
                 <Field label={`Storage on ${selected.node}`} hint={<>Shared storage lets HA start it on another node if this one fails. Shared block storage (such as Ceph RBD) is preferred over NFS.
                   {(selected.excludedStorages?.length ?? 0) > 0 && <> Not offered: {selected.excludedStorages!.map(s => s.storage).join(', ')}. {selected.excludedStorages![0].reason}</>}</>}>
@@ -676,7 +701,7 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
                 <input type="number" min={1} max={4094} value={vlan} onChange={e => setVlan(e.target.value === '' ? '' : Number(e.target.value))}
                   style={{ ...INPUT, maxWidth: 160 }} inputMode="numeric" />
               </Field>
-              {recipe.pointNetwork && <PublishBlock appName={recipe.name} onChange={setPublish} />}
+              {(recipe.pointNetwork || recipe.publishable) && <PublishBlock appName={recipe.name} onChange={setPublish} />}
               {mode === 'dhcp' && !overrideNeed && (
                 <Notice kind="warn">DHCP: the address comes from whichever DHCP server answers, and a bridge can carry more than one network. A fixed address keeps the guest where you expect it.</Notice>
               )}
@@ -752,9 +777,9 @@ export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
                       ...(isArr ? arrReview(preview.plan.options as unknown as Record<string, string> | undefined, recipe.options ?? []) : []),
                       ...(isTc ? tcReview(recipe.id as TcKind, preview.plan.options as unknown as Record<string, string> | undefined) : []),
                       ...(preview.plan.publish ? [['Public name', (() => { const p = preview.plan.publish as any; return `${p.domain}: DNS record ${p.record.type} ${p.record.name} in ${p.zone}, a proxy host on ${p.instanceName} and a certificate` })()] as [string, any]] : recipe.pointNetwork ? [['Reachable from', 'your network only (no public name)'] as [string, any]] : []),
-                      ...options.map(o => {
+                      ...visibleOptions(options, (preview.plan.options as unknown as Record<string, string> | undefined) ?? opts).map(o => {
                         const v = (preview.plan.options as unknown as Record<string, string> | undefined)?.[o.key] ?? ''
-                        return [o.label, o.kind === 'boolean' ? (v === '1' ? 'yes' : 'no') : (v || '—')] as [string, any]
+                        return [o.label, o.kind === 'boolean' ? (v === '1' ? 'yes' : 'no') : (o.choices?.find(c => c.value === v)?.label ?? (v || '—'))] as [string, any]
                       }),
                     ] as Array<[string, any]>).map(([k, v]) => (
                       <div key={k} className="contents">
