@@ -274,6 +274,9 @@ const APP_PLUGINS_FIX = /^\/api\/plugins\/(immich|openwebui)\/actions$/
 const APTCACHE_RECONFIRM = /^\/api\/plugins\/apt-cacher-ng\/(caches\/[^/]+\/settings|use|guests\/(repair|remove))$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
+// MikroTik LAN guard (routes/mikrotik.ts): adding or removing the one address list and one forward rule on the router.
+// Admin (the default for a POST) and confirmed in the page, which keeps API tokens out.
+const MIKROTIK_LAN_GUARD = /^\/api\/plugins\/mikrotik\/lan-guard\/(apply|undo)$/
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
 // Local plug-ins (lib/local-plugins.ts): admin for every method, reads included, and every change confirmed on the page
 // (API tokens are refused there outright by api-tokens.ts, reads too). No local plug-in action asks for the master
@@ -464,6 +467,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (SITE_METRICS_ADMIN_READ.test(p)) return 'admin'
   if (SETUP_CHECKLIST.test(p)) return 'admin'
   if (ASUS_DIAGNOSTICS.test(p)) return 'admin'
+  if (MIKROTIK_LAN_GUARD.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && NEXTCLOUD_ADMIN_READ.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && DNS_ADMIN_READ.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && K3S_ADMIN_READ.test(p)) return 'admin'
@@ -590,6 +594,7 @@ export function needsConfirm(method: string, path: string, opts: { tokenPluginSc
   if (m === 'POST' && REMOVED_GUESTS_CLEAN.test(p)) return true
   if (m === 'POST' && PLEX_SIGNIN_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
+  if (m === 'POST' && MIKROTIK_LAN_GUARD.test(p)) return true
   // Arr Stack: downloading a better copy, the VPN panel's fixes, and the folder sorter's changes.
   if (m === 'POST' && ARR_CONFIRM.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true

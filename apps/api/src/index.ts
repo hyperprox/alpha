@@ -40,6 +40,7 @@ import { qnapRoutes }           from './routes/qnap'
 import { dnsBlockerRoutes }     from './lib/dns-blocker/routes'
 import { asusRoutes }           from './routes/asus'
 import { plexClearoutRoutes }   from './routes/plex-clearout'
+import { mikrotikRoutes }       from './routes/mikrotik'
 import { arrUpcomingRoutes }    from './routes/arr-upcoming'
 import { arrQueueRoutes }       from './routes/arr-queue'
 import { arrGiveUpRoutes }      from './routes/arr-giveup'
@@ -209,6 +210,7 @@ async function main() {
   await server.register(dnsBlockerRoutes('adguard'), { prefix: '/api/plugins/adguard' })
   await server.register(asusRoutes,            { prefix: '/api/plugins/asus' })
   await server.register(plexClearoutRoutes,    { prefix: '/api/plugins/plex' })
+  await server.register(mikrotikRoutes,        { prefix: '/api/plugins/mikrotik' })
   await server.register(arrUpcomingRoutes,     { prefix: '/api/plugins/arrstack' })
   await server.register(arrQueueRoutes,        { prefix: '/api/plugins/arrstack' })
   await server.register(arrGiveUpRoutes,       { prefix: '/api/plugins/arrstack' })

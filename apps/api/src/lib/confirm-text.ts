@@ -6,6 +6,8 @@
 // =============================================================================
 
 /** The header a confirmed request carries its token in (lib/confirm.ts). Here so the demo can name it without the store. */
+import { applySummary } from './mikrotik-lan'
+
 export const CONFIRM_HEADER = 'x-hyperprox-confirm'
 
 type Params = Record<string, unknown>
@@ -161,6 +163,12 @@ const RULES: Rule[] = [
   ['POST', /^\/api\/plugins\/qnap\/instances\/[^/]+\/secure-actions$/, (_m, _p, b) =>
     b?.action === 'shutdown' ? 'Shut down this NAS? Everything stored on it is unreachable until someone presses its power button.'
       : b?.action === 'restart' ? 'Restart this NAS? Everything stored on it is unreachable for 3 to 10 minutes.' : 'Run this action on the NAS?'],
+  ['POST', /^\/api\/plugins\/mikrotik\/lan-guard\/apply$/, (_m, _p, b) => {
+    const nets = (Array.isArray(b?.subnets) ? b.subnets : []).map((x: unknown) => String(x)).filter((x: string) => /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(x)).slice(0, 12)
+    const iface = String(b?.interface ?? '').replace(/[^\w .:-]/g, '').slice(0, 40)
+    return nets.length && iface ? applySummary({ interface: iface, subnets: nets }) : 'Add the LAN guard to the router?'
+  }],
+  ['POST', /^\/api\/plugins\/mikrotik\/lan-guard\/undo$/, () => 'Remove the LAN guard from the router? Exactly the address list "hyperprox-lan" and the one rule HyperProx added are deleted; nothing else is touched.'],
   ['POST', /^\/api\/plugins\/asus\/instances\/[^/]+\/actions$/, () => 'Run this action on the router? Your network may drop for a few minutes.'],
   ['POST', /^\/api\/plugins\/(pihole|adguard)\/instances\/[^/]+\/secure-actions$/, m => `Make this change to ${pluginName(m[1])}? It affects DNS for everything that uses it.`],
   ['POST', /^\/api\/plugins\/pbs\/instances\/[^/]+\/actions\/verify$/, () => 'Start a verify on this backup server now? It reads every backup and can take hours.'],

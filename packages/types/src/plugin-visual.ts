@@ -94,7 +94,25 @@ export interface RouterVisual {
   wans:    Array<{ name: string; downBps: number; upBps: number }>
   total:   { downBps: number; upBps: number }
   health:  { cpuPct: number; cpuCores: number | null; memPct: number; tempC: number | null; voltage: number | null }
-  subnets: Array<{ net: string; uplink: string | null; devices: number; downBps: number; upBps: number }>
+  /** `own` is false for a network the router is not on (devices there use addresses that are not yours). */
+  subnets: Array<{ net: string; uplink: string | null; devices: number; downBps: number; upBps: number; own?: boolean }>
+  /** Addresses outside the router's own networks, and the guard that blocks them. Absent from an older API. */
+  lan?: {
+    strays: Array<{ address: string; mac: string; net: string; name: string | null; port: string; firstSeen: string | null; lastSeen: string | null; softwareMade: boolean; connections: number }>
+    guard: {
+      state: 'off' | 'on' | 'partial'
+      /** true / false when the router says whether this login may write; null when it does not say. */
+      canWrite: boolean | null
+      interface: string | null
+      /** The networks the router owns: what the guard lets through. */
+      subnets: string[]
+      /** Networks the guard's list does not hold yet. */
+      missing: string[]
+      listName: string
+      ruleComment: string
+      unavailable?: string
+    }
+  }
   /** Busiest first. `source` says where the name came from. */
   talkers: Array<{ name: string | null; ip: string; downBps: number; upBps: number; source: 'router' | 'cluster' | 'none' }>
   forwards: Array<{ name: string; proto: string; port: string; to: string; toName: string | null; active: boolean; bytes: number }>

@@ -8,10 +8,16 @@
 //  Read-only by intent. A router is the one box where a wrong write takes the
 //  whole network down — including HyperProx itself. The single POST here is
 //  `monitor-traffic`, which RouterOS models as a command but which only reads.
+//  The one thing that can change the router is the "LAN guard" (routes/mikrotik.ts,
+//  lib/mikrotik-lan): an admin's confirmed, audited, undoable action, never run from here.
 // =============================================================================
 
 import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric, PluginLink } from '../lib/plugin-host'
 import type { RouterVisual } from '../lib/plugin-visual-types'
+import {
+  GUARD_LIST, GUARD_RULE_COMMENT, guardView, isSoftwareMac, isStrayAddress, neighbourIndex, overlaps, ownSubnets,
+  portIndex, portText, type GuardView,
+} from '../lib/mikrotik-lan'
 
 type Row = { label: string; value: string; tone?: 'good' | 'warn' | 'bad' }
 
@@ -43,7 +49,7 @@ function humaniseUptime(raw: string): string {
  * face the internet and which face the network, so read that rather than guess
  * from a routing table or from which interface happens to be a bridge.
  */
-async function interfaceLists(ctx: PluginContext): Promise<{ wan: string[]; lan: string[] }> {
+export async function interfaceLists(ctx: PluginContext): Promise<{ wan: string[]; lan: string[] }> {
   try {
     const members: any[] = await ctx.get('/rest/interface/list/member')
     const pick = (name: string) => members
@@ -66,7 +72,7 @@ async function interfaceLists(ctx: PluginContext): Promise<{ wan: string[]; lan:
  * then the default route as a last resort. The setting accepts a comma-separated
  * list so a hand-configured router without interface lists can still name both.
  */
-async function findWans(ctx: PluginContext, override?: string): Promise<string[]> {
+export async function findWans(ctx: PluginContext, override?: string): Promise<string[]> {
   if (override) return override.split(',').map(s => s.trim()).filter(Boolean)
   const { wan } = await interfaceLists(ctx)
   if (wan.length) return wan
@@ -136,7 +142,7 @@ function isLanNeighbour(a: any, lan: string[]): boolean {
  * loopback — on a router whose LAN is a single trunk to a switch, that trunk is
  * the honest answer and no bridge would have found it.
  */
-async function findLan(ctx: PluginContext, wan: string | null): Promise<string | null> {
+export async function findLan(ctx: PluginContext, wan: string | null): Promise<string | null> {
   try {
     const ifaces: any[] = await ctx.get('/rest/interface')
     const usable = ifaces.filter(i =>
@@ -271,7 +277,7 @@ function bySubnet(traffic: DeviceTraffic[], uplinks: Map<string, string>,
   return [...by.values()].sort((a, b) => (b.down + b.up) - (a.down + a.up))
 }
 
-async function perDevice(ctx: PluginContext, names: Map<string, string>): Promise<DeviceTraffic[]> {
+async function perDevice(ctx: PluginContext, names: Map<string, string>, alsoCount: Set<string> = new Set()): Promise<DeviceTraffic[]> {
   let conns: any[]
   try {
     conns = await ctx.get('/rest/ip/firewall/connection', { timeoutMs: 25_000 })
@@ -283,7 +289,8 @@ async function perDevice(ctx: PluginContext, names: Map<string, string>): Promis
   const by = new Map<string, DeviceTraffic>()
   for (const c of conns) {
     const src = String(c['src-address'] ?? '').split(':')[0]
-    if (!isLocal(src)) continue
+    // Addresses outside the router's own networks are counted too, so a stray one can say whether it is talking.
+    if (!isLocal(src) && !alsoCount.has(src)) continue
 
     const row = by.get(src) ?? { ip: src, name: names.get(src) ?? '—', down: 0, up: 0, bytes: 0, conns: 0 }
     // orig- is what the device sent, repl- is what came back to it.
@@ -315,11 +322,12 @@ export function logLevel(topics: unknown): 'error' | 'warning' | 'info' {
 export function buildRouterVisual(input: {
   resource: any; identity: any; board: any; health: any[]
   wanRates: Array<{ iface: string; rx: number; tx: number }>
-  subnets: Array<{ net: string; uplink: string; devices: number; down: number; up: number }>
+  subnets: Array<{ net: string; uplink: string; devices: number; down: number; up: number; own?: boolean }>
   traffic: Array<{ ip: string; name: string; down: number; up: number; bytes: number }>
   nat: any[]; log: any[]
   routerNames: Map<string, string>
   guestNames: Map<string, string>
+  lan?: RouterVisual['lan']
 }): RouterVisual {
   const { resource, identity, board, health } = input
   const sensor = (...names: string[]) => names.map(n => health.find(h => h?.name === n)?.value).find(v => v !== undefined)
@@ -365,17 +373,28 @@ export function buildRouterVisual(input: {
     },
     subnets: input.subnets.map(sn => ({
       net: sn.net, uplink: sn.uplink && sn.uplink !== '—' ? sn.uplink : null, devices: sn.devices, downBps: sn.down, upBps: sn.up,
+      ...(sn.own === undefined ? {} : { own: sn.own }),
     })),
     talkers: input.traffic
       .filter(t => t.down + t.up > 0)
       .slice(0, 10)
       .map(t => ({ ip: t.ip, downBps: t.down, upBps: t.up, ...nameFor(t.ip, t.name) })),
+    ...(input.lan ? { lan: input.lan } : {}),
     forwards: forwards.slice(0, 24),
     forwardsActive: forwards.filter(f => f.active).length,
     log: [...input.log].reverse().slice(0, 30).map(l => ({
       time: String(l.time ?? '').slice(0, 40), message: String(l.message ?? '').trim().slice(0, 300), level: logLevel(l.topics),
       topic: String(l.topics ?? '').slice(0, 60),
     })),
+  }
+}
+
+/** The guard as the page needs it: no router ids, just what to show and what to send back. */
+export function guardForPage(g: GuardView): NonNullable<RouterVisual['lan']>['guard'] {
+  return {
+    state: g.state, canWrite: g.canWrite, interface: g.plan?.interface ?? null, subnets: g.plan?.subnets ?? [],
+    missing: g.missing, listName: GUARD_LIST, ruleComment: GUARD_RULE_COMMENT,
+    ...(g.unavailable ? { unavailable: g.unavailable } : {}),
   }
 }
 
@@ -596,6 +615,7 @@ export const mikrotikPlugin: Plugin = {
     const [
       resource, identity, board, health, arp, leases, ifaces,
       addresses, nat, filter, wgPeers, neighbors, services, users, dns, log, wan,
+      bridgeHosts, wifiNew, wifiOld, addressList, groups,
     ] = await Promise.all([
       one('/rest/system/resource'),
       one('/rest/system/identity'),
@@ -614,8 +634,22 @@ export const mikrotikPlugin: Plugin = {
       one('/rest/ip/dns'),
       list('/rest/log'),
       findWans(ctx, ctx.option('wan')),
+      // Where each device sits. Routers without a bridge, or without Wi-Fi, answer with an error: that column is then
+      // simply empty.
+      list('/rest/interface/bridge/host'),
+      list('/rest/interface/wifi/registration-table'),
+      list('/rest/interface/wireless/registration-table'),
+      list('/rest/ip/firewall/address-list'),
+      list('/rest/user/group'),
     ])
     const lists = await interfaceLists(ctx)
+    const ports = portIndex(bridgeHosts, [...wifiOld, ...wifiNew])
+    const neighbourBy = neighbourIndex(neighbors)
+    const own = ownSubnets(addresses, wan)
+    // Addresses that are not on any of the router's networks, so connection counting also looks at them.
+    const strayIps = new Set<string>(arp
+      .filter(a => isLanNeighbour(a, lists.lan) && !wan.includes(String(a.interface ?? '')) && isStrayAddress(String(a.address ?? ''), own))
+      .map(a => String(a.address)))
 
     const namesByIp = new Map<string, string>()
     for (const l of leases) {
@@ -627,7 +661,7 @@ export const mikrotikPlugin: Plugin = {
     for (const a of arp) {
       if (a.address && a.comment && !namesByIp.has(a.address)) namesByIp.set(a.address, a.comment)
     }
-    const traffic = await opt(perDevice(ctx, namesByIp), [] as DeviceTraffic[])
+    const traffic = await opt(perDevice(ctx, namesByIp, strayIps), [] as DeviceTraffic[])
 
     const { down, up, perInterface: perWanRates } = await rates(ctx, wan)
 
@@ -652,15 +686,34 @@ export const mikrotikPlugin: Plugin = {
       if (existing) {
         existing.awake = 'yes'
         existing.iface = a.interface ?? '—'
+        existing.arp = a
       } else {
         byMac.set(key, {
           name: '—', address: a.address ?? '—', mac: a['mac-address'],
-          kind: 'no lease', lastSeen: '—', awake: 'yes', iface: a.interface ?? '—',
+          kind: 'no lease', lastSeen: '—', awake: 'yes', iface: a.interface ?? '—', arp: a,
         })
       }
     }
     const devices = [...byMac.values()].sort((x, y) =>
       (y.awake === 'yes' ? 1 : 0) - (x.awake === 'yes' ? 1 : 0) || String(x.name).localeCompare(String(y.name)))
+
+    // Port, neighbour and stray flags, from what the router already told us. Nothing here asks it for more.
+    const connsByIp = new Map(traffic.map(t => [t.ip, t.conns]))
+    for (const d of devices) {
+      const k = String(d.mac).toUpperCase()
+      const where = ports.get(k)
+      d.port = portText(where)
+      d.wifi = where?.wireless === true
+      d.neighbour = neighbourBy.get(k) ?? ''
+      d.stray = isStrayAddress(String(d.address ?? ''), own)
+      if (d.stray) {
+        d.softwareMade = isSoftwareMac(String(d.mac))
+        d.connections = connsByIp.get(String(d.address)) ?? 0
+        const seen = (d.arp?.['last-seen'] ?? (d.lastSeen !== '—' ? d.lastSeen : null) ?? (where?.age ? `${where.age} ago` : null)) || null
+        d.lastSeenText = seen
+        d.firstSeenText = d.arp?.['first-seen'] ?? null
+      }
+    }
 
     const deviceCounts = new Map<string, number>()
     for (const d of devices) {
@@ -671,36 +724,55 @@ export const mikrotikPlugin: Plugin = {
     const uplinks = await opt(subnetUplinks(ctx), new Map<string, string>())
     const subnets = bySubnet(traffic, uplinks, deviceCounts)
 
-    const deviceColumns = [
+    const anyNeighbour = devices.some(d => d.neighbour)
+    const isOwnNet = (net: string) => own.length === 0 || own.some(o => overlaps(o, net))
+    const strayText = 'Address outside your networks'
+    const deviceColumns = (hasStray: boolean) => [
       { key: 'awake',   label: 'Awake' },
       { key: 'name',    label: 'Name' },
       { key: 'address', label: 'Address' },
       { key: 'mac',     label: 'MAC' },
+      { key: 'port',    label: 'Port' },
       { key: 'iface',   label: 'Interface' },
       { key: 'kind',    label: 'Lease' },
+      ...(anyNeighbour ? [{ key: 'neighbour', label: 'Seen as' }] : []),
+      ...(hasStray ? [{ key: 'warning', label: 'Warning' }, { key: 'detail', label: 'Detail' }] : []),
     ]
-    const deviceRow = (d: any) => ({ ...d, iface: d.iface ?? '—' })
+    const deviceRow = (d: any) => {
+      const { arp: _a, wifi: _w, stray, softwareMade, connections, lastSeenText, firstSeenText, ...row } = d
+      return {
+        ...row, iface: d.iface ?? '—', neighbour: d.neighbour || '—',
+        warning: stray ? strayText : '—',
+        detail: stray ? [
+          softwareMade ? 'Software-made address' : 'Address burned into the hardware',
+          connections ? `${connections} live connection${connections === 1 ? '' : 's'}` : 'No live connections',
+          firstSeenText ? `first seen ${firstSeenText}` : null,
+          lastSeenText ? `last seen ${lastSeenText}` : null,
+        ].filter(Boolean).join(' · ') : '—',
+      }
+    }
     const deviceGroups = new Map<string, any[]>()
     for (const d of devices) {
       const net = subnetOf(String(d.address ?? '')) ?? 'other'
       if (!deviceGroups.has(net)) deviceGroups.set(net, [])
       deviceGroups.get(net)!.push(d)
     }
-    const deviceTables = deviceGroups.size <= 1
+    const deviceTables = deviceGroups.size <= 1 && [...deviceGroups.keys()].every(n => n === 'other' || isOwnNet(n))
       ? [{
           title: 'Devices',
           empty: 'No devices found — the router returned neither ARP entries nor DHCP leases.',
-          columns: deviceColumns,
+          columns: deviceColumns(devices.some(d => d.stray)),
           rows: devices.map(deviceRow),
         }]
       : [...deviceGroups.entries()]
           .sort((a, b) => b[1].length - a[1].length)
           .map(([net, list]) => {
             const up = uplinks.get(net)
+            const notYours = net !== 'other' && !isOwnNet(net)
             return {
-              title: `Devices · ${net}${up ? ` → ${up}` : ''}`,
+              title: notYours ? `Devices · Not one of your networks (${net})` : `Devices · ${net}${up ? ` → ${up}` : ''}`,
               empty: 'No devices on this subnet.',
-              columns: deviceColumns,
+              columns: deviceColumns(list.some(d => d.stray)),
               rows: list.map(deviceRow),
             }
           })
@@ -805,9 +877,21 @@ export const mikrotikPlugin: Plugin = {
     const guestNames = await import('../lib/guest-names')
       .then(m => m.clusterGuestNames())
       .catch(() => new Map<string, string>())
+    // The LAN guard: what it would add, whether it is already there, and whether this login may write.
+    const lanIface = ctx.option('lan') || await findLan(ctx, wan[0] ?? null)
+    const guard = guardView({ addresses, wan, lan: lanIface, addressList, filter, users, groups, username: ctx.option('username') })
+    const strays = devices.filter(d => d.stray).map(d => ({
+      address: String(d.address), mac: String(d.mac), net: subnetOf(String(d.address)) ?? String(d.address),
+      name: d.name !== '—' ? String(d.name) : null,
+      port: d.port as string,
+      firstSeen: (d.firstSeenText ?? null) as string | null, lastSeen: (d.lastSeenText ?? null) as string | null,
+      softwareMade: Boolean(d.softwareMade), connections: Number(d.connections ?? 0),
+    }))
     const visual = buildRouterVisual({
-      resource, identity, board, health, wanRates: perWanRates, subnets, traffic, nat, log,
+      resource, identity, board, health, wanRates: perWanRates,
+      subnets: subnets.map(sn => ({ ...sn, own: isOwnNet(sn.net) })), traffic, nat, log,
       routerNames: namesByIp, guestNames,
+      lan: { strays, guard: guardForPage(guard) },
     })
 
     return {
@@ -844,7 +928,7 @@ export const mikrotikPlugin: Plugin = {
             { key: 'conns',   label: 'Conns',   align: 'right' },
           ],
           rows: subnets.map(sn => ({
-            net: sn.net, uplink: sn.uplink, devices: sn.devices,
+            net: isOwnNet(sn.net) ? sn.net : `${sn.net} (not one of your networks)`, uplink: sn.uplink, devices: sn.devices,
             down: `${mbps(sn.down)} Mbps`, up: `${mbps(sn.up)} Mbps`,
             data: bytes(sn.bytes), conns: sn.conns,
           })),
