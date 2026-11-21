@@ -1246,7 +1246,7 @@ It asks the places HyperProx already knows serve the web (every enabled proxy ho
 running containers listening on port 80 or 443, the same list as [Add an existing site](#add-an-existing-site))
 one read-only question per app: Nextcloud's `/status.php`, Jellyfin's `/System/Info/Public`, Gitea's
 `/api/v1/version`, Vaultwarden's `/api/config` (or `/alive`), Grafana's `/api/health`, Uptime Kuma's
-`/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Tautulli's sign-in page, Nginx Proxy
+`/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Immich's `/api/server/config`, Open WebUI's `/api/config`, Home Assistant's `/manifest.json`, Tautulli's sign-in page, Nginx Proxy
 Manager's `/api/`, HAProxy's own "no server is available" page, Proxmox Backup Server's web page, Unmanic's worker list and Tdarr's start page, Caddy's and
 Envoy's `Server` header, and the health answer only the Catalogue's NGINX gives. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
 timeout and at most 64 KiB read; a proxy target is asked with the public name as its Host header, as the

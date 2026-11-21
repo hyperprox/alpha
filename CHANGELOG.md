@@ -64,6 +64,7 @@ know or do before they install. Newest entry at the top.
 - **An Open WebUI plug-in with fix buttons.** It shows the models available and whether the Ollama behind it answers, with a Reconnect button, and whether open sign-up is off, with a button to close it.
   - Technical: plug-in `openwebui`, routes `/api/plugins/openwebui/overview` and `/actions` (same rules as Immich's); reconnect checks the address with `/ollama/verify`, saves with `/ollama/config/update` and reads it back.
 - **Search in the Catalogue, and a public name for these apps.** Type "google photos", "chatgpt" or "smart home" and the right app appears. The install can also give Immich, Open WebUI and Home Assistant a name and a certificate; for Immich the proxy accepts any upload size and waits long enough for big videos, and for Open WebUI answers stream as they are written.
+  - Technical: each app has a read-only fingerprint for the "already running" check (Immich `/api/server/config`, Open WebUI `/api/config`, Home Assistant `/manifest.json`).
   - Technical: recipes carry `keywords`, `publishable` and `proxyAdvanced` (nginx advanced config for the proxy host); options can be menus (`choices`), depend on another answer (`showWhen`) or be filled by the preview only (`hidden`).
 
 ## 2026-11-20 — Updates: automatic reboots
