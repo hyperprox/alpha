@@ -181,12 +181,6 @@ export function guardView(i: {
   return { ...base, state, plan, missing }
 }
 
-/** The words a confirmation shows, naming exactly what will be added. */
-export function applySummary(plan: { interface: string; subnets: string[] }, missing?: string[]): string {
-  const list = (missing?.length ? missing : plan.subnets).join(', ')
-  return `Add to the router: the address list "${GUARD_LIST}" with ${list}, and one rule at the top of the forward chain that drops traffic coming in on ${plan.interface} from any address not in that list. Nothing else is changed. Undo removes exactly those two things.`
-}
-
 export class GuardRefusal extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); this.name = 'GuardRefusal' }
 }
