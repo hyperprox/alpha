@@ -4,7 +4,7 @@
 //  Reads are for anyone signed in: the HA page, one guest's panel, the
 //  migration grid and the list badges. Every write is a preview, then an
 //  apply of that preview's id (lib/ha/plans.ts). Preview and check are admin;
-//  apply is admin with the master password re-entered (lib/roles.ts, HA_*).
+//  apply is admin with an in-page confirmation (lib/roles.ts, HA_*).
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'

@@ -137,7 +137,7 @@ export const CATALOG: Record<string, Record<string, ActionSpec>> = {
     start: { label: 'Start', service: 'start',          expect: s => s.state === 'cleaning' },
     dock:  { label: 'Dock',  service: 'return_to_base', expect: s => ['returning', 'docked'].includes(s.state) },
   },
-  // Security domains: every action here needs admin, a fresh master password, and a named confirmation.
+  // Security domains: every action here needs admin and a named confirmation, confirmed on the page.
   lock: {
     lock:   { label: 'Lock',   service: 'lock',   expect: s => ['locked', 'locking'].includes(s.state) },
     unlock: { label: 'Unlock', service: 'unlock', expect: s => ['unlocked', 'unlocking', 'open'].includes(s.state) },

@@ -3,7 +3,7 @@
 //
 //  Reads follow the usual roles (any GET is viewer; device paths and IDs are
 //  shown to admins only). Every write is preview then apply: preview is admin,
-//  apply is admin with the master password re-entered (lib/roles.ts), and apply
+//  apply is admin with an in-page confirmation (lib/roles.ts), and apply
 //  takes only a preview id this user made.
 // =============================================================================
 

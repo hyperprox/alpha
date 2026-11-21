@@ -5,7 +5,7 @@
 //    GET  /clearout          viewer: the lists, sizes and keep-rule counts (cached ten minutes); ?refresh=1 re-reads,
 //                            operator only and at most once a minute
 //    POST /clearout/preview  operator: exactly what a removal would delete and how big it is; changes nothing
-//    POST /clearout/remove   operator, with the master password re-entered within five minutes, which keeps API
+//    POST /clearout/remove   operator, with an in-page confirmation within five minutes, which keeps API
 //                            tokens out; refused here by name for a token as well
 //
 //    GET  /live              viewer: now streaming, counts and bandwidth (Plex /status/sessions), for the
@@ -16,7 +16,7 @@
 //    GET  /library           viewer: every movie and show, with posters, sizes, plays and which way each would go
 //    GET  /library/show/:key viewer: one show's seasons and episodes, with plays, quality and who it is next up for
 //    POST /library/preview   operator: a show, season, episodes (or one version) or a movie; changes nothing
-//    POST /library/remove    operator with the master password re-entered, like /clearout/remove
+//    POST /library/remove    operator with an in-page confirmation, like /clearout/remove
 //
 //  Who watched what: every row carries how many accounts watched it (by the history or by Plex's own watched
 //  marks, lib/plex-clearout/watchers.ts). Their names (watchedBy) go to operators and up only; a viewer gets the

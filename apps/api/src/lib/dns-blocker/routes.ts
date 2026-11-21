@@ -4,8 +4,8 @@
 //  Roles (lib/roles.ts): reads are viewer, like every plug-in page; a viewer's reading carries no per-client numbers (the
 //  names and addresses of the people on the network), and the instance list carries no address. Pausing blocking, turning
 //  it back on and updating the lists (POST .../actions) are operator. Restarting, allowing a domain, switching the
-//  upstream DNS servers and the guest DNS setting (POST .../secure-actions) are admin with the master password
-//  re-entered, which also keeps API tokens out; the service refuses a token there again by name. Adding, changing or
+//  upstream DNS servers and the guest DNS setting (POST .../secure-actions) are admin with an in-page
+//  confirmation, which also keeps API tokens out; the service refuses a token there again by name. Adding, changing or
 //  removing a blocker stores a login: admin and re-confirmed.
 //
 //  No route returns a password, and no route takes a path or a command: an action is one of eight names.

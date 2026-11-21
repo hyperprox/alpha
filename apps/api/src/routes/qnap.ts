@@ -4,7 +4,7 @@
 //  Roles (lib/roles.ts): reads are viewer, like every plug-in page, and a
 //  viewer's reading carries no serial numbers, host name, addresses or MACs.
 //  A quick SMART test (POST .../actions) is operator. Restart and shut down
-//  (POST .../secure-actions) are admin with the master password re-entered,
+//  (POST .../secure-actions) are admin with an in-page confirmation,
 //  which also keeps API tokens out; the service refuses a token there again by
 //  name and checks the confirm phrase and the typed NAS name. Adding, changing
 //  or removing a NAS is admin and re-confirmed: it stores a login.

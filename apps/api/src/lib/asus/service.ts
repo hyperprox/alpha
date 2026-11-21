@@ -13,7 +13,7 @@
 //  its model when no name is given. A login that fails at setup is not saved.
 //
 //  One action, reboot, with one way in: POST .../actions, admin, a person
-//  (never an API token), the master password re-entered (the gate), the confirm
+//  (never an API token), an in-page confirmation (the gate), the confirm
 //  phrase and the router's name typed (here), rate-limited, audited whatever the
 //  outcome, a notification after it, and read back afterwards: HyperProx checks
 //  the router came back with a fresh uptime and records that too.

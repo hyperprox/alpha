@@ -499,7 +499,7 @@ export async function applyAction(planId: unknown, body: { confirmName?: unknown
  * Checked in this order, and nothing is done unless every check passes: unlocked, the plan is this person's, the
  * request is for the plan's cluster, that cluster's connection is unchanged, the guest reference is valid, the
  * role, the master-password re-confirmation, the guest's config digest, the typed name (delete). A refusal the
- * person can fix (re-confirm, type the name) keeps the plan; every other refusal uses it up. The plan is taken
+ * person can fix (confirm, type the name) keeps the plan; every other refusal uses it up. The plan is taken
  * only when it is about to run.
  */
 async function applyOnce(planId: unknown, body: { confirmName?: unknown }, d: ApplyDeps, seen: { plan: ActionPlan | null; audited: boolean }): Promise<ApplyAnswer> {

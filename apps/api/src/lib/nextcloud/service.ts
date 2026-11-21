@@ -11,7 +11,7 @@
 //  refused by name), audited BEFORE it runs (no audit row, no action), one at a
 //  time per instance, and either one allow-listed occ command with checked
 //  arguments or a fixed sequence of them (lib/nextcloud/update.ts). Which
-//  actions also need the master password re-entered is fixed here (ACTIONS),
+//  actions also need an in-page confirmation is fixed here (ACTIONS),
 //  not chosen by the caller: a secure action on the plain route is refused.
 //  Adding, changing and removing an instance are audited before they act too.
 //
@@ -1218,7 +1218,7 @@ export class NextcloudService {
   }
 
   /**
-   * Stop watching a job (admin, master password, audited first). For a job HyperProx can no longer reach: it ends
+   * Stop watching a job (admin, in-page confirmation, audited first). For a job HyperProx can no longer reach: it ends
    * the job record and clears its busy marker, so deploys and HyperProx's own update are allowed again. It does not
    * touch the guest: a detached update may still be running there.
    */

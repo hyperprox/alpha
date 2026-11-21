@@ -9,7 +9,7 @@
 //  WAN address (operator and above see them). Finding a router on the LAN
 //  (POST /detect) is admin. Adding, changing or removing a router is admin and
 //  re-confirmed: it stores an admin login. Rebooting (POST .../actions) is
-//  admin with the master password re-entered, which keeps API tokens out; the
+//  admin with an in-page confirmation, which keeps API tokens out; the
 //  service refuses a token there again by name and checks the confirm phrase
 //  and the typed router name.
 //

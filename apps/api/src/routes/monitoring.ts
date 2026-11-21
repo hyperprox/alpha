@@ -6,7 +6,7 @@
 //                                        body { fresh: true } replaces a token that is not read-only
 //  No re-confirmation: the token it makes can only read. `hyperprox pve-exporter` calls the POST.
 //    POST /api/monitoring/grafana-admin/reset   new Grafana admin password, set in Grafana and kept only in
-//                                               the vault (admin, master password re-entered). Reveal it
+//                                               the vault (admin, in-page confirmation). Reveal it
 //                                               under Settings → Secrets (hyperprox:system/grafana).
 // =============================================================================
 

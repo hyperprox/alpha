@@ -3,7 +3,7 @@
 //
 //  Roles (lib/roles.ts): admin for every method, reads included (the status names the account's servers and
 //  their addresses). Starting a sign-in and saving the chosen server both save plug-in settings, so both need
-//  the master password re-entered within five minutes, which keeps API tokens out; refused here by name for a
+//  an in-page confirmation within five minutes, which keeps API tokens out; refused here by name for a
 //  token as well.
 //
 //    POST   /signin               a new sign-in: the 4-character code, plex.tv/link, and the new-tab link

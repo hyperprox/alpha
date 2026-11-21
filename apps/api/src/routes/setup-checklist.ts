@@ -8,7 +8,7 @@
 //  GET  /igpu-access/:node            { node, state: 'open'|'closed'|'none', ruleInstalled }
 //  POST /igpu-access/:node/apply      let containers use the node's built-in graphics → { status, reason, state }
 //  POST /igpu-access/:node/undo       take that back → { status, reason, state }
-//  Every POST and PUT asks for the master password again (lib/roles.ts). The Infrastructure page's
+//  Every POST and PUT is confirmed on the page (lib/roles.ts), except trusting host keys, which asks for the master password. The Infrastructure page's
 //  Portable GPU links here; lib/igpu-access.ts is the same thing as a function.
 // =============================================================================
 

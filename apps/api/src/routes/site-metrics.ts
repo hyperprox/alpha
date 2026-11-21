@@ -9,7 +9,7 @@
 //    GET  /adopt/guests                   containers that could be adopted
 //    GET  /adopt/candidates?refresh=1     websites HyperProx found (proxy hosts, listening containers), read-only
 //    POST /adopt/check                    what HyperProx would read from one (read-only, in the guest)
-//    POST /adopt                          record it (master password re-entered)
+//    POST /adopt                          record it (in-page confirmation)
 //    DELETE /adopt/:id                    forget an adopted site and its numbers (re-entered)
 //    POST /sites/:id/log-format/preview   the exact nginx lines that would change (read-only; never for LiteSpeed)
 //    POST /sites/:id/log-format/apply     make that change (re-entered)

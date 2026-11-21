@@ -8,7 +8,7 @@
 //    normal    a quick SMART test of one disk: operator or above (the gate), on
 //              POST .../actions. It reads the disk back afterwards.
 //    security  restart and shut down: on POST .../secure-actions only, admin, a
-//              person (never an API token), the master password re-entered
+//              person (never an API token), an in-page confirmation
 //              (the gate), the confirm phrase and the NAS's name typed (here),
 //              rate-limited, and a notification after it.
 //  Every attempt, refused or not, gets an audit row (who, which NAS, what,

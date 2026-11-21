@@ -40,7 +40,7 @@
 //  A move whose heartbeat went stale (its process died) is taken over by an
 //  atomic claim and watched to its end; a live one is never touched.
 //
-//  A balancing plan is a list of moves approved once (the master password),
+//  A balancing plan is a list of moves approved once (an in-page confirmation),
 //  run one at a time, each through move() above: its own audit row, its own
 //  server-side check, its own quiet-window check. Before each move the plan
 //  checks again that the cluster has not changed since it was approved
@@ -53,7 +53,7 @@
 //
 //  Automatic balancing is off by default. On, it checks every so often; when
 //  the cluster has been uneven for a sustained time, in a quiet window, it
-//  notifies. With "apply automatically" (turned on with the master password,
+//  notifies. With "apply automatically" (turned on with an in-page confirmation,
 //  which records who approved it) it also runs one move at a time as a
 //  one-move plan: only guests HA does not manage, never one with disks to copy,
 //  within its own limits (moves per day, hours between moves). Emergency stop
@@ -1307,7 +1307,7 @@ export class PlacementService {
         if (this.now() - (m.scheduledFor ?? 0) > 30 * 60_000) { await skip('Its quiet window passed without it running (HyperProx was locked or restarting). Schedule it again.'); continue }
         // Locked: the Proxmox token is in the vault. Try again next minute, until the window passes.
         if (!this.d.isUnlocked() || this.slot) continue
-        // The approval: recorded at scheduling (with the master password just re-entered), an admin's, under 7 days old,
+        // The approval: recorded at scheduling (just confirmed on the page), an admin's, under 7 days old,
         // and nothing HyperProx holds says the approver was removed or demoted since.
         const ap = m.snapshot?.approver
         if (!ap || (ap.role !== 'admin' && ap.role !== 'owner')) { await skip('Not run: no admin approval is recorded for it. Schedule it again.'); continue }

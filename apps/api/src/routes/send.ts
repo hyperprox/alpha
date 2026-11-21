@@ -1,8 +1,8 @@
 // =============================================================================
 //  HyperProx — Send files, the simple way (/api/clusters/:id/send/...), registered by routes/clusters.ts
 //
-//  All admin (lib/roles.ts). /send/setup also needs the master password re-entered, which keeps API tokens
-//  out (a token cannot re-confirm); it is refused here for a token as well. The rest only read, or start a
+//  All admin (lib/roles.ts). /send/setup also needs an in-page confirmation, which keeps API tokens
+//  out (a token cannot confirm); it is refused here for a token as well. The rest only read, or start a
 //  copy through the reviewed engine (a copy only adds files, so starting one is not re-confirmed, as before).
 //  No answer carries a key, a token or a password.
 // =============================================================================

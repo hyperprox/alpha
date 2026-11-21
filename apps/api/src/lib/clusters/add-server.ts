@@ -1,8 +1,8 @@
 // =============================================================================
 //  HyperProx — adding a server, with the setup chores done in the same step
 //
-//  The owner gives a name, an address, the token made on that server, and the master password once (the route is
-//  re-confirmed: lib/roles.ts). Everything else happens here, in that one request:
+//  The owner gives a name, an address, the token made on that server, and confirms once on the page (the route is
+//  confirmed in-page: lib/roles.ts). Everything else happens here, in that one request:
 //
 //    1. The API certificate. When the address the owner typed is a Tailscale IP that tailscaled says is an online
 //       device owned by this tailnet's own account, and this machine routes it into the tunnel, the tunnel to
@@ -120,7 +120,7 @@ export function certNames(c: PresentedCertificate): string[] {
 }
 
 /**
- * What monitoring on a new server would do, shown before the master password and bound by the script's hash: only
+ * What monitoring on a new server would do, shown before the confirmation and bound by the script's hash: only
  * node_exporter, with no GPU extras, on each node whose key HyperProx verifies.
  */
 export function monitoringPreview(): { steps: string[]; hash: string } {

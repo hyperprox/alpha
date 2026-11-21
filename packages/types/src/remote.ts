@@ -156,8 +156,8 @@ export interface VpnMachineStatus {
 
 /**
  * What the infrastructure pages plug into their guest drill-down and list badges. The default implementation
- * is apps/frontend/lib/vpn.ts. Every method that changes something needs the admin role and a master-password
- * re-confirmation; the promise rejects with { code: 'reconfirm_required' } when one is due.
+ * is apps/frontend/lib/vpn.ts. Every method that changes something needs the admin role and a confirmation (in-page, or the
+ * master password where lib/roles.ts needsPassword says so); the promise rejects with { code: 'reconfirm_required' } when one is due.
  */
 export interface VpnStatusSource {
   /** Every node and guest. */

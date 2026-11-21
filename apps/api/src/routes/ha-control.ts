@@ -4,7 +4,7 @@
 //  Roles (lib/roles.ts): reads are viewer, like every plug-in page. Everyday
 //  controls (POST .../actions) are operator at the gate, and the instance's own
 //  setting can raise that to admin. Security controls (POST .../secure-actions)
-//  are admin with the master password re-entered, which also keeps API tokens
+//  are admin with an in-page confirmation, which also keeps API tokens
 //  out; the service refuses a token there again by name. Adding, changing or
 //  removing an instance is admin and re-confirmed: it stores a token or changes
 //  what counts as a security device.

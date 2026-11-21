@@ -10,7 +10,7 @@
 //
 //  The one action: run verify now (GC is left to its own weekly schedule, whose
 //  last and next run the page shows). It is admin, a person (never an
-//  API token: the gate's master-password re-confirmation already keeps tokens
+//  API token: the gate's in-page confirmation already keeps tokens
 //  out, and this service refuses one again by name), names a datastore the
 //  server reports, is rate-limited, audited (every attempt, refused or not), and
 //  read back: the task's status is fetched after the start. There is no delete,

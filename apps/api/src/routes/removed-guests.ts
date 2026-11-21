@@ -3,8 +3,7 @@
 //
 //  What HyperProx still holds for guests that were removed from Proxmox, and
 //  the one Clean up for each. Admin for every method, reads included (it names
-//  guests, addresses and backup jobs). Clean up also needs the master password
-//  again (lib/roles.ts): it deletes vault items and changes the cluster's backup
+//  guests, addresses and backup jobs). Clean up is also confirmed on the page (lib/roles.ts): it deletes vault items and changes the cluster's backup
 //  jobs and HA list, and it is a person's decision, never an API token's.
 // =============================================================================
 

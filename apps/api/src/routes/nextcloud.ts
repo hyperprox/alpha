@@ -7,7 +7,7 @@
 //  list, the update check, snoozes, every action. Adding, changing or removing
 //  an instance stores a login, and the secure actions (lib/nextcloud/checks.ts
 //  ACTIONS: the update, the HPB update, long database work, 2FA, mail) are on
-//  /secure-actions/, which the gate re-confirms (master password); that also
+//  /secure-actions/, which the gate confirms on the page; that also
 //  keeps API tokens out, and the service refuses a token by name on every
 //  action anyway. No route takes a command, a path or a container name.
 // =============================================================================

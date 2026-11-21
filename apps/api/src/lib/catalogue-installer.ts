@@ -1953,7 +1953,7 @@ export async function wizardView(over: Partial<WizardDeps> = {}) {
 
 export const readNamingSettings = (over: Partial<WizardDeps> = {}) => wizardDeps(over).readNaming()
 
-/** Check and save the naming settings. The route has already asked for the master password again. */
+/** Check and save the naming settings. The route has already had it confirmed on the page. */
 export async function saveNamingSettings(raw: unknown, who: string, over: Partial<WizardDeps> = {}): Promise<{ settings?: NamingSettings; errors: string[] }> {
   const deps = wizardDeps(over)
   const v = validateNaming(raw)

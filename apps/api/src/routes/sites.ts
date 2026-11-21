@@ -5,13 +5,13 @@
 //  would make), and the Sites view: health, pull now, and the one-time
 //  WordPress admin sign-in. The install itself is the catalogue wizard's
 //  preview and apply. Every route here is admin; the sign-in also needs the
-//  master password re-entered (roles.ts), and is audited without its token.
+//  master password re-entered (roles.ts needsPassword), and is audited without its token.
 //
 //  Deleting a site (lib/site-delete.ts): POST /:id/delete/preview lists exactly
 //  what would go, with HyperProx's ownership defaults, and changes nothing;
 //  POST /:id/delete removes what was ticked from that preview. The preview is
 //  single use, the asker's own, for this site only, and lasts ten minutes. The
-//  delete needs the master password re-entered; API tokens are refused on both.
+//  delete is confirmed on the page; API tokens are refused on both.
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
@@ -161,7 +161,7 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
       } catch (e) { return refused(reply, e) }
     })
 
-    // POST /:id/delete — remove what was ticked from that preview (master password re-entered, roles.ts)
+    // POST /:id/delete — remove what was ticked from that preview (in-page confirmation, roles.ts)
     fastify.post<{ Params: { id: string }; Body: { previewId?: unknown; items?: unknown; confirm?: unknown } }>('/:id/delete', async (q, reply) => {
       if (!deleteGuard(q, reply)) return
       const site = await getSite(q.params.id)

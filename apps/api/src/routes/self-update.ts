@@ -5,9 +5,9 @@
 //    GET  /status    admin: installed version, settings, the last check, the run in progress
 //    POST /check     admin: check now (at most once a minute)
 //    GET  /preview   admin: what an install would do, and anything that refuses it
-//    POST /install   admin + master password re-entered (roles.ts); never an API token
+//    POST /install   admin + an in-page confirmation (roles.ts); never an API token
 //    GET  /job       admin: the run's steps and log tail, read from the updater's state file
-//    PUT  /settings  admin + master password re-entered; never an API token
+//    PUT  /settings  admin + an in-page confirmation; never an API token
 //
 //  The update itself runs outside the API (lib/self-update/updater-main.ts).
 // =============================================================================

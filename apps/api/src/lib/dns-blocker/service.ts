@@ -9,8 +9,8 @@
 //    normal    pause blocking for 5, 30 or 60 minutes, turn it back on, update the block lists: operator or above (the
 //              gate), on POST .../actions.
 //    secure    restart the service, allow a domain, switch the upstream DNS servers, and "use for HyperProx-installed
-//              guests": on POST .../secure-actions only. Admin, a person (never an API token), the master password
-//              re-entered (the gate). Allowing a domain also needs the phrase "Allow <domain>" typed (checked here). Rate-limited.
+//              guests": on POST .../secure-actions only. Admin, a person (never an API token), an in-page
+//              confirmation (the gate). Allowing a domain also needs the phrase "Allow <domain>" typed (checked here). Rate-limited.
 //  Every attempt gets audit rows (who, which blocker, what; never an address or a login): a "started" row written BEFORE
 //  anything is done (if it cannot be written, nothing is done: fail closed), then the outcome, best effort.
 //  Each action reads the blocker again afterwards: "done" means the blocker now says so, not that it accepted the call.

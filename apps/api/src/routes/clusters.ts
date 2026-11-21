@@ -3,7 +3,8 @@
 //
 //  Roles (lib/roles.ts): the list, the Command center and task status are viewer; power is operator; every
 //  other call is admin. Anything that stores or replaces a credential, confirms a certificate or host key,
-//  deletes, or installs is admin with the master password re-entered, which also keeps API tokens out.
+//  deletes, or installs is admin with an in-page confirmation (the host-key and verify-keys
+//  routes keep the master password, lib/roles.ts needsPassword), which also keeps API tokens out.
 //
 //  Secrets go one way: into the vault. No answer here carries a token, a password, a key or a fingerprint of
 //  one, and the audit log records who did what to which cluster, never a value.
@@ -242,7 +243,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (e) { return fail(reply, e) }
   })
 
-  // Adding a server, in one step under the one master-password re-confirmation (lib/roles.ts): the certificate
+  // Adding a server, in one step under the one in-page confirmation (lib/roles.ts): the certificate
   // (verified over a private link, or the fingerprint the owner compared when that is not possible), the token, the
   // node addresses, and with a node login, host keys verified and the login saved, then monitoring and Send files.
   // Nothing is stored until the certificate and the token have both passed (vault first, then the row).

@@ -13,7 +13,7 @@
 //  recommendation, next free ID and bridge the wizard's Placement step offers)
 //  and holds it as a preview under the person's name. The assistant never
 //  installs: the person opens that preview in the New website wizard, reviews
-//  it, and Install there asks for the master password, as it does by hand.
+//  it, and Install there asks for a confirmation on the page, as it does by hand.
 // =============================================================================
 
 import { coerceHostname } from './fields'

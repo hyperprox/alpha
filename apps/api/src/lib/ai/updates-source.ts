@@ -5,7 +5,7 @@
 //  security updates?" are answered from the Updates page's own target tree, as
 //  last read, with no model call and nothing read from any machine. It never
 //  starts an update and offers no way to: updates are chosen and run on the
-//  Updates page, after the master password.
+//  Updates page, after an in-page confirmation.
 //
 //  Admin only, like the Updates page: the tree lists every pending package and
 //  kernel hold on every host.

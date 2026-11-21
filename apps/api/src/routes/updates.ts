@@ -13,8 +13,8 @@
 //  remote with X-HyperProx-Cluster. Each cluster has its own runner, policy and inventory cache
 //  (lib/updates/service.ts), and its own view of the jobs, so a job planned for one cluster cannot be confirmed,
 //  resumed or rolled back through another. On a remote, everything that changes something (starting a run,
-//  confirming, resuming, rolling back, rebooting) also needs the master password re-entered within the last
-//  five minutes — which an API token can never do.
+//  confirming, resuming, rolling back, rebooting) also needs an in-page confirmation (lib/confirm.ts, valid
+//  five minutes) — which an API token can never do.
 //
 //  The services, the daily check and the scheduler are built and started by
 //  lib/services/bootstrap.ts (lib/updates/runtime.ts); these routes only use them.

@@ -137,7 +137,7 @@ const PROXY = /^\/api\/proxy(\/|$)/
 const PROXY_READ = /^\/api\/proxy\/(kinds|instances|hosts|certificates|stats|instances\/[^/]+\/(hosts|certificates|health))$/
 // The Catalogue install wizard: the node table, ID and address checks, previews and applies. Admin for every
 // method, reads included: it maps every node, guest and address. Apply and clean-up create or destroy a
-// container, so both also need the master password re-entered.
+// container, so both are also confirmed on the page.
 const CATALOGUE_WIZARD = /^\/api\/catalogue\/wizard(\/|$)/
 // Where each catalogue app already runs (routes/catalogue.ts /detected): it names guests and addresses, so admin.
 const CATALOGUE_DETECTED = /^\/api\/catalogue\/detected$/
@@ -150,7 +150,7 @@ const SITES = /^\/api\/sites(\/|$)/
 const SITES_RECONFIRM = /^\/api\/sites\/[^/]+\/(admin-login|delete)$/
 // Site metrics (routes/site-metrics.ts). Reads are viewer here and trimmed by the route (totals only below
 // operator); the adopt reads map containers, so they are admin. Adopting or forgetting a site and changing its
-// nginx log format also need the master password re-entered.
+// nginx log format are also confirmed on the page.
 const SITE_METRICS_ADMIN_READ = /^\/api\/site-metrics\/adopt(\/|$)/
 const SITE_METRICS_RECONFIRM: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/site-metrics\/adopt$/],
@@ -165,7 +165,7 @@ const GUEST_CONFIG_APPLY = /^\/api\/infra\/guest-config\/apply$/
 const GUEST_CONFIG_REVEAL = /^\/api\/infra\/guest-config\/guests\/[^/]+\/[^/]+\/[^/]+\/reveal$/
 // HA management (routes/ha.ts). Reads (the HA page, a guest's panel, the migration grid, list badges) are
 // viewer: they are status. Every write is admin: previews, the live rule check, and applying a preview,
-// which writes cluster-wide HA configuration and so also needs the master password re-entered.
+// which writes cluster-wide HA configuration and so is also confirmed on the page.
 const HA = /^\/api\/ha(\/|$)/
 const HA_READ = /^\/api\/ha\/(overview|badges|guests\/(lxc|qemu)\/\d+(\/preflight)?)$/
 const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pin)$/
@@ -174,7 +174,7 @@ const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pi
 // is admin: the move check, saving settings, checking bind-mount paths and reading corosync's log (both over node
 // logins), cancelling a scheduled move, resolving a stuck one, stopping a plan, the emergency stop. A move (now or
 // scheduled), running or scheduling a balancing plan, saving the settings (they decide when approved moves run) and
-// saving automatic balancing (it can turn on applying automatically) also need the master password re-entered, which
+// saving automatic balancing (it can turn on applying automatically) are also confirmed on the page, which
 // keeps API tokens out too (lib/api-tokens.ts refuses them those routes outright as well).
 const PLACEMENT = /^\/api\/placement(\/|$)/
 const PLACEMENT_READ = /^\/api\/placement\/(balance|map|advice|settings|auto|plans(\/[^/]+)?|moves(\/[^/]+)?|guests\/(lxc|qemu)\/\d+)$/
@@ -206,7 +206,7 @@ const DNS_RECONFIRM = /^\/api\/plugins\/(pihole|adguard)\/instances(\/[^/]+(\/se
 const ASUS_DIAGNOSTICS = /^\/api\/plugins\/asus\/instances\/[^/]+\/diagnostics$/
 const ASUS_RECONFIRM = /^\/api\/plugins\/asus\/instances(\/(?!probe-certificate$)[^/]+(\/actions)?)?$/
 // Plex clear-out and Library (routes/plex-clearout.ts). The lists are a read (viewer). Previewing a removal is
-// operator; removing (through Sonarr, Radarr or Plex itself) deletes files, so it is operator with the master password re-entered, which keeps API
+// operator; removing (through Sonarr, Radarr or Plex itself) deletes files, so it is operator with an in-page confirmation, which keeps API
 // tokens out too.
 const PLEX_CLEAROUT_ACT = /^\/api\/plugins\/plex\/(clearout|library)\/(preview|remove)$/
 const PLEX_CLEAROUT_RECONFIRM = /^\/api\/plugins\/plex\/(clearout|library)\/remove$/
@@ -395,7 +395,7 @@ const REMOTE_JOBS = /^\/api\/remote\/(exclusions$|(v1\/)?jobs(\/|$)|machines\/[^
 // Clusters (routes/clusters.ts): the list, the Command center and task status are viewer; guest power is operator,
 // as it is on the home pages; everything else is admin, reads included (scans and node lists map machines).
 // Storing or replacing a credential (a sending key and a Plex token included), confirming or verifying a certificate
-// or host key, deleting and installing also need the master password re-entered. Starting a copy does not: HyperProx's
+// or host key, deleting and installing are also confirmed on the page. Starting a copy does not: HyperProx's
 // copy only adds files (it never replaces or deletes one that was there).
 const CLUSTERS = /^\/api\/clusters(\/|$)/
 const CLUSTERS_VIEW = /^\/api\/clusters(\/overview|\/[^/]+\/tasks(\/[^/]+\/[^/]+)?|\/files\/jobs(\/[^/]+)?)?$/

@@ -284,7 +284,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
     } catch (e) { return refusal(reply, e) }
   })
 
-  // GET/PUT /wizard/naming — Settings → Naming & addresses. Saving needs the master password again (roles.ts).
+  // GET/PUT /wizard/naming — Settings → Naming & addresses. Saving is confirmed on the page (roles.ts).
   fastify.get('/wizard/naming', async (_req, reply) => {
     // A saved row that no longer passes its checks is shown as a problem, so it can be fixed by saving again.
     try { return reply.send({ success: true, data: { settings: await readNamingSettings(deps.wizard) } }) }
@@ -428,7 +428,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
     return reply.send({ success: true, data: { jobs } })
   })
 
-  // POST /wizard/jobs/:jobId/finish-seerr — start that Seerr and connect it now (admin, master password re-entered)
+  // POST /wizard/jobs/:jobId/finish-seerr — start that Seerr and connect it now (admin, in-page confirmation)
   fastify.post<{ Params: { jobId: string } }>('/wizard/jobs/:jobId/finish-seerr', async (req, reply) => {
     try {
       const detail = await finishSeerr(req.params.jobId, deps.whoami(req), deps.wizard)

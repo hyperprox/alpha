@@ -5,7 +5,7 @@
 //  spread, and for every guest, HA or not: why is it where it is, could it run
 //  somewhere else, and should it. A balancing plan is a short list of moves
 //  that evens the load out. Nothing moves unless a person runs a plan or a
-//  single move (with the master password), or turns on automatic balancing,
+//  single move (with an in-page confirmation), or turns on automatic balancing,
 //  which is off by default and moves only guests HA does not manage: for HA
 //  guests Proxmox's own scheduler (CRS) and HA rules have the last word.
 // =============================================================================
@@ -229,7 +229,7 @@ export interface MoveSnapshot {
   /** The balancing plan this move belongs to, and whether automatic balancing started it. */
   planId?:   string
   auto?:     boolean
-  /** Who approved a scheduled move, with the role they held when they did (re-confirmed with the master password). */
+  /** Who approved a scheduled move, with the role they held when they did (confirmed on the page). */
   approver?: { email: string; role: string; at: number }
   type?:     'lxc' | 'qemu'
   running?:  boolean
@@ -350,7 +350,7 @@ export interface PlanSnapshot {
   settings?: Partial<PlacementSettings>
   /** An automatic plan: the approval it runs under (its time) and the stop epoch when it was made. */
   auto?:     { approvedAt: number; epoch: number }
-  /** Who approved it (with the master password just re-entered), with the role they held then. */
+  /** Who approved it (just confirmed on the page), with the role they held then. */
   approver?: { email: string; role: string; at: number }
   /** Ceph's health checks when it was approved: a check that was not there then stops the plan. Null: no Ceph status. */
   ceph?:     { checks: string[] } | null

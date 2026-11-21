@@ -4,9 +4,8 @@
 //  Roles (lib/roles.ts): everything here is admin, reads included (a reading
 //  names users and, unless turned off, client addresses).
 //  Adding, removing or resetting a user and changing the settings (who may use
-//  it, whether it reaches the LAN, per-user figures) also need the master
-//  password re-entered, which keeps API tokens out. Reload and the self-check
-//  are confirmed on the page and audited.
+//  it, whether it reaches the LAN, per-user figures) also need an in-page confirmation, which keeps API tokens out. Reload and the
+//  self-check are confirmed on the page and audited.
 //
 //  No route takes a command, a path or a password: a proxy is picked by its id,
 //  an action by its name, a user by a checked name. A new password is never in

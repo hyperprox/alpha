@@ -20,7 +20,7 @@
 //    - every auto-connect is audited as "system" with the evidence (and the
 //      vault item's id and name when one was used, never its value)
 //    - an auto-connect does only what a read-only connect does; writes and fixes
-//      keep their own admin and master-password rules
+//      keep their own admin and confirmation rules
 // =============================================================================
 
 import type { SecretItem } from '../vault/broker'

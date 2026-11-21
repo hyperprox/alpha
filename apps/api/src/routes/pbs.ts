@@ -3,9 +3,9 @@
 //
 //  Roles (lib/roles.ts): reads are viewer, like every plug-in page; below
 //  operator a server's address, token id and pin are left out. Adding,
-//  changing or removing a server stores a token: admin, master password
-//  re-entered. "Verify now" (POST .../actions/verify, the only action) is admin
-//  with the master password re-entered, which also keeps API tokens out; the
+//  changing or removing a server stores a token: admin, in-page
+//  confirmation. "Verify now" (POST .../actions/verify, the only action) is admin
+//  with an in-page confirmation, which also keeps API tokens out; the
 //  service refuses a token again by name.
 //
 //  No route returns a token secret, and no route takes a path: the one action is

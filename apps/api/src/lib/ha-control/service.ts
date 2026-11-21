@@ -8,7 +8,7 @@
 //       state and attributes it has right now;
 //    3. the person may act: everyday controls need the instance's role (operator
 //       by default); the security tier needs admin, a person (never an API
-//       token), the master password re-entered (the gate checks that on the
+//       token), an in-page confirmation (the gate checks that on the
 //       secure route);
 //    4. the rate limit for this session (before any phrase is compared);
 //    5. the allow-list turns (domain, action, value) into one service call with

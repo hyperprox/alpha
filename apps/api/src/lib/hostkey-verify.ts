@@ -29,7 +29,7 @@
 //  raises an alert. Passes run one at a time.
 //
 //  Every script sent to a node, home or remote, passes the script guard (lib/clusters/script-guard.ts) first. An API
-//  token cannot start a pass: the routes that do are re-confirmed with the master password, and the entry points
+//  token cannot start a pass: the routes that do need the master password (lib/roles.ts needsPassword), and the entry points
 //  below refuse a token's session as well. The background runs are for HOME nodes, after an owner sign-in or when
 //  HyperProx first learns a home node's key.
 // =============================================================================

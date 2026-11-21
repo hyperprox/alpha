@@ -6,7 +6,7 @@
 //  addresses, event text and the pods' last log lines are left out, and a
 //  fresh read (past the cache) is admin only. Logs and the drain preview are admin (logs can hold anything
 //  an app printed). Connecting, renaming or removing a cluster, and every
-//  action, are admin with the master password re-entered, which also keeps API
+//  action, are admin with an in-page confirmation, which also keeps API
 //  tokens out; the service refuses a token again by name.
 //
 //  No route returns a token, a kubeconfig or a join token: those stay in the

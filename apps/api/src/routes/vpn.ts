@@ -2,9 +2,9 @@
 //  HyperProx — WireGuard routes (/api/vpn/wg)
 //
 //  Admin only, reads included (they list endpoints and keys' public halves).
-//  Everything that changes something, reveals a client config or rotates a key
-//  needs a fresh master-password re-confirmation (lib/roles.ts), which also
-//  keeps API tokens out. Responses that carry a config are never cached.
+//  Everything that changes something is confirmed on the page; revealing a client
+//  config, rotating a key and adding a device need the master password
+//  (lib/roles.ts needsPassword). Both keep API tokens out. Responses that carry a config are never cached.
 // =============================================================================
 
 import { sendFailure, sendRefusal } from '../lib/failure'

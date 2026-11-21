@@ -4,8 +4,8 @@
 //  Roles (lib/roles.ts): everything here is admin, reads included: the preview
 //  maps every service's LAN address and the diff shows the whole file. Turning
 //  on widgets, writing their keys to the guest, wiring the key file into
-//  Homepage's compose file, and creating or revoking the Proxmox token also need
-//  the master password re-entered (and so never work for an API token); the
+//  Homepage's compose file, and creating or revoking the Proxmox token are also
+//  confirmed on the page (and so never work for an API token); the
 //  service refuses a token there again by name.
 //
 //  No route takes a path, a command or a file's content: a dashboard is picked

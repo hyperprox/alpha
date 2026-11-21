@@ -3,8 +3,8 @@
 //
 //  Roles (lib/roles.ts): everything here is admin, reads included (a reading
 //  names the guests that use the cache). Changing who may use it, the Updates
-//  setting, and writing or removing the setting on every guest also need the
-//  master password re-entered. API tokens are refused every change outright
+//  setting, and writing or removing the setting on every guest also need an
+//  in-page confirmation. API tokens are refused every change outright
 //  (lib/api-tokens.ts) and again in the service. Every change is audited
 //  first; when the audit cannot be written, nothing is done.
 //

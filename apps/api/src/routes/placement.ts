@@ -6,7 +6,7 @@
 //  automatic balancing's settings. The move check is admin. A move (now or
 //  scheduled), running or scheduling a balancing plan, and saving automatic
 //  balancing (which can turn on applying automatically) are admin with the
-//  master password re-entered, and refused to API tokens outright
+//  an in-page confirmation, and refused to API tokens outright
 //  (lib/roles.ts PLACEMENT_*, lib/api-tokens.ts). Stopping a plan and the
 //  emergency stop are admin and audited, without the password: stopping is
 //  always safe. Checking bind-mount paths and reading corosync's log use node

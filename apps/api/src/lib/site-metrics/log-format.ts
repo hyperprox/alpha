@@ -2,7 +2,7 @@
 //  HyperProx — site metrics: adding $request_time to an existing nginx's log
 //
 //  The only change HyperProx offers to make inside a site it adopted, and only
-//  when an admin asks, sees the exact lines, and re-enters the master password.
+//  when an admin asks, sees the exact lines, and confirms on the page.
 //
 //  1. inspectScript (read-only) lists nginx's configuration files with their
 //     SHA-256 and the lines that mention access_log or open the http block.
