@@ -69,7 +69,7 @@ import { runOpenWebuiSetup } from './openwebui/setup'
 import { HA_SETUP_STEPS, usbList } from './homeassistant/recipe'
 import { createHaVm, imageFor, runHaSetup, type HaSetupDeps } from './homeassistant/job'
 import { haSocket } from './homeassistant/ws'
-import { HAVM_USB_SCRIPT, parseUsb } from './homeassistant/usb'
+import { HAVM_USB_SCRIPT, parseUsb, resolveUsb } from './homeassistant/usb'
 import { InstanceStore as HaInstanceStore } from './ha-control/instances'
 import { deleteCredential } from './credentials'
 import { isPrivateV4 as aptCachePrivate } from './aptcache/net'
@@ -218,6 +218,19 @@ export interface InstallDeps {
   ha?: () => HaDeps
   /** The Ollama address the AI page is connected to (Open WebUI is pointed at it), or null. */
   knownOllama?: () => Promise<string | null>
+  /** The plug-in settings in the vault, for undoing the connection an install made (default: the credential store). */
+  pluginCreds?: PluginCreds
+}
+
+export interface PluginCreds {
+  get(provider: string, key: string): Promise<string | null>
+  set(provider: string, key: string, value: string): Promise<void>
+  del(provider: string, key: string): Promise<void>
+  delProvider(provider: string): Promise<void>
+}
+const realPluginCreds: PluginCreds = {
+  get: (p, k) => getCredential('plugin', p, k), set: (p, k, v) => setCredential('plugin', p, k, v, false),
+  del: (p, k) => deleteCredential('plugin', p, k), delProvider: p => deleteProviderCredentials('plugin', p),
 }
 
 /** What Home Assistant's install reaches outside itself for. */
@@ -243,7 +256,7 @@ function realHaDeps(): HaDeps {
       }
     },
     agentFile: {
-      read: async (node, vmid, path) => String((await pve().fetchStrict<any>(`/nodes/${enc(node)}/qemu/${vmid}/agent/file-read?file=${enc(path)}`))?.content ?? ''),
+      read: async (node, vmid, path) => { const r = await pve().fetchStrict<any>(`/nodes/${enc(node)}/qemu/${vmid}/agent/file-read?file=${enc(path)}`); return { content: String(r?.content ?? ''), truncated: !!r?.truncated } },
       write: async (node, vmid, path, content) => { await pve().fetchStrict(`/nodes/${enc(node)}/qemu/${vmid}/agent/file-write`, 'POST', new URLSearchParams({ file: path, content }).toString()) },
     },
     timeZone: async node => String((await pve().fetchStrict<any>(`/nodes/${enc(node)}/time`))?.timezone ?? 'UTC'),
@@ -838,17 +851,17 @@ async function runJob(
     if (appSetup) {
       const arr = deps.arr?.()
       if (!job.ip || !admin || !job.vaultItem || !arr) throw new Error(`${recipe.name} needs its address, its generated login and the vault to be set up.`)
-      const sd = { http: arr.http, wait: deps.wait, saveSecrets: deps.saveSecrets, savePluginSettings: arr.savePluginSettings, pluginSettings: arr.pluginSettings }
+      const sd = { sh: arrSh, http: arr.http, wait: deps.wait, saveSecrets: deps.saveSecrets, savePluginSettings: async (id: string, v: Record<string, string>) => { await arr.savePluginSettings(id, v); job.connected = { plugin: id }; await persistJob(job).catch(e => persistFailed(job, e)) }, pluginSettings: arr.pluginSettings }
       const vault = { category: job.vaultItem.category, provider: job.vaultItem.provider }
       const ip = job.ip.split('/')[0]
       if (recipe.setup === 'immich') {
         const out = await runImmichSetup({ ip, admin: { email: admin.user, name: options.IMMICH_ADMIN_NAME || 'Administrator', password: admin.password }, ffmpeg: (options.IMMICH_FFMPEG as any) || 'disabled', vault }, id => step(job, id), sd)
-        if (out.connected) job.connected = { plugin: 'immich' }
+        void out
       } else {
-        const out = await runOpenWebuiSetup({ ip, admin: { email: admin.user, password: admin.password }, ollama: options.OWUI_OLLAMA_ENABLED === '1', vault }, id => step(job, id), sd)
-        if (out.connected) job.connected = { plugin: 'openwebui' }
+        const out = await runOpenWebuiSetup({ ip, admin: { email: admin.user, password: admin.password }, ollama: options.OWUI_OLLAMA_ENABLED === 'true', vault }, id => step(job, id), sd)
+        void out
         // No Ollama to use yet: the finished page offers to install one, and the plug-in connects it once it is there.
-        if (options.OWUI_OLLAMA === 'auto' && options.OWUI_OLLAMA_ENABLED !== '1') {
+        if (options.OWUI_OLLAMA === 'auto' && options.OWUI_OLLAMA_ENABLED !== 'true') {
           job.tcFollowUp = { recipeId: 'ollama', label: 'Install Ollama next', url: '', options: {} }
         }
       }
@@ -1561,7 +1574,7 @@ export function checkPlan(
   const policy = namingPolicy(naming, { node: input.node, vmid: Number(input.vmid), ip: String(input.ip ?? ''), bridge: input.bridge }, input.namingConfirm)
   errors.push(...policy.errors); warnings.push(...policy.warnings)
   if (naming && input.ip !== 'dhcp' && !policy.errors.length && !policy.override) checks.push(`${bareIp(String(input.ip))} is inside your range ${naming.rangeStart}–${naming.rangeEnd}.`)
-  if (recipe.options?.length) errors.push(...checkOptions(recipe, input.options).errors)
+  if (recipe.options?.length) errors.push(...checkOptions(recipe, input.options, { trustHidden: true }).errors)
   if (input.dns && !DNS_LIST.test(input.dns)) errors.push(`"${input.dns}" is not a list of IPv4 DNS servers.`)
   else if (input.dns && input.dns.split(/[\s,]+/).some(d => !parseCidr(`${d}/32`))) errors.push(`"${input.dns}" holds an address that is not IPv4.`)
 
@@ -1722,7 +1735,7 @@ export async function previewInstall(
       ...(input.vlan ? { vlan: input.vlan } : {}),
       ...(r.override && input.namingConfirm ? { namingConfirm: input.namingConfirm.trim() } : {}),
       ...(input.ip !== 'dhcp' && input.addressAck?.length ? { addressAck: [...input.addressAck].sort() } : {}),
-      ...(recipe.options?.length ? { options: checkOptions(recipe, input.options).values } : {}),
+      ...(recipe.options?.length ? { options: checkOptions(recipe, input.options, { trustHidden: true }).values } : {}),
       ...(publish ? { publish } : {}),
       ...(balance ? { balance } : {}),
       ...(arr?.publish?.length ? { arrPublish: arr.publish } : {}),
@@ -2300,8 +2313,10 @@ async function haPreview(input: WizardInput, recipe: CatalogueRecipe, deps: Wiza
   else checks.push(`${input.node} has room to unpack the image (it is removed again after the import).`)
   const usb = usbList(o.HA_USB ?? '')
   if (usb.length) {
-    const have = new Set(parseUsb((await run(HAVM_USB_SCRIPT, 30_000))?.output ?? '').map(d => d.id))
-    for (const id of usb) { if (have.has(id)) checks.push(`USB device ${id} is plugged into ${input.node} and will be passed in.`); else errors.push(`USB device ${id} is not plugged into ${input.node}. Plug it in, or pick the node it is on.`) }
+    const devices = parseUsb((await run(HAVM_USB_SCRIPT, 30_000))?.output ?? '')
+    const r = resolveUsb(devices, usb, input.node)
+    errors.push(...r.errors)
+    for (const h of r.hosts) checks.push(`USB device ${h} is plugged into ${input.node}, is not one the node needs, and will be passed in.`)
     warnings.push(`Passing a USB device in ties the machine to ${input.node}: Proxmox cannot move it or restart it on another node while it holds the device.`)
   }
   if (input.diskGb < 32) warnings.push('Home Assistant OS\'s disk image is 32 GB, so the machine\'s disk is 32 GB whatever is asked for here.')
@@ -2327,15 +2342,9 @@ export async function homeAssistantUsb(node: string, over: Partial<WizardDeps> =
 async function runVmJob(job: InstallJob, recipe: CatalogueRecipe, deps: WizardDeps, plan: InstallPlan, onSettled: () => Promise<void> | void): Promise<void> {
   const options = plan.options ?? {}
   try {
-    const s1 = step(job, 'container')
-    const image = imageFor('amd64')!
-    await createHaVm(plan, `${recipe.name}, installed by HyperProx on ${new Date().toISOString().slice(0, 10)}.\n${installMark(job.jobId)}`, deps.client,
-      () => { job.created = true; void persistJob(job).catch(e => persistFailed(job, e)) })
-    s1.status = 'done'; s1.detail = `VM ${job.vmid} on ${job.node}`
     const ha = deps.ha?.(), arr = deps.arr?.()
     if (!ha || !arr) throw new Error('Home Assistant\'s setup is not available here.')
-
-    // The owner's generated password is in the vault before anything else runs: a password that exists only in a running machine is a lockout.
+    // The owner's generated password is in the vault before anything is made, and before anything else runs: a password that exists only in a running machine is a lockout, and a locked vault must not leave a machine behind.
     if (!await deps.vaultOpen()) throw new Error('Home Assistant\'s owner gets a generated password, which is saved in the vault, and the vault is locked. Sign in to unlock it and try again.')
     const owner = { name: options.HA_OWNER_NAME || 'Owner', username: options.HA_OWNER_USER || 'owner', password: randomBytes(18).toString('base64url') }
     const provider = `${recipe.id}-${job.vmid}`
@@ -2343,12 +2352,18 @@ async function runVmJob(job: InstallJob, recipe: CatalogueRecipe, deps: WizardDe
     await deps.saveSecrets('apps', provider, { admin_user: owner.username, admin_password: owner.password })
     job.vaultItem = { category: 'apps', provider, createdByJob: before !== null && Object.keys(before).length === 0 }
     await persistJob(job).catch(e => persistFailed(job, e))
+    const s1 = step(job, 'container')
+    const image = imageFor('amd64')!
+    await createHaVm(plan, `${recipe.name}, installed by HyperProx on ${new Date().toISOString().slice(0, 10)}.\n${installMark(job.jobId)}`, deps.client,
+      () => { job.created = true; void persistJob(job).catch(e => persistFailed(job, e)) })
+    s1.status = 'done'; s1.detail = `VM ${job.vmid} on ${job.node}`
+    const proxyIp = plan.publish ? await deps.publish.proxy.instanceAddress?.(plan.publish.instanceId).catch(() => null) ?? undefined : undefined
 
     const res = await runHaSetup({
       node: plan.node, vmid: plan.vmid,
       plan: { storage: plan.storage, diskGb: plan.diskGb, ip: plan.ip, gateway: plan.gateway, dns: plan.dns },
       image, name: options.HA_NAME || 'Home', units: options.HA_UNITS === 'us_customary' ? 'us_customary' : 'metric', timeZone: await ha.timeZone(plan.node).catch(() => 'UTC'),
-      owner, usb: usbList(options.HA_USB ?? ''), vault: { category: 'apps', provider }, publishing: !!plan.publish,
+      owner, usb: usbList(options.HA_USB ?? ''), vault: { category: 'apps', provider }, publishing: !!plan.publish, proxyIp,
     }, id => step(job, id), {
       client: deps.client, nodeRun: arr.nodeRun, http: arr.http, socket: ha.socket, wait: deps.wait, saveSecrets: deps.saveSecrets,
       connect: async o => { const r = await ha.connect(o); job.connected = { plugin: 'home-assistant', instanceId: r.id }; await persistJob(job).catch(e => persistFailed(job, e)); return r },
@@ -2360,8 +2375,13 @@ async function runVmJob(job: InstallJob, recipe: CatalogueRecipe, deps: WizardDe
     if (plan.publish) {
       if (res.trusted) {
         job.ledger ??= {}
-        job.url = await runPublish(plan.publish, recipe, res.ip, job.owner, job.ledger,
-          { step: id => step(job, id), save: () => { void persistJob(job).catch(e => persistFailed(job, e)) } }, deps.publish)
+        try {
+          job.url = await runPublish(plan.publish, recipe, res.ip, job.owner, job.ledger,
+            { step: id => step(job, id), save: () => { void persistJob(job).catch(e => persistFailed(job, e)) } }, deps.publish)
+        } catch (e: any) {
+          // The public check goes through the proxy, so it is the proof that Home Assistant accepts it.
+          throw new Error(`${e.message} Home Assistant was told to trust ${proxyIp ?? 'the proxy'} only. If the proxy reaches Home Assistant from another address, put that address in trusted_proxies in Home Assistant's configuration.yaml.`)
+        }
       } else {
         for (const st of PUBLISH_STEPS) { const x = job.steps.find(y => y.id === st.id); if (x) { x.status = 'skipped'; x.detail = 'Not made: Home Assistant does not trust the proxy yet.' } }
       }
@@ -2391,15 +2411,33 @@ async function runVmJob(job: InstallJob, recipe: CatalogueRecipe, deps: WizardDe
  */
 async function removeConnection(job: InstallJob, deps: WizardDeps): Promise<string> {
   const c = job.connected
+  const pc = deps.pluginCreds ?? realPluginCreds
   if (!c) return ''
+  const port = c.plugin === 'immich' ? 2283 : c.plugin === 'openwebui' ? 8080 : 8123
+  const mine = job.ip ? `http://${job.ip.split('/')[0]}:${port}` : null
+  const label = c.plugin === 'home-assistant' ? 'Home Assistant' : c.plugin === 'immich' ? 'Immich' : 'Open WebUI'
   try {
+    // Only a connection that still points at THIS install is removed: the plug-in may have been moved to another one since.
+    const now = (await pc.get(c.plugin, 'url').catch(() => null))?.replace(/\/+$/, '') ?? null
+    const ownInstance = c.plugin === 'home-assistant' && !!c.instanceId && c.instanceId !== 'default'
+    if (!ownInstance && (!mine || now !== mine)) {
+      job.connected = undefined
+      return ` The ${label} plug-in no longer points at this install, so its connection was left as it is.`
+    }
     if (c.plugin === 'home-assistant') {
-      const store = new HaInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials })
-      if (c.instanceId && c.instanceId !== 'default') await store.remove(c.instanceId)
-      else { await deleteCredential('plugin', 'home-assistant', 'url'); await deleteCredential('plugin', 'home-assistant', 'token'); await deleteCredential('plugin', 'home-assistant', 'instances') }
-    } else await deleteProviderCredentials('plugin', c.plugin)
+      if (c.instanceId && c.instanceId !== 'default') await new HaInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials }).remove(c.instanceId)
+      else {
+        // The first instance is the plug-in's own settings: this install's address and token go, and only its entry leaves the list.
+        await pc.del('home-assistant', 'url'); await pc.del('home-assistant', 'token')
+        const raw = await pc.get('home-assistant', 'instances').catch(() => null)
+        if (raw) {
+          const list = (() => { try { const v = JSON.parse(raw); return Array.isArray(v) ? v : null } catch { return null } })()
+          if (list) { const rest = list.filter((x: any) => x?.id !== 'default'); if (rest.length) await pc.set('home-assistant', 'instances', JSON.stringify(rest)); else await pc.del('home-assistant', 'instances') }
+        }
+      }
+    } else await pc.delProvider(c.plugin)
     job.connected = undefined
-    return ` The ${c.plugin === 'home-assistant' ? 'Home Assistant' : c.plugin === 'immich' ? 'Immich' : 'Open WebUI'} plug-in connection this install made was removed.`
+    return ` The ${label} plug-in connection this install made was removed.`
   } catch (e: any) {
     return ` The plug-in connection this install made could not be removed: ${e.message}`
   }

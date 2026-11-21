@@ -26,13 +26,13 @@ export async function openwebuiPreview(values: Record<string, string>, d: OpenWe
   errors: string[]; warnings: string[]; checks: string[]; options: Record<string, string>; offerOllama: boolean
 }> {
   const errors: string[] = [], warnings: string[] = [], checks: string[] = []
-  const options: Record<string, string> = { ...values, OWUI_OLLAMA_URL: '', OWUI_OLLAMA_ENABLED: '0' }
+  const options: Record<string, string> = { ...values, OWUI_OLLAMA_URL: '', OWUI_OLLAMA_ENABLED: 'false' }
   let offerOllama = false
   const mode = values.OWUI_OLLAMA || 'auto'
   const use = async (url: string, how: string) => {
     const n = await askOllama(url, d.http)
     if (n === null) return false
-    options.OWUI_OLLAMA_URL = url; options.OWUI_OLLAMA_ENABLED = '1'
+    options.OWUI_OLLAMA_URL = url; options.OWUI_OLLAMA_ENABLED = 'true'
     checks.push(`${how} answers at ${url} and lists ${n} model${n === 1 ? '' : 's'}; Open WebUI will use it.`)
     if (n === 0) warnings.push('That Ollama has no models yet. Pull one from the AI page or from Open WebUI\'s Admin → Settings → Models.')
     return true

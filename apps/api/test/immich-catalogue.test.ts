@@ -48,6 +48,10 @@ test("recipe: a pinned release, an admin from the vault, the settings it asks, a
   // The administrator's key may read the numbers and look after the queues, and cannot read a photo.
   assert.ok(!IMMICH_KEY_PERMISSIONS.some(p => /^asset\.|^album/.test(p)))
   assert.ok(IMMICH_KEY_PERMISSIONS.includes("queue.update" as any))
+  // Exactly the scopes the plug-in's calls need: the numbers, the update check, the queues (read, pause and resume), and job.create
+  // (the permission of the one call that clears failed jobs only, which is Immich's deprecated PUT /jobs/{name}).
+  assert.deepEqual([...IMMICH_KEY_PERMISSIONS], ["server.statistics", "server.versionCheck", "queue.read", "queue.update", "job.create"])
+  for (const unused of ["server.about", "server.storage", "user.read", "queueJob.read", "queueJob.delete"]) assert.ok(!IMMICH_KEY_PERMISSIONS.includes(unused as any), unused)
 })
 
 test("options: a menu refuses any other answer, and a NAS or a folder needs its address", () => {
@@ -464,4 +468,39 @@ test("clean-up: a failed install is removed with the plug-in connection it made 
   assert.equal(job.status, "failed")
   assert.match(await removeFailedInstall(job.jobId, OWNER, failing), /CT 910 was removed.*generated login \(apps\/immich-910\) was removed from the vault/)
   assert.equal(w.vault.has("apps/immich-910"), false)
+})
+
+test("the install's compose header says what is pinned how: Immich by version tag, PostgreSQL and Valkey by digest", () => {
+  const c = composeFile({ accel: "cpu" })
+  assert.match(c.split("\n")[0], /server and machine-learning images are pinned by version tag.*PostgreSQL and Valkey by digest/)
+  assert.doesNotMatch(c.split("\n")[0], /pinned by version and digest/)
+})
+
+test("hidden options: a request cannot set the preview's fields, and the plan the preview built keeps them", () => {
+  const v = checkOptions(IMMICH_RECIPE, { IMMICH_ADMIN_EMAIL: "me@example.com", TC_NVIDIA_VERSION: "1.2.3", IMMICH_FFMPEG: "nvenc", IMMICH_INTEL: "1" })
+  assert.deepEqual([v.values.TC_NVIDIA_VERSION, v.values.IMMICH_FFMPEG, v.values.IMMICH_INTEL], ["", "", "0"])
+  const t = checkOptions(IMMICH_RECIPE, { IMMICH_ADMIN_EMAIL: "me@example.com", IMMICH_FFMPEG: "nvenc", IMMICH_INTEL: "1" }, { trustHidden: true })
+  assert.deepEqual([t.values.IMMICH_FFMPEG, t.values.IMMICH_INTEL], ["nvenc", "1"])
+})
+
+test("clean-up: the plug-in connection is removed only while it still points at this install, and a connection made before the failure is found", async () => {
+  const creds = new Map<string, string>(); const del: string[] = []
+  const pluginCreds = {
+    get: async (p: string, k: string) => creds.get(`${p}/${k}`) ?? null, set: async (p: string, k: string, v: string) => { creds.set(`${p}/${k}`, v) },
+    del: async (p: string, k: string) => { creds.delete(`${p}/${k}`); del.push(`${p}/${k}`) }, delProvider: async (p: string) => { for (const k of [...creds.keys()]) if (k.startsWith(`${p}/`)) creds.delete(k); del.push(p) },
+  }
+  const run = async (hwFails: boolean, moveTo?: string) => {
+    const w = wizard({ "node-a": INTEL }); w.f.keepConfig = !hwFails
+    const d = { ...w.d, pluginCreds, arr: () => ({ ...(w.d.arr as any)(), savePluginSettings: async (id: string, v: any) => { creds.set(`${id}/url`, v.url); w.store.plugin[id] = v } }) as any }
+    const r = await previewInstall(base({ options: { IMMICH_ACCEL: "vaapi" } }), OWNER, d)
+    const job = await settled((await applyPreview(r.preview!.id, OWNER, d)).jobId)
+    assert.equal(job.status, "failed"); assert.match(job.error!, /did not keep the hardware conversion setting/)
+    assert.deepEqual(job.connected, { plugin: "immich" }, "the connection made before the failure is on record")
+    if (moveTo) creds.set("immich/url", moveTo)
+    return removeFailedInstall(job.jobId, OWNER, d)
+  }
+  assert.match(await run(true), /Immich plug-in connection this install made was removed/); assert.deepEqual(del, ["immich"]); assert.equal(creds.has("immich/url"), false)
+  del.length = 0
+  assert.match(await run(true, "http://10.9.9.9:2283"), /no longer points at this install, so its connection was left as it is/)
+  assert.deepEqual(del, []); assert.equal(creds.get("immich/url"), "http://10.9.9.9:2283")
 })

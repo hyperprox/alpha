@@ -15,6 +15,13 @@ export const OPENWEBUI_RECIPE_ID = 'open-webui'
 export const OPENWEBUI_VERSION = 'v0.13.4'
 export const OPENWEBUI_PORT = 8080
 
+/**
+ * The only paths an Open WebUI API key may call (exact, or the path and anything under it). Open WebUI has no read-only or
+ * per-feature keys: a key is its owner's whole login, so this list is the narrowest it offers. The administrator's settings page
+ * is in it because Close sign-up needs it, and that page can change any of Open WebUI's settings: say so wherever the key is described.
+ */
+export const KEY_ENDPOINTS = ['/api/version', '/ollama/config', '/ollama/verify', '/ollama/api/tags', '/api/v1/auths/admin/config']
+
 export const OPENWEBUI_OPTIONS: RecipeOption[] = [
   { key: 'OWUI_ADMIN_EMAIL', label: 'Administrator email', kind: 'email', required: true, placeholder: 'you@example.com',
     hint: 'The first account, and the administrator. Open WebUI signs in with an email address. The password is generated and kept in the vault.' },
@@ -29,7 +36,8 @@ export const OPENWEBUI_OPTIONS: RecipeOption[] = [
   { key: 'OWUI_OLLAMA_ADDRESS', label: 'Ollama address', kind: 'text', showWhen: { key: 'OWUI_OLLAMA', value: 'address' }, maxLength: 200, placeholder: 'http://ollama.example.lan:11434', hint: 'Only when you give an address.' },
   // Preview-only: what the preview resolved. A value in a request is never used.
   { key: 'OWUI_OLLAMA_URL', label: 'Ollama address in use', kind: 'text', maxLength: 200, hidden: true },
-  { key: 'OWUI_OLLAMA_ENABLED', label: 'Ollama on', kind: 'boolean', default: '0', hidden: true },
+  // Open WebUI reads this as the word true or false (anything else is false), so it is never 1 or 0.
+  { key: 'OWUI_OLLAMA_ENABLED', label: 'Ollama on', kind: 'text', default: 'false', maxLength: 5, hidden: true },
 ]
 
 /** An address Open WebUI may be pointed at: http(s), a host and a port, no login in it, no path. */
@@ -69,6 +77,10 @@ export const OPENWEBUI_COMPOSE = `services:
       - ENABLE_SIGNUP=false
       - DEFAULT_USER_ROLE=pending
       - ENABLE_API_KEYS=true
+      # An API key may reach only what HyperProx's plug-in uses (the version, the Ollama connection and its models, the settings
+      # page). The list applies to every API key on this Open WebUI.
+      - ENABLE_API_KEYS_ENDPOINT_RESTRICTIONS=true
+      - API_KEYS_ALLOWED_ENDPOINTS=${KEY_ENDPOINTS.join(',')}
     volumes:
       - ./data:/app/backend/data
     logging:
@@ -83,6 +95,7 @@ export const OPENWEBUI_SETUP_STEPS = [
   { id: 'owui-key', label: 'Make HyperProx\'s API key and connect the Open WebUI plug-in' },
   { id: 'owui-signup', label: 'Check that open sign-up is off' },
   { id: 'owui-ollama', label: 'Check the Ollama connection' },
+  { id: 'owui-clean', label: 'Remove the administrator password from the install folder' },
 ] as const
 
 export const OPENWEBUI_RECIPE: CatalogueRecipe = {
@@ -112,6 +125,8 @@ export const OPENWEBUI_RECIPE: CatalogueRecipe = {
     `Pinned: Open WebUI ${OPENWEBUI_VERSION}, in /opt/app/docker-compose.yml. An upgrade is a changed tag there, then \`docker compose pull && docker compose up -d\`.`,
     'It is only the page: the models run in Ollama, which may be on any machine. HyperProx finds the Ollama it already knows; if there is none it offers to install one after this.',
     'Open sign-up is off and new accounts start as pending. The administrator is made by Open WebUI itself on its first start from a generated password, which is in the vault.',
+    'HyperProx\'s API key can reach only the few paths its plug-in uses (the version, the Ollama connection and its models, and the administrator settings page). Open WebUI has no read-only keys, so that settings page is the narrowest it offers: it can read and change Open WebUI\'s settings, which is what Close sign-up needs. The limit applies to every API key on this Open WebUI.',
+    'The administrator password is only needed on the first start: once HyperProx has signed in, it is blanked in the install folder\'s .env and the container is recreated. It stays in the vault.',
     'A public name gets websockets, no response buffering (answers appear as they are written) and ten-minute timeouts at the proxy.',
   ],
   options: OPENWEBUI_OPTIONS,

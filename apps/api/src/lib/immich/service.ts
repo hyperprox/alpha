@@ -140,6 +140,8 @@ export async function runAction(raw: ActionInput, actor: string, d: ActionDeps):
   const pause = (isPaused: boolean) => d.client.put(`/api/queues/${queue}`, { isPaused }, 30_000)
   if (action === 'resume-queue') await pause(false)
   else if (action === 'restart-queue') { await pause(true); await d.wait?.(1000); await pause(false) }
+  // Immich's deprecated PUT /jobs/{name} (since v2.4.0): the only call that clears failed jobs and leaves the waiting ones. Its replacement,
+  // DELETE /queues/{name}/jobs, empties the queue. When Immich removes it, this is the line to change (the test pins it).
   else await d.client.put(`/api/jobs/${queue}`, { command: 'clear-failed' }, 60_000)
   const after = await readQueue()
   if (action !== 'clear-failed' && after.paused) throw new ImmichRefusal('not_applied', `Immich still shows the ${after.label} queue as paused after the request.`, 502)

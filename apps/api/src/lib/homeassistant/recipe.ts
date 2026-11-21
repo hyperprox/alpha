@@ -43,7 +43,8 @@ export const HA_OPTIONS: RecipeOption[] = [
     hint: 'Optional: a Zigbee or Z-Wave stick plugged into the node, as vendor:product codes separated by commas (pick them from the list). The machine then cannot move to another node while it holds them.' },
 ]
 
-const USB_ID = /^[0-9a-f]{4}:[0-9a-f]{4}$/
+/** A vendor:product code, or a bus-port (1-2.3) for one of several identical devices. */
+const USB_ID = /^(?:[0-9a-f]{4}:[0-9a-f]{4}|\d{1,3}-\d{1,3}(?:\.\d{1,3}){0,5})$/
 
 export function usbList(v: string): string[] {
   return v.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
@@ -52,7 +53,7 @@ export function usbList(v: string): string[] {
 export function checkHaOptions(v: Record<string, string>): string[] {
   const out: string[] = []
   const list = usbList(v.HA_USB ?? '')
-  for (const id of list) if (!USB_ID.test(id)) out.push(`USB device "${id.slice(0, 20)}": use the vendor:product code from the list, like 10c4:ea60.`)
+  for (const id of list) if (!USB_ID.test(id)) out.push(`USB device "${id.slice(0, 20)}": use the code from the list, like 10c4:ea60 (or a bus-port like 1-2.3 when two identical devices are plugged in).`)
   if (new Set(list).size !== list.length) out.push('A USB device is listed twice.')
   if (list.length > 4) out.push('Pass in at most four USB devices.')
   return out

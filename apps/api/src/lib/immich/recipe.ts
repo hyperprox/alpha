@@ -29,8 +29,14 @@ export const IMMICH_UPLOAD_DIR = '/data/immich'
 export const VALKEY_IMAGE = 'docker.io/valkey/valkey:9@sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd'
 export const POSTGRES_IMAGE = 'ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23'
 
-/** What HyperProx's own key may do: read the numbers, and look after the job queues (job.create is the permission Immich asks for to clear failed jobs). Nothing that reads or changes a photo. */
-export const IMMICH_KEY_PERMISSIONS = ['server.about', 'server.statistics', 'server.versionCheck', 'server.storage', 'queue.read', 'queue.update', 'queueJob.read', 'job.create', 'user.read'] as const
+/**
+ * Exactly what the plug-in calls, and nothing else: server.statistics and server.versionCheck (the numbers and the update),
+ * queue.read (the queues), queue.update (pause and resume a queue) and job.create. That last one is the permission Immich asks for
+ * on its deprecated PUT /jobs/{name}, the only call that clears FAILED jobs (the newer DELETE /queues/{name}/jobs empties the whole
+ * queue, waiting jobs included). It is a pity to hold a scope that can also start jobs, but the plug-in only ever sends clear-failed.
+ * Nothing here reads or changes a photo.
+ */
+export const IMMICH_KEY_PERMISSIONS = ['server.statistics', 'server.versionCheck', 'queue.read', 'queue.update', 'job.create'] as const
 
 export const IMMICH_OPTIONS: RecipeOption[] = [
   { key: 'IMMICH_ADMIN_EMAIL', label: 'Administrator email', kind: 'email', required: true, placeholder: 'you@example.com',
@@ -109,7 +115,7 @@ export function composeFile(i: ComposeInput): string {
   const nvEnv = (caps: string) => nvidia ? ['      NVIDIA_VISIBLE_DEVICES: all', `      NVIDIA_DRIVER_CAPABILITIES: ${caps}`] : []
   const logging = ['    logging:', '      driver: json-file', '      options:', '        max-size: "10m"', '        max-file: "3"']
   return [
-    '# Written by HyperProx. Images are pinned by version and digest; to upgrade, change the version in .env and the tags, then `docker compose pull && docker compose up -d`.',
+    '# Written by HyperProx. Immich\'s server and machine-learning images are pinned by version tag (IMMICH_VERSION in .env); PostgreSQL and Valkey by digest. To upgrade, change the version in .env, then `docker compose pull && docker compose up -d`.',
     'name: immich', 'services:',
     '  immich-server:', '    container_name: immich_server', `    image: ghcr.io/immich-app/immich-server:\${IMMICH_VERSION}`,
     // The same user as the other library apps (uid 1000 in the container), so a NAS or a folder is written as one owner.

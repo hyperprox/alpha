@@ -107,8 +107,12 @@ export async function runAction(raw: unknown, actor: string, d: ActionDeps): Pro
     // Checked by Open WebUI itself, from where it runs: an address it cannot reach is never saved.
     try { await c.post('/ollama/verify', { url: target, key: '' }, 20_000) }
     catch (e) { throw new OpenWebuiRefusal('unreachable', `Open WebUI cannot reach the Ollama HyperProx knows (${text(e)}). Nothing was changed.`, 409) }
+    // Only the address changes: the rest of the connection settings (per-address options) are sent back as they were read.
+    const cur = await c.get('/ollama/config', 15_000)
+    const urls: string[] = Array.isArray(cur?.OLLAMA_BASE_URLS) ? cur.OLLAMA_BASE_URLS.map(String) : []
+    urls[0] = target
     await d.audit('openwebui.reconnect-ollama', { by: actor, target })
-    await c.post('/ollama/config/update', { ENABLE_OLLAMA_API: true, OLLAMA_BASE_URLS: [target], OLLAMA_API_CONFIGS: {} }, 30_000)
+    await c.post('/ollama/config/update', { ENABLE_OLLAMA_API: true, OLLAMA_BASE_URLS: urls, OLLAMA_API_CONFIGS: cur?.OLLAMA_API_CONFIGS && typeof cur.OLLAMA_API_CONFIGS === 'object' ? cur.OLLAMA_API_CONFIGS : {} }, 30_000)
     const back = await c.get('/ollama/config', 15_000)
     if (back?.ENABLE_OLLAMA_API !== true || !Array.isArray(back?.OLLAMA_BASE_URLS) || bare(back.OLLAMA_BASE_URLS[0]) !== target) throw new OpenWebuiRefusal('not_applied', 'Open WebUI did not keep the new connection: it reads back as something else.', 502)
     const o = await readOverview(c, known)

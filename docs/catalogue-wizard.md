@@ -30,7 +30,7 @@ checked, together with its vault item and plug-in connection.
 Immich and Open WebUI are Docker installs like the others with a `setup` of their own (`lib/immich/`, `lib/openwebui/`): after the
 install answers they make the administrator, make HyperProx's API key, keep it in the vault, connect the plug-in (never replacing one
 that already follows another instance) and read each result back. Immich reuses the Unmanic and Tdarr code for the node's hardware
-and the library; Open WebUI asks Ollama for its models in the preview. A recipe with `publishable` gets the optional public name
+and the library; Open WebUI asks Ollama for its models in the preview. A plug-in connection an install made is undone only while the plug-in still points at that install's address, and only that install's Home Assistant instance leaves the instance list. A recipe with `publishable` gets the optional public name
 block in the wizard, and its `proxyAdvanced` is put in the proxy host (no upload limit and long timeouts for Immich).
 
 ## How it works now

@@ -12,12 +12,13 @@ import type { Http, StepRef } from '../arr/setup'
 import type { HaSocket } from './ws'
 import { HAOS_IMAGES, HAOS_VERSION, usbList, type HaosImage } from './recipe'
 import { haUrl, hasHttpSection, onboard, setStaticAddress, waitForHomeAssistant, withTrust } from './onboarding'
+import { HAVM_USB_SCRIPT, parseUsb, resolveUsb } from './usb'
 
 const enc = encodeURIComponent
 const sq = (v: string) => `'${String(v).replace(/'/g, `'\\''`)}'`
 const STORAGE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const SHA = /^[0-9a-f]{64}$/
-const USB = /^[0-9a-f]{4}:[0-9a-f]{4}$/
+const USB = /^(?:[0-9a-f]{4}:[0-9a-f]{4}|\d{1,3}-\d{1,3}(?:\.\d{1,3}){0,5})$/
 
 /** The image for a node's processor, or null when Proxmox cannot run it (HyperProx makes x86 machines only). */
 export function imageFor(arch: string): HaosImage | null { return arch === 'amd64' ? HAOS_IMAGES.amd64 : null }
@@ -103,6 +104,8 @@ export interface HaSetupInput {
   vault: { category: string; provider: string }
   /** The plan will publish a name, so Home Assistant must trust the proxy first. */
   publishing: boolean
+  /** The reverse proxy's own address (IPv4): the only address Home Assistant is told to trust. */
+  proxyIp?: string
 }
 
 export interface HaSetupDeps {
@@ -115,45 +118,46 @@ export interface HaSetupDeps {
   /** The Home Assistant plug-in's instances (its first is the plug-in's own settings). */
   connect(o: { name: string; url: string; token: string }): Promise<{ id: string; name: string }>
   /** The machine's own files through the guest agent. Absent or failing: the proxy step says what to add by hand. */
-  agentFile?: { read(node: string, vmid: number, path: string): Promise<string>; write(node: string, vmid: number, path: string, content: string): Promise<void> }
+  agentFile?: { read(node: string, vmid: number, path: string): Promise<{ content: string; truncated: boolean }>; write(node: string, vmid: number, path: string, content: string): Promise<void> }
 }
 
 export interface HaSetupResult { ip: string; url: string; token: string; instance: { id: string; name: string }; trusted: boolean; trustNote: string }
 
-const subnet24 = (ip: string) => `${ip.split('.').slice(0, 3).join('.')}.0/24`
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/
 
 /**
- * Prove Home Assistant trusts the proxy: a request that carries a forwarded address is answered by Home Assistant only
- * when the sender is a trusted proxy; otherwise it answers 400. HyperProx sends one from its own address, which is on the
- * same network the block names, so a 200 means the block works.
+ * Let Home Assistant trust the reverse proxy, and only it: the proxy's own address with /32. The configuration is read through
+ * the guest agent (a read that was cut short is never written back), the block is added, checked, applied with a restart, and Home
+ * Assistant must come back; anything else puts the file back. The proof that Home Assistant accepts the proxy is the public check
+ * that follows: it goes through the proxy itself. A forwarded request sent from HyperProx would prove nothing about the proxy.
  */
-export async function forwardedWorks(ip: string, http: Http): Promise<boolean> {
-  const r = await http({ method: 'GET', url: `${haUrl(ip)}/manifest.json`, headers: { 'x-forwarded-for': '203.0.113.9' }, timeoutMs: 10_000 }).catch(() => null)
-  return r?.status === 200
-}
-
-/** The configuration through the guest agent, the block added, checked, applied and proved; put back if anything fails. */
-export async function trustProxy(i: { node: string; vmid: number; ip: string; token: string }, d: Pick<HaSetupDeps, 'agentFile' | 'http' | 'wait'>): Promise<{ ok: boolean; note: string }> {
-  const manual = (why: string) => ({ ok: false, note: `${why} Add these lines to Home Assistant's configuration.yaml (the File editor add-on does it), then restart Home Assistant: http: / use_x_forwarded_for: true / trusted_proxies: [${subnet24(i.ip)}]. Then give it its public name from the Proxy page.` })
+export async function trustProxy(i: { node: string; vmid: number; ip: string; token: string; proxyIp?: string }, d: Pick<HaSetupDeps, 'agentFile' | 'http' | 'wait'>): Promise<{ ok: boolean; note: string }> {
+  const who = i.proxyIp && IPV4.test(i.proxyIp) ? `${i.proxyIp}/32` : '<the proxy\'s address>'
+  const manual = (why: string) => ({ ok: false, note: `${why} Add these lines to Home Assistant's configuration.yaml (the File editor add-on does it), then restart Home Assistant: http: / use_x_forwarded_for: true / trusted_proxies: [${who}]. Then give it its public name from the Proxy page.` })
+  if (!i.proxyIp || !IPV4.test(i.proxyIp)) return manual('HyperProx does not know the proxy\'s address, so it cannot tell Home Assistant which proxy to trust.')
   if (!d.agentFile) return manual('HyperProx cannot edit the machine\'s files.')
   let before: string
-  try { before = await d.agentFile.read(i.node, i.vmid, CONFIG_PATH) } catch { return manual('The machine\'s guest agent would not let HyperProx read Home Assistant\'s configuration.') }
+  try {
+    const r = await d.agentFile.read(i.node, i.vmid, CONFIG_PATH)
+    // The agent cuts a long read short; writing back a cut-short file would destroy the rest of the configuration.
+    if (r.truncated) return manual('Home Assistant\'s configuration is larger than the guest agent will read in one go, so HyperProx did not touch it.')
+    before = r.content
+  } catch { return manual('The machine\'s guest agent would not let HyperProx read Home Assistant\'s configuration (Proxmox 9 needs the VM.GuestAgent.FileRead and FileWrite privileges for HyperProx\'s token).') }
   if (hasHttpSection(before)) return manual('Home Assistant\'s configuration already has an "http:" section, which HyperProx will not edit.')
   const auth = { authorization: `Bearer ${i.token}` }
   const restart = async () => {
     await d.http({ method: 'POST', url: `${haUrl(i.ip)}/api/services/homeassistant/restart`, headers: auth, json: {}, timeoutMs: 20_000 }).catch(() => null)
     await d.wait(15_000)
-    for (let n = 0; n < 40; n++) { const s = await d.http({ method: 'GET', url: `${haUrl(i.ip)}/manifest.json`, timeoutMs: 6000 }).catch(() => null); if (s?.status === 200 || s?.status === 400) return true; await d.wait(5000) }
+    for (let n = 0; n < 40; n++) { const s = await d.http({ method: 'GET', url: `${haUrl(i.ip)}/manifest.json`, timeoutMs: 6000 }).catch(() => null); if (s?.status === 200) return true; await d.wait(5000) }
     return false
   }
   const restore = async () => { await d.agentFile!.write(i.node, i.vmid, CONFIG_PATH, before).catch(() => {}); await restart() }
   try {
-    await d.agentFile.write(i.node, i.vmid, CONFIG_PATH, withTrust(before, subnet24(i.ip)))
+    await d.agentFile.write(i.node, i.vmid, CONFIG_PATH, withTrust(before, `${i.proxyIp}/32`))
     const check = await d.http({ method: 'POST', url: `${haUrl(i.ip)}/api/config/core/check_config`, headers: auth, json: {}, timeoutMs: 60_000 }).catch(() => null)
     if (!check || check.status !== 200 || !/"result"\s*:\s*"valid"/.test(check.body)) { await d.agentFile.write(i.node, i.vmid, CONFIG_PATH, before).catch(() => {}); return manual('Home Assistant did not accept the change when it checked it, so it was put back.') }
     if (!await restart()) { await restore(); return manual('Home Assistant did not come back after the change, so it was put back.') }
-    if (!await forwardedWorks(i.ip, d.http)) { await restore(); return manual('Home Assistant still refused a forwarded request after the change, so it was put back.') }
-    return { ok: true, note: `Home Assistant trusts proxies on ${subnet24(i.ip)} and was proved to accept a forwarded request.` }
+    return { ok: true, note: `Home Assistant trusts the proxy at ${i.proxyIp} only; the public name's own check goes through it.` }
   } catch (e: any) {
     await restore()
     return manual(`The change failed (${String(e?.message ?? e).slice(0, 100)}) and was put back.`)
@@ -164,8 +168,16 @@ export async function trustProxy(i: { node: string; vmid: number; ip: string; to
 export async function runHaSetup(i: HaSetupInput, step: (id: string) => StepRef, d: HaSetupDeps, setIp: (ip: string) => void): Promise<HaSetupResult> {
   const base = `/nodes/${enc(i.node)}/qemu/${i.vmid}`
 
+  // The USB devices are looked at again now, as at the preview: still there, still ones the node can do without, still one device each.
+  let usbHosts: string[] = []
+  if (i.usb.length) {
+    const seen = await d.nodeRun(i.node, HAVM_USB_SCRIPT, 30_000)
+    const r = resolveUsb(parseUsb(seen.output), i.usb, i.node)
+    if (r.errors.length) throw new Error(`${r.errors.join(' ')} Nothing was imported.`)
+    usbHosts = r.hosts
+  }
   const s1 = step('ha-image')
-  const run = await d.nodeRun(i.node, importScript({ vmid: i.vmid, storage: i.plan.storage, image: i.image, diskGb: i.plan.diskGb, usb: i.usb }), 25 * 60_000)
+  const run = await d.nodeRun(i.node, importScript({ vmid: i.vmid, storage: i.plan.storage, image: i.image, diskGb: i.plan.diskGb, usb: usbHosts }), 25 * 60_000)
   if (/@@ha space/.test(run.output)) throw new Error(`${i.node} has less than 4 GB free in /var/tmp, which the image needs while it is unpacked. Free some space there or pick another node.`)
   if (/@@ha badsum/.test(run.output)) throw new Error('The downloaded Home Assistant OS image did not match its published checksum, so it was not used and nothing was imported.')
   if (!/@@ha checked/.test(run.output)) throw new Error('The Home Assistant OS image could not be downloaded to the node. Check that the node can reach github.com.')
@@ -177,10 +189,10 @@ export async function runHaSetup(i: HaSetupInput, step: (id: string) => StepRef,
   const bad: string[] = []
   if (!/^[^,]+:vm-\d+-disk-\d+/.test(String(cfg?.scsi0 ?? ''))) bad.push('the disk (scsi0)')
   if (String(cfg?.bios) !== 'ovmf') bad.push('UEFI')
-  i.usb.forEach((u, n) => { if (!String(cfg?.[`usb${n}`] ?? '').includes(u)) bad.push(`USB device ${u}`) })
+  usbHosts.forEach((u, n) => { if (!String(cfg?.[`usb${n}`] ?? '').includes(u)) bad.push(`USB device ${u}`) })
   if (bad.length) throw new Error(`VM ${i.vmid}'s settings did not read back: ${bad.join(', ')}.`)
   await d.client.waitForTask(i.node, await d.client.fetchStrict<string>(`${base}/status/start`, 'POST'), { timeoutMs: 3 * 60_000 })
-  s2.status = 'done'; s2.detail = `Disk imported${i.usb.length ? `, ${i.usb.length} USB device${i.usb.length === 1 ? '' : 's'} passed in` : ''}; the machine is starting.`
+  s2.status = 'done'; s2.detail = `Disk imported${usbHosts.length ? `, ${usbHosts.length} USB device${usbHosts.length === 1 ? '' : 's'} passed in` : ''}; the machine is starting.`
 
   const s3 = step('network')
   let ip: string | undefined
@@ -212,9 +224,10 @@ export async function runHaSetup(i: HaSetupInput, step: (id: string) => StepRef,
     const want = i.plan.ip.split('/')[0]
     if (want !== ip) {
       const sock = await d.socket(ip, accessToken)
-      try { await setStaticAddress(sock, { address: i.plan.ip, gateway: i.plan.gateway, dns: i.plan.dns?.split(/\s+/).filter(Boolean) }) } finally { sock.close() }
+      // The call cannot be answered from the old address once it works, so a cut or silent socket is "maybe applied": the new address decides.
+      try { await setStaticAddress(sock, { address: i.plan.ip, gateway: i.plan.gateway, dns: i.plan.dns?.split(/\s+/).filter(Boolean) }) } finally { try { sock.close() } catch { /* already cut */ } }
       let at = false
-      for (let n = 0; n < 40 && !at; n++) { await d.wait(5000); at = (await waitForHomeAssistant(want, { http: d.http, wait: async () => {} }, 1)) !== null }
+      for (let n = 0; n < 60 && !at; n++) { await d.wait(5000); at = (await waitForHomeAssistant(want, { http: d.http, wait: async () => {} }, 1)) !== null }
       if (!at) throw new Error(`Home Assistant did not come back at ${want} after its address was changed. Its token is in the vault as access_token; look at the machine's console in Proxmox.`)
       ip = want; setIp(ip)
     }
@@ -227,7 +240,7 @@ export async function runHaSetup(i: HaSetupInput, step: (id: string) => StepRef,
   const s8 = step('ha-trust')
   let trusted = false, trustNote = 'No public name was asked for, so Home Assistant was left as it is.'
   if (i.publishing) {
-    const t = await trustProxy({ node: i.node, vmid: i.vmid, ip, token: accessToken }, d)
+    const t = await trustProxy({ node: i.node, vmid: i.vmid, ip, token: accessToken, proxyIp: i.proxyIp }, d)
     trusted = t.ok; trustNote = t.note
     s8.status = t.ok ? 'done' : 'skipped'; s8.detail = t.note
   } else { s8.status = 'skipped'; s8.detail = trustNote }

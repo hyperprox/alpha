@@ -1218,23 +1218,34 @@ removes what that install made: the machine or container, its public name, the v
   Assistant's first-run itself: the owner account with a generated password (in the vault), your home's name, the time zone of the
   node and your choice of units, a long-lived access token for HyperProx, and your Home Assistant plug-in connected with it.
   A fixed address is applied through Home Assistant's own network settings. You can pass a Zigbee or Z-Wave stick in: the wizard
-  lists the USB devices plugged into the node you chose (a machine holding one cannot move to another node). A public name needs
-  Home Assistant to trust the proxy (`use_x_forwarded_for` and `trusted_proxies`): HyperProx adds them through the machine's guest
-  agent, checks the configuration, restarts Home Assistant and proves it accepts a forwarded request, and makes the name only then.
-  If it cannot, it says exactly what to add and leaves the name for you.
+  lists the USB devices plugged into the node you chose (a machine holding one cannot move to another node). HyperProx offers only
+  devices the node can do without: a hub, a disk or memory stick (mass storage), a wireless controller, a network adapter and
+  anything with a disk or a network interface behind it are shown greyed out with the reason, and everything is checked again
+  when the install runs. A serial stick (Zigbee, Z-Wave) is allowed. Two identical devices are told apart by where they are
+  plugged in (the bus-port, like 1-2.3). A public name needs Home Assistant to trust the proxy (`use_x_forwarded_for` and
+  `trusted_proxies`): HyperProx adds the reverse proxy's own address (and only that, as a single-address entry) through the
+  machine's guest agent, checks the configuration, restarts Home Assistant, and then makes the name; the name's own check goes
+  through the proxy, which is the proof that Home Assistant accepts it. It never writes back a configuration the agent read only
+  in part. On Proxmox 9 the guest agent calls need the VM.GuestAgent.FileRead and VM.GuestAgent.FileWrite privileges for
+  HyperProx's token. If it cannot do this, it says exactly what to add and leaves the name for you.
 - **Immich** is your own photo and video library, like Google Photos. It runs Immich's server, its machine-learning service, PostgreSQL
   with the vector extension Immich needs and Valkey, in Docker in one unprivileged container, at a pinned release. You choose where
   the photos live: a new disk, a folder on a NAS, or a folder that already exists on the node (a mounted share, CephFS or a CIFS share);
   HyperProx checks the folder from the node, and that the container's user can write there, before anything is made. Hardware
   acceleration is offered only for what the chosen node really has: Intel or AMD graphics (video conversion, and recognition on
   Intel) or an NVIDIA card (both), and the wizard shows what the node has. HyperProx makes the administrator account itself, makes an
-  API key for itself that can read the numbers and look after the job queues and cannot open a photo, and turns on hardware video
+  API key for itself that can read the numbers and look after the job queues and cannot open a photo (five permissions: server
+  statistics, the update check, reading the queues, pausing and resuming them, and the one Immich asks for to clear failed jobs),
+  and turns on hardware video
   conversion in Immich's settings. A public name gets no upload limit and ten-minute timeouts, so large videos from a phone go through.
 - **Open WebUI** is a ChatGPT-style page for the models you run yourself. It runs in Docker in an unprivileged container at a pinned
   release. It is pointed at the Ollama HyperProx already knows (the one installed from the Catalogue or connected on the AI page), or
   one you name, checked to list its models before anything is made; with none, the install offers to install Ollama next, and the
-  plug-in connects the two. The administrator is made on Open WebUI's first start from a generated password. Open sign-up is off and
-  new accounts start as pending, so the administrator invites people. A public name gets websockets, no response buffering and long
+  plug-in connects the two. The administrator is made on Open WebUI's first start from a generated password, which HyperProx then
+  blanks in the install folder (it stays in the vault). Open sign-up is off and new accounts start as pending, so the administrator
+  invites people. Open WebUI has no read-only API keys: a key is its owner's whole login. HyperProx's key is limited to the few
+  paths its plug-in uses (the version, the Ollama connection and its models, and the administrator settings page, which can change
+  Open WebUI's settings), using Open WebUI's own endpoint list; that list applies to every API key on that Open WebUI. A public name gets websockets, no response buffering and long
   timeouts, so answers appear as they are written.
 
 The Immich and Open WebUI plug-ins are described under [Plug-ins](#plug-ins). The install wizard, the vault and the plug-in

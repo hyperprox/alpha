@@ -10,7 +10,7 @@
 import { useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
 
-interface Usb { id: string; name: string }
+interface Usb { id: string; name: string; code: string; port: string; refused: string | null }
 
 /** The chosen codes as a list, and a list back to the codes the install takes (comma separated, no empties). */
 export const usbCodes = (v: string): string[] => v.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
@@ -42,8 +42,9 @@ export function UsbPicker({ node, value, onChange }: { node: string; value: stri
           {list.map(d => (
             <li key={d.id}>
               <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text)' }}>
-                <input type="checkbox" checked={chosen.includes(d.id)} onChange={e => toggle(d.id, e.target.checked)} />
-                <span>{d.name} <span className="font-mono text-[12px]" style={{ color: 'var(--text-dim)' }}>{d.id}</span></span>
+                <input type="checkbox" checked={chosen.includes(d.id)} disabled={!!d.refused} onChange={e => toggle(d.id, e.target.checked)} />
+                <span>{d.name} <span className="font-mono text-[12px]" style={{ color: 'var(--text-dim)' }}>{d.id}</span>
+                  {d.refused && <span className="block text-[12px]" style={{ color: 'var(--warn-2)' }}>Cannot be passed in: {d.refused}</span>}</span>
               </label>
             </li>
           ))}

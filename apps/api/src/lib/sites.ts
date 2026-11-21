@@ -46,6 +46,8 @@ export interface ProxyLike {
   attachCertificate(instanceId: string, hostId: string, certId: string, actor: { email: string }): Promise<void>
   deleteHost(instanceId: string, hostId: string, actor: { email: string }): Promise<void>
   requestCertificate(instanceId: string, domains: string[], email: string, actor: { email: string }): Promise<{ id: string }>
+  /** The address the proxy instance is at (an IPv4 address), for an app that must trust it; null when it is not known. */
+  instanceAddress?(instanceId: string): Promise<string | null>
 }
 
 export interface PublishDeps {
@@ -110,6 +112,14 @@ const realProxy: ProxyLike = {
   async requestCertificate(instanceId, domains, email, actor) {
     const c = await proxyService().requestCertificate(instanceId, domains, email, actor)
     return { id: String(c.id) }
+  },
+  async instanceAddress(instanceId) {
+    const i = (await proxyService().listInstances()).find(x => x.id === instanceId)
+    if (!i) return null
+    let host: string
+    try { host = new URL(i.url).hostname.replace(/^\[|\]$/g, '') } catch { return null }
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host
+    try { return (await (await import('dns/promises')).resolve4(host))[0] ?? null } catch { return null }
   },
 }
 

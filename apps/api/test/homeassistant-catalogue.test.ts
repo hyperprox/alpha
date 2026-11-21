@@ -9,9 +9,9 @@ import crypto from "node:crypto"
 import { CATALOGUE, findRecipe, checkOptions } from "../src/lib/catalogue"
 import { HA_RECIPE, HAOS_IMAGES, HAOS_VERSION, HA_SETUP_STEPS, checkHaOptions, usbList } from "../src/lib/homeassistant/recipe"
 import { encodeFrame, decodeFrames, haSocket } from "../src/lib/homeassistant/ws"
-import { importScript, createHaVm, agentAddress, imageFor, trustProxy, forwardedWorks, runHaSetup, CONFIG_PATH } from "../src/lib/homeassistant/job"
+import { importScript, createHaVm, agentAddress, imageFor, trustProxy, runHaSetup, CONFIG_PATH } from "../src/lib/homeassistant/job"
 import { onboard, onboardingState, waitForHomeAssistant, withTrust, hasHttpSection, setStaticAddress, trustBlock } from "../src/lib/homeassistant/onboarding"
-import { parseUsb, HAVM_USB_SCRIPT } from "../src/lib/homeassistant/usb"
+import { parseUsb, resolveUsb, whyRefused, HAVM_USB_SCRIPT } from "../src/lib/homeassistant/usb"
 import { installScript, manualCommands } from "../src/lib/install-script"
 import { previewInstall, applyPreview, removeFailedInstall, homeAssistantUsb } from "../src/lib/catalogue-installer"
 import { FakePve, deps, INPUT, settled } from "./fakes/catalogue-pve"
@@ -48,7 +48,8 @@ test("options: units are a menu, USB codes are vendor:product, at most four and 
   assert.match(v({ HA_UNITS: "imperial" }).errors.join(" "), /Units: pick one of/)
   assert.deepEqual(v({ HA_USB: "10c4:ea60, 1A86:7523" }).errors, [])
   assert.deepEqual(usbList("10c4:ea60, 1A86:7523,"), ["10c4:ea60", "1a86:7523"])
-  assert.match(v({ HA_USB: "/dev/ttyUSB0" }).errors.join(" "), /vendor:product code/)
+  assert.match(v({ HA_USB: "/dev/ttyUSB0" }).errors.join(" "), /the code from the list/)
+  assert.deepEqual(v({ HA_USB: "1-2.3, 10c4:ea60" }).errors, [], "a bus-port names one of several identical devices")
   assert.deepEqual(checkHaOptions({ HA_USB: "10c4:ea60,10c4:ea60" }), ["A USB device is listed twice."])
   assert.deepEqual(checkHaOptions({ HA_USB: "0001:0001,0002:0002,0003:0003,0004:0004,0005:0005" }), ["Pass in at most four USB devices."])
   assert.match(v({ HA_OWNER_USER: "Owner Name" }).errors.join(" "), /lowercase letters/)
@@ -155,10 +156,38 @@ test("agent address: the first real IPv4 address, not loopback, link-local or Ho
   assert.equal(agentAddress(null), undefined); assert.equal(agentAddress({ result: "no" }), undefined)
 })
 
-test("usb: the node's own list, hubs left out, each device once with the name it gives", () => {
-  const out = "@@usb 10c4:ea60|Silicon Labs|CP210x UART Bridge\n@@usb 1d6b:0002|Linux Foundation|2.0 root hub\n@@usb 10c4:ea60|Silicon Labs|dup\n@@usb 1a86:7523||\nnoise\n@@usb bad|x|y\n"
-  assert.deepEqual(parseUsb(out), [{ id: "10c4:ea60", name: "Silicon Labs CP210x UART Bridge" }, { id: "1a86:7523", name: "USB device" }])
-  assert.match(HAVM_USB_SCRIPT, /bDeviceClass/); assert.doesNotMatch(HAVM_USB_SCRIPT, /\b(rm|mv|chmod|tee)\b|[^2]>\s*\/(?!dev\/null)|qm /)
+const U = (code: string, name: string, port: string, cls = "ff", drv = "", blk = 0, net = 0) => `@@usb ${code}|${name.split("|")[0]}|${name.split("|")[1] ?? ""}|${port}|${cls}|${drv}|${blk}|${net}\n`
+
+test("usb: only what the node can do without is offered, each refusal says why, and the script only reads", () => {
+  const out = U("10c4:ea60", "Silicon Labs|CP210x UART Bridge", "1-2", "00,ff", "cp210x") + U("1d6b:0002", "Linux Foundation|2.0 root hub", "1-1", "09") + U("10c4:ea60", "Silicon Labs|dup", "1-2") + U("1a86:7523", "|", "1-3", "ff", "ch341")
+    + "noise\n@@usb bad|x|y\n"
+  assert.deepEqual(parseUsb(out).map(d => [d.id, d.name, d.refused === null]), [["10c4:ea60", "Silicon Labs CP210x UART Bridge", true], ["1a86:7523", "USB device", true]], "root hubs and repeats are dropped")
+  const why = (o: Partial<{ classes: string[]; drivers: string[]; blk: boolean; net: boolean }>) => whyRefused({ classes: ["00"], drivers: [], blk: false, net: false, ...o })
+  assert.match(why({ classes: ["09"] })!, /hub/)
+  assert.match(why({ classes: ["08"], drivers: ["usb-storage"] })!, /storage device/)
+  assert.match(why({ drivers: ["uas"] })!, /storage device/)
+  assert.match(why({ blk: true })!, /disk sits behind/)
+  assert.match(why({ classes: ["e0"] })!, /wireless controller/)
+  for (const d of ["r8152", "ax88179_178a", "cdc_ether", "rndis_host", "asix", "cdc_ncm"]) assert.match(why({ classes: ["02", "0a"], drivers: [d] })!, /network adapter/, d)
+  assert.match(why({ net: true })!, /network adapter/)
+  assert.match(why({ classes: ["02", "0a"], drivers: ["option"] })!, /modem or network device/)
+  assert.equal(why({ classes: ["02", "0a"], drivers: ["cdc_acm", "cdc_acm"] }), null, "a CDC serial stick (Zigbee, Z-Wave) is what this is for")
+  assert.equal(why({ drivers: ["cp210x"] }), null); assert.equal(why({ classes: ["03"], drivers: ["usbhid"] }), null)
+  const mixed = parseUsb(U("0781:5581", "SanDisk|Ultra", "1-4", "00,08", "usb-storage", 1) + U("0bda:8153", "Realtek|LAN", "1-5", "00,ff", "r8152", 0, 1) + U("10c4:ea60", "Silicon Labs|CP210x", "1-2", "ff", "cp210x"))
+  assert.deepEqual(mixed.map(d => d.refused === null), [false, false, true])
+  assert.match(HAVM_USB_SCRIPT, /bInterfaceClass/); assert.match(HAVM_USB_SCRIPT, /\/sys\/block/); assert.match(HAVM_USB_SCRIPT, /\/sys\/class\/net/)
+  assert.doesNotMatch(HAVM_USB_SCRIPT, /\b(rm|mv|chmod|tee)\b|[^2]>\s*\/(?!dev\/null)|qm /)
+})
+
+test("usb: a choice must still be plugged in and safe, and identical devices are told apart by bus-port", () => {
+  const list = parseUsb(U("10c4:ea60", "Silicon Labs|CP210x", "1-2", "ff", "cp210x") + U("0781:5581", "SanDisk|Ultra", "1-4", "00,08", "usb-storage", 1))
+  assert.deepEqual(resolveUsb(list, ["10c4:ea60"], "node-a"), { hosts: ["10c4:ea60"], errors: [] })
+  assert.match(resolveUsb(list, ["0781:5581"], "node-a").errors.join(" "), /SanDisk Ultra \(0781:5581\) cannot be passed in: It is a storage device/)
+  assert.match(resolveUsb(list, ["1a86:7523"], "node-a").errors.join(" "), /not plugged into node-a/)
+  const two = parseUsb(U("10c4:ea60", "Silicon Labs|CP210x", "1-2", "ff", "cp210x") + U("10c4:ea60", "Silicon Labs|CP210x", "1-3.1", "ff", "cp210x"))
+  assert.deepEqual(two.map(d => d.id), ["1-2", "1-3.1"], "identical devices are named by where they are plugged in")
+  assert.deepEqual(resolveUsb(two, ["1-3.1"], "node-a"), { hosts: ["1-3.1"], errors: [] })
+  assert.match(resolveUsb(two, ["10c4:ea60"], "node-a").errors.join(" "), /More than one device is 10c4:ea60; pick the one you mean/)
 })
 
 // ── Home Assistant, as a fake ───────────────────────────────────────────────
@@ -166,7 +195,7 @@ test("usb: the node's own list, hubs left out, each device once with the name it
 class FakeHa {
   stage: "down" | "waiting" | "done" = "waiting"; polls = 0; downPolls = 0
   trusted = false; config = "# Loads default set of integrations.\ndefault_config:\n"; restarts = 0; users: any[] = []
-  homeName = ""; tz = ""; steps: string[] = []; network: any[] = []; checkValid = true; keepsConfig = true
+  cutOnUpdate = false; homeName = ""; tz = ""; steps: string[] = []; network: any[] = []; checkValid = true; keepsConfig = true
   http = async (r: any) => {
     const u = new URL(r.url), p = u.pathname, auth = r.headers?.authorization
     const ok = (body: unknown, status = 200) => ({ status, headers: {}, body: JSON.stringify(body) })
@@ -191,7 +220,7 @@ class FakeHa {
         if (m.type === "config/core/update") { me.homeName = m.location_name; me.tz = m.time_zone; return null }
         if (m.type === "auth/long_lived_access_token") return "ll-token-0123456789abcdef"
         if (m.type === "supervisor/api" && m.endpoint === "/network/info") return { interfaces: [{ interface: "enp0s18", primary: true, enabled: true }] }
-        if (m.type === "supervisor/api") { me.network.push(m); return {} }
+        if (m.type === "supervisor/api") { me.network.push(m); if (me.cutOnUpdate) throw new Error("The connection to Home Assistant closed."); return {} }
         throw new Error("unexpected " + m.type)
       },
       close() {},
@@ -199,7 +228,8 @@ class FakeHa {
   }
   agent = {
     reads: 0,
-    read: async (_n: string, _v: number, path: string) => { assert.equal(path, CONFIG_PATH); return this.config },
+    truncated: false,
+    read: async (_n: string, _v: number, path: string) => { assert.equal(path, CONFIG_PATH); return { content: this.config, truncated: this.agent.truncated } },
     write: async (_n: string, _v: number, path: string, content: string) => { assert.equal(path, CONFIG_PATH); this.config = content },
   }
 }
@@ -226,36 +256,41 @@ test("static address: the primary interface is changed through Home Assistant's 
   await assert.rejects(setStaticAddress(bad, { address: "10.0.0.60/24" }), /did not say which network interface/)
 })
 
-test("trust: the block is added to the configuration through the guest agent, checked, applied, and proved with a forwarded request; anything else puts it back", async () => {
-  assert.equal(trustBlock("10.0.0.0/24"), "http:\n  use_x_forwarded_for: true\n  trusted_proxies:\n    - 10.0.0.0/24\n")
+test("trust: only the proxy's own address, through the guest agent, checked and restarted; anything else puts the file back, and a cut-short read is never written back", async () => {
+  assert.equal(trustBlock("10.0.0.5/32"), "http:\n  use_x_forwarded_for: true\n  trusted_proxies:\n    - 10.0.0.5/32\n")
   assert.equal(hasHttpSection("default_config:\nhttp:\n  x: 1\n"), true); assert.equal(hasHttpSection("default_config:\n# http: later\n"), false)
-  const keep = withTrust("default_config:\n", "10.0.0.0/24"); assert.ok(keep.startsWith("default_config:\n") && keep.endsWith(trustBlock("10.0.0.0/24")))
+  const keep = withTrust("default_config:\n", "10.0.0.5/32"); assert.ok(keep.startsWith("default_config:\n") && keep.endsWith(trustBlock("10.0.0.5/32")))
+  const T = { node: "node-a", vmid: 920, ip: "10.0.0.52", token: "ll-token-0123456789abcdef", proxyIp: "10.0.0.5" }
+  const mk = (ha: FakeHa) => ({ agentFile: ha.agent, http: ha.http as any, wait: async () => {} })
   const ha = new FakeHa()
-  assert.equal(await forwardedWorks("10.0.0.52", ha.http as any), false, "untrusted: Home Assistant answers a forwarded request with 400")
-  const d = { agentFile: ha.agent, http: ha.http as any, wait: async () => {} }
-  const ok = await trustProxy({ node: "node-a", vmid: 920, ip: "10.0.0.52", token: "ll-token-0123456789abcdef" }, d)
-  assert.equal(ok.ok, true); assert.match(ok.note, /10\.0\.0\.0\/24/)
-  assert.ok(ha.config.startsWith("# Loads default set of integrations.\ndefault_config:\n") && ha.config.includes("trusted_proxies:") && ha.restarts === 1)
-  // An invalid change is put back and says what to add by hand.
+  const ok = await trustProxy(T, mk(ha))
+  assert.equal(ok.ok, true); assert.match(ok.note, /10\.0\.0\.5 only/)
+  assert.ok(ha.config.startsWith("# Loads default set of integrations.\ndefault_config:\n") && ha.config.includes("- 10.0.0.5/32") && ha.restarts === 1)
+  assert.doesNotMatch(ha.config, /\/24|0\.0\.0\.0/, "no network around Home Assistant is trusted")
   const bad = new FakeHa(); bad.checkValid = false
-  const r1 = await trustProxy({ node: "node-a", vmid: 920, ip: "10.0.0.52", token: "ll-token-0123456789abcdef" }, { agentFile: bad.agent, http: bad.http as any, wait: async () => {} })
-  assert.equal(r1.ok, false); assert.match(r1.note, /put back/); assert.match(r1.note, /use_x_forwarded_for: true/); assert.ok(!bad.config.includes("trusted_proxies")); assert.equal(bad.restarts, 0)
-  // A change that does not take effect is put back too.
-  const lying = new FakeHa(); lying.keepsConfig = false
-  const r2 = await trustProxy({ node: "node-a", vmid: 920, ip: "10.0.0.52", token: "ll-token-0123456789abcdef" }, { agentFile: lying.agent, http: lying.http as any, wait: async () => {} })
-  assert.equal(r2.ok, false); assert.ok(!lying.config.includes("trusted_proxies")); assert.equal(lying.restarts, 2, "restarted again after it was put back")
-  // An http: section already there is never edited; no agent and an unreadable file say what to add by hand.
+  const r1 = await trustProxy(T, mk(bad))
+  assert.equal(r1.ok, false); assert.match(r1.note, /put back/); assert.match(r1.note, /trusted_proxies: \[10\.0\.0\.5\/32\]/); assert.ok(!bad.config.includes("trusted_proxies")); assert.equal(bad.restarts, 0)
   const own = new FakeHa(); own.config = "http:\n  server_port: 8123\n"
-  assert.match((await trustProxy({ node: "node-a", vmid: 920, ip: "10.0.0.52", token: "ll-token-0123456789abcdef" }, { agentFile: own.agent, http: own.http as any, wait: async () => {} })).note, /already has an "http:" section/)
-  assert.equal(own.config, "http:\n  server_port: 8123\n")
-  assert.match((await trustProxy({ node: "n", vmid: 1, ip: "10.0.0.52", token: "t" }, { http: own.http as any, wait: async () => {} })).note, /cannot edit the machine's files/)
-  assert.match((await trustProxy({ node: "n", vmid: 1, ip: "10.0.0.52", token: "t" }, { agentFile: { read: async () => { throw new Error("denied") }, write: async () => {} }, http: own.http as any, wait: async () => {} })).note, /guest agent would not let HyperProx read/)
+  assert.match((await trustProxy(T, mk(own))).note, /already has an "http:" section/); assert.equal(own.config, "http:\n  server_port: 8123\n")
+  // A read the agent cut short is never written back: that would destroy the rest of the file.
+  const cut = new FakeHa(); cut.agent.truncated = true; const before = cut.config
+  const r3 = await trustProxy(T, mk(cut))
+  assert.equal(r3.ok, false); assert.match(r3.note, /larger than the guest agent will read/); assert.equal(cut.config, before); assert.equal(cut.restarts, 0)
+  // No proxy address known, no agent, and a denied read each say what to add by hand (and the privileges Proxmox 9 needs).
+  assert.match((await trustProxy({ ...T, proxyIp: undefined }, mk(new FakeHa()))).note, /does not know the proxy's address/)
+  assert.match((await trustProxy({ ...T, proxyIp: "proxy.example" }, mk(new FakeHa()))).note, /does not know the proxy's address/)
+  assert.match((await trustProxy(T, { http: own.http as any, wait: async () => {} })).note, /cannot edit the machine's files/)
+  assert.match((await trustProxy(T, { agentFile: { read: async () => { throw new Error("denied") }, write: async () => {} }, http: own.http as any, wait: async () => {} })).note, /VM\.GuestAgent\.FileRead and FileWrite/)
+  // A change Home Assistant does not come back from is put back.
+  const dead = new FakeHa(); dead.http = (async (r: any) => (new URL(r.url).pathname === "/manifest.json" ? { status: 502, headers: {}, body: "" } : new FakeHa().http(r))) as any
+  const r4 = await trustProxy(T, { agentFile: dead.agent, http: async (r: any) => (new URL(r.url).pathname === "/manifest.json" ? { status: 502, headers: {}, body: "" } : ha.http(r)), wait: async () => {} })
+  assert.equal(r4.ok, false); assert.match(r4.note, /did not come back/); assert.ok(!dead.config.includes("trusted_proxies"))
 })
 
 // ── The whole job, with fakes ───────────────────────────────────────────────
 
 const mkSteps = () => { const m: Record<string, any> = {}; return { step: (id: string) => (m[id] ??= { status: "running" }), m } }
-function setup(o: { ha?: FakeHa; importOut?: string; ip?: string; cfg?: any } = {}) {
+function setup(o: { ha?: FakeHa; importOut?: string; ip?: string; cfg?: any; usbOut?: string } = {}) {
   const ha = o.ha ?? new FakeHa(); const calls: string[] = []; const vault: any[] = []; const connected: any[] = []; const requests: string[] = []
   const client = {
     fetchStrict: async (path: string, method = "GET") => {
@@ -269,7 +304,7 @@ function setup(o: { ha?: FakeHa; importOut?: string; ip?: string; cfg?: any } = 
   }
   const d: any = {
     client, http: ha.http, socket: ha.socket, wait: async () => {}, agentFile: ha.agent,
-    nodeRun: async (_n: string, script: string) => { calls.push(script); return { code: 0, output: o.importOut ?? "@@ha checked\n@@ha imported\n" } },
+    nodeRun: async (_n: string, script: string) => { if (script.includes("bInterfaceClass")) return { code: 0, output: o.usbOut ?? U("10c4:ea60", "Silicon Labs|CP210x", "1-2", "ff", "cp210x") }; calls.push(script); return { code: 0, output: o.importOut ?? "@@ha checked\n@@ha imported\n" } },
     saveSecrets: async (c: string, p: string, v: any) => { vault.push([c, p, v]) },
     connect: async (x: any) => { connected.push(x); return { id: "default", name: x.name } },
   }
@@ -277,7 +312,7 @@ function setup(o: { ha?: FakeHa; importOut?: string; ip?: string; cfg?: any } = 
 }
 const hin = (o: any = {}) => ({
   node: "node-a", vmid: 920, plan: { storage: "pool", diskGb: 32, ip: "dhcp" }, image: HAOS_IMAGES.amd64, name: "Home", units: "metric" as const, timeZone: "America/Toronto",
-  owner: { name: "Me", username: "owner", password: "pw-1" }, usb: ["10c4:ea60"], vault: { category: "apps", provider: "home-assistant-920" }, publishing: false, ...o,
+  owner: { name: "Me", username: "owner", password: "pw-1" }, usb: ["10c4:ea60"], vault: { category: "apps", provider: "home-assistant-920" }, publishing: false, proxyIp: "10.0.0.5", ...o,
 })
 
 test("job: disk, start, address, first start, owner, token (kept before the plug-in has it), plug-in, and no trust asked for when nothing is published", async () => {
@@ -353,7 +388,7 @@ function wizard(over: { usbPlugged?: string; free?: number; ha?: FakeHa } = {}) 
       http: ha.http as any,
       nodeRun: async (_n: string, script: string) => {
         if (script.startsWith("df ")) return { code: 0, output: `${over.free ?? 20_000_000}\n` }
-        if (script.includes("bDeviceClass")) return { code: 0, output: over.usbPlugged ?? "@@usb 10c4:ea60|Silicon Labs|CP210x\n" }
+        if (script.includes("bInterfaceClass")) return { code: 0, output: over.usbPlugged ?? U("10c4:ea60", "Silicon Labs|CP210x", "1-2", "ff", "cp210x") }
         if (script.includes("qm disk import")) {
           imports.push(script)
           const vmid = Number(/^V=(\d+)/m.exec(script)![1])
@@ -390,8 +425,8 @@ test("wizard preview: a machine plan is checked like a container's, on a storage
   const arm = wizard(); arm.pve.unsupported = true
   assert.match((await previewInstall(input(), OWNER, arm.d)).errors.join(" "), /not an x86 machine/)
   assert.match((await previewInstall(input(), OWNER, { ...w.d, vaultOpen: async () => false })).errors.join(" "), /vault is locked/)
-  assert.match((await previewInstall({ ...input(), options: { HA_USB: "nope" } }, OWNER, w.d)).errors.join(" "), /vendor:product code/)
-  assert.deepEqual(await homeAssistantUsb("node-a", w.d), [{ id: "10c4:ea60", name: "Silicon Labs CP210x" }])
+  assert.match((await previewInstall({ ...input(), options: { HA_USB: "nope" } }, OWNER, w.d)).errors.join(" "), /the code from the list/)
+  assert.deepEqual(await homeAssistantUsb("node-a", w.d), [{ id: "10c4:ea60", code: "10c4:ea60", port: "1-2", name: "Silicon Labs CP210x", refused: null }])
 })
 
 test("wizard apply: makes the machine through the API, imports the disk, onboards by itself, keeps the owner's password in the vault, and connects the plug-in; no secret in the job", async () => {
@@ -416,7 +451,7 @@ test("wizard apply: makes the machine through the API, imports the disk, onboard
 test("wizard apply: a public name is made only once Home Assistant is proved to trust the proxy; otherwise it is left, with the lines to add", async () => {
   const publish = (hosts: any[]): any => ({
     dns: async () => ({ getDomains: async () => [{ domain: "example.test" }], getRecords: async () => [], createRecord: async () => {}, deleteRecord: async () => {} }),
-    proxy: { instances: async () => [{ id: "p1", name: "npm", kind: "npm", certificates: "request" }], createHost: async (_i: string, spec: any) => { hosts.push(spec); return { hostId: "h1" } }, attachCertificate: async () => {}, deleteHost: async () => {}, requestCertificate: async () => ({ id: "c1" }) },
+    proxy: { instances: async () => [{ id: "p1", name: "npm", kind: "npm", certificates: "request" }], createHost: async (_i: string, spec: any) => { hosts.push(spec); return { hostId: "h1" } }, attachCertificate: async () => {}, deleteHost: async () => {}, requestCertificate: async () => ({ id: "c1" }), instanceAddress: async () => "10.0.0.5" },
     wanIp: async () => "203.0.113.7", resolve4: async () => ["203.0.113.7"], letsEncryptEmail: () => "ops@example.test",
     fetchPublic: async () => ({ status: 200, body: "{}" }), wait: async () => {},
   })
@@ -426,7 +461,7 @@ test("wizard apply: a public name is made only once Home Assistant is proved to 
   const job = await settled((await applyPreview(r.preview!.id, OWNER, d)).jobId)
   assert.equal(job.status, "completed", job.error)
   assert.equal(job.url, "https://home.example.test"); assert.equal(hosts[0].forwardPort, 8123); assert.equal(hosts[0].websockets, true)
-  assert.match(w.ha.config, /use_x_forwarded_for: true/); assert.equal(job.steps.find(s => s.id === "ha-trust")!.status, "done")
+  assert.match(w.ha.config, /use_x_forwarded_for: true/); assert.match(w.ha.config, /- 10\.0\.0\.5\/32/); assert.equal(job.steps.find(s => s.id === "ha-trust")!.status, "done")
   // Home Assistant refuses the change: the name is not made, and the finished page says what to add.
   const hosts2: any[] = []; const bad = wizard({ ha: Object.assign(new FakeHa(), { checkValid: false }) }); const d2 = { ...bad.d, publish: publish(hosts2) }
   const r2 = await previewInstall({ ...input(), publish: { zone: "example.test", name: "home", instanceId: "p1" } }, OWNER, d2)
@@ -458,4 +493,90 @@ test("clean-up: refuses a machine without this install's mark, and a container w
   assert.deepEqual(w.pve.vmDeletes, [])
   w.pve.guests = w.pve.guests.map(g => (g.vmid === 920 ? { ...g, type: "lxc" } : g))
   await assert.rejects(removeFailedInstall(job.jobId, OWNER, w.d), /is now a container/)
+})
+
+test("job: the call that changes Home Assistant's address cannot be answered from the old one; a cut socket is carried on from, and only a new address that never answers fails", async () => {
+  const s = setup(); s.ha.cutOnUpdate = true; const st = mkSteps(); let ip = ""
+  s.ha.http = ((orig) => async (r: any) => (new URL(r.url).hostname === "10.0.0.60" ? orig({ ...r, url: r.url.replace("10.0.0.60", "10.0.0.52") }) : orig(r)))(s.ha.http)
+  const out = await runHaSetup(hin({ plan: { storage: "pool", diskGb: 32, ip: "10.0.0.60/24", gateway: "10.0.0.1" } }), st.step, s.d, i => { ip = i })
+  assert.deepEqual([out.ip, ip, st.m["ha-address"].status], ["10.0.0.60", "10.0.0.60", "done"])
+  assert.equal(s.ha.network.length, 1, "the update was sent once")
+  // The new address never answers: the one failure.
+  const n = setup(); n.ha.cutOnUpdate = true
+  n.d.http = (async (r: any) => (new URL(r.url).hostname === "10.0.0.60" ? Promise.reject(new Error("ECONNREFUSED")) : n.ha.http(r))) as any
+  await assert.rejects(runHaSetup(hin({ plan: { storage: "pool", diskGb: 32, ip: "10.0.0.60/24" } }), mkSteps().step, n.d, () => {}), /did not come back at 10\.0\.0\.60/)
+  assert.equal(n.connected.length, 0)
+  const waits: number[] = []; n.d.wait = async (ms: number) => { waits.push(ms) }
+  await assert.rejects(runHaSetup(hin({ plan: { storage: "pool", diskGb: 32, ip: "10.0.0.60/24" } }), mkSteps().step, n.d, () => {}), /did not come back/)
+  assert.ok(waits.length < 1000, "the wait is bounded")
+})
+
+test("job: USB devices are looked at again at install time: one that left, or one the node needs, stops it before anything is imported", async () => {
+  const gone = setup({ usbOut: "" })
+  await assert.rejects(runHaSetup(hin(), mkSteps().step, gone.d, () => {}), /10c4:ea60 is not plugged into node-a.*Nothing was imported/)
+  assert.equal(gone.calls.length, 0, "no import ran")
+  const disk = setup({ usbOut: U("10c4:ea60", "SanDisk|Ultra", "1-2", "00,08", "usb-storage", 1) })
+  await assert.rejects(runHaSetup(hin(), mkSteps().step, disk.d, () => {}), /cannot be passed in: It is a storage device/)
+  assert.equal(disk.calls.length, 0)
+  const twin = setup({ usbOut: U("10c4:ea60", "A|x", "1-2", "ff", "cp210x") + U("10c4:ea60", "A|x", "1-3", "ff", "cp210x") })
+  await assert.rejects(runHaSetup(hin(), mkSteps().step, twin.d, () => {}), /More than one device is 10c4:ea60/)
+  const byPort = setup({ usbOut: U("10c4:ea60", "A|x", "1-2", "ff", "cp210x") + U("10c4:ea60", "A|x", "1-3", "ff", "cp210x"), cfg: { scsi0: "pool:vm-920-disk-1", bios: "ovmf", usb0: "host=1-3" } })
+  await runHaSetup(hin({ usb: ["1-3"] }), mkSteps().step, byPort.d, () => {})
+  assert.match(byPort.calls[0], /--usb0 host=1-3 /, "one of two identical devices is passed in by its bus-port")
+})
+
+test("wizard: a plan that passes the preview is refused when the machine's USB device is a disk, and a vault that locks after the preview creates no machine", async () => {
+  const w = wizard({ usbPlugged: U("10c4:ea60", "SanDisk|Ultra", "1-2", "00,08", "usb-storage", 1) })
+  const r = await previewInstall({ ...input(), options: { HA_USB: "10c4:ea60" } }, OWNER, w.d)
+  assert.match(r.errors.join(" "), /cannot be passed in: It is a storage device/); assert.equal(r.preview, undefined)
+  const ok = wizard(); let calls = 0
+  const d = { ...ok.d, vaultOpen: async () => ++calls < 3 }
+  const p = await previewInstall(input(), OWNER, d)
+  const job = await settled((await applyPreview(p.preview!.id, OWNER, d)).jobId)
+  assert.equal(job.status, "failed"); assert.match(job.error!, /vault is locked/)
+  assert.equal(ok.pve.vmCreates.length, 0, "no machine was made")
+  assert.equal(job.created, undefined)
+})
+
+test("wizard: when the public check through the proxy fails, the error says which address Home Assistant was told to trust", async () => {
+  const hosts: any[] = []; const w = wizard()
+  const publish: any = {
+    dns: async () => ({ getDomains: async () => [{ domain: "example.test" }], getRecords: async () => [], createRecord: async () => {}, deleteRecord: async () => {} }),
+    proxy: { instances: async () => [{ id: "p1", name: "npm", kind: "npm", certificates: "request" }], createHost: async (_i: string, spec: any) => { hosts.push(spec); return { hostId: "h1" } }, attachCertificate: async () => {}, deleteHost: async () => {}, requestCertificate: async () => ({ id: "c1" }), instanceAddress: async () => "10.0.0.5" },
+    wanIp: async () => "203.0.113.7", resolve4: async () => ["203.0.113.7"], letsEncryptEmail: () => "ops@example.test",
+    fetchPublic: async () => ({ status: 400, body: "" }), wait: async () => {},
+  }
+  const d = { ...w.d, publish }
+  const r = await previewInstall({ ...input(), publish: { zone: "example.test", name: "home", instanceId: "p1" } }, OWNER, d)
+  const job = await settled((await applyPreview(r.preview!.id, OWNER, d)).jobId)
+  assert.equal(job.status, "failed"); assert.match(job.error!, /Home Assistant was told to trust 10\.0\.0\.5 only.*trusted_proxies/)
+})
+
+test("clean-up: the first Home Assistant instance's address and token go, only this install's entry leaves the instance list, and a plug-in that moved on is left alone", async () => {
+  const mk = () => {
+    const creds = new Map<string, string>([["home-assistant/url", "http://192.0.2.150:8123"], ["home-assistant/token", "ll"], ["home-assistant/instances", JSON.stringify([{ id: "default", name: "Cottage" }, { id: "h1234abcd", name: "Second home" }])]])
+    return { creds, pluginCreds: {
+      get: async (p: string, k: string) => creds.get(`${p}/${k}`) ?? null, set: async (p: string, k: string, v: string) => { creds.set(`${p}/${k}`, v) },
+      del: async (p: string, k: string) => { creds.delete(`${p}/${k}`) }, delProvider: async (p: string) => { for (const k of [...creds.keys()]) if (k.startsWith(`${p}/`)) creds.delete(k) },
+    } }
+  }
+  const failing = async (c: ReturnType<typeof mk>) => {
+    const w = wizard(); const publish: any = {
+      dns: async () => ({ getDomains: async () => [{ domain: "example.test" }], getRecords: async () => [], createRecord: async () => {}, deleteRecord: async () => {} }),
+      proxy: { instances: async () => [{ id: "p1", name: "npm", kind: "npm", certificates: "request" }], createHost: async () => ({ hostId: "h1" }), attachCertificate: async () => {}, deleteHost: async () => {}, requestCertificate: async () => ({ id: "c1" }), instanceAddress: async () => "10.0.0.5" },
+      wanIp: async () => "203.0.113.7", resolve4: async () => ["203.0.113.7"], letsEncryptEmail: () => "ops@example.test", fetchPublic: async () => ({ status: 400, body: "" }), wait: async () => {},
+    }
+    const d = { ...w.d, publish, pluginCreds: c.pluginCreds }
+    const r = await previewInstall({ ...input(), publish: { zone: "example.test", name: "home", instanceId: "p1" } }, OWNER, d)
+    const job = await settled((await applyPreview(r.preview!.id, OWNER, d)).jobId)
+    assert.equal(job.status, "failed"); assert.deepEqual(job.connected, { plugin: "home-assistant", instanceId: "default" })
+    return { job, d }
+  }
+  const a = mk(); const { job, d } = await failing(a)
+  assert.match(await removeFailedInstall(job.jobId, OWNER, d), /Home Assistant plug-in connection this install made was removed/)
+  assert.equal(a.creds.has("home-assistant/url"), false); assert.equal(a.creds.has("home-assistant/token"), false)
+  assert.deepEqual(JSON.parse(a.creds.get("home-assistant/instances")!), [{ id: "h1234abcd", name: "Second home" }], "the other instance stays listed")
+  const b = mk(); const f2 = await failing(b); b.creds.set("home-assistant/url", "http://192.0.2.9:8123")
+  assert.match(await removeFailedInstall(f2.job.jobId, OWNER, f2.d), /no longer points at this install/)
+  assert.equal(b.creds.get("home-assistant/url"), "http://192.0.2.9:8123"); assert.equal(b.creds.has("home-assistant/instances"), true)
 })

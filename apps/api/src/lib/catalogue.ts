@@ -174,11 +174,6 @@ export interface CatalogueRecipe {
   /** Extra proxy settings for the public name (nginx advanced config), such as no upload limit for a photo server. */
   proxyAdvanced?: string
   /**
-   * Words people search for that the name does not hold ("google photos" for Immich). The Catalogue page's search reads
-   * these with the name and the summary.
-   */
-  keywords?:   string[]
-  /**
    * A reverse proxy HyperProx can drive: once it answers, the install adds it to the Proxy page as a Managed instance
    * of this kind (lib/proxy/managed-recipes.ts managedInstanceInput), so apps can be published through it from
    * HyperProx. The script gets a fresh secret in HPX_PROXY_SECRET for an API login it sets up (the instance keeps it
@@ -1063,14 +1058,18 @@ const PATH_RE  = /^[A-Za-z0-9._][A-Za-z0-9._\/-]*$/
 const TEXT_RE  = /^[^\u0000-\u001f\u007f]*$/
 
 /**
- * The recipe's options, checked and filled with defaults. Unknown keys are dropped; a value that does
+ * The recipe's options, checked and filled with defaults. `hidden` options (the preview's own) are dropped to their default unless
+ * `trustHidden` says the input is a plan the preview built.
+ * Unknown keys are dropped; a value that does
  * not fit its kind is an error, never quietly changed. The values go to the script as environment
  * variables (quoted), and each kind is narrow enough that a script may use it in a command line.
  */
-export function checkOptions(recipe: CatalogueRecipe, raw: unknown): { values: Record<string, string>; errors: string[] } {
+export function checkOptions(recipe: CatalogueRecipe, raw: unknown, opts: { trustHidden?: boolean } = {}): { values: Record<string, string>; errors: string[] } {
   const given = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
   const values: Record<string, string> = {}, errors: string[] = []
   for (const o of recipe.options ?? []) {
+    // A field the recipe's own preview fills in is never taken from a request: only the plan, built by the preview, may carry it.
+    if (o.hidden && !opts.trustHidden) { values[o.key] = o.default ?? ''; continue }
     const has = Object.prototype.hasOwnProperty.call(given, o.key)
     const rawV = has ? given[o.key] : undefined
     if (rawV !== undefined && rawV !== null && typeof rawV !== 'string' && typeof rawV !== 'number' && typeof rawV !== 'boolean') {

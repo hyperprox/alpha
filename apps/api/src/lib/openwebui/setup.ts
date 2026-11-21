@@ -22,10 +22,21 @@ export interface OpenWebuiSetupDeps {
   http: Http
   wait(ms: number): Promise<unknown>
   saveSecrets(category: string, provider: string, values: Record<string, string>): Promise<void>
+  /** A script in the container, as root. */
+  sh(script: string, timeoutMs: number): Promise<{ code: number; output: string }>
   savePluginSettings(id: string, values: Record<string, string>): Promise<void>
   /** What the plug-in holds now, so an Open WebUI that is already connected is never replaced by this one. */
   pluginSettings(id: string): Promise<Record<string, string>>
 }
+
+const INSTALL_DIR = '/opt/app'
+/** Blank the password line, check it is blank, recreate the container. Nothing is printed. */
+export const CLEAN_SCRIPT = `set -e
+cd ${INSTALL_DIR}
+sed -i 's/^OWUI_ADMIN_PASSWORD=.*/OWUI_ADMIN_PASSWORD=/' .env
+grep -qx 'OWUI_ADMIN_PASSWORD=' .env
+docker compose up -d --force-recreate >/dev/null
+`
 
 export const openwebuiUrl = (ip: string) => `http://${ip}:${OPENWEBUI_PORT}`
 const j = (body: string): any => { try { return JSON.parse(body) } catch { return null } }
@@ -81,5 +92,13 @@ export async function runOpenWebuiSetup(i: OpenWebuiSetupInput, step: (id: strin
     if (Array.isArray(m)) { models = m.length; s4.status = 'done'; s4.detail = `Ollama answers through Open WebUI and lists ${models} model${models === 1 ? '' : 's'}.` }
     else { s4.status = 'failed'; s4.detail = 'Open WebUI could not reach the Ollama. It is installed and working; open the plug-in and use Reconnect once the Ollama is up.' }
   }
+
+  // The administrator's password was only read while Open WebUI had no users. Blank it in the private .env and recreate the
+  // container, so it is not left in a file (it stays in the vault); then wait for Open WebUI again.
+  const s5 = step('owui-clean')
+  const r = await d.sh(CLEAN_SCRIPT, 5 * 60_000)
+  if (r.code !== 0) throw new Error(`The administrator password could not be blanked in the install folder (exit ${r.code}). Open WebUI is installed and working; blank OWUI_ADMIN_PASSWORD in ${INSTALL_DIR}/.env and run docker compose up -d there.`)
+  if (!await waitForOpenWebui(i.ip, d)) throw new Error('Open WebUI did not answer after it was recreated without the administrator password. Check the container (docker compose logs).')
+  s5.status = 'done'; s5.detail = 'The password is no longer in the install folder; it stays in the vault.'
   return { url: base, models, connected: mine }
 }

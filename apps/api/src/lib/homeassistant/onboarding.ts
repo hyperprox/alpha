@@ -90,17 +90,22 @@ export async function onboard(i: OnboardInput, d: OnboardDeps): Promise<{ access
  * A fixed address, through Home Assistant's own network settings (the supervisor's API, over the WebSocket). The machine
  * keeps its DHCP address until this is applied; the caller then waits for it to answer at the new one.
  */
-export async function setStaticAddress(sock: HaSocket, o: { address: string; gateway?: string; dns?: string[] }): Promise<void> {
+export async function setStaticAddress(sock: HaSocket, o: { address: string; gateway?: string; dns?: string[] }): Promise<'applied' | 'maybe'> {
   const info = await sock.call({ type: 'supervisor/api', endpoint: '/network/info', method: 'get' })
   const iface = (info?.interfaces ?? []).find((x: any) => x?.primary && x?.enabled) ?? (info?.interfaces ?? [])[0]
   if (!iface?.interface || !/^[A-Za-z0-9._-]{1,20}$/.test(iface.interface)) throw new Error('Home Assistant did not say which network interface to change.')
-  await sock.call({
-    type: 'supervisor/api', endpoint: `/network/interface/${iface.interface}/update`, method: 'post',
-    data: { ipv4: { method: 'static', address: [o.address], ...(o.gateway ? { gateway: o.gateway } : {}), nameservers: o.dns?.length ? o.dns : o.gateway ? [o.gateway] : [] } },
-  }, 30_000)
+  // The machine leaves this address while it answers: the socket is then cut or never answers. That is "maybe applied", not a failure;
+  // the caller waits for the new address and fails only if it never answers.
+  try {
+    await sock.call({
+      type: 'supervisor/api', endpoint: `/network/interface/${iface.interface}/update`, method: 'post',
+      data: { ipv4: { method: 'static', address: [o.address], ...(o.gateway ? { gateway: o.gateway } : {}), nameservers: o.dns?.length ? o.dns : o.gateway ? [o.gateway] : [] } },
+    }, 15_000)
+    return 'applied'
+  } catch { return 'maybe' }
 }
 
-/** The lines Home Assistant needs to trust a reverse proxy. `network` is a CIDR the proxy's address is inside. */
+/** The lines Home Assistant needs to trust a reverse proxy. `network` is the proxy's own address with /32. */
 export const trustBlock = (network: string) => `http:\n  use_x_forwarded_for: true\n  trusted_proxies:\n    - ${network}\n`
 
 /** Does the configuration already have an http: section? Then it is not edited (two would break it). */

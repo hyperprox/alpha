@@ -5,9 +5,9 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import yaml from "js-yaml"
 import { findRecipe, checkOptions } from "../src/lib/catalogue"
-import { OPENWEBUI_RECIPE, OPENWEBUI_COMPOSE, OPENWEBUI_VERSION, OPENWEBUI_OPTIONS, cleanOllamaUrl, checkOpenWebuiOptions } from "../src/lib/openwebui/recipe"
+import { KEY_ENDPOINTS, OPENWEBUI_RECIPE, OPENWEBUI_COMPOSE, OPENWEBUI_VERSION, OPENWEBUI_OPTIONS, cleanOllamaUrl, checkOpenWebuiOptions } from "../src/lib/openwebui/recipe"
 import { openwebuiPreview, askOllama } from "../src/lib/openwebui/preview"
-import { runOpenWebuiSetup } from "../src/lib/openwebui/setup"
+import { runOpenWebuiSetup, CLEAN_SCRIPT } from "../src/lib/openwebui/setup"
 import { readOverview, runAction, parseAction, problemsOf, OpenWebuiRefusal } from "../src/lib/openwebui/service"
 import { openWebuiPlugin, tileOf, detailOf } from "../src/plugins/openwebui"
 import { installScript } from "../src/lib/install-script"
@@ -64,8 +64,8 @@ const ollamaHttp = (up: Record<string, number>) => async (r: any) => {
 const vals = (o: any = {}) => checkOptions(OPENWEBUI_RECIPE, { OWUI_ADMIN_EMAIL: "me@example.com", ...o }).values
 
 test("preview: the Ollama HyperProx knows is used when it answers, an address is asked to list its models, and a request's own resolved fields are dropped", async () => {
-  const auto = await openwebuiPreview({ ...vals(), OWUI_OLLAMA_URL: "http://evil:1", OWUI_OLLAMA_ENABLED: "1" }, { http: ollamaHttp({ [OLLAMA]: 3 }) as any, knownOllama: async () => OLLAMA + "/" })
-  assert.deepEqual(auto.errors, []); assert.deepEqual([auto.options.OWUI_OLLAMA_URL, auto.options.OWUI_OLLAMA_ENABLED, auto.offerOllama], [OLLAMA, "1", false])
+  const auto = await openwebuiPreview({ ...vals(), OWUI_OLLAMA_URL: "http://evil:1", OWUI_OLLAMA_ENABLED: "yes" }, { http: ollamaHttp({ [OLLAMA]: 3 }) as any, knownOllama: async () => OLLAMA + "/" })
+  assert.deepEqual(auto.errors, []); assert.deepEqual([auto.options.OWUI_OLLAMA_URL, auto.options.OWUI_OLLAMA_ENABLED, auto.offerOllama], [OLLAMA, "true", false])
   assert.ok(auto.checks.some(c => /lists 3 models/.test(c)))
   const empty = await openwebuiPreview(vals(), { http: ollamaHttp({ [OLLAMA]: 0 }) as any, knownOllama: async () => OLLAMA })
   assert.ok(empty.warnings.some(w => /no models yet/.test(w)))
@@ -78,19 +78,19 @@ test("preview: the Ollama HyperProx knows is used when it answers, an address is
 
 test("preview: with no Ollama known the install is offered Ollama next, and a known one that is down is said; none starts with the model server off", async () => {
   const none = await openwebuiPreview(vals(), { http: ollamaHttp({}) as any, knownOllama: async () => null })
-  assert.deepEqual([none.errors, none.offerOllama, none.options.OWUI_OLLAMA_ENABLED, none.options.OWUI_OLLAMA_URL], [[], true, "0", ""])
+  assert.deepEqual([none.errors, none.offerOllama, none.options.OWUI_OLLAMA_ENABLED, none.options.OWUI_OLLAMA_URL], [[], true, "false", ""])
   assert.match(none.warnings.join(" "), /does not know an Ollama yet.*offers to install Ollama next/)
   const down = await openwebuiPreview(vals(), { http: ollamaHttp({}) as any, knownOllama: async () => OLLAMA })
   assert.equal(down.offerOllama, true); assert.match(down.warnings.join(" "), /knows an Ollama at .* did not answer/)
   const off = await openwebuiPreview(vals({ OWUI_OLLAMA: "none" }), { http: ollamaHttp({}) as any, knownOllama: async () => OLLAMA })
-  assert.deepEqual([off.offerOllama, off.options.OWUI_OLLAMA_ENABLED], [false, "0"])
+  assert.deepEqual([off.offerOllama, off.options.OWUI_OLLAMA_ENABLED], [false, "false"])
   for (const r of [none, down, off]) assert.ok(r.checks.some(c => /Open sign-up is off/.test(c)))
 })
 
 // ── A fake Open WebUI ───────────────────────────────────────────────────────
 
 class FakeWebui {
-  pw: string | null = "pw-1"; signup = false; ollamaEnabled = true; urls: string[] = [OLLAMA]; ollamaUp = true; keepConfig = true; signinFailsFor = 0
+  apiConfigs: any = {}; scripts: string[] = []; shCode = 0; pw: string | null = "pw-1"; signup = false; ollamaEnabled = true; urls: string[] = [OLLAMA]; ollamaUp = true; keepConfig = true; signinFailsFor = 0
   models = [{ name: "llama3:8b", size: 5 * 1024 ** 3 }, { name: "tiny:1b", size: 700 * 1024 ** 2 }]
   posts: Array<{ path: string; body: any }> = []; order: string[] = []; signins = 0; version = "0.13.4"; adminConfigPosts = 0
   http = async (r: any) => {
@@ -104,7 +104,7 @@ class FakeWebui {
     if (p === "/api/v1/auths/admin/config" && r.method === "GET") return ok({ ENABLE_SIGNUP: this.signup, DEFAULT_USER_ROLE: "pending", WEBUI_URL: "x" })
     if (p === "/api/v1/auths/admin/config" && r.method === "POST") { this.adminConfigPosts++; if (this.keepConfig) this.signup = r.json.ENABLE_SIGNUP; this.posts.push({ path: p, body: r.json }); return ok(r.json) }
     if (p === "/api/version") return ok({ version: this.version })
-    if (p === "/ollama/config" && r.method === "GET") return ok({ ENABLE_OLLAMA_API: this.ollamaEnabled, OLLAMA_BASE_URLS: this.urls, OLLAMA_API_CONFIGS: {} })
+    if (p === "/ollama/config" && r.method === "GET") return ok({ ENABLE_OLLAMA_API: this.ollamaEnabled, OLLAMA_BASE_URLS: this.urls, OLLAMA_API_CONFIGS: this.apiConfigs })
     if (p === "/ollama/config/update") { this.posts.push({ path: p, body: r.json }); if (this.keepConfig) { this.ollamaEnabled = r.json.ENABLE_OLLAMA_API; this.urls = r.json.OLLAMA_BASE_URLS } return ok(r.json) }
     if (p === "/ollama/verify") return (r.json.url === OLLAMA && this.ollamaUp) || (r.json.url === this.urls[0] && this.ollamaUp) ? ok({ ok: true }) : ok({ detail: "cannot connect" }, 500)
     if (p === "/ollama/api/tags") return ok({ models: this.ollamaEnabled && this.ollamaUp ? this.models : [] })
@@ -114,6 +114,7 @@ class FakeWebui {
 const steps = () => { const m: Record<string, any> = {}; return { step: (id: string) => (m[id] ??= { status: "running" }), m } }
 const sdeps = (f: FakeWebui, store: { vault: any[]; plugin: Record<string, Record<string, string>> }) => ({
   http: f.http as any, wait: async () => {},
+  sh: async (script: string) => { f.order.push("sh"); f.scripts.push(script); return { code: f.shCode, output: "" } },
   saveSecrets: async (c: string, p: string, v: Record<string, string>) => { f.order.push("vault"); store.vault.push([c, p, v]) },
   savePluginSettings: async (id: string, v: Record<string, string>) => { f.order.push("plugin"); store.plugin[id] = v },
   pluginSettings: async (id: string) => store.plugin[id] ?? {},
@@ -127,7 +128,7 @@ test("setup: signs in once, makes the key, keeps it in the vault before the plug
   assert.deepEqual(store.vault, [["apps", "open-webui-911", { api_key: "sk-key-1" }]])
   assert.deepEqual(store.plugin.openwebui, { url: "http://10.0.0.51:8080", token: "sk-key-1" })
   assert.ok(f.order.indexOf("vault") < f.order.indexOf("plugin"))
-  assert.deepEqual(Object.values(s.m).map((x: any) => x.status), ["done", "done", "done", "done"])
+  assert.deepEqual(Object.values(s.m).map((x: any) => x.status), ["done", "done", "done", "done", "done"])
   assert.match(s.m["owui-ollama"].detail, /lists 2 models/)
   assert.doesNotMatch(JSON.stringify(s.m), /sk-key-1|jwt-1|pw-1/)
 })
@@ -190,12 +191,12 @@ test("plug-in: its card and details carry counts and model names, and its key go
 })
 
 test("fixes: reconnect checks the address from Open WebUI first, audits, saves, and reads back; closing sign-up reads the settings, changes one field and reads back", async () => {
-  const f = new FakeWebui(); f.urls = ["http://10.0.0.99:11434"]; f.ollamaEnabled = false
+  const f = new FakeWebui(); f.urls = ["http://10.0.0.99:11434", "http://10.0.0.98:11434"]; f.apiConfigs = { "0": { enable: true, key: "per-address" } }; f.ollamaEnabled = false
   const audits: any[] = []
   const d = { client: client(f), known: async () => OLLAMA, audit: async (a: string, x: any) => { audits.push([a, x]); f.order.push("AUDIT") } }
   const r = await runAction({ action: "reconnect-ollama" }, "admin@example.com", d)
   assert.match(r.message, /connected to the Ollama HyperProx knows and lists 2 models/)
-  assert.deepEqual(f.posts[0], { path: "/ollama/config/update", body: { ENABLE_OLLAMA_API: true, OLLAMA_BASE_URLS: [OLLAMA], OLLAMA_API_CONFIGS: {} } })
+  assert.deepEqual(f.posts[0], { path: "/ollama/config/update", body: { ENABLE_OLLAMA_API: true, OLLAMA_BASE_URLS: [OLLAMA, "http://10.0.0.98:11434"], OLLAMA_API_CONFIGS: { "0": { enable: true, key: "per-address" } } } }, "only the address changes; the per-address settings are sent back as read")
   assert.ok(f.order.indexOf("POST /ollama/verify") < f.order.indexOf("AUDIT") && f.order.indexOf("AUDIT") < f.order.indexOf("POST /ollama/config/update"), "checked, then audited, then changed")
   assert.deepEqual(audits[0], ["openwebui.reconnect-ollama", { by: "admin@example.com", target: OLLAMA }])
   // An Ollama Open WebUI cannot reach is never saved.
@@ -247,7 +248,7 @@ test("wizard: installs in an unprivileged container with the known Ollama, the g
   const item = w.vault.get("apps/open-webui-911")!
   assert.deepEqual(Object.keys(item).sort(), ["admin_password", "admin_user", "api_key", "secret_key"])
   const script = w.scripts.find(s => s.includes("HP_ENV"))!
-  assert.ok(script.includes(`OWUI_ADMIN_PASSWORD=${item.admin_password}`) && script.includes(`OWUI_OLLAMA_URL=${OLLAMA}`) && script.includes("OWUI_OLLAMA_ENABLED=1"))
+  assert.ok(script.includes(`OWUI_ADMIN_PASSWORD=${item.admin_password}`) && script.includes(`OWUI_OLLAMA_URL=${OLLAMA}`) && script.includes("OWUI_OLLAMA_ENABLED=true"))
   assert.deepEqual(w.store.plugin.openwebui, { url: "http://192.0.2.61:8080", token: "sk-key-1" })
   assert.deepEqual(job.connected, { plugin: "openwebui" })
   assert.equal(job.tcFollowUp, undefined)
@@ -274,4 +275,42 @@ test("wizard: a vault that is locked refuses the plan; an Ollama address that do
   const bad = await previewInstall(base({ OWUI_OLLAMA: "address", OWUI_OLLAMA_ADDRESS: "http://10.0.0.77:11434" }), OWNER, w.d)
   assert.match(bad.errors.join(" "), /No Ollama answered/)
   assert.equal(w.pve.creates.length, 0)
+})
+
+test("env: Open WebUI reads ENABLE_OLLAMA_API as the word true or false, a request cannot set the preview's fields, and API keys are limited to what the plug-in uses", async () => {
+  // Compose passes the value through; the preview only ever writes the words.
+  assert.match(OPENWEBUI_COMPOSE, /ENABLE_OLLAMA_API=\$\{OWUI_OLLAMA_ENABLED\}/)
+  const on = await openwebuiPreview(vals(), { http: ollamaHttp({ [OLLAMA]: 1 }) as any, knownOllama: async () => OLLAMA })
+  const off = await openwebuiPreview(vals({ OWUI_OLLAMA: "none" }), { http: ollamaHttp({}) as any, knownOllama: async () => OLLAMA })
+  assert.deepEqual([on.options.OWUI_OLLAMA_ENABLED, off.options.OWUI_OLLAMA_ENABLED], ["true", "false"])
+  const emitted = installScript(OPENWEBUI_RECIPE, "debian", { OWUI_ADMIN_PASSWORD: "p", OWUI_SECRET_KEY: "k", ...on.options })
+  assert.match(emitted, /^OWUI_OLLAMA_ENABLED=true$/m)
+  assert.doesNotMatch(emitted, /^OWUI_OLLAMA_ENABLED=[01]$/m)
+  // Hidden options are never taken from a request; a plan the preview built keeps them.
+  const dirty = checkOptions(OPENWEBUI_RECIPE, { OWUI_ADMIN_EMAIL: "me@example.com", OWUI_OLLAMA_URL: "http://evil:1", OWUI_OLLAMA_ENABLED: "true" })
+  assert.deepEqual([dirty.values.OWUI_OLLAMA_URL, dirty.values.OWUI_OLLAMA_ENABLED], ["", "false"])
+  assert.equal(checkOptions(OPENWEBUI_RECIPE, { OWUI_ADMIN_EMAIL: "me@example.com", OWUI_OLLAMA_ENABLED: "true" }, { trustHidden: true }).values.OWUI_OLLAMA_ENABLED, "true")
+  assert.match(checkOptions(OPENWEBUI_RECIPE, { OWUI_ADMIN_EMAIL: "me@example.com", OWUI_OLLAMA_ENABLED: "maybe!" }, { trustHidden: true }).errors.join(" "), /longer than 5/)
+  // The key reaches only these paths.
+  const y: any = yaml.load(OPENWEBUI_COMPOSE)
+  const env: string[] = y.services["open-webui"].environment
+  assert.ok(env.includes("ENABLE_API_KEYS_ENDPOINT_RESTRICTIONS=true"))
+  assert.ok(env.includes(`API_KEYS_ALLOWED_ENDPOINTS=${KEY_ENDPOINTS.join(",")}`))
+  assert.deepEqual(KEY_ENDPOINTS, ["/api/version", "/ollama/config", "/ollama/verify", "/ollama/api/tags", "/api/v1/auths/admin/config"])
+})
+
+test("the administrator password is blanked in the install folder after the first successful start, and the container is recreated", async () => {
+  assert.match(CLEAN_SCRIPT, /sed -i 's\/\^OWUI_ADMIN_PASSWORD=\.\*\/OWUI_ADMIN_PASSWORD=\/' \.env/)
+  assert.match(CLEAN_SCRIPT, /grep -qx 'OWUI_ADMIN_PASSWORD=' \.env/); assert.match(CLEAN_SCRIPT, /docker compose up -d --force-recreate/)
+  const f = new FakeWebui(); const s = steps()
+  await runOpenWebuiSetup(input(), s.step, sdeps(f, { vault: [], plugin: {} }))
+  assert.deepEqual(f.scripts, [CLEAN_SCRIPT]); assert.equal(s.m["owui-clean"].status, "done")
+  assert.ok(f.order.lastIndexOf("sh") > f.order.indexOf("plugin"), "only after the key is kept and the plug-in connected")
+  const bad = new FakeWebui(); bad.shCode = 1
+  await assert.rejects(runOpenWebuiSetup(input(), steps().step, sdeps(bad, { vault: [], plugin: {} })), /could not be blanked.*OWUI_ADMIN_PASSWORD in \/opt\/app\/\.env/)
+  const w = wizard()
+  const r = await previewInstall(base(), OWNER, w.d)
+  const job = await settled((await applyPreview(r.preview!.id, OWNER, w.d)).jobId)
+  assert.equal(job.status, "completed", job.error)
+  assert.ok(w.scripts.some(x => x === CLEAN_SCRIPT), "the install ran it in the container")
 })
