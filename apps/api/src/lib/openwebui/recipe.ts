@@ -8,6 +8,7 @@
 // =============================================================================
 
 import type { CatalogueRecipe, RecipeOption } from '../catalogue'
+import { DETECT } from '../catalogue-detect'
 
 export const OPENWEBUI_RECIPE_ID = 'open-webui'
 /** The release this install runs. */
@@ -86,6 +87,7 @@ export const OPENWEBUI_SETUP_STEPS = [
 
 export const OPENWEBUI_RECIPE: CatalogueRecipe = {
   id: OPENWEBUI_RECIPE_ID,
+  detect: DETECT[OPENWEBUI_RECIPE_ID],
   name: 'Open WebUI',
   summary: 'A ChatGPT-style page for the models you run yourself: chat, documents, several people, and everything stays on your own machines.',
   keywords: ['chatgpt', 'chat gpt', 'ai chat', 'llm', 'chatbot', 'assistant', 'ollama ui', 'local ai', 'gpt', 'claude', 'openai'],

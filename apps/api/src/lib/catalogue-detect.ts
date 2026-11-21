@@ -86,6 +86,21 @@ export const DETECT: Record<string, Fingerprint[]> = {
     path: '/api/tags',
     match: a => { const j = json(a); return j && Array.isArray(j.models) && Object.keys(j).length === 1 ? { version: null } : null },
   }],
+  // Immich's public server settings: a page no other app answers with these two fields together.
+  immich: [{
+    path: '/api/server/config',
+    match: a => { const j = json(a); return j && typeof j.isInitialized === 'boolean' && typeof j.trashDays === 'number' ? { version: null } : null },
+  }],
+  // Open WebUI's public settings name the app and carry its version.
+  'open-webui': [{
+    path: '/api/config',
+    match: a => { const j = json(a); return j && /^open webui$/i.test(String(j.name ?? '')) ? { version: str(j.version) } : null },
+  }],
+  // Home Assistant's web app manifest, served without a sign-in.
+  'home-assistant': [{
+    path: '/manifest.json',
+    match: a => { const j = json(a); return j && /^home assistant$/i.test(String(j.name ?? '')) && typeof j.start_url === 'string' ? { version: null } : null },
+  }],
   tautulli: [{
     path: '/auth/login',
     match: a => (a.status === 200 && /<title>[^<]*Tautulli/i.test(a.body) ? { version: null } : null),

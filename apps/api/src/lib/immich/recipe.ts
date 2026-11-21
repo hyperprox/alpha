@@ -15,6 +15,7 @@ import { PUID, PGID } from '../arr/components'
 import { NVIDIA_RUN_SHA256, NVIDIA_USERLAND_SCRIPT } from '../transcode/compose'
 import type { NodeHardware, Accel } from '../transcode/hardware'
 import type { CatalogueRecipe, RecipeOption } from '../catalogue'
+import { DETECT } from '../catalogue-detect'
 
 export const IMMICH_RECIPE_ID = 'immich'
 /** The release this install runs. A newer release is an upgrade the person chooses (the plug-in says when one exists). */
@@ -195,6 +196,7 @@ export const IMMICH_SETUP_STEPS = [
 
 export const IMMICH_RECIPE: CatalogueRecipe = {
   id: IMMICH_RECIPE_ID,
+  detect: DETECT[IMMICH_RECIPE_ID],
   name: 'Immich',
   summary: 'Your own photo and video library, like Google Photos: backs up your phones, finds people and things in them, and keeps them on your own storage.',
   keywords: ['photos', 'google photos', 'icloud photos', 'pictures', 'videos', 'gallery', 'camera backup', 'phone backup', 'photo backup', 'album', 'faces'],

@@ -13,6 +13,7 @@
 // =============================================================================
 
 import type { CatalogueRecipe, RecipeOption } from '../catalogue'
+import { DETECT } from '../catalogue-detect'
 
 export const HA_RECIPE_ID = 'home-assistant'
 /** The release this install runs. Home Assistant updates itself from inside after that (Settings → System → Updates). */
@@ -70,6 +71,7 @@ export const HA_SETUP_STEPS = [
 
 export const HA_RECIPE: CatalogueRecipe = {
   id: HA_RECIPE_ID,
+  detect: DETECT[HA_RECIPE_ID],
   name: 'Home Assistant',
   summary: 'Your smart home in one place: lights, switches, sensors, cameras and automations from hundreds of brands, running on your own machines. Home Assistant OS in its own virtual machine, set up for you.',
   keywords: ['smart home', 'home automation', 'domotics', 'iot', 'lights', 'zigbee', 'z-wave', 'zwave', 'hass', 'homeassistant', 'alexa', 'google home', 'thermostat'],
