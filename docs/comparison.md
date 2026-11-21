@@ -37,7 +37,7 @@ Many people run HyperProx next to one of these, not instead of it.
 | Browser terminal | ✅ | ✅ | ◐ consoles | ✅ | — | — | ✅ | ✅ | ? | — | ? | ✅ |
 | App control panels | ✅ Home Assistant, Plex (live, with library clear-out and removal), Arr, Unmanic, MikroTik, QNAP, Proxmox Backup Server, MeshCentral | — | ◐ plug-in system | — | — | — | — | — | — | ✅ 100+ read-only widgets | ✅ 91+ integrations | ◐ add-on apps |
 | NAS | ✅ QNAP plug-in, NAS on cluster cards | — | — | ✅ NAS VMs, shares | ◐ TrueNAS monitoring | — | — | — | — | ◐ widgets | ? | ◐ 45Drives add-on |
-| VPN / remote access | ✅ WireGuard, Tailscale | — | — | ? | — | ◐ Tailscale add-on | — | — | ◐ Tailscale app | — | — | — |
+| VPN / remote access | ✅ WireGuard, Tailscale, NetBird | — | — | ? | — | ◐ Tailscale add-on | — | — | ◐ Tailscale app | — | — | — |
 | AI assistant | ✅ local (Ollama) | — | — | ◐ rewrites alerts | ✅ Patrol + MCP | — | ◐ MCP | ✅ | — | — | ? | — |
 | Install | one-line script | ISO | script, APT, Docker | one-line script | Docker, script, Helm | one line per app | script | script | script | Docker | Docker | distro package |
 
@@ -65,7 +65,7 @@ Being fair matters more than winning a table.
 - Notifications cannot go out by email yet.
 - DNS works with GoDaddy and Cloudflare only.
 - Guests can move between nodes of one cluster, but not to another cluster.
-- Guest hardware is still edited in the Proxmox web interface.
+- Guest settings (cores, memory, disks, network cards, mount points) are edited in HyperProx, but templates, clones and a cloud-init editor are not built yet.
 - Proxmox Backup Server is read and cleaned up, not driven: no restores, no automatic restore tests and no creating backup jobs.
 
 ## Sources

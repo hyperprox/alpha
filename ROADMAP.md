@@ -50,8 +50,7 @@ if something changed since the preview, and is read back afterwards.
 ### Guests & HA
 
 - Every VM and container in one list with power actions, snapshots and migration within a cluster.
-- Create a container from any template or a VM from any ISO on any node. Delete asks for the master
-  password.
+- Create a container from any template or a VM from any ISO on any node. Delete is confirmed on the page.
 - **Guest config editor** (`lib/guest-config`): cores, memory, swap, start-up order, tags, DNS, network
   cards, disks and mount points. Each change is previewed, refused if the guest changed meanwhile, and
   read back.
@@ -75,8 +74,8 @@ if something changed since the preview, and is read back afterwards.
   - Guests with no home, guests not protected, and guests that need one node's hardware are listed.
   - Where each guest would go if its node failed, and a grid of which nodes it can migrate to and why not.
   - Maintenance mode for a node.
-  - Every change is previewed, refused without quorum or if HA changed since the preview, and needs the
-    master password.
+  - Every change is previewed, refused without quorum or if HA changed since the preview, and is confirmed
+    on the page.
 
 ### Storage & Ceph
 
@@ -95,10 +94,10 @@ if something changed since the preview, and is read back afterwards.
 - **Reverse proxy** (`lib/proxy/providers`): Nginx Proxy Manager, Traefik, Caddy, HAProxy and Pangolin,
   several at once in one table. Each proxy is one you run or one HyperProx installed. Every change is
   previewed and read back; hosts other tools made are read-only.
-- **DNS**: GoDaddy only. Records, guided creation, domain expiry, A records that differ from your WAN IP
-  flagged, and DDNS.
+- **DNS**: GoDaddy and Cloudflare (`lib/cloudflare-client.ts`). Records, guided creation, domain expiry, A
+  records that differ from your WAN IP flagged, and DDNS.
 - **Certificates** (`lib/certs`): probes every endpoint like a client, issues and renews over ACME DNS-01
-  through GoDaddy, delivers into guests or HyperProx's own nginx, and checks each delivery by fingerprint.
+  through GoDaddy or Cloudflare, delivers into guests or HyperProx's own nginx, and checks each delivery by fingerprint.
 - **VPN and remote access**: installs and manages Tailscale and NetBird on nodes, containers and VMs, and
   adopts clients it did not install. WireGuard servers in a container, phones and laptops by QR code, and
   WireGuard peers on a MikroTik router.
@@ -107,9 +106,11 @@ if something changed since the preview, and is read back afterwards.
 
 ### Apps & Plug-ins
 
-- **Catalogue** (`lib/catalogue.ts`): fourteen recipes; the Catalogue page lists twelve (Nginx Proxy Manager,
-  Ollama, Tautulli, Proxmox Backup Server, Arr Stack, Nextcloud, Jellyfin, Vaultwarden, Gitea, Uptime Kuma, Homepage, Grafana), and the two
-  website recipes (Static site, WordPress) are used by the Websites section. A wizard picks resources,
+- **Catalogue** (`lib/catalogue.ts`): thirty recipes: 27 apps on the Catalogue page (reverse proxies Nginx Proxy Manager, NGINX, Caddy, Envoy
+  and HAProxy; Ollama, Tautulli, Proxmox Backup Server, Arr Stack, Nextcloud, Jellyfin, Vaultwarden, Gitea,
+  Uptime Kuma, Homepage, Grafana, Plex, Unmanic and its worker, Tdarr and its node, Pi-hole, AdGuard Home,
+  3proxy, a package cache, K3s and a K3s agent), and three website recipes (Static site, WordPress, Ghost)
+  used by the Websites section. A wizard picks resources,
   recommends a node from live capacity, sets ID, hostname and address, and shows the exact plan. A failed
   install can remove only the container it made. An app already running on the cluster is found by a
   read-only probe of each proxy target and web-serving container (`lib/catalogue-detect.ts`) and shown
@@ -137,15 +138,16 @@ if something changed since the preview, and is read back afterwards.
   end on the home cluster: container, service, proxy host, DNS record and certificate. A static site (its
   starter page) is offered to it too and goes through the same steps. On any cluster it can
   prepare guest power, snapshot, back up now, delete, monitoring and copies; nothing runs until you confirm,
-  with the same role and password checks as by hand. It also reads every QNAP NAS, network storage, the
+  with the same role and confirmation checks as by hand. It also reads every QNAP NAS, network storage, the
   alerts Prometheus has firing, notification channels, every Home Assistant house by room, the websites
   HyperProx made, and the plug-in pages' figures, and answers the common questions about them by code. It
   plans a new website through the New website wizard's own code (reviewed and installed in the wizard),
   and prepares a static site's pull now and a NAS disk's quick SMART test. Visitor figures wait for the
   site-metrics module: until it is added the assistant says they are not collected. Providers: Anthropic,
   OpenAI-compatible, Ollama.
-- **Plug-ins** (`apps/api/src/plugins`): Arr Stack, Unmanic, MikroTik, Plex, Proxmox Backup Server,
-  Home Assistant, QNAP and MeshCentral. Each has a visual page that follows the theme, with the old tables
+- **Plug-ins** (`apps/api/src/plugins`): twenty: Arr Stack, Home Assistant, Plex, Unmanic, MikroTik, ASUS routers,
+  MeshCentral, QNAP, Proxmox Backup Server, Nextcloud, Homepage, HAProxy, NGINX, Caddy, Envoy, Pi-hole,
+  AdGuard Home, 3proxy, K3s and a package cache. Each has a visual page that follows the theme, with the old tables
   under **Details**. Plug-ins never read a credential: HyperProx makes their HTTP calls. **Scan for
   services** finds known apps on running guests.
 - **Arr Stack recipe** (`lib/arr`, 2026-11-12): a component picker in the wizard (Sonarr, Radarr, Prowlarr and
@@ -157,7 +159,7 @@ if something changed since the preview, and is read back afterwards.
   signed-in image proxy so the token never reaches the browser. **Clear-out** lists what nobody watches, with
   keep rules. **Library** removes shows, seasons, episodes and films through Sonarr or Radarr (or through Plex
   when none manages the item), after a preview, with a warning for someone's next-up episode, a refusal while
-  it is streaming and the master password. An optional message when something new is added.
+  it is streaming and an in-page confirmation. An optional message when something new is added.
 - **Proxmox Backup Server** (`lib/pbs`, 2026-11-12): a plug-in, and a catalogue recipe that puts the datastore
   on a NAS over NFS (recommended) or on a local disk. The plug-in is read-only by default and pins the
   server's certificate. **Add a backup server** by signing in once: HyperProx makes its own read-only token and
@@ -166,7 +168,7 @@ if something changed since the preview, and is read back afterwards.
   touched.
 - **Home Assistant control** (`lib/ha-control`): more than one house, devices as tiles by room, read-back
   after every action, and an audit entry for each. Locks, alarm panels, sirens and other security devices
-  need the admin role, the master password and a confirm step where you type the device name.
+  need the admin role and a confirm step where you type the device name.
 - **QNAP** (`lib/qnap`): each NAS's bays with SMART, volumes, shares, temperatures, fans and firmware; quick
   SMART test; restart and shut down behind the confirm step; alerts; and a NAS on a remote cluster's LAN read
   through one of that cluster's nodes.
@@ -194,7 +196,7 @@ if something changed since the preview, and is read back afterwards.
 - A policy file (`config/updates.yaml`) with per-cluster sections. Without it you get dry runs only. A node
   with held packages or a pinned kernel gets `apt-get upgrade`, never `dist-upgrade`, unless the policy
   names it.
-- On a remote: apt's own simulation as the preview, the master password to apply, every package read back,
+- On a remote: apt's own simulation as the preview, an in-page confirmation to apply, every package read back,
   and no automatic reboot.
 - A daily read-only check of every cluster, with one notification when something new needs updating.
 - **App updates** for software outside apt and Docker, contributed by plug-ins. MeshCentral (npm installs)
@@ -207,8 +209,10 @@ if something changed since the preview, and is read back afterwards.
 - Locked after a reboot, auto-lock after idle time, secrets in memory only, and a small keyholder so a
   deploy does not lock you out.
 - Four roles from the vault's organization: owner, admin, operator, viewer.
-- The master password is asked again for dangerous actions (destroying a guest, revealing a secret,
-  catalogue installs, remote cluster changes, and more).
+- Dangerous actions (destroying a guest, catalogue installs, remote cluster changes, and more) are confirmed on
+  the page: you see what will happen and press Confirm. The master password is asked again only to reveal a
+  stored secret, to change who can sign in or what they may do, and to hand out a way in (network access keys,
+  device approval, a site's admin login, trusting host keys).
 - API tokens with a role, stored as a hash, that stop working while locked and can never read secrets.
 - Secrets page: reveal, send as a one-view link, or generate and store a password.
 - Node host keys and remote certificates are verified automatically where HyperProx has evidence, and
@@ -220,7 +224,7 @@ if something changed since the preview, and is read back afterwards.
 
 - A redesigned interface with a grouped side rail, a **Find anything** box, and Auto, Light and Dark themes.
 - A dashboard built for a glance (condensed 2026-11-12): one status header with a verdict in words, storage
-  and what is happening now, a chip for each plug-in (Active, Needs attention or Off) and a Websites row (sites
+  and what is happening now, a chip for each plug-in (Active, Needs attention or Not set up) and a Websites row (sites
   up, people today, bots apart, certificate and alert pills). Dials, GPU, network, bandwidth, Ceph and HA are
   folded under **More detail**; the node tiles moved to Infrastructure.
 - Works on a phone and installs as an app.
@@ -330,8 +334,7 @@ session.** Today consoles, templates, Ceph maintenance and backups still send yo
    proxy host and certificate, keeps generated logins in the vault, and gives the site monitoring with alerts
    (its Metrics tab). The Arr Stack recipe also wires its apps together and keeps their logins in the vault, and the
    Proxmox Backup Server recipe pins its certificate and hands the plug-in a read-only token. Backups, the update policy and a plug-in panel are not automatic for any recipe yet, and
-   monitoring with alerts is not automatic for the other recipes. Ghost as a website kind waits on a supported
-   database for Debian 13.
+   monitoring with alerts is not automatic for the other recipes. Ghost is built as a website kind.
 2. **MeshCentral remote desktop**: a catalogue recipe that installs MeshCentral, an adopt flow for an
    existing install, and its devices and remote desktop on the plug-in page.
 3. **Automatic restore tests for the Proxmox Backup Server plug-in.** The plug-in itself is built (datastore
@@ -352,15 +355,15 @@ session.** Today consoles, templates, Ceph maintenance and backups still send yo
    - Offered automatically when an SSH pane cannot connect.
    - Send Ctrl-Alt-Del, paste as typed keystrokes, scale to pane, fullscreen.
 6. **Ceph operations**: the unbuilt part of "Ceph: measurement, not just status" above.
-7. **Releases and self-update**: versioned, checksum-verified builds instead of installing whatever `main`
-   is, and `hyperprox update`, `rollback` and `uninstall`. Today you update with `git pull` and `deploy.sh`.
-   The design is in [docs/superpowers/specs/2026-10-06-installer-design.md](docs/superpowers/specs/2026-10-06-installer-design.md).
+7. **Versioned releases**: checksum-verified builds instead of installing whatever `main` is. ~~Self-update~~
+   is done: Updates → HyperProx checks for a newer version and installs it from the app (see "Updating
+   HyperProx" in the README). The design is in [docs/superpowers/specs/2026-10-06-installer-design.md](docs/superpowers/specs/2026-10-06-installer-design.md).
 8. **Demo mode and screenshots**: the demo and the README screenshots are built; the dashboard pictures
    still show the layout from before the 2026-11-12 condense and need retaking.
 9. ~~**The hyperprox.dev website.**~~ Built; it is kept in step with this file.
 10. **More integrations**:
-    - DNS providers beyond GoDaddy: Cloudflare, Namecheap, Route 53, Porkbun, with a provider chosen per
-      domain. (The credential form already has Cloudflare fields; there is no Cloudflare client.)
+    - DNS providers beyond GoDaddy and Cloudflare: Namecheap, Route 53, Porkbun, with a provider chosen per
+      domain.
     - Email notifications.
     - LDAP / Active Directory and OIDC / SSO sign-in.
 

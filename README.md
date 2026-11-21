@@ -66,7 +66,7 @@ To run it locally, see [docs/demo.md](docs/demo.md).
 | Area | What you get |
 |---|---|
 | Proxmox | Every VM and container with power actions, snapshots, migration, HA state and an SSH console; create guests from any template or ISO on any node |
-| Dashboard | A glance: one cluster verdict, storage and what is happening now, a chip for each plug-in (Active, Needs attention or Off) and a Websites row with people today, bots kept apart, and certificate and alert pills; dials, GPU, network, Ceph and HA are folded away under **More detail** |
+| Dashboard | A glance: one cluster verdict, storage and what is happening now, a chip for each plug-in (Active, Needs attention or Not set up) and a Websites row with people today, bots kept apart, and certificate and alert pills; dials, GPU, network, Ceph and HA are folded away under **More detail** |
 | Monitoring | Bundled Prometheus and Grafana with HyperProx dashboards and alert rules |
 | Storage | Every storage on every node, Ceph health, OSDs and pools, and per-guest disks |
 | Reverse proxy | Nginx Proxy Manager, Traefik, Caddy, HAProxy, Pangolin and NGINX, several at once in one table; every change previewed, then read back. NGINX and Caddy installed from the Catalogue join the table by themselves |
@@ -77,7 +77,7 @@ To run it locally, see [docs/demo.md](docs/demo.md).
 | Catalogue | Guided installs of NPM, HAProxy, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server, Pi-hole, AdGuard Home and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes; **Plex Media Server** installs from Plex's own repository, is claimed to your Plex account in the flow, and the Plex plug-in connects to it by itself |
 | Websites | Its own section: a New website wizard (static site, WordPress or Ghost) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link or open Ghost's admin, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
-| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud, HAProxy, Pi-hole, AdGuard Home, MeshCentral, NGINX, Caddy and Envoy, with no access to credentials; Home Assistant also controls devices, in more than one house |
+| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP, Nextcloud, Homepage, HAProxy, Pi-hole, AdGuard Home, MeshCentral, NGINX, Caddy, Envoy, 3proxy, K3s and a package cache, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and a confirmation; a message when something new is added |
 | Nextcloud | Version and update, every setup warning from the admin page grouped by severity with a one-click fix, a guided step or an honest "optional" for each, Talk's signalling server and Client Push, PHP, database, background jobs and the log; updates a Docker Compose install (database dump first, confirmed on the page) |
 | Proxy load balancing | The HAProxy plug-in draws each load balancer as frontends, backends and servers with their live state, weights, sessions, request rates, errors, health checks and response times; drain, maintenance, weights, health checks, adding and removing servers and the balance algorithm are a click each (runtime only, or saved after `haproxy -c`); **Proxy load balancing** spreads one app's traffic across two or more guests (the Load balancing page, by contrast, moves guests between nodes) |
@@ -560,7 +560,7 @@ sits beside it (see Command center below).
 
 Under the header are each Proxmox storage as a bar and what is happening now (firing alerts, offline
 nodes, Ceph checks, HA guests not started, services not answering). Then a row of **plug-in chips**, one
-for each plug-in: **Active**, **Needs attention** with the reason, or **Off** when it is not set up. Each
+for each plug-in: **Active**, **Needs attention** with the reason, or **Not set up** when it has nothing to talk to yet. Each
 chip opens that plug-in. Then a **Websites** row: how many sites, how many are up, **people today** across
 all of them, with bots and unconfirmed visitors counted apart in smaller type, and a pill for each
 certificate under 14 days and each site alert. Each site, its chart and the scanner detail stay on the
@@ -1174,9 +1174,9 @@ runs its dry run, monitoring scans the nodes); nothing changes until you confirm
 the cluster (amber, marked REMOTE, for a remote). The server then runs its own copy of the plan through
 the same code as the Command center's buttons and reads the result back. A plan works only on the
 cluster it was made for: confirmed for another cluster, after that server's address, port, certificate
-or API token changed, or after the guest's settings changed, it does nothing. Your role and the master-password
+or API token changed, or after the guest's settings changed, it does nothing. Your role and the confirmation
 check are exactly what the same action needs by hand (deleting a guest and installing or removing
-monitoring ask for the password; deleting also asks for the guest's name, typed, or its ID for a VM
+monitoring ask you to confirm; deleting also asks for the guest's name, typed, or its ID for a VM
 with no name), the audit log records who did what on which cluster, including every refusal, and while
 HyperProx is locked it does nothing. Editing a guest's
 settings is not offered by the assistant: use the guest's Settings tab. Using the assistant needs the
@@ -2227,7 +2227,8 @@ downloading, available, failed, declined), and where each one is now. Built for 
   media server, using reads that really ask them (never a library sync), and shares one reading for a minute between open
   pages. A link it cannot use shows a plain sentence and a **Reconnect** button. For Radarr and Sonarr it tests the key
   HyperProx has saved first and writes it into Seerr only if that works, and only for Seerr's entry for that app; for the
-  media server it puts back the saved address and sign-in. When Seerr still points at a quality profile or library folder
+  media server it writes the saved address and sign-in into Seerr first, then tests it, and says so when Seerr still
+  cannot use it. When Seerr still points at a quality profile or library folder
   (for Sonarr, also the anime ones) that Radarr or Sonarr no longer has, which is the usual reason requests fail,
   **Fix Seerr's settings** names the server and each change, old to new, before you confirm. It proposes the profile or
   folder with the same name; where nothing has the same name it guesses nothing and gives you a menu of what the arr has.
