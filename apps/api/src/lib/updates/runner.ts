@@ -18,6 +18,7 @@
 //  executor, so every path here runs in tests against a fake.
 // =============================================================================
 
+import { planHash, PLAN_CHANGED } from './plan-hash'
 import type { UpdatesClusterRef, UpdatesItemOutcome, UpdatesPlan, UpdatesPlanItem, UpdatesRebootPreview, UpdatesRebootResult, UpdatesRebootRun, UpdatesReport, UpdatesStepAction, UpdatesWsPayload } from './types'
 import type { UpdatesExecutor, GuestListing, LineSink } from './executor'
 import { parseOsdOkToStop, parseCephState, parseOsdFlags, judgeRestoredState, type CephState } from './ceph-safety'
@@ -168,8 +169,6 @@ const STALE_NOOUT = 'Ceph noout is set — left by an earlier run that stopped (
 const INTERRUPTED = 'interrupted by a HyperProx restart'
 /** An automatic reboot run reached the end of its window: what is left waits for the next one. */
 const WINDOW_CLOSED = 'the reboot window closed; it waits for the next window'
-import { planHash, PLAN_CHANGED } from './plan-hash'
-
 /** A plan nobody confirmed within this long is cancelled; nothing was changed. */
 export const PLAN_EXPIRY_MS = 24 * 60 * 60_000
 export const PLAN_EXPIRED_REASON = 'Not confirmed within a day; nothing was changed'
@@ -2226,7 +2225,6 @@ export class UpdatesRunner {
     catch (err: any) { this.log(`could not announce the job: ${err?.name ?? 'error'}`, 'warn') }
   }
 
-  /** The plan-time safety note on every Ceph restart and node reboot. A check that cannot run says so. */
   private async startedRunning(jobId: string): Promise<void> {
     const f = this.onRunning.get(jobId)
     this.onRunning.delete(jobId)
@@ -2234,6 +2232,7 @@ export class UpdatesRunner {
     try { await f(jobId) } catch (e: any) { this.log(`[updates] after-start hook failed: ${e?.message ?? e}`, 'warn') }
   }
 
+  /** The plan-time safety note on every Ceph restart and node reboot. A check that cannot run says so. */
   private async withSafety(jobId: string, plan: UpdatesPlan): Promise<UpdatesPlan> {
     try { return await annotatePlanSafety(this.exec, plan, await this.ceph(jobId)) }
     catch (e: any) { return { ...plan, warnings: [...plan.warnings, `Ceph safety not checked at plan time: ${e?.message ?? e}`] } }

@@ -285,6 +285,22 @@ test('a plan that differs from the confirmed one stops for Go ahead with a plain
   await app.close()
 })
 
+test('a /preview selection that differs from the /jobs selection cannot produce a match', async () => {
+  const { app, runner } = await planRoutes()
+  const all = (await app.inject({ method: 'GET', url: '/api/updates/targets' })).json().targets as Array<{ id: string; selectable: boolean }>
+  const ids = all.filter(t => t.selectable).map(t => t.id)
+  assert.ok(ids.length >= 2, `need two selectable targets, have ${ids.length}`)
+  const pv = (await app.inject({ method: 'POST', url: '/api/updates/preview', payload: { select: ids } })).json()
+  const narrower = ids.slice(0, 1)
+  const res = await confirmed(app, 'POST', '/api/updates/jobs', { mode: 'run', select: narrower, planHash: pv.planHash })
+  assert.equal(res.statusCode, 201, res.body)
+  await runner().idle(); await runner().idle()
+  const job = (await app.inject({ method: 'GET', url: `/api/updates/jobs/${res.json().job.id}` })).json().job
+  assert.equal(job.status, 'awaiting-confirm', 'stops for Go ahead')
+  assert.equal(job.pauseReason, PLAN_CHANGED)
+  await app.close()
+})
+
 test('Go ahead stops a check that is reading instead of being refused', async () => {
   const { app, store, runner, checker } = await planRoutes({ checkGapMs: 40 })
   const select = await selection(app)
