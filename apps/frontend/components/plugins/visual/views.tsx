@@ -19,6 +19,7 @@ import {
 } from '@/components/visual/kit'
 import pg from './pages.module.css'
 import { PlexSignIn } from '@/components/plugins/plex/SignIn'
+import { LanGuard } from './LanGuard'
 
 // ── Plex ─────────────────────────────────────────────────────────────────────
 
@@ -326,7 +327,7 @@ export function routerChips(v: RouterVisual): StatChip[] {
   ]
 }
 
-export function RouterView({ v }: { v: RouterVisual }) {
+export function RouterView({ v, onChanged }: { v: RouterVisual; onChanged?: () => void }) {
   const h = v.health
   const rings: Array<{ label: string; value: number; max: number; text: string; color: string }> = [
     { label: 'CPU', value: h.cpuPct, max: 100, text: `${h.cpuPct}%`, color: h.cpuPct > 80 ? 'var(--crit)' : 'var(--hx-accent)' },
@@ -342,9 +343,12 @@ export function RouterView({ v }: { v: RouterVisual }) {
           internet={{ name: 'Internet' }}
           wans={v.wans.map(w => ({ key: w.name, name: w.name, sub: `↓ ${mbps(w.downBps)} ↑ ${mbps(w.upBps)} Mbps`, active: w.downBps + w.upBps > 0 }))}
           core={{ name: v.router.name, lines: [`↓ ${mbps(v.total.downBps)} · ↑ ${mbps(v.total.upBps)} Mbps`, `CPU ${h.cpuPct}%${h.tempC !== null ? ` · ${h.tempC}°C` : ''}`] }}
-          subnets={v.subnets.slice(0, 4).map(n => ({ key: n.net, name: n.net, sub: `${n.devices} devices${n.uplink ? ` · via ${n.uplink}` : ''}`, active: n.downBps + n.upBps > 0 }))} />
+          subnets={v.subnets.slice(0, 4).map(n => n.own === false
+            ? { key: n.net, name: 'Not one of your networks', sub: `${n.net} · ${n.devices} device${n.devices === 1 ? '' : 's'}`, active: n.downBps + n.upBps > 0 }
+            : { key: n.net, name: n.net, sub: `${n.devices} devices${n.uplink ? ` · via ${n.uplink}` : ''}`, active: n.downBps + n.upBps > 0 })} />
         {v.subnets.length > 4 && <p className={s.note} style={{ color: 'var(--text-muted)' }}>{v.subnets.length - 4} more subnets are in Details.</p>}
       </Panel>
+      <LanGuard lan={v.lan} onChanged={onChanged} />
       <Cols>
         <Panel title="Router health">
           <div className={s.rings}>

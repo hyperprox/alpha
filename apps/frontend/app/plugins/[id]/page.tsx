@@ -63,6 +63,7 @@ function cellTone(v: string): string | undefined {
   if (['yes', 'running', 'playing', 'direct play'].includes(s)) return TONE.good
   if (['paused', 'transcode', 'dynamic'].includes(s))            return TONE.warn
   if (['no', 'stopped', 'no lease'].includes(s))                 return 'var(--text-dim)'
+  if (s.startsWith('address outside'))                           return TONE.warn
   return undefined
 }
 
@@ -477,7 +478,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
             {v?.kind === 'arrstack' && arrTab === 'upcoming' && <ArrUpcoming onQueue={showArrQueue} />}
             {v?.kind === 'arrstack' && arrTab === 'sorting' && <ArrRouter />}
             {v?.kind === 'unmanic' && <UnmanicView v={v} />}
-            {v?.kind === 'mikrotik' && <RouterView v={v} />}
+            {v?.kind === 'mikrotik' && <RouterView v={v} onChanged={() => load(true)} />}
             {v?.kind === 'meshcentral' && <MeshView v={v} />}
 
             {/* Downloads that are complete and cannot be filed, when the page has no alert card for them. */}
