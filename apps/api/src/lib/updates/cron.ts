@@ -11,6 +11,8 @@
 //  "Wednesday 08:00" means.
 // =============================================================================
 
+import { localParts } from '../placement/windows'
+
 export interface CronSpec {
   minute: Set<number>
   hour:   Set<number>
@@ -88,6 +90,21 @@ export function cronMatches(spec: CronSpec, d: Date): boolean {
  * The first time strictly after `from` that the expression fires, or null when it never does
  * within roughly four years (31 February, say).
  */
+/** Does `spec` fire at the minute containing `ms`, read as wall-clock time in `tz` (minute, hour and weekday fields only)? */
+export function cronMatchesIn(spec: CronSpec, ms: number, tz: string): boolean {
+  const p = localParts(ms, tz)
+  // 2001-01-07 was a Sunday: a stand-in date carrying the zone's weekday, hour and minute.
+  return cronMatches(spec, new Date(2001, 0, 7 + p.dow, p.hour, p.minute))
+}
+
+/** The next time the expression fires after `from`, read in `tz`; looks a week ahead. */
+export function nextRunIn(expr: string, from: Date, tz: string): Date | null {
+  const spec = parseCron(expr)
+  const start = from.getTime() - (from.getTime() % 60_000) + 60_000
+  for (let t = start; t <= start + 8 * 86_400_000; t += 60_000) if (cronMatchesIn(spec, t, tz)) return new Date(t)
+  return null
+}
+
 export function nextRun(expr: string | CronSpec, from: Date = new Date()): Date | null {
   const spec = typeof expr === 'string' ? parseCron(expr) : expr
   const d = new Date(from.getTime())

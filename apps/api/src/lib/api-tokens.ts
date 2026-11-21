@@ -163,6 +163,8 @@ export function tokenForbidden(method: string, path: string): boolean {
   if (m !== 'GET' && m !== 'HEAD' && /^\/api\/plugins\/arrstack\/router(\/|$)/.test(p)) return true
   // Automatic reboots: settings, Reboot now and Make safe are a signed-in admin's act, never a token's.
   if (m !== 'GET' && m !== 'HEAD' && /^\/api\/updates\/reboots\//.test(p)) return true
+  // Install updates automatically: the switch is a signed-in admin's act, never a token's.
+  if (m !== 'GET' && m !== 'HEAD' && /^\/api\/updates\/auto-install$/.test(p)) return true
   // Package cache changes (fixes, settings, Updates' setting, the setting on every guest): a signed-in admin's act.
   if (m !== 'GET' && m !== 'HEAD' && /^\/api\/plugins\/apt-cacher-ng\//.test(p)) return true
   // Nextcloud actions (fixes, updates, mail, 2FA): a signed-in admin's act, never a token's.

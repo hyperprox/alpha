@@ -33,6 +33,7 @@ import { busyJobs } from '../long-jobs'
 import { productionAptCacheHook, type AptCacheHook } from './apt-cache'
 import type { UpdatesInventory, UpdatesWsPayload } from './types'
 import { AutoReboots } from './auto-reboots'
+import { FileAutoInstall, withAutoInstall, type AutoInstallStore } from './auto-install'
 import { FileRebootState, type RebootStateStore } from './reboots'
 
 export interface UpdatesRuntimeDeps {
@@ -66,6 +67,8 @@ export interface UpdatesRuntimeDeps {
   log:         (msg: string, level?: 'warn' | 'error') => void
   /** Automatic reboot settings, per cluster. Default data/updates-reboots.json. */
   rebootState?: RebootStateStore
+  /** Where the "Install updates automatically" switch is kept. Default data/updates-auto.json. */
+  autoInstall?: AutoInstallStore
   /** Whether HyperProx is unlocked (tests). Default the vault's state. */
   isUnlocked?: () => boolean
   /** The clock automatic reboots read their window with (tests). */
@@ -83,6 +86,8 @@ export class UpdatesRuntime {
   /** Home's runner (scheduled runs are home-only). */
   readonly runner: UpdatesRunner
   readonly hostname: string | undefined
+  /** The "Install updates automatically" switch. */
+  readonly autoInstall: AutoInstallStore
   private readonly scheduler: UpdatesScheduler
   /** Automatic reboots: the window timer, the card's status and its actions. */
   readonly reboots: AutoReboots
@@ -92,6 +97,7 @@ export class UpdatesRuntime {
   constructor(d: UpdatesRuntimeDeps) {
     this.store = d.store
     this.loadPolicy = d.loadPolicy ?? (() => loadPolicyFile())
+    this.autoInstall = d.autoInstall ?? new FileAutoInstall()
     this.apps = d.apps ?? (d.exec ? undefined : productionAppEnv())
     this.appProviders = this.apps?.providers.map(r => r.provider.id)
     this.hostname = d.hostname
@@ -111,7 +117,7 @@ export class UpdatesRuntime {
         const s = this.services.get(c.id)
         return { ref: { id: c.id, name: c.name, kind: c.kind }, exec: s.exec, loadPolicy: s.loadPolicy, remote: s.remote }
       }),
-      loadPolicy: this.loadPolicy, isUnlocked,
+      loadPolicy: this.loadPolicy, isUnlocked: d.isUnlocked ?? isUnlocked,
       activeJob: () => d.store.activeJob(),
       state: d.checkState ?? new FileCheckState(),
       publish,
@@ -119,7 +125,9 @@ export class UpdatesRuntime {
       gapMs: d.checkGapMs, clusterGapMs: d.checkGapMs, afterJobMs: d.checkAfterJobMs,
     })
     // Scheduled runs are home-only. The daily check covers every cluster, read-only.
-    this.scheduler = new UpdatesScheduler({ runner: this.runner, loadPolicy: this.loadPolicy, isUnlocked, busy: () => this.checker.running, log: d.log })
+    this.scheduler = new UpdatesScheduler({ runner: this.runner, loadPolicy: () => withAutoInstall(this.loadPolicy(), this.autoInstall.load()),
+      // The automatic install is read in the cluster's time zone (the reboot window's), so 08:00 is 08:00 there.
+      tz: () => (this.autoInstall.load().enabled ? this.reboots.settings(HOME_ID).timezone : undefined), isUnlocked: d.isUnlocked ?? isUnlocked, busy: () => this.checker.running, log: d.log })
     this.reboots = new AutoReboots({
       service: id => this.services.get(id), state: d.rebootState ?? new FileRebootState(),
       isUnlocked: d.isUnlocked ?? isUnlocked, busy: () => this.checker.running, now: d.now, log: d.log, hostname: d.hostname,
@@ -174,12 +182,24 @@ export class UpdatesRuntime {
     }
   }
 
+  /** Cancel a plan nobody confirmed within a day (any cluster's). Returns the job id, or null. */
+  async expireWaitingPlans(): Promise<string | null> {
+    const active = await this.store.activeJob().catch(() => null)
+    if (!active || active.status !== 'awaiting-confirm') return null
+    const id = jobCluster(active)
+    if (!clusterRow(id)) return null
+    return this.services.get(id).runner.expireUnconfirmed().catch((e: any) => { this.log(`[updates] could not expire a waiting plan: ${e.message}`, 'error'); return null })
+  }
+
   /** The home scheduler and the daily check's timer. Each waits for an unlocked HyperProx itself. Returns the stop. */
   start(): () => void {
     this.scheduler.start()
     this.checker.start()
     this.reboots.start()
-    return () => { this.scheduler.stop(); this.checker.stop(); this.reboots.stop() }
+    const expiry = setInterval(() => { this.expireWaitingPlans().catch(() => undefined) }, 10 * 60_000)
+    expiry.unref?.()
+    this.expireWaitingPlans().catch(() => undefined)
+    return () => { this.scheduler.stop(); this.checker.stop(); this.reboots.stop(); clearInterval(expiry) }
   }
 }
 

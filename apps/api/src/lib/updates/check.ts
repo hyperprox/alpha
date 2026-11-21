@@ -234,7 +234,7 @@ export interface CheckDeps {
   /** The policy file's own load: the `check:` section is read from its top level. */
   loadPolicy: () => PolicyLoad
   /** Any Updates job active anywhere (the shared lock). */
-  activeJob: () => Promise<{ id: string } | null>
+  activeJob: () => Promise<{ id: string; status?: string } | null>
   isUnlocked: () => boolean
   state: CheckStateStore
   publish?: (e: NotifyEventInput) => Promise<void>
@@ -254,6 +254,8 @@ export interface CheckDeps {
 
 /** The reason stored on a cluster the check skipped because a job was running. */
 export const JOB_SKIP = 'an Updates job is running'
+/** The reason stored on a cluster the check skipped because HyperProx was locked (owed: it runs after unlock). */
+export const LOCKED_SKIP = 'HyperProx is locked, so it has no credentials to read with'
 
 const sleepReal = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
@@ -267,6 +269,10 @@ export class UpdatesChecker {
   /** When the check after a job may run (ms); null when none is waiting. */
   private recheckAt: number | null = null
   private jobEndedAt: number | null = null
+  /** A check was skipped because HyperProx was locked: it is owed shortly after unlock (debounced). */
+  private owedLocked = false
+  /** The running check was stopped early by a job or a person's run, so it is owed once that is over. */
+  private stoppedForJob = false
   private lastStartedAt = 0
 
   constructor(private deps: CheckDeps) { this.last = this.now() }
@@ -277,6 +283,20 @@ export class UpdatesChecker {
 
   /** Resolves when the running check (if any) has finished. */
   idle(): Promise<void> { return this.current ? this.current.then(() => undefined, () => undefined) : Promise.resolve() }
+
+  /**
+   * A job that is really running, anywhere. A plan waiting for a person to confirm it (awaiting-confirm) is not a
+   * running job: it holds the one-job lock, but it touches nothing, so it neither stops nor skips the check.
+   */
+  private async busyJob(): Promise<{ id: string } | null> {
+    const j = await this.deps.activeJob()
+    return j && j.status !== 'awaiting-confirm' ? j : null
+  }
+
+  /** A plan is waiting for a person's OK: an owed re-run holds off, so it cannot be reading when Go ahead is pressed. */
+  private async waitingPlan(): Promise<boolean> {
+    return (await this.deps.activeJob())?.status === 'awaiting-confirm'
+  }
 
   /** Stop the running check at the next machine (an Updates job is starting). What was read is kept. */
   abort(reason: string): void { if (this.current) this.abortReason = reason }
@@ -326,6 +346,7 @@ export class UpdatesChecker {
 
   private async runOnce(trigger: 'schedule' | 'manual'): Promise<UpdatesCheckStatus> {
     this.abortReason = null
+    this.stoppedForJob = false
     this.lastStartedAt = this.now().getTime()
     const state = this.deps.state.load()
     const at = this.now().toISOString()
@@ -343,8 +364,8 @@ export class UpdatesChecker {
       })
       let r: UpdatesCheckCluster
       try {
-        if (!this.deps.isUnlocked()) r = skip('HyperProx is locked, so it has no credentials to read with')
-        else if (await this.deps.activeJob()) r = skip(JOB_SKIP)
+        if (!this.deps.isUnlocked()) r = skip(LOCKED_SKIP)
+        else if (await this.busyJob()) r = skip(JOB_SKIP)
         else r = await this.checkCluster(h, at, gap, skip, state, fileMissing)
       } catch (e: any) { r = skip(`not reachable: ${shortReason(e?.message ?? String(e))}`) }
       state.clusters[h.ref.id] = r
@@ -354,7 +375,8 @@ export class UpdatesChecker {
     // Clusters that were removed leave the state.
     for (const id of Object.keys(state.clusters)) if (!handles.some(h => h.ref.id === id)) { delete state.clusters[id]; delete state.keys[id] }
     state.lastRun = at
-    this.owed = fresh.some(r => r.result === 'skipped' && r.reason === JOB_SKIP)
+    this.owed = this.stoppedForJob || fresh.some(r => r.result === 'skipped' && r.reason === JOB_SKIP)
+    this.owedLocked = fresh.some(r => r.result === 'skipped' && r.reason === LOCKED_SKIP)
     await this.notify(state, fresh)
     this.deps.state.save(state)
     this.deps.log?.(`[updates] ${trigger} check finished`)
@@ -373,8 +395,8 @@ export class UpdatesChecker {
     // Asked before every machine: a job that started, a person's run asking the check to stop, or the time cap.
     const stop = async (): Promise<string | null> => {
       if (stopped) return stopped
-      if (this.abortReason) stopped = this.abortReason
-      else if (await this.deps.activeJob()) stopped = 'an Updates job started'
+      if (this.abortReason) { stopped = this.abortReason; this.stoppedForJob = true }
+      else if (await this.busyJob()) { stopped = 'an Updates job started'; this.stoppedForJob = true }
       else if (this.now().getTime() - started > cap) stopped = `the ${Math.round(cap / 60_000)}-minute limit for one cluster was reached`
       return stopped
     }
@@ -462,14 +484,17 @@ export class UpdatesChecker {
    * running job is owed too, even if the end of that job was never announced (a restart, a recovered job).
    */
   private async recheckTick(now: Date): Promise<'ran' | 'busy' | 'locked' | null> {
-    if (this.recheckAt === null && this.owed && !this.running && this.deps.isUnlocked() && !(await this.deps.activeJob())) this.recheckAt = now.getTime()
+    if (this.recheckAt === null && this.owed && !this.running && this.deps.isUnlocked() && !(await this.busyJob())) this.recheckAt = now.getTime()
+    // Skipped because HyperProx was locked: owed, run shortly after unlock (the debounce restarts if it locks again).
+    if (this.owedLocked && !this.deps.isUnlocked()) this.recheckAt = null
+    else if (this.recheckAt === null && this.owedLocked && !this.running && this.deps.isUnlocked()) this.recheckAt = now.getTime() + (this.deps.afterJobMs ?? 30_000)
     if (this.recheckAt === null || now.getTime() < this.recheckAt) return null
     if (!this.deps.isUnlocked()) { this.deps.log?.('[updates] check after the update waits: HyperProx is locked'); return 'locked' }
-    if (this.running || await this.deps.activeJob()) return 'busy'
+    if (this.running || await this.busyJob() || await this.waitingPlan()) return 'busy'
     const ended = this.jobEndedAt
     this.recheckAt = null
     this.jobEndedAt = null
-    if (ended !== null && this.lastStartedAt >= ended && !this.owed) return null
+    if (ended !== null && this.lastStartedAt >= ended && !this.owed && !this.owedLocked) return null
     this.deps.log?.('[updates] checking again now that an update finished')
     await this.run('schedule')
     return 'ran'
@@ -482,7 +507,7 @@ export class UpdatesChecker {
     this.last = now
     const load = this.deps.loadPolicy()
     const pol = load.policy.check
-    if (!pol.enabled) { this.owed = false; this.recheckAt = null; return 'off' }
+    if (!pol.enabled) { this.owed = false; this.owedLocked = false; this.recheckAt = null; return 'off' }
     const blocked = this.blocked(load)
     if (blocked) { this.deps.log?.(`[updates] ${blocked}`); return 'off' }
     const again = await this.recheckTick(now)
@@ -490,7 +515,7 @@ export class UpdatesChecker {
     let due: Date[]
     try { due = dueMinutes(pol.cron, since, now) } catch (e: any) { this.deps.log?.(`[updates] check schedule not understood: ${e.message}`, 'warn'); return 'error' }
     if (!due.length) return again ?? 'idle'
-    if (!this.deps.isUnlocked()) { this.deps.log?.('[updates] daily check skipped: HyperProx is locked, so it has no credentials to read with'); return 'locked' }
+    if (!this.deps.isUnlocked()) { this.owedLocked = true; this.deps.log?.('[updates] daily check skipped: HyperProx is locked, so it has no credentials to read with; it runs shortly after unlock'); return 'locked' }
     if (this.running) return 'busy'
     await this.run('schedule')
     return 'ran'

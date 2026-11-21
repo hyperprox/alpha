@@ -11,7 +11,7 @@
 //  hour nobody chose is worse than one a week late.
 // =============================================================================
 
-import { parseCron, cronMatches } from './cron'
+import { parseCron, cronMatches, cronMatchesIn } from './cron'
 import type { PolicyLoad } from './policy'
 import type { UpdatesRunner } from './runner'
 import { ActiveJobError } from './store'
@@ -24,6 +24,18 @@ export interface SchedulerDeps {
   busy?:      () => boolean
   log?:       (msg: string, level?: 'warn' | 'error') => void
   now?:       () => Date
+  /** A time zone to read the cron in (the cluster's), when one applies; otherwise the server's own clock. */
+  tz?:        () => string | undefined
+}
+
+/** Like dueMinutes, but the expression is read as wall-clock time in `tz` (minute, hour and weekday fields only). */
+export function dueMinutesIn(cron: string, after: Date, upTo: Date, tz: string): Date[] {
+  const spec = parseCron(cron)
+  const out: Date[] = []
+  const floor = upTo.getTime() - 3_600_000
+  let t = Math.max(after.getTime() - (after.getTime() % 60_000) + 60_000, floor - (floor % 60_000))
+  for (; t <= upTo.getTime(); t += 60_000) if (cronMatchesIn(spec, t, tz)) out.push(new Date(t))
+  return out
 }
 
 /** Minutes in (after, upTo] at which the expression fires. Pure, for the tick and its tests. */
@@ -72,7 +84,7 @@ export class UpdatesScheduler {
     const load = this.deps.loadPolicy()
     if (!load.loaded || !load.policy.schedule.enabled) return 'off'
     let due: Date[]
-    try { due = dueMinutes(load.policy.schedule.cron, since, now) }
+    try { const tz = this.deps.tz?.(); due = tz ? dueMinutesIn(load.policy.schedule.cron, since, now, tz) : dueMinutes(load.policy.schedule.cron, since, now) }
     catch (e: any) { this.deps.log?.(`[updates] schedule not understood: ${e.message}`, 'warn'); return 'error' }
     if (!due.length) return 'idle'
     if (!this.deps.isUnlocked()) {

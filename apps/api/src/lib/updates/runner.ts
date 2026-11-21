@@ -94,6 +94,13 @@ export const DEFAULT_TIMING: RunnerTiming = {
   rebootStreamRecheckMs: 10 * 60_000,
 }
 
+/** What a manual run of chosen targets may carry: the plan hash it was confirmed against, and what to do once it runs. */
+export interface StartOptions {
+  planHash?: string
+  /** Called once, when the run actually starts running (confirmed, or its plan matched): never for a plan that is cancelled or expires. */
+  onRunning?: (jobId: string) => Promise<void> | void
+}
+
 export interface RunnerDeps {
   store:      UpdatesStore
   exec:       UpdatesExecutor
@@ -161,6 +168,11 @@ const STALE_NOOUT = 'Ceph noout is set — left by an earlier run that stopped (
 const INTERRUPTED = 'interrupted by a HyperProx restart'
 /** An automatic reboot run reached the end of its window: what is left waits for the next one. */
 const WINDOW_CLOSED = 'the reboot window closed; it waits for the next window'
+import { planHash, PLAN_CHANGED } from './plan-hash'
+
+/** A plan nobody confirmed within this long is cancelled; nothing was changed. */
+export const PLAN_EXPIRY_MS = 24 * 60 * 60_000
+export const PLAN_EXPIRED_REASON = 'Not confirmed within a day; nothing was changed'
 const NOT_FINISHED: UpdatesJobStatus[] = ['planned', 'awaiting-confirm', 'running', 'paused']
 const SNAPSHOT_PREFIX = 'hp-upd-'
 const BOOT_ID = 'cat /proc/sys/kernel/random/boot_id'
@@ -188,6 +200,9 @@ export class UpdatesRunner {
   private timing: RunnerTiming
   private driving: Promise<void> = Promise.resolve()
   private cancelRequested = new Set<string>()
+  /** Plan hashes a manual run was confirmed against, and what to do once it runs, by job id (see plan-hash.ts). */
+  private expectedHash = new Map<string, { hash: string; actor?: string }>()
+  private onRunning = new Map<string, (jobId: string) => Promise<void> | void>()
   private runStartedAt = new Map<string, number>()
   /** Whether the cluster has Ceph, asked once per job (see executor.cephPresent). */
   private cephKnown = new Map<string, boolean>()
@@ -223,7 +238,7 @@ export class UpdatesRunner {
   // ===========================================================================
 
   async start(mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule' = 'manual', actor?: string, scope: 'all' | 'guests' = 'all',
-              approvals: string[] = [], selection?: string[]): Promise<JobRecord> {
+              approvals: string[] = [], selection?: string[], opts: StartOptions = {}): Promise<JobRecord> {
     // A scheduled run has nobody to approve anything: only `auto` apps go in. Nor does it choose targets.
     if (trigger === 'schedule') { approvals = []; selection = undefined }
     if (selection) {
@@ -249,6 +264,10 @@ export class UpdatesRunner {
     await this.store.audit(`updates.job.${mode === 'dry-run' ? 'dry-run' : 'start'}`, job.id, {
       trigger, scope, ...auditBy(actor ?? 'scheduler'), ...(approvals.length ? { approvals } : {}), ...(selection ? { selection } : {}),
     })
+    if (mode === 'run' && trigger === 'manual') {
+      if (opts.planHash) this.expectedHash.set(job.id, { hash: opts.planHash, actor })
+      if (opts.onRunning) this.onRunning.set(job.id, opts.onRunning)
+    }
     await this.emitJob(job)
     this.drive(job.id, () => this.prepare(job.id, mode, trigger, scope, approvals, selection))
     return job
@@ -262,6 +281,7 @@ export class UpdatesRunner {
     if (!next) throw new JobStateError(`Job ${id} is ${(await this.mustGet(id)).status}, not awaiting confirmation`)
     this.cancelRequested.delete(id)
     await this.store.audit('updates.job.confirm', id, { ...auditBy(actor) })
+    await this.startedRunning(id)
     this.drive(id, () => this.execute(id))
     return next
   }
@@ -299,6 +319,21 @@ export class UpdatesRunner {
     // Stops after the step in progress; a half-run apt is worse than a finished one.
     this.cancelRequested.add(id)
     return now
+  }
+
+  /**
+   * A plan that has waited for a person's confirmation past `maxMs` (default a day) is cancelled: nothing ran, the
+   * lock is released, and it is audited first. Returns the job id it cancelled, or null.
+   */
+  async expireUnconfirmed(maxMs: number = PLAN_EXPIRY_MS): Promise<string | null> {
+    const job = await this.store.activeJob()
+    if (!job || job.status !== 'awaiting-confirm') return null
+    if (this.exec.now() - job.startedAt.getTime() < maxMs) return null
+    await this.store.audit('updates.job.expired', job.id, { reason: PLAN_EXPIRED_REASON, ...auditBy('HyperProx') })
+    const done = await this.finish(job.id, 'cancelled', PLAN_EXPIRED_REASON, undefined, ['awaiting-confirm'])
+    // Confirmed or cancelled at the very moment it expired: the audit row above is then not what happened.
+    if (!done) await this.store.audit('updates.job.expire-lost', job.id, { reason: 'It was confirmed or cancelled at the same moment, so it was not expired', ...auditBy('HyperProx') })
+    return done ? job.id : null
   }
 
   /** A one-node reboot job with the same gates as a run. */
@@ -837,7 +872,17 @@ export class UpdatesRunner {
     const plan: UpdatesPlan = selection ? { ...built, stepOffset: PRE_STEPS } : built
     await this.store.addSteps(jobId, plan.steps.map(s => ({ ...s, seq: s.seq + PRE_STEPS })))
     if (trigger === 'manual') {
-      await this.transition(jobId, ['running'], { plan, status: 'awaiting-confirm' })
+      const want = this.expectedHash.get(jobId)
+      this.expectedHash.delete(jobId)
+      // The plan the person confirmed is the plan that came out: go ahead on that one confirmation, audited.
+      if (want && want.hash === planHash(plan)) {
+        await this.setJob(jobId, { plan })
+        await this.store.audit('updates.job.confirm', jobId, { ...auditBy(want.actor), via: 'the plan shown in the confirmation, unchanged' })
+        await this.startedRunning(jobId)
+        await this.execute(jobId)
+        return
+      }
+      await this.transition(jobId, ['running'], { plan, status: 'awaiting-confirm', pauseReason: want ? PLAN_CHANGED : null })
       return
     }
     await this.setJob(jobId, { plan })
@@ -2052,6 +2097,7 @@ export class UpdatesRunner {
     const claimed = await this.store.transitionJob(jobId, from, { status, finishedAt: new Date(this.exec.now()), pauseReason: status === 'done' ? null : (reason ?? null) })
     if (!claimed) return null
     this.cancelRequested.delete(jobId)
+    this.expectedHash.delete(jobId); this.onRunning.delete(jobId)
     for (const s of await this.store.getSteps(jobId)) {
       if (s.status === 'pending') await this.setStep(s, { status: 'skipped', reason: status === 'cancelled' ? 'cancelled' : 'the run stopped before this step' })
     }
@@ -2181,6 +2227,13 @@ export class UpdatesRunner {
   }
 
   /** The plan-time safety note on every Ceph restart and node reboot. A check that cannot run says so. */
+  private async startedRunning(jobId: string): Promise<void> {
+    const f = this.onRunning.get(jobId)
+    this.onRunning.delete(jobId)
+    if (!f) return
+    try { await f(jobId) } catch (e: any) { this.log(`[updates] after-start hook failed: ${e?.message ?? e}`, 'warn') }
+  }
+
   private async withSafety(jobId: string, plan: UpdatesPlan): Promise<UpdatesPlan> {
     try { return await annotatePlanSafety(this.exec, plan, await this.ceph(jobId)) }
     catch (e: any) { return { ...plan, warnings: [...plan.warnings, `Ceph safety not checked at plan time: ${e?.message ?? e}`] } }

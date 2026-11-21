@@ -16,7 +16,7 @@
 import fs from 'node:fs'
 import { z } from 'zod'
 import type { UpdatesNodePolicyView, UpdatesPolicyStatus } from './types'
-import { nextRun, parseCron } from './cron'
+import { nextRun, nextRunIn, parseCron } from './cron'
 
 // js-yaml ships no types; only load() is used.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -507,12 +507,13 @@ export function unknownAppProviders(p: Policy, known: string[]): string[] {
   return Object.keys(p.apps.providers).filter(id => !known.includes(id)).sort()
 }
 
-export function policyStatus(load: PolicyLoad, now = new Date()): UpdatesPolicyStatus {
+/** `tz`: read the schedule in that time zone (the automatic install's: the cluster's), not the server's clock. */
+export function policyStatus(load: PolicyLoad, now = new Date(), tz?: string): UpdatesPolicyStatus {
   const s = load.policy.schedule
   const enabled = load.loaded && s.enabled
   let next: string | null = null
   if (enabled) {
-    try { next = nextRun(s.cron, now)?.toISOString() ?? null } catch { next = null }
+    try { next = (tz ? nextRunIn(s.cron, now, tz) : nextRun(s.cron, now))?.toISOString() ?? null } catch { next = null }
   }
   const out: UpdatesPolicyStatus = {
     loaded: load.loaded,

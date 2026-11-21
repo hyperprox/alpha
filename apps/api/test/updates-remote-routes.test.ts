@@ -197,15 +197,21 @@ function fakeRunningCheck(): { aborted: () => string | null } {
   return { aborted: () => reason }
 }
 
-test('review 3: while a check reads, confirm, resume, rollback and reboot are refused in plain words; cancel is not', async () => {
+test('review 3: while a check reads, Go ahead and Resume stop it; rollback and reboot are refused in plain words; cancel is not', async () => {
   const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
-  fakeRunningCheck()
-  for (const url of ['/api/updates/jobs/abc/confirm', '/api/updates/jobs/abc/resume', '/api/updates/nodes/pve1/reboot']) {
+  // Go ahead and Resume take precedence over a check that is reading: it is stopped, then the request is answered (no such job here).
+  for (const url of ['/api/updates/jobs/abc/confirm', '/api/updates/jobs/abc/resume']) {
+    const f = fakeRunningCheck()
     const r = await app.inject({ method: 'POST', url, headers: { cookie, ...H } })
-    assert.equal(r.statusCode, 409, url)
-    assert.match(r.json().error, /daily updates check is reading machines/)
+    assert.equal(f.aborted(), 'an Updates run was started', url)
+    assert.equal(r.statusCode, 404, url)
   }
+  fakeRunningCheck()
+  const reb = await app.inject({ method: 'POST', url: '/api/updates/nodes/pve1/reboot', headers: { cookie, ...H } })
+  assert.equal(reb.statusCode, 409)
+  assert.match(reb.json().error, /daily updates check is reading machines/)
+  fakeRunningCheck()
   const rb = await app.inject({ method: 'POST', url: '/api/updates/jobs/abc/rollback', headers: { cookie, ...H }, payload: { target: '101' } })
   assert.equal(rb.statusCode, 409)
   assert.equal((await app.inject({ method: 'POST', url: '/api/updates/jobs/abc/cancel', headers: { cookie, ...H } })).statusCode, 404, 'cancel goes through (no such job)')

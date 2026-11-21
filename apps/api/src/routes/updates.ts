@@ -40,6 +40,8 @@ import { UpdatesChecker, type CheckStateStore } from '../lib/updates/check'
 import { currentClusterId } from '../lib/clusters/context'
 import { listClusters } from '../lib/clusters/registry'
 import { selfVmidOf } from '../lib/updates/inventory'
+import { planHash, PLAN_HASH } from '../lib/updates/plan-hash'
+import { AUTO_INSTALL_TIME, withAutoInstall, type AutoInstallStore } from '../lib/updates/auto-install'
 import { buildSelectedPlan, parseTargetId, MAX_SELECTION, type GuardContext } from '../lib/updates/targets'
 import { jobLog } from '../lib/log-once'
 import { UpdatesRuntime, updatesRuntime } from '../lib/updates/runtime'
@@ -65,6 +67,8 @@ export interface UpdatesRouteDeps {
   checkState?: CheckStateStore
   /** The daily check's pauses between machines. */
   checkGapMs?: number
+  /** Where the automatic-install switch is kept (tests). */
+  autoInstall?: AutoInstallStore
   /** How HyperProx reaches a remote now (tests); default lib/pve-env.ts connectionKey. */
   connection?: (clusterId: string) => string
   hostname?:   string
@@ -137,6 +141,7 @@ function selectionFrom(raw: unknown): string[] | null {
   return raw.every(x => typeof x === 'string' && parseTargetId(x)) ? [...new Set(raw as string[])] : null
 }
 
+const EMPTY_SELECTION = 'Pick at least one machine, or run Check now first.'
 const CHECK_BUSY = 'The daily updates check is reading machines right now. Try again when it has finished (its card on this page shows it); it never takes longer than a few minutes per cluster.'
 
 /** An API token acts as a session whose id starts with "token:" (lib/gate.ts tokenSession). */
@@ -163,7 +168,7 @@ function runtimeFromDeps(deps: UpdatesRouteDeps, fastify: { prisma?: unknown; lo
     loadPolicy: deps.loadPolicy, checkState: deps.checkState, checkGapMs: deps.checkGapMs, connection: deps.connection,
     hostname: deps.hostname, timing: deps.timing, apps: deps.apps, publish: deps.publish, emit: broadcast,
     guards: deps.guards, log: jobLog(fastify.log),
-    rebootState: deps.rebootState, isUnlocked: deps.isUnlocked, now: deps.now,
+    autoInstall: deps.autoInstall, rebootState: deps.rebootState, isUnlocked: deps.isUnlocked, now: deps.now,
   })
   rt.installSources()
   return rt
@@ -184,7 +189,8 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
 
     fastify.get('/policy', async () => {
       const s = svc()
-      const status = policyStatus(s.loadPolicy())
+      const auto = !s.remote && rt.autoInstall.load().enabled
+      const status = policyStatus(s.remote ? s.loadPolicy() : withAutoInstall(s.loadPolicy(), rt.autoInstall.load()), new Date(), auto ? rt.reboots.settings(s.ref.id).timezone : undefined)
       const check = loadPolicy().policy.check
       const st = checker.status()
       const out = { ...status, cluster: { ...s.ref }, check: { enabled: check.enabled, cron: check.cron, nextRun: st.nextRun, reminderDays: check.reminderDays } }
@@ -255,6 +261,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     // would be refused and why. Read-only (a POST only because a selection can be long).
     fastify.post<{ Body: { select?: unknown; approve?: unknown } }>('/preview', async (req, reply) => {
       const select = selectionFrom(req.body?.select)
+      if (Array.isArray(req.body?.select) && req.body.select.length === 0) return sendRefusal(reply, 400, 'invalid_request', EMPTY_SELECTION)
       if (!select) return sendRefusal(reply, 400, 'invalid_request', `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets`)
       const approve = req.body?.approve ?? []
       if (!Array.isArray(approve) || approve.length > 200 || !approve.every(a => typeof a === 'string' && APPROVAL_ID.test(a))) {
@@ -269,13 +276,14 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
           policyNote: load.loaded ? undefined : `${load.error ?? 'No policy file'} — runs are refused until the policy file loads.`,
         })
         const out = { ...plan, cluster: { ...s.ref } }
-        if (s.remote || !plan.steps.some(x => x.action === 'ceph' || x.action === 'node-reboot' || x.action === 'self')) return out
-        try { return await annotatePlanSafety(s.exec, out, await s.exec.cephPresent()) }
-        catch (e: any) { return { ...out, warnings: [...out.warnings, `Ceph safety not checked: ${e?.message ?? e}`] } }
+        // `planHash`: what Update now binds its one confirmation to (lib/updates/plan-hash.ts).
+        if (s.remote || !plan.steps.some(x => x.action === 'ceph' || x.action === 'node-reboot' || x.action === 'self')) return { ...out, planHash: planHash(out) }
+        try { const a = await annotatePlanSafety(s.exec, out, await s.exec.cephPresent()); return { ...a, planHash: planHash(a) } }
+        catch (e: any) { return { ...out, warnings: [...out.warnings, `Ceph safety not checked: ${e?.message ?? e}`], planHash: planHash(out) } }
       } catch (e) { return sendError(reply, e) }
     })
 
-    fastify.post<{ Body: { mode?: string; scope?: string; approve?: unknown; select?: unknown; autoReboot?: unknown } }>('/jobs', async (req, reply) => {
+    fastify.post<{ Body: { mode?: string; scope?: string; approve?: unknown; select?: unknown; autoReboot?: unknown; planHash?: unknown } }>('/jobs', async (req, reply) => {
       const mode = req.body?.mode
       if (mode !== 'run' && mode !== 'dry-run') return sendRefusal(reply, 400, 'invalid_request', "mode must be 'run' or 'dry-run'")
       const scope = req.body?.scope ?? 'all'
@@ -285,10 +293,13 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
         return sendRefusal(reply, 400, 'invalid_request', 'approve must be a list of approval ids from the inventory')
       }
       const select = req.body?.select === undefined ? undefined : selectionFrom(req.body.select)
+      if (Array.isArray(req.body?.select) && req.body.select.length === 0) return sendRefusal(reply, 400, 'invalid_request', EMPTY_SELECTION)
       if (select === null) return sendRefusal(reply, 400, 'invalid_request', `select must be a list of 1 to ${MAX_SELECTION} target ids from /targets`)
       // "Reboot automatically in the next window": a run only, home only, and confirmed with the run it rides on.
       const autoReboot = req.body?.autoReboot
       if (autoReboot !== undefined && typeof autoReboot !== 'boolean') return sendRefusal(reply, 400, 'invalid_request', 'autoReboot is true or false')
+      const hash = req.body?.planHash
+      if (hash !== undefined && (typeof hash !== 'string' || !PLAN_HASH.test(hash) || mode !== 'run' || !select)) return sendRefusal(reply, 400, 'invalid_request', 'planHash is the hash /preview returned, for a run of chosen machines')
       const s = svc()
       if (autoReboot && (mode !== 'run' || s.remote)) return sendRefusal(reply, 400, 'invalid_request', s.remote ? 'HyperProx does not reboot the nodes of a remote cluster on its own.' : 'Only a real run can ask for a reboot in the next window.')
       if (mode === 'run' && (s.remote || select || autoReboot) && !(await confirmed(req, reply))) return reply
@@ -301,24 +312,21 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
           if (!pv.steps.length) return sendRefusal(reply, 400, 'nothing_to_update', 'Nothing chosen can be updated', { refused: pv.refused ?? [] })
         } catch (e) { return sendError(reply, e) }
       }
-      if (checker.running) {
-        // A person's run takes precedence: the check stops at the next machine, keeping what it read.
-        checker.abort('an Updates run was started')
-        await Promise.race([checker.idle(), new Promise(r => setTimeout(r, 60_000).unref?.())])
-        if (checker.running) return sendRefusal(reply, 409, 'check_busy', 'The daily check is finishing the machine it is reading and stops after it. Try again in a minute.')
-      }
+      if (!(await yieldCheck(reply))) return reply
       try {
-        const job = await s.runner.start(mode, 'manual', req.session?.email, scope, approve as string[], select)
-        if (autoReboot) {
+        // "Reboot automatically in the next window" is queued only once the run actually starts running (confirmed, or its
+        // plan matched the one confirmed): a plan that is cancelled or expires never leaves a reboot waiting.
+        const onRunning = autoReboot ? async (jobId: string) => {
           // Audited before it is saved: whatever this run leaves needing a reboot goes in the next window, once.
-          await s.store.audit('updates.reboots.queued', job.id, { ...auditBy(actorOf(req)), ...(select ? { select } : {}) })
+          await s.store.audit('updates.reboots.queued', jobId, { ...auditBy(actorOf(req)), ...(select ? { select } : {}) })
           // Only this run's own targets: a chosen run's nodes and guests (Ceph moves every node), or everything.
           const picked = select ? select.map(parseTargetId).filter((t): t is NonNullable<typeof t> => !!t) : null
           const only = picked && !picked.some(t => t.kind === 'ceph')
             ? { nodes: [...new Set(picked.flatMap(t => ('node' in t ? [t.node] : [])))], guests: [...new Set(picked.flatMap(t => ('vmid' in t ? [t.vmid] : [])))] }
             : null
-          rt.reboots.queueNext(s.ref.id, req.session?.email ?? 'an admin', job.id, only)
-        }
+          rt.reboots.queueNext(s.ref.id, req.session?.email ?? 'an admin', jobId, only)
+        } : undefined
+        const job = await s.runner.start(mode, 'manual', req.session?.email, scope, approve as string[], select, { planHash: hash as string | undefined, onRunning })
         return reply.status(201).send({ job: jobView(job, await s.store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }
     })
@@ -343,7 +351,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
           const chosen = s.remote ? true : Array.isArray((await s.store.getJob(req.params.id).catch(() => null))?.plan?.items)
           if (chosen && !(await confirmed(req, reply))) return reply
         }
-        if (op !== 'cancel' && checker.running) return sendRefusal(reply, 409, 'check_busy', CHECK_BUSY)
+        if (op !== 'cancel' && !(await yieldCheck(reply))) return reply
         try {
           const job = await s.runner[op](req.params.id, req.session?.email)
           return { job: jobView(job, await s.store.getSteps(job.id)) }
@@ -403,6 +411,30 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       } catch (e) { return sendError(reply, e) }
     })
 
+    // "Install updates automatically": the home cluster's scheduled run, every morning, off by default. Admin, confirmed on
+    // the page (never an API token), audited with before and after.
+    fastify.get('/auto-install', async (_req, reply) => {
+      const s = svc()
+      if (s.remote) return sendRefusal(reply, 400, 'not_available', 'HyperProx does not install updates on its own on a remote cluster.')
+      const st = rt.autoInstall.load()
+      const eff = withAutoInstall(loadPolicy(), st).policy.schedule
+      return { enabled: st.enabled, time: AUTO_INSTALL_TIME, scheduleOn: eff.enabled, cron: eff.cron }
+    })
+    fastify.put<{ Body: { enabled?: unknown } }>('/auto-install', async (req, reply) => {
+      const s = svc()
+      if (s.remote) return sendRefusal(reply, 400, 'not_available', 'HyperProx does not install updates on its own on a remote cluster.')
+      const enabled = req.body?.enabled
+      if (typeof enabled !== 'boolean') return sendRefusal(reply, 400, 'invalid_request', 'enabled is true or false')
+      if (!(await confirmed(req, reply))) return reply
+      try {
+        const before = rt.autoInstall.load()
+        const after = { enabled, by: req.session?.email ?? 'an admin', at: new Date().toISOString() }
+        await s.store.audit('updates.auto-install', s.ref.id, { before: before.enabled, after: enabled, ...auditBy(actorOf(req)) })
+        rt.autoInstall.save(after)
+        return { enabled, time: AUTO_INSTALL_TIME }
+      } catch (e) { return sendError(reply, e) }
+    })
+
     // "Reboot now (rolling)": the same engine as the window, now. `all`: every node, not only those that need it.
     fastify.post<{ Body: { all?: unknown } }>('/reboots/now', async (req, reply) => {
       const all = req.body?.all
@@ -425,6 +457,17 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       try { return await s.runner.makeSafe(req.session?.email) }
       catch (e) { return sendError(reply, e) }
     })
+
+    // A person's run, Go ahead or Resume takes precedence over a check that is reading: the check stops at the next
+    // machine, keeping what it read (and is owed again afterwards). Refused only if it does not stop within a minute.
+    const yieldCheck = async (reply: FastifyReply): Promise<boolean> => {
+      if (!checker.running) return true
+      checker.abort('an Updates run was started')
+      await Promise.race([checker.idle(), new Promise(r => setTimeout(r, 60_000).unref?.())])
+      if (!checker.running) return true
+      sendRefusal(reply, 409, 'check_busy', 'The daily check is finishing the machine it is reading and stops after it. Try again in a minute.')
+      return false
+    }
 
     // The daily check: its last result for every cluster, and "Check now". Read-only on every machine.
     // Manual checks are at least `manualCheckGapMs` apart: each one runs apt update on every node and guest.
