@@ -277,6 +277,10 @@ const APTCACHE_RECONFIRM = /^\/api\/plugins\/apt-cacher-ng\/(caches\/[^/]+\/sett
 // MikroTik LAN guard (routes/mikrotik.ts): adding or removing the one address list and one forward rule on the router.
 // Admin (the default for a POST) and confirmed in the page, which keeps API tokens out.
 const MIKROTIK_LAN_GUARD = /^\/api\/plugins\/mikrotik\/lan-guard\/(apply|undo)$/
+// MikroTik router manager (routes/mikrotik.ts): fixed addresses, port forwards, device blocks and the change history.
+// Admin for every method, reads included. Every write is confirmed by the route itself with a summary of the exact
+// plan (lib/confirm.ts, bound to the request body), so none of these is in the generic confirmation table.
+const MIKROTIK_CONTROL = /^\/api\/plugins\/mikrotik\/(control|change\/(plan|apply)|changes\/[^/]+\/undo)$/
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
 // Local plug-ins (lib/local-plugins.ts): admin for every method, reads included, and every change confirmed on the page
 // (API tokens are refused there outright by api-tokens.ts, reads too). No local plug-in action asks for the master
@@ -468,6 +472,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (SETUP_CHECKLIST.test(p)) return 'admin'
   if (ASUS_DIAGNOSTICS.test(p)) return 'admin'
   if (MIKROTIK_LAN_GUARD.test(p)) return 'admin'
+  if (MIKROTIK_CONTROL.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && NEXTCLOUD_ADMIN_READ.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && DNS_ADMIN_READ.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && K3S_ADMIN_READ.test(p)) return 'admin'
