@@ -34,6 +34,8 @@ export interface ConfirmNames {
   routerGraduate?: (previewId: unknown) => { count: number; folder: string } | null
   routerLibrary?: (previewId: unknown, ids: unknown) => { count: number; groups: string[] } | null
   routerLibraryUndo?: (app: unknown) => { count: number } | null
+  /** The title of a Seerr request in the last reading, for the Requests tab's confirmation. */
+  requestTitle?: (id: unknown) => string | null
 }
 const names: ConfirmNames = {}
 export function setConfirmNames(n: ConfirmNames): void { Object.assign(names, n) }
@@ -84,6 +86,21 @@ function routerLibrarySentence(b: any): string {
   const list = n.groups.slice(0, 6).map(g => str(g, 120)).join('; ')
   const more = n.groups.length > 6 ? `; and ${n.groups.length - 6} more groups` : ''
   return `Move ${n.count} ${n.count === 1 ? 'item' : 'items'} in your library into the folders your rules pick? ${list}${more}. Their files move with them, 20 a minute.`
+}
+
+function requestActionSentence(b: any): string {
+  const title = names.requestTitle?.(b?.id) ?? null
+  const what = title && str(title, 100) ? `"${str(title, 100)}"` : 'this request'
+  switch (b?.action) {
+    case 'approve': return `Approve ${what}? Seerr sends it to Radarr or Sonarr to download.`
+    case 'decline': return `Decline ${what}${str(b?.reason, 200) ? ' with your reason' : ''}? It will not be downloaded.`
+    case 'retry': return `Send ${what} to Radarr or Sonarr again?`
+    case 'fix-settings': return 'Point Seerr\'s Radarr and Sonarr settings at the quality profile and library folder they have now? Only Seerr\'s own settings change.'
+    case 'reconnect': return b?.target === 'media'
+      ? 'Reconnect Seerr to your media server with the sign-in HyperProx has saved? Only Seerr\'s own settings change.'
+      : `Put the ${b?.target === 'sonarr' ? 'Sonarr' : 'Radarr'} key HyperProx has saved back into Seerr? Only Seerr\'s own settings change.`
+    default: return 'Make this change to Seerr\'s requests?'
+  }
 }
 
 const RULES: Rule[] = [
@@ -147,6 +164,7 @@ const RULES: Rule[] = [
   }],
   ['POST', /^\/api\/plugins\/arrstack\/better\/grab$/, (_m, _p, b) => betterGrabSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/vpn\/actions$/, (_m, _p, b) => vpnFixSentence(b)],
+  ['POST', /^\/api\/plugins\/arrstack\/requests\/actions$/, (_m, _p, b) => requestActionSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/settings$/, (_m, _p, b) => routerSettingsSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/move$/, (_m, _p, b) => routerMoveSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/graduate$/, (_m, _p, b) => routerGraduateSentence(b)],

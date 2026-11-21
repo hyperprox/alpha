@@ -106,12 +106,15 @@ export function bypassesLock(path: string): boolean {
 // Arr Stack VPN panel (routes/arr-vpn.ts): the status is a read (viewer; the public address only for an admin); its fixes
 // (put the forwarded port into qBittorrent, reconnect the tunnel, restart qBittorrent) are admin and confirmed on the
 // page (ARR_CONFIRM). Refused to API tokens by name. No master password: nothing permanent changes.
+// Arr Stack Seerr requests (routes/arr-requests.ts): the list, its health and posters are a read (viewer; who asked is shown
+// to an admin only). Approve, decline, retry, "Fix Seerr's settings" and reconnect are admin and confirmed on the page
+// (ARR_CONFIRM). Refused to API tokens by name. No master password: nothing is deleted.
 // Arr Stack "Sort requests into the right folder" (routes/arr-router.ts): the rules and Recently sorted are a read
 // (viewer). The library test and the graduate and library-sort previews are admin (the default for a POST) and change
 // nothing; saving the rules, "Undo / move to…", moving the finished shows, and starting, stopping or undoing a library sort are
 // admin and confirmed on the page (ARR_CONFIRM). Refused to
 // API tokens by name. No master password: nothing is deleted, and every move can be moved back.
-const ARR_CONFIRM = /^\/api\/plugins\/arrstack\/(better\/grab|vpn\/actions|router\/(settings|move|graduate|library\/(apply|stop|undo)))$/
+const ARR_CONFIRM = /^\/api\/plugins\/arrstack\/(better\/grab|vpn\/actions|requests\/actions|router\/(settings|move|graduate|library\/(apply|stop|undo)))$/
 
 // Guest power actions. Both route families exist: /api/infra (infrastructure.ts)
 // and /api/proxmox (proxmox.ts).

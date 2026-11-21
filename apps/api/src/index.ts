@@ -43,6 +43,7 @@ import { plexClearoutRoutes }   from './routes/plex-clearout'
 import { arrUpcomingRoutes }    from './routes/arr-upcoming'
 import { arrQueueRoutes }       from './routes/arr-queue'
 import { arrGiveUpRoutes }      from './routes/arr-giveup'
+import { arrRequestsRoutes }    from './routes/arr-requests'
 import { arrBetterRoutes } from './routes/arr-better'
 import { arrVpnRoutes } from './routes/arr-vpn'
 import { arrRouterRoutes } from './routes/arr-router'
@@ -209,6 +210,7 @@ async function main() {
   await server.register(arrUpcomingRoutes,     { prefix: '/api/plugins/arrstack' })
   await server.register(arrQueueRoutes,        { prefix: '/api/plugins/arrstack' })
   await server.register(arrGiveUpRoutes,       { prefix: '/api/plugins/arrstack' })
+  await server.register(arrRequestsRoutes,     { prefix: '/api/plugins/arrstack' })
   await server.register(arrBetterRoutes,       { prefix: '/api/plugins/arrstack' })
   await server.register(arrVpnRoutes,          { prefix: '/api/plugins/arrstack' })
   await server.register(arrRouterRoutes,       { prefix: '/api/plugins/arrstack' })

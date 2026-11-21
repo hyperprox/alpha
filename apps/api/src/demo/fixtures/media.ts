@@ -181,9 +181,28 @@ function arrVpn() {
   }
 }
 
+// ================================================================================ Arr Stack: the Requests tab
+function arrRequests() {
+  const now = Date.now()
+  const row = (id: number, kind: 'movie' | 'tv', title: string, year: number, group: string, where: string, ago: number, extra: Record<string, unknown> = {}) =>
+    ({ id, kind, title, year, poster: null, group, where, progress: null, who: 'a family member', at: new Date(now - ago * DAY).toISOString(), seasons: kind === 'tv' ? 2 : null, sortedInto: null, reason: null, is4k: false, ...extra })
+  const rows = [
+    row(5, 'movie', 'Paper Lanterns', 2011, 'pending', 'Waiting for an admin to approve it.', 0.2),
+    row(4, 'tv', 'Harbour Lights', 2021, 'downloading', 'Downloading, 62% done.', 1, { progress: 0.62 }),
+    row(3, 'movie', 'Quiet Harbour', 2019, 'available', 'In the library, ready to watch.', 3, { sortedInto: 'Dramas' }),
+    row(2, 'movie', 'Night Ferry', 2020, 'failed', 'Seerr could not send it to Radarr.', 4),
+    row(1, 'movie', 'Copper Hills', 2018, 'approved', 'Approved. Radarr is looking for a copy.', 5),
+  ]
+  const counts: Record<string, number> = { pending: 0, approved: 0, downloading: 0, available: 0, failed: 0, declined: 0 }
+  for (const r of rows) counts[r.group]++
+  return { configured: true, rows, counts, readAt: new Date(now).toISOString(), capped: false }
+}
+
 void HOUR
 export const MEDIA_ROUTES: FixtureRoute[] = [
   { path: '/api/plugins/arrstack/vpn', get: () => ok(arrVpn()) },
+  { path: '/api/plugins/arrstack/requests', get: () => ok(arrRequests()) },
+  { path: '/api/plugins/arrstack/requests/health', get: () => ok({ configured: true, problems: [], stale: [], readAt: new Date().toISOString() }) },
   { path: '/api/plugins/plex/live', get: () => ok(plexLive()) },
   { path: '/api/plugins/plex/library', get: () => ok(plexLibrary()) },
   { path: '/api/plugins/plex/library/show/:id', get: p => ok(plexShow(p.id)) },
