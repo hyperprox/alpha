@@ -97,7 +97,7 @@ function clearout() {
     generatedAt: Date.now() - 4 * MIN, historySince: MS(400), historyPlays: 3412, sizesFrom: { tv: 'arr' as const, movies: 'arr' as const }, arr: { sonarr: true, radarr: true }, sections: SECTIONS, rows,
     kept: [{ rule: 'airing', label: 'Still airing', tv: 3, movies: 0 }, { rule: 'recent', label: 'Added in the last 6 months', tv: 4, movies: 6 }, { rule: 'next-up', label: 'Someone’s next episode', tv: 2, movies: 0 }],
     totals: { tv: tot('show'), movies: tot('movie') }, cutoffs: { neverMinMonths: 6, idleMonths: 12 },
-    notes: ['Sizes come from Sonarr and Radarr. Nothing is removed without a preview and your master password.'], watchState: watchState(),
+    notes: ['Sizes come from Sonarr and Radarr. Nothing is removed without a preview and a confirmation.'], watchState: watchState(),
   }
 }
 

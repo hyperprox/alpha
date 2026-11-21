@@ -47,7 +47,7 @@ export const pbsPlugin: Plugin = {
     id: 'pbs',
     // Named as the wishlist names it, so the idea leaves the "not built yet" list.
     name: 'Proxmox Backup Server',
-    description: 'Each backup server: datastores (use, deduplication, GC), every backup group with its newest snapshot and verify state, prune/GC/verify/sync jobs and failed tasks, with verify now behind the master password. Read-only by default; deleting, pruning and clean-up only if an admin turns on backup management.',
+    description: 'Each backup server: datastores (use, deduplication, GC), every backup group with its newest snapshot and verify state, prune/GC/verify/sync jobs and failed tasks, with verify now after a confirm step. Read-only by default; deleting, pruning and clean-up only if an admin turns on backup management.',
     kind: 'device',
     icon: '🛡️',
     baseUrlSetting: 'url',

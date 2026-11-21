@@ -52,7 +52,7 @@ export const nextcloudPlugin: Plugin = {
   manifest: {
     id: 'nextcloud',
     name: 'Nextcloud',
-    description: 'Each Nextcloud: version and update, the setup warnings grouped by severity with a fix, a guided step or an honest "optional" for each, background jobs, Talk signalling and Client Push, PHP, database, users and the log. Updates a Docker Compose install with a database dump first, behind the master password.',
+    description: 'Each Nextcloud: version and update, the setup warnings grouped by severity with a fix, a guided step or an honest "optional" for each, background jobs, Talk signalling and Client Push, PHP, database, users and the log. Updates a Docker Compose install with a database dump first, after a confirm step.',
     kind: 'device',
     icon: '☁️',
     baseUrlSetting: 'url',

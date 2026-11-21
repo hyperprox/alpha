@@ -114,7 +114,7 @@ export async function runTokenCli(
           action: CLI_PLUGIN_SETTINGS_AUDIT, details: { state: on ? 'on' : 'off', via: 'server shell (root)', by: CLI_ACTOR },
         })
         const v = tokenView(out)
-        io.out(`API token "${v.name}" (role ${v.role}, ${v.state}): plug-in settings without the master password ${v.pluginSettingsWithoutReconfirm ? 'ON' : 'OFF'}`)
+        io.out(`API token "${v.name}" (role ${v.role}, ${v.state}): plug-in settings without a confirmation ${v.pluginSettingsWithoutReconfirm ? 'ON' : 'OFF'}`)
         if (v.pluginSettingsWithoutReconfirm) io.err('anyone holding this token can now change plug-in connections and their credentials; saves are written as the signed-in owner and audited')
         io.err('a running API sees this within 10 seconds')
         return 0

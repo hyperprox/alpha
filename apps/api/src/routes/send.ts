@@ -95,7 +95,7 @@ export const sendRoutes: FastifyPluginAsync = async (fastify) => {
   // First-time setup for what one preview showed, in one step. Re-confirmed (lib/roles.ts); never for an API token.
   fastify.post<{ Params: { id: string }; Body: { previewId?: string; setupHash?: string; confirmHostKeys?: unknown } }>('/:id/send/setup', async (req, reply) => {
     const row = remoteOr404(req.params.id, reply); if (!row) return
-    if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'Setting up sending needs a person with the master password, not an API token.' })
+    if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'Setting up sending needs a person, not an API token.' })
     const keys = Array.isArray(req.body?.confirmHostKeys) ? req.body!.confirmHostKeys.map(String).slice(0, 10) : []
     try {
       const r = await setupSend(row.id, contextActor().email, { previewId: String(req.body?.previewId ?? ''), setupHash: String(req.body?.setupHash ?? ''), confirmHostKeys: keys })

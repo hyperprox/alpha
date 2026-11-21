@@ -196,7 +196,7 @@ function OverviewTab({ row, view, nodes, canOperate, canAdmin, onRefresh, onClos
         <Section title="Danger zone">
           {!confirmDelete ? <GhostButton style={{ height: 36, color: 'var(--crit-soft)' }} disabled={busy || running} onClick={() => setConfirmDelete(true)}>Delete {row.type === 'lxc' ? 'container' : 'VM'}</GhostButton> : (
             <div className="space-y-2 rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--crit-2) 35%, transparent)' }}>
-              <p className="text-sm" style={{ color: 'var(--crit-soft)' }}>Delete {row.name} ({row.vmid}) and its disks? This cannot be undone. Type the name to confirm. If you have not confirmed your master password in the last few minutes, it is asked for next.</p>
+              <p className="text-sm" style={{ color: 'var(--crit-soft)' }}>Delete {row.name} ({row.vmid}) and its disks? This cannot be undone. Type the name to confirm. You are asked to confirm before it is deleted.</p>
               <div><label style={LABEL}>Type <b style={{ color: 'var(--text-bright)' }}>{row.name}</b> to delete it</label>
                 <input style={INPUT} value={typedName} onChange={e => setTypedName(e.target.value)} autoComplete="off" aria-label={`Type ${row.name} to confirm`} /></div>
               <div className="flex items-center gap-2 flex-wrap">

@@ -36,7 +36,7 @@ interface TokenRow {
   pluginSettingsGrantedBy?: string | null
 }
 
-const PLUGIN_BADGE = 'Can save plug-in settings without your master password'
+const PLUGIN_BADGE = 'Can save plug-in settings without a confirmation'
 
 const TOKEN_ROLES: Role[] = ['viewer', 'operator', 'admin']
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -155,7 +155,7 @@ function PluginSettingsModal({ row, onConfirm, onClose }: { row: TokenRow; onCon
           <>
             <Notice kind="warn">
               Anyone holding this token can change plug-in connections and their credentials (addresses, API keys,
-              passwords), without your master password.
+              passwords), without a confirmation.
             </Notice>
             <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
               Only plug-in settings, and adding or changing a backup server (by its token), a Home Assistant house or a
@@ -166,7 +166,7 @@ function PluginSettingsModal({ row, onConfirm, onClose }: { row: TokenRow; onCon
           </>
         ) : (
           <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
-            From the next request, this token needs a person&apos;s master password again to save plug-in settings, so it cannot.
+            From the next request, this token needs a person&apos;s confirmation again to save plug-in settings, so it cannot.
           </p>
         )}
         <div className="flex gap-2 justify-end">
@@ -297,7 +297,7 @@ export default function ApiTokensPage() {
                   <div className={ss.acts}>
                     {isOwner && (r.pluginSettingsWithoutReconfirm || (r.state === 'active' && r.role === 'admin')) && (
                       <button type="button" onClick={() => setScoping(r)} className={ss.mini}
-                              aria-label={`${r.pluginSettingsWithoutReconfirm ? 'Stop' : 'Allow'} ${r.name} saving plug-in settings without your master password`}>
+                              aria-label={`${r.pluginSettingsWithoutReconfirm ? 'Stop' : 'Allow'} ${r.name} saving plug-in settings without a confirmation`}>
                         {r.pluginSettingsWithoutReconfirm ? 'Stop plug-in settings' : 'Allow plug-in settings'}
                       </button>
                     )}
