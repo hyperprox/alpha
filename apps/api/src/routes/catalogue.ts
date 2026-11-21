@@ -14,7 +14,7 @@ import { CATALOGUE, CATEGORY_LABELS, findRecipe } from '../lib/catalogue'
 import {
   getInstallJob, readAdminCredential, previewInstall, applyPreview, removeFailedInstall, getPreview, cleanupCandidates,
   wizardView, identityView, placementFor, spreadNodes, nextIdOf, checkIdentity, readVmidRule, saveVmidRule, WizardRefusal, finishSeerr, seerrWaiting,
-  transcodeHardware, readNamingSettings, saveNamingSettings, detectFromView, proposeFor, readLiveAddresses, notePartial,
+  transcodeHardware, homeAssistantUsb, readNamingSettings, saveNamingSettings, detectFromView, proposeFor, readLiveAddresses, notePartial,
   type InstallJob, type WizardDeps, type WizardInput,
 } from '../lib/catalogue-installer'
 import { parseCidr } from '../lib/wizard-placement'
@@ -143,8 +143,10 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       stack: r.stack ?? null,
       sizes: r.sizes ?? null,
       pointNetwork: Boolean(r.pointNetwork),
-      // The words people search for that the name does not hold.
+      // The words people search for, and whether the wizard offers a public name; a virtual machine says so.
       keywords: r.keywords ?? [],
+      publishable: Boolean(r.publishable),
+      vm: r.install.kind === 'vm',
       // A recipe whose integration already has an address is not offered as a
       // fix for a problem the user does not have.
       installedAt,
@@ -410,6 +412,15 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
     const nas = (storages ?? []).filter((x: any) => x?.type === 'nfs' && typeof x.server === 'string' && typeof x.export === 'string')
       .map((x: any) => ({ storage: String(x.storage), server: String(x.server), export: String(x.export) }))
     return reply.send({ success: true, data: { nas, unmanicUrl: unmanic.url || null } })
+  })
+
+  // GET /wizard/homeassistant/usb?node= — the USB devices plugged into that node (read-only), for passing a stick in.
+  fastify.get<{ Querystring: { node?: string } }>('/wizard/homeassistant/usb', async (req, reply) => {
+    if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot look at a node\'s USB devices.' })
+    const node = String(req.query.node ?? '')
+    if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/.test(node)) return reply.status(400).send({ success: false, error: 'node is required' })
+    try { return reply.send({ success: true, data: await homeAssistantUsb(node, deps.wizard) }) }
+    catch (e: any) { return sendFailure(req, reply, e, 'Could not look at that node.', { status: 502 }) }
   })
 
   // GET /wizard/transcode/hardware?node= — what that node can give a transcoder, from a read-only look at it

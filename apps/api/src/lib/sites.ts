@@ -254,7 +254,7 @@ export async function runPublish(
   const host = await d.proxy.createHost(plan.instanceId, {
     domains: [plan.domain], forwardScheme: 'http', forwardHost: ip, forwardPort: recipe.port, enabled: true, websockets: true,
     npm: { certificate_id: false, ssl_forced: false, block_exploits: true, http2_support: false, hsts_enabled: false,
-      hsts_subdomains: false, caching_enabled: false, advanced_config: '' },
+      hsts_subdomains: false, caching_enabled: false, advanced_config: recipe.proxyAdvanced ?? '' },
   } as HostSpec, actor)
   ledger.proxyHost = { instanceId: plan.instanceId, hostId: String(host.hostId) }
   hooks.save()

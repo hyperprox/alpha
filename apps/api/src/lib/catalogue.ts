@@ -31,6 +31,9 @@ import { THREEPROXY_RECIPE } from './fwdproxy/recipes'
 import { K3S_RECIPES } from './k3s/recipe'
 import { APTCACHE_RECIPE } from './aptcache/recipe'
 import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
+import { IMMICH_RECIPE } from './immich/recipe'
+import { OPENWEBUI_RECIPE } from './openwebui/recipe'
+import { HA_RECIPE } from './homeassistant/recipe'
 import { HAPROXY_SCRIPT, HAPROXY_RECIPE_ID, HAPROXY_VERSION, HAPROXY_LINE, DATAPLANE_VERSION, METRICS_PORT } from './haproxy/recipe'
 
 /** What a person does the first time they open the service. */
@@ -70,6 +73,15 @@ export interface RecipeOption {
   max?:      number
   maxLength?: number
   placeholder?: string
+  /**
+   * A fixed list of answers (the wizard shows a menu). Any other value is refused. A choice the node cannot honour
+   * (a graphics card it does not have) is refused by the recipe's own preview, never changed quietly.
+   */
+  choices?: Array<{ value: string; label: string }>
+  /** Set by the recipe's own preview, never by the person: the wizard does not ask for it, and a request's value is ignored. */
+  hidden?: boolean
+  /** Asked only while another option has one of these values (the NAS address while "a NAS" is chosen). */
+  showWhen?: { key: string; value: string | string[] }
 }
 
 export interface CatalogueRecipe {
@@ -119,6 +131,8 @@ export interface CatalogueRecipe {
   install:
     | { kind: 'compose'; dir: string; compose: string }
     | { kind: 'script'; script: string }
+    /** A virtual machine made from a vendor disk image, not a container (lib/homeassistant/vm.ts). Never run as a script. */
+    | { kind: 'vm' }
   /** Extra packages on top of DOCKER_PACKAGES, by distro. */
   packages?:   Partial<Record<Distro, string[]>>
   /**
@@ -146,7 +160,19 @@ export interface CatalogueRecipe {
    * the K3s page connected) replaces the check and the wiring. The package cache's (lib/aptcache/setup.ts) replaces the
    * generic check with its own self-check, on a cache disk of its own.
    */
-  setup?:      'pbs' | 'ghost' | 'haproxy' | 'fwdproxy' | 'k3s' | 'aptcache'
+  setup?:      'pbs' | 'ghost' | 'haproxy' | 'fwdproxy' | 'k3s' | 'aptcache' | 'immich' | 'openwebui' | 'homeassistant'
+  /**
+   * Words people search for that the name does not hold ("google photos" for Immich). The Catalogue page's search reads
+   * these with the name and the summary.
+   */
+  keywords?:   string[]
+  /**
+   * The install wizard offers a public name for this app: HyperProx makes the DNS record, the proxy host and the
+   * certificate with the same helpers the Websites wizard uses. Off by default: the app is then on the network only.
+   */
+  publishable?: boolean
+  /** Extra proxy settings for the public name (nginx advanced config), such as no upload limit for a photo server. */
+  proxyAdvanced?: string
   /**
    * Words people search for that the name does not hold ("google photos" for Immich). The Catalogue page's search reads
    * these with the name and the summary.
@@ -1017,6 +1043,10 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     setup: 'ghost',
     install: { kind: 'script', script: GHOST_SCRIPT },
   },
+  // ── Added 2026-11: a smart home, a photo library and a chat page for local models ──
+  HA_RECIPE,
+  IMMICH_RECIPE,
+  OPENWEBUI_RECIPE,
 ]
 
 /** The category names the pages show. */
@@ -1070,6 +1100,7 @@ export function checkOptions(recipe: CatalogueRecipe, raw: unknown): { values: R
       }
       case 'boolean':  if (v !== '1' && v !== '0') { bad('yes or no.'); continue } break
     }
+    if (o.choices && !o.choices.some(c => c.value === v)) { bad(`pick one of: ${o.choices.map(c => c.label).join(', ')}.`); continue }
     values[o.key] = v
   }
   if (!errors.length && recipe.checkOptions) errors.push(...recipe.checkOptions(values))

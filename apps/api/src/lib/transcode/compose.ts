@@ -158,6 +158,37 @@ export function composeFile(i: ComposeInput): string {
 }
 
 /**
+ * The NVIDIA part of an install script, shared by the apps that run Docker with a card: the node's driver stays the node's, only the
+ * user-space libraries are matched here, to exactly its version, and the container toolkit is set up. It reads TC_ACCEL, TC_NVIDIA_VERSION
+ * and TC_NVIDIA_SHA256, and does nothing unless TC_ACCEL is nvidia.
+ */
+export const NVIDIA_USERLAND_SCRIPT = String.raw`# NVIDIA: the node's driver is the node's. Only the user-space libraries are matched here, to exactly its version.
+if [ "$TC_ACCEL" = nvidia ]; then
+  apt-get install -y -qq gnupg kmod
+  if ! nvidia-smi -L >/dev/null 2>&1; then
+    n=0
+    until curl -fsSL -o /tmp/nvidia.run "https://download.nvidia.com/XFree86/Linux-x86_64/$TC_NVIDIA_VERSION/NVIDIA-Linux-x86_64-$TC_NVIDIA_VERSION.run"; do
+      n=$((n + 1)); [ "$n" -ge 3 ] && { echo "Could not download NVIDIA's libraries for version $TC_NVIDIA_VERSION." >&2; exit 7; }
+      sleep 10
+    done
+    # The installer runs as root: only the exact file whose hash is pinned in HyperProx is run.
+    echo "$TC_NVIDIA_SHA256  /tmp/nvidia.run" | sha256sum -c - || { rm -f /tmp/nvidia.run; echo "checksum mismatch" >&2; exit 7; }
+    sh /tmp/nvidia.run --silent --no-kernel-module --no-kernel-module-source --no-drm --no-x-check --no-nouveau-check --no-install-compat32-libs || { echo "NVIDIA's libraries did not install." >&2; exit 7; }
+    rm -f /tmp/nvidia.run
+  fi
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+  apt-get update -qq
+  apt-get install -y -qq nvidia-container-toolkit
+  nvidia-ctk runtime configure --runtime=docker
+  # In a container the device cgroups belong to the node, not to Docker.
+  sed -i 's/^#\?no-cgroups *=.*/no-cgroups = true/' /etc/nvidia-container-runtime/config.toml
+  systemctl restart docker
+  nvidia-smi -L >/dev/null || { echo "The NVIDIA card does not answer inside the container (driver $TC_NVIDIA_VERSION)." >&2; exit 7; }
+fi`
+
+/**
  * The install script. Every value arrives as an exported variable: the compose file base64 encoded (so nothing in
  * it is ever read as shell). It prints no secret because there is none: neither app takes a login here.
  */
@@ -190,31 +221,7 @@ mkdir -p "$TC_APP_DIR" && cd "$TC_APP_DIR"
 for d in $TC_SUBDIRS; do mkdir -p "$d"; done
 chown -R $TC_PUID:$TC_PGID $TC_SUBDIRS
 
-# NVIDIA: the node's driver is the node's. Only the user-space libraries are matched here, to exactly its version.
-if [ "$TC_ACCEL" = nvidia ]; then
-  apt-get install -y -qq gnupg kmod
-  if ! nvidia-smi -L >/dev/null 2>&1; then
-    n=0
-    until curl -fsSL -o /tmp/nvidia.run "https://download.nvidia.com/XFree86/Linux-x86_64/$TC_NVIDIA_VERSION/NVIDIA-Linux-x86_64-$TC_NVIDIA_VERSION.run"; do
-      n=$((n + 1)); [ "$n" -ge 3 ] && { echo "Could not download NVIDIA's libraries for version $TC_NVIDIA_VERSION." >&2; exit 7; }
-      sleep 10
-    done
-    # The installer runs as root: only the exact file whose hash is pinned in HyperProx is run.
-    echo "$TC_NVIDIA_SHA256  /tmp/nvidia.run" | sha256sum -c - || { rm -f /tmp/nvidia.run; echo "checksum mismatch" >&2; exit 7; }
-    sh /tmp/nvidia.run --silent --no-kernel-module --no-kernel-module-source --no-drm --no-x-check --no-nouveau-check --no-install-compat32-libs || { echo "NVIDIA's libraries did not install." >&2; exit 7; }
-    rm -f /tmp/nvidia.run
-  fi
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list
-  apt-get update -qq
-  apt-get install -y -qq nvidia-container-toolkit
-  nvidia-ctk runtime configure --runtime=docker
-  # In a container the device cgroups belong to the node, not to Docker.
-  sed -i 's/^#\?no-cgroups *=.*/no-cgroups = true/' /etc/nvidia-container-runtime/config.toml
-  systemctl restart docker
-  nvidia-smi -L >/dev/null || { echo "The NVIDIA card does not answer inside the container (driver $TC_NVIDIA_VERSION)." >&2; exit 7; }
-fi
+${NVIDIA_USERLAND_SCRIPT}
 
 printf '%s' "$TC_COMPOSE_B64" | base64 -d > docker-compose.yml
 { printf "TZ='%s'\n" "$(cat /etc/timezone 2>/dev/null || echo Etc/UTC)"; } > .env

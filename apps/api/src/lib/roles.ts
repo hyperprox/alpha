@@ -266,6 +266,11 @@ const FWDPROXY_RECONFIRM = /^\/api\/plugins\/3proxy\/proxies\/[^/]+\/(users(\/[^
 // it); its gallery card (/api/plugins/apt-cacher-ng/data) stays a viewer read. Who may use it, Updates' "Use the package
 // cache" and writing or removing the setting on every guest are also re-confirmed.
 const APTCACHE = /^\/api\/plugins\/apt-cacher-ng\/(caches|use|guests)(\/|$)/
+// Immich and Open WebUI (routes/immich.ts, routes/openwebui.ts): admin for every method, reads included (the overview names
+// Immich's users and what each stores); each gallery card (/api/plugins/<id>/data) stays a viewer read. Every fix is
+// confirmed on the page and audited by the route before it runs.
+const APP_PLUGINS = /^\/api\/plugins\/(immich|openwebui)\/(overview|actions)$/
+const APP_PLUGINS_FIX = /^\/api\/plugins\/(immich|openwebui)\/actions$/
 const APTCACHE_RECONFIRM = /^\/api\/plugins\/apt-cacher-ng\/(caches\/[^/]+\/settings|use|guests\/(repair|remove))$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
@@ -450,6 +455,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (FWDPROXY.test(p)) return 'admin'
   if ((m === 'GET' || m === 'HEAD') && FWDPROXY_ADMIN_READ.test(p)) return 'admin'
   if (APTCACHE.test(p)) return 'admin'
+  if (APP_PLUGINS.test(p)) return 'admin'
   if (AUTO_CONNECT.test(p)) return 'admin'
   if (REMOVED_GUESTS.test(p)) return 'admin'
   if (CATALOGUE_DETECTED.test(p)) return 'admin'
@@ -577,6 +583,7 @@ export function needsConfirm(method: string, path: string, opts: { tokenPluginSc
   if (HOMEPAGE_RECONFIRM.test(p)) return true
   if (FWDPROXY_RECONFIRM.test(p)) return true
   if (APTCACHE_RECONFIRM.test(p)) return true
+  if (APP_PLUGINS_FIX.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   // Disconnecting a plug-in deletes its vault item (every key it had).
   if (m === 'DELETE' && PLUGIN_SETTINGS.test(p)) return true

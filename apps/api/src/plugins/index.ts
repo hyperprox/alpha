@@ -26,6 +26,8 @@ import { piholePlugin, adguardPlugin } from './dns-blocker'
 import { threeProxyPlugin } from './threeproxy'
 import { k3sPlugin }      from './k3s'
 import { aptCachePlugin } from './apt-cache'
+import { immichPlugin }   from './immich'
+import { openWebuiPlugin } from './openwebui'
 
 export const PLUGINS: Plugin[] = [
   arrstackPlugin,
@@ -48,6 +50,8 @@ export const PLUGINS: Plugin[] = [
   threeProxyPlugin,
   k3sPlugin,
   aptCachePlugin,
+  immichPlugin,
+  openWebuiPlugin,
 ]
 
 export function findPlugin(id: string): Plugin | undefined {

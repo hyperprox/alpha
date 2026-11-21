@@ -46,6 +46,7 @@ export function hostEnv(r: CatalogueRecipe, at: { ip?: string; domain?: string }
 }
 
 export function installScript(r: CatalogueRecipe, distro: Distro, env: Record<string, string> = {}): string {
+  if (r.install.kind === 'vm') throw new Error(`${r.name} is a virtual machine, not a container, so it has no install script.`)
   for (const k of Object.keys(env)) if (!ENV_KEY.test(k)) throw new Error(`Invalid environment variable name "${k}"`)
   const lines: string[] = ['set -e', 'export DEBIAN_FRONTEND=noninteractive']
 
@@ -101,6 +102,7 @@ export function installScript(r: CatalogueRecipe, distro: Distro, env: Record<st
 
 /** The same install as commands a person can run by hand. Secrets in `env` are never printed. */
 export function manualCommands(r: CatalogueRecipe, distro: Distro): string[] {
+  if (r.install.kind === 'vm') return [`# ${r.name} is a virtual machine: HyperProx makes it from the vendor's disk image. There are no commands to run by hand.`]
   const out = ['# Run these commands inside the container:']
   const pkgs = packagesFor(r, distro)
   if (r.install.kind === 'script') {

@@ -60,6 +60,18 @@ import { isK3s, k3sPrepare, k3sPreview, k3sInstallEnv, k3sRunSetup, k3sSteps } f
 import type { K3sService } from './k3s/service'
 import { k3sService } from './k3s'
 import { APTCACHE_SETUP_STEPS, runAptCacheSetup } from './aptcache/setup'
+import { IMMICH_SETUP_STEPS, immichScriptEnv, accelOf } from './immich/recipe'
+import { immichPreview, immichPrepare } from './immich/preview'
+import { runImmichSetup } from './immich/setup'
+import { OPENWEBUI_SETUP_STEPS } from './openwebui/recipe'
+import { openwebuiPreview } from './openwebui/preview'
+import { runOpenWebuiSetup } from './openwebui/setup'
+import { HA_SETUP_STEPS, usbList } from './homeassistant/recipe'
+import { createHaVm, imageFor, runHaSetup, type HaSetupDeps } from './homeassistant/job'
+import { haSocket } from './homeassistant/ws'
+import { HAVM_USB_SCRIPT, parseUsb } from './homeassistant/usb'
+import { InstanceStore as HaInstanceStore } from './ha-control/instances'
+import { deleteCredential } from './credentials'
 import { isPrivateV4 as aptCachePrivate } from './aptcache/net'
 import { DEFAULT_CACHE_GB } from './aptcache/recipe'
 import {
@@ -144,6 +156,12 @@ export interface InstallJob {
   hostname?: string
   /** A NAS datastore this job mounted on the container's node (Proxmox Backup Server); clean-up unmounts it. */
   hostMount?: { node: string; vmid: number }
+  /** 'vm': what this job made is a virtual machine (Home Assistant OS), so clean-up uses the machine's API, not the container's. */
+  guest?: 'vm'
+  /** The plug-in this install connected by itself, so clean-up can disconnect it again (Immich, Open WebUI: its settings; Home Assistant: the instance it added). */
+  connected?: { plugin: string; instanceId?: string }
+  /** Home Assistant: what happened with the proxy's trust (the lines to add by hand when HyperProx could not), for the finished page. */
+  haTrustNote?: string
 }
 
 const JOBS = new Map<string, InstallJob>()
@@ -196,6 +214,40 @@ export interface InstallDeps {
   k3s?:        () => K3sService
   /** The package cache's plug-in connects the new container (auto-connect, at once); true when it did. */
   aptCacheConnect?: (vmid: number) => Promise<boolean>
+  /** Home Assistant's reach beyond the generic installer's: its WebSocket, its plug-in, the machine's files, the node's time zone. */
+  ha?: () => HaDeps
+  /** The Ollama address the AI page is connected to (Open WebUI is pointed at it), or null. */
+  knownOllama?: () => Promise<string | null>
+}
+
+/** What Home Assistant's install reaches outside itself for. */
+export interface HaDeps {
+  socket: HaSetupDeps['socket']
+  connect: HaSetupDeps['connect']
+  agentFile?: HaSetupDeps['agentFile']
+  timeZone(node: string): Promise<string>
+}
+
+function realHaDeps(): HaDeps {
+  const store = () => new HaInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials })
+  const enc = encodeURIComponent
+  return {
+    socket: (ip, token) => haSocket(ip, 8123, token),
+    connect: async o => {
+      const st = store()
+      try { const m = await st.create({ name: o.name, url: o.url, token: o.token }); return { id: m.id, name: m.name } }
+      catch (e: any) {
+        // Another instance already has the name: this one is told apart by its machine.
+        if (e?.status === 409) { const m = await st.create({ name: `${o.name.slice(0, 30)} (HyperProx)`, url: o.url, token: o.token }); return { id: m.id, name: m.name } }
+        throw e
+      }
+    },
+    agentFile: {
+      read: async (node, vmid, path) => String((await pve().fetchStrict<any>(`/nodes/${enc(node)}/qemu/${vmid}/agent/file-read?file=${enc(path)}`))?.content ?? ''),
+      write: async (node, vmid, path, content) => { await pve().fetchStrict(`/nodes/${enc(node)}/qemu/${vmid}/agent/file-write`, 'POST', new URLSearchParams({ file: path, content }).toString()) },
+    },
+    timeZone: async node => String((await pve().fetchStrict<any>(`/nodes/${enc(node)}/time`))?.timezone ?? 'UTC'),
+  }
 }
 
 /** HAProxy's setup as it runs for real: the Proxy service, the plug-in's store, the audit log and Prometheus. */
@@ -213,6 +265,8 @@ function realHaproxySetupDeps(): HaproxySetupDeps {
 }
 
 const realDeps = (): InstallDeps => ({
+  ha:         realHaDeps,
+  knownOllama: () => getCredential('ai', 'ollama', 'url').catch(() => null),
   client:     pve(),
   credential: node => nodeCredential(node),
   exec:       o => execInGuest(o),
@@ -441,7 +495,11 @@ async function preflight(d: InstallDeps, intoVmid: number): Promise<{ node: stri
   return { node: g.node, vmid: Number(g.vmid) }
 }
 
-const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan, balance?: boolean): InstallStep[] => [
+const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan, balance?: boolean): InstallStep[] => recipe.install.kind === 'vm' ? [
+  { id: 'container', label: first, status: 'pending' },
+  ...HA_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase })),
+  ...(publish ? PUBLISH_STEPS.map(s => ({ id: s.id, label: s.label, status: 'pending' as Phase })) : []),
+] : [
   { id: 'container', label: first, status: 'pending' },
   { id: 'network',   label: 'Wait for an address',   status: 'pending' },
   { id: 'install',   label: `Install ${recipe.name}`, status: 'pending' },
@@ -453,6 +511,8 @@ const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan, ba
     { id: 'verify',    label: 'Check it answers',       status: 'pending' as Phase },
     // HAProxy's own setup takes the place of the generic wiring.
     ...(recipe.setup === 'haproxy' ? HAPROXY_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase }))
+      : recipe.setup === 'immich' ? IMMICH_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase }))
+      : recipe.setup === 'openwebui' ? OPENWEBUI_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase }))
       : [{ id: 'wire',      label: 'Configure the integration', status: 'pending' as Phase }]),
     ...(recipe.registersProxy ? [{ id: 'proxy', label: 'Add it to the Proxy page', status: 'pending' as Phase }] : []),
     ...(balance && recipe.setup === 'haproxy' ? [{ ...BALANCE_STEP, status: 'pending' as Phase }] : []),
@@ -607,6 +667,10 @@ async function runJob(
     const proxySecret = recipe.registersProxy ? managedSecret() : ''
     if (proxySecret) env.HPX_PROXY_SECRET = proxySecret
     if (tc) Object.assign(env, tcInstallEnv(tc, { options, groups: job.tcGroups ?? [], ip: job.ip ?? '', hostname: job.hostname ?? recipe.id }))
+    // Immich: the compose file for the hardware the node was found to have, and its private database password.
+    if (recipe.setup === 'immich') {
+      Object.assign(env, immichScriptEnv({ accel: accelOf(options), groups: job.tcGroups ?? [], intel: options.IMMICH_INTEL === '1', nvidiaVersion: options.TC_NVIDIA_VERSION || undefined }))
+    }
     // K3s: the server's own address for its certificate; an agent's server and join token (from the vault, into the script only).
     if (isK3s(recipe)) {
       if (!deps.k3s) throw new Error('The K3s page is not available here.')
@@ -769,6 +833,30 @@ async function runJob(
       s4.detail = 'no address to check'
     }
 
+    // Immich and Open WebUI: the administrator, HyperProx's own key, the plug-in and the checks, over the container's own address.
+    const appSetup = recipe.setup === 'immich' || recipe.setup === 'openwebui'
+    if (appSetup) {
+      const arr = deps.arr?.()
+      if (!job.ip || !admin || !job.vaultItem || !arr) throw new Error(`${recipe.name} needs its address, its generated login and the vault to be set up.`)
+      const sd = { http: arr.http, wait: deps.wait, saveSecrets: deps.saveSecrets, savePluginSettings: arr.savePluginSettings, pluginSettings: arr.pluginSettings }
+      const vault = { category: job.vaultItem.category, provider: job.vaultItem.provider }
+      const ip = job.ip.split('/')[0]
+      if (recipe.setup === 'immich') {
+        const out = await runImmichSetup({ ip, admin: { email: admin.user, name: options.IMMICH_ADMIN_NAME || 'Administrator', password: admin.password }, ffmpeg: (options.IMMICH_FFMPEG as any) || 'disabled', vault }, id => step(job, id), sd)
+        if (out.connected) job.connected = { plugin: 'immich' }
+      } else {
+        const out = await runOpenWebuiSetup({ ip, admin: { email: admin.user, password: admin.password }, ollama: options.OWUI_OLLAMA_ENABLED === '1', vault }, id => step(job, id), sd)
+        if (out.connected) job.connected = { plugin: 'openwebui' }
+        // No Ollama to use yet: the finished page offers to install one, and the plug-in connects it once it is there.
+        if (options.OWUI_OLLAMA === 'auto' && options.OWUI_OLLAMA_ENABLED !== '1') {
+          job.tcFollowUp = { recipeId: 'ollama', label: 'Install Ollama next', url: '', options: {} }
+        }
+      }
+      // The setup waited for the service far longer than the quick check above did.
+      if (s4.status !== 'done') { s4.status = 'done'; s4.detail = `${url}${recipe.healthPath} is answering` }
+      await persistJob(job).catch(e => persistFailed(job, e))
+    }
+
     // 5. Hand it to whatever was waiting for it. HAProxy: the Proxy page, its plug-in and Prometheus.
     if (recipe.setup === 'haproxy') {
       if (s4.status !== 'done' || !job.ip || !haproxySecret) throw new Error('HAProxy did not answer on port 80, so it was not added to the Proxy page or the plug-in. Its Data Plane password is in the vault under ' + `apps/${recipe.id}-${job.vmid}.`)
@@ -789,7 +877,7 @@ async function runJob(
           })
         if (lb.url) job.url = lb.url
       }
-    } else {
+    } else if (!appSetup) {
       const s5 = step(job, 'wire')
       s5.detail = url ? await wireUp(recipe, url) : 'no address, so nothing was configured'
       s5.status = url ? 'done' : 'skipped'
@@ -953,6 +1041,8 @@ export interface InstallPlan {
   arrPublish?: ArrPublishPlan[]
   /** HAProxy's optional step: the app to load-balance once it is installed, exactly as checked. */
   balance?: InstallBalance
+  /** Open WebUI with no Ollama to use: the finished page offers to install one next. */
+  offerOllama?: boolean
   unprivileged: true
 }
 
@@ -1410,12 +1500,12 @@ export function checkPlan(
     if (view.partial.includes(`storage:${node.node}`)) errors.push(`HyperProx could not read the storage on ${node.node}.`)
     const s = view.storages.find(x => x.node === node.node && x.storage === input.storage)
     if (!s) errors.push(`${input.storage || 'No storage'} is not a storage on ${node.node}.`)
-    else if (ROOTFS_EXCLUDED[s.type]) errors.push(`${s.storage}: ${ROOTFS_EXCLUDED[s.type]}`)
-    else if (!s.active || !s.content.includes('rootdir')) errors.push(`${s.storage} on ${node.node} cannot hold containers.`)
+    else if (recipe.install.kind !== 'vm' && ROOTFS_EXCLUDED[s.type]) errors.push(`${s.storage}: ${ROOTFS_EXCLUDED[s.type]}`)
+    else if (!s.active || !s.content.includes(recipe.install.kind === 'vm' ? 'images' : 'rootdir')) errors.push(`${s.storage} on ${node.node} cannot hold ${recipe.install.kind === 'vm' ? 'virtual machine disks' : 'containers'}.`)
     else if (int(input.diskGb) && s.freeGb < Math.ceil(input.diskGb * 1.2)) errors.push(`${s.storage} has ${s.freeGb} GB free; this needs ${Math.ceil(input.diskGb * 1.2)} GB.`)
     else {
       checks.push(`${s.storage} (${s.shared ? 'shared' : 'local'}, ${s.type}) has ${s.freeGb} GB free.`)
-      if (!s.shared) warnings.push(`${s.storage} is local to ${node.node}: HA cannot start this container on another node.`)
+      if (!s.shared) warnings.push(`${s.storage} is local to ${node.node}: HA cannot start this ${recipe.install.kind === 'vm' ? 'machine' : 'container'} on another node.`)
     }
   }
 
@@ -1563,9 +1653,32 @@ export async function previewInstall(
     // The reference is the preview's own, or empty: one sent in the request is never used.
     input = { ...input, options: g?.options ?? { ...o.values, GHOST_SMTP_REF: '' } }
   }
+  // Immich: the node's hardware and the photo library, looked at from the node.
+  let offerOllama = false
+  if (recipe.setup === 'immich' && !r.errors.length) {
+    const o = checkOptions(recipe, input.options)
+    const ip = await immichPreview({
+      node: input.node, vmid: input.vmid, storage: input.storage, diskGb: input.diskGb, values: o.values,
+      storageFreeGb: view.storages.find(x => x.node === input.node && x.storage === input.storage)?.freeGb,
+    }, deps)
+    r.errors.push(...ip.errors); r.warnings.push(...ip.warnings); r.checks.push(...ip.checks); input = { ...input, options: ip.options }
+  }
+  // Open WebUI: which Ollama it is pointed at, asked to list its models before anything is made.
+  if (recipe.setup === 'openwebui' && !r.errors.length) {
+    const o = checkOptions(recipe, input.options)
+    const arr = deps.arr?.()
+    const op = await openwebuiPreview(o.values, { http: arr?.http ?? (async () => { throw new Error('no http') }), knownOllama: deps.knownOllama ?? (async () => null) })
+    r.errors.push(...op.errors); r.warnings.push(...op.warnings); r.checks.push(...op.checks); input = { ...input, options: op.options }
+    offerOllama = op.offerOllama
+  }
+  // Home Assistant OS: the processor decides the image, the USB devices must be plugged into the node, the node needs room to unpack it.
+  if (recipe.setup === 'homeassistant' && !r.errors.length) {
+    const hp = await haPreview(input, recipe, deps)
+    r.errors.push(...hp.errors); r.warnings.push(...hp.warnings); r.checks.push(...hp.checks)
+  }
   let publish: PublishPlan | undefined
   if (input.publish) {
-    if (recipe.category !== 'web' && recipe.category !== 'network') r.errors.push(`${recipe.name} is not published by the wizard; only websites are.`)
+    if (recipe.category !== 'web' && recipe.category !== 'network' && !recipe.publishable) r.errors.push(`${recipe.name} is not published by the wizard; only websites are.`)
     else {
       const pp = await planPublish(input.publish, deps.publish)
       r.errors.push(...pp.errors); r.warnings.push(...pp.warnings); r.checks.push(...pp.checks)
@@ -1589,10 +1702,14 @@ export async function previewInstall(
     r.errors.push(...pc.errors); r.warnings.push(...pc.warnings); r.checks.push(...pc.checks)
   }
   if (r.errors.length) return r
-  const t = await resolveTemplate(deps.client, input.node, view)
+  // A virtual machine is made from the vendor's image, not a container template.
+  const isVm = recipe.install.kind === 'vm'
+  const vmImage = isVm ? imageFor(archOfKernel((await deps.client.fetchStrict<any>(`/nodes/${encodeURIComponent(input.node)}/status`).catch(() => null))?.['current-kernel']?.machine) || 'amd64') : null
+  if (isVm && !vmImage) return { ...r, errors: [`${input.node} is not an x86 machine, and HyperProx makes Home Assistant OS machines for x86 only.`] }
+  const t = isVm ? { template: vmImage!.file, download: false } : await resolveTemplate(deps.client, input.node, view)
   if ('error' in t) return { ...r, errors: [t.error] }
   if (t.download) r.warnings.push(`The template ${t.template.split('/').pop()} is downloaded to ${input.node} first.`)
-  r.checks.push(`Created from ${t.template.split('/').pop()}.`)
+  r.checks.push(isVm ? `Created from the official ${t.template}, checked against its published SHA-256.` : `Created from ${t.template.split('/').pop()}.`)
 
   const preview: Preview = {
     id: randomUUID(), owner, checks: r.checks, warnings: r.warnings, createdAt: now, expiresAt: now + PREVIEW_TTL_MS, used: false,
@@ -1610,6 +1727,7 @@ export async function previewInstall(
       ...(balance ? { balance } : {}),
       ...(arr?.publish?.length ? { arrPublish: arr.publish } : {}),
       template: t.template, ...(t.download ? { downloadTemplate: true } : {}), unprivileged: true,
+      ...(offerOllama ? { offerOllama: true } : {}),
     },
   }
   await store.put({ id: preview.id, kind: 'preview', owner, data: preview, expiresAt: new Date(preview.expiresAt) })
@@ -1685,8 +1803,10 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     }
     CREATING.add(plan.vmid)
 
-    const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`, plan.publish, !!plan.balance)
+    const isVm = recipe.install.kind === 'vm'
+    const job = newJob(recipe, owner, `Create ${isVm ? 'VM' : 'CT'} ${plan.vmid} (${plan.hostname}) on ${plan.node}`, plan.publish, !!plan.balance)
     job.vmid = plan.vmid; job.node = plan.node; job.hostname = plan.hostname
+    if (isVm) job.guest = 'vm'
     if (recipe.stack === 'arr') job.steps = arrJobSteps(job.steps, plan.options ?? {}, plan.arrPublish)
     if (isTranscode(recipe)) job.steps = tcJobSteps(job.steps, kindOf(recipe.id))
     const markId = `creating:${plan.vmid}`
@@ -1699,6 +1819,16 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       CREATING.delete(plan.vmid)
       JOBS.delete(job.jobId)
       throw new WizardRefusal(`HyperProx could not record the install, so nothing was created: ${e.message}`, 'changed')
+    }
+    const settle = async () => {
+      // Held until the whole job settles, not just the create: an apply that read the cluster before this
+      // container showed up must still be refused.
+      CREATING.delete(plan.vmid)
+      await store.delete(markId).catch(e => installerLog.warn({ err: e }, 'could not remove an install create mark'))
+    }
+    if (isVm) {
+      void runVmJob(job, recipe, deps, plan, settle)
+      return job
     }
     void runJob(job, recipe, deps, async () => {
       await createFromPlan(plan, recipe, job.jobId, deps.client, () => { job.created = true; void persistJob(job).catch(e => persistFailed(job, e)) })
@@ -1722,15 +1852,17 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
         await persistJob(job).catch(e => persistFailed(job, e))
         await waitRunning(deps, plan.node, plan.vmid)
       }
+      if (recipe.setup === 'immich') {
+        // keyctl, the hardware devices and the photo library, which an API token cannot set; then it starts again.
+        const prep = await immichPrepare(plan, { ...deps, arr: deps.arr, client: deps.client }, async () => { job.arrHostMount = { node: plan.node, vmid: plan.vmid }; await persistJob(job).catch(e => persistFailed(job, e)) })
+        job.tcPrepared = prep.detail; job.tcGroups = prep.groups
+        await persistJob(job).catch(e => persistFailed(job, e))
+        await waitRunning(deps, plan.node, plan.vmid)
+      }
       const distro = distroOf(plan.template)
       if (!distro) throw new Error(`${plan.template} is neither Debian nor Ubuntu.`)
       return { distro, ...(plan.ip !== 'dhcp' ? { ip: parseCidr(plan.ip)!.ip } : {}) }
-    }, async () => {
-      // Held until the whole job settles, not just the create: an apply that read the cluster before this
-      // container showed up must still be refused.
-      CREATING.delete(plan.vmid)
-      await store.delete(markId).catch(e => installerLog.warn({ err: e }, 'could not remove an install create mark'))
-    }, { options: plan.options ?? {}, publish: plan.publish, arrPublish: plan.arrPublish, balance: plan.balance })
+    }, settle, { options: plan.options ?? {}, publish: plan.publish, arrPublish: plan.arrPublish, balance: plan.balance })
     return job
   } finally {
     APPLYING.delete(id)
@@ -1798,28 +1930,30 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   if (job.status !== 'failed' && job.status !== 'interrupted') throw new WizardRefusal('Only a failed or interrupted install can be cleaned up.', 'changed')
   if (job.removed) throw new WizardRefusal('Its container was already removed.', 'used')
   if (!job.created || !job.vmid || !job.node) throw new WizardRefusal('This install did not create a container, so there is nothing of its own to remove.', 'changed')
-  const base = `/nodes/${enc(job.node)}/lxc/${job.vmid}`
+  const isVm = job.guest === 'vm'
+  const kind = isVm ? 'VM' : 'CT'
+  const base = `/nodes/${enc(job.node)}/${isVm ? 'qemu' : 'lxc'}/${job.vmid}`
   // A create whose task failed is usually rolled back by Proxmox itself; then there is nothing to remove.
   const listed = await deps.client.fetchStrict<any[]>('/cluster/resources?type=vm')
   const here = (listed ?? []).find((r: any) => Number(r?.vmid) === job.vmid)
   if (!here) {
     job.removed = true
-    const msg = `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removePublished(job, deps)}${await removeHostMount(job, deps)}${await removeVaultItem(job, deps)}`
+    const msg = `${kind} ${job.vmid} no longer exists, so there was nothing to remove.${await removePublished(job, deps)}${await removeHostMount(job, deps)}${await removeConnection(job, deps)}${await removeVaultItem(job, deps)}`
     await persistJob(job).catch(e => persistFailed(job, e))
     return msg
   }
-  if (here.node !== job.node || here.type !== 'lxc') {
+  if (here.node !== job.node || here.type !== (isVm ? 'qemu' : 'lxc')) {
     throw new WizardRefusal(`ID ${job.vmid} is now a ${here.type === 'qemu' ? 'VM' : 'container'} on ${here.node}, not this install's container.`, 'changed')
   }
   const cfg = await deps.client.fetchStrict<Record<string, unknown>>(`${base}/config`)
   if (!String(cfg?.description ?? '').includes(installMark(job.jobId))) {
-    throw new WizardRefusal(`CT ${job.vmid} does not carry this install's mark, so HyperProx will not remove it.`, 'changed')
+    throw new WizardRefusal(`${kind} ${job.vmid} does not carry this install's mark, so HyperProx will not remove it.`, 'changed')
   }
   let ha: any[]
   try { ha = (await deps.client.fetchStrict<any[]>('/cluster/ha/resources')) ?? [] }
-  catch { throw new WizardRefusal(`HyperProx could not confirm whether CT ${job.vmid} is under HA, so it was not removed. Try again.`, 'changed') }
-  if (ha.some((h: any) => h?.sid === `ct:${job.vmid}`)) {
-    throw new WizardRefusal(`CT ${job.vmid} is managed by HA now; remove it from HA first.`, 'changed')
+  catch { throw new WizardRefusal(`HyperProx could not confirm whether ${kind} ${job.vmid} is under HA, so it was not removed. Try again.`, 'changed') }
+  if (ha.some((h: any) => h?.sid === `${isVm ? 'vm' : 'ct'}:${job.vmid}`)) {
+    throw new WizardRefusal(`${kind} ${job.vmid} is managed by HA now; remove it from HA first.`, 'changed')
   }
   // What publishing made goes first, while the container it points at still exists to be named.
   const published = await removePublished(job, deps)
@@ -1833,9 +1967,9 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   await deps.client.waitForTask(job.node,
     await deps.client.fetchStrict<string>(`${base}?purge=1`, 'DELETE'), { timeoutMs: 5 * 60_000 })
   const left = await deps.client.fetchStrict<any[]>('/cluster/resources?type=vm')
-  if ((left ?? []).some((r: any) => Number(r?.vmid) === job.vmid)) throw new Error(`CT ${job.vmid} is still listed after the removal.`)
+  if ((left ?? []).some((r: any) => Number(r?.vmid) === job.vmid)) throw new Error(`${kind} ${job.vmid} is still listed after the removal.`)
   job.removed = true
-  const msg = `CT ${job.vmid} was removed from ${job.node}.${published}${await removeHostMount(job, deps)}${await removeVaultItem(job, deps)}`
+  const msg = `${kind} ${job.vmid} was removed from ${job.node}.${published}${await removeHostMount(job, deps)}${await removeConnection(job, deps)}${await removeVaultItem(job, deps)}`
   await persistJob(job).catch(e => persistFailed(job, e))
   return msg
 }
@@ -1850,10 +1984,11 @@ export async function forgetInstallRecord(jobId: string, over: Partial<WizardDep
   const job = JOBS.get(jobId) ?? (row?.kind === 'job' ? (row.data as InstallJob) : null)
   if (!job) return 'The install record is already gone.'
   if (job.status === 'running') throw new WizardRefusal('That install is still running, so its record is kept.', 'changed')
+  const conn = await removeConnection(job, wizardDeps(over))
   const vault = await removeVaultItem(job, wizardDeps(over))
   JOBS.delete(jobId)
   await wizardStore().delete(jobId)
-  return `Forgot the ${job.recipeId} install record.${vault}`
+  return `Forgot the ${job.recipeId} install record.${conn}${vault}`
 }
 
 // ── Proxmox Backup Server: the NAS datastore on the node ─────────────────────
@@ -2147,4 +2282,125 @@ export async function finishSeerr(jobId: string, owner: string, over: Partial<Wi
 /** What a node can give a transcoder (Intel/AMD graphics, an NVIDIA card with its driver loaded), for the wizard's picker. */
 export async function transcodeHardware(node: string, over: Partial<WizardDeps> = {}) {
   return nodeHardwareFacts(node, wizardDeps(over))
+}
+
+// ── Home Assistant OS: a virtual machine, not a container (lib/homeassistant) ─────────────────────────────
+
+/** The preview's checks for Home Assistant OS: the USB devices are plugged into the node, and it has room to unpack the image. */
+async function haPreview(input: WizardInput, recipe: CatalogueRecipe, deps: WizardDeps): Promise<{ errors: string[]; warnings: string[]; checks: string[] }> {
+  const errors: string[] = [], warnings: string[] = [], checks: string[] = []
+  const o = checkOptions(recipe, input.options).values
+  const arr = deps.arr?.()
+  if (!arr) return { errors: ['HyperProx cannot reach the node to look at it.'], warnings, checks }
+  const run = (script: string, ms: number) => arr.nodeRun(input.node, script, ms).catch(() => null)
+  const space = await run('df --output=avail -k /var/tmp | tail -1', 20_000)
+  const free = Number(String(space?.output ?? '').trim().split(/\s+/).pop())
+  if (!Number.isFinite(free)) errors.push(`HyperProx could not look at the free space on ${input.node}.`)
+  else if (free < 4194304) errors.push(`${input.node} has ${Math.floor(free / 1048576)} GB free in /var/tmp, and the image needs about 4 GB while it is unpacked. Free some space there or pick another node.`)
+  else checks.push(`${input.node} has room to unpack the image (it is removed again after the import).`)
+  const usb = usbList(o.HA_USB ?? '')
+  if (usb.length) {
+    const have = new Set(parseUsb((await run(HAVM_USB_SCRIPT, 30_000))?.output ?? '').map(d => d.id))
+    for (const id of usb) { if (have.has(id)) checks.push(`USB device ${id} is plugged into ${input.node} and will be passed in.`); else errors.push(`USB device ${id} is not plugged into ${input.node}. Plug it in, or pick the node it is on.`) }
+    warnings.push(`Passing a USB device in ties the machine to ${input.node}: Proxmox cannot move it or restart it on another node while it holds the device.`)
+  }
+  if (input.diskGb < 32) warnings.push('Home Assistant OS\'s disk image is 32 GB, so the machine\'s disk is 32 GB whatever is asked for here.')
+  checks.push('The machine is UEFI (q35) with VirtIO disk and network, the guest agent on, and it starts when the node does.')
+  if (input.ip === 'dhcp') warnings.push('Home Assistant OS starts on an address from DHCP and keeps it. Give it a reservation on your router, or choose a fixed address so it stays where you expect it.')
+  else checks.push('The machine starts on a DHCP address and is then set to the fixed address you chose, through Home Assistant\'s own network settings.')
+  return { errors, warnings, checks }
+}
+
+/** USB devices plugged into a node, for the wizard's picker (read-only). */
+export async function homeAssistantUsb(node: string, over: Partial<WizardDeps> = {}) {
+  const arr = wizardDeps(over).arr?.()
+  if (!arr) throw new Error('HyperProx cannot reach the node.')
+  const r = await arr.nodeRun(node, HAVM_USB_SCRIPT, 30_000)
+  return parseUsb(r.output)
+}
+
+/**
+ * The Home Assistant OS install. The virtual machine is made through Proxmox's API; the disk is imported over the node's
+ * login; Home Assistant's own onboarding does the rest (lib/homeassistant/job.ts). A public name is made only once Home
+ * Assistant is proved to trust the proxy, otherwise the finished page says what to add and where.
+ */
+async function runVmJob(job: InstallJob, recipe: CatalogueRecipe, deps: WizardDeps, plan: InstallPlan, onSettled: () => Promise<void> | void): Promise<void> {
+  const options = plan.options ?? {}
+  try {
+    const s1 = step(job, 'container')
+    const image = imageFor('amd64')!
+    await createHaVm(plan, `${recipe.name}, installed by HyperProx on ${new Date().toISOString().slice(0, 10)}.\n${installMark(job.jobId)}`, deps.client,
+      () => { job.created = true; void persistJob(job).catch(e => persistFailed(job, e)) })
+    s1.status = 'done'; s1.detail = `VM ${job.vmid} on ${job.node}`
+    const ha = deps.ha?.(), arr = deps.arr?.()
+    if (!ha || !arr) throw new Error('Home Assistant\'s setup is not available here.')
+
+    // The owner's generated password is in the vault before anything else runs: a password that exists only in a running machine is a lockout.
+    if (!await deps.vaultOpen()) throw new Error('Home Assistant\'s owner gets a generated password, which is saved in the vault, and the vault is locked. Sign in to unlock it and try again.')
+    const owner = { name: options.HA_OWNER_NAME || 'Owner', username: options.HA_OWNER_USER || 'owner', password: randomBytes(18).toString('base64url') }
+    const provider = `${recipe.id}-${job.vmid}`
+    const before = await deps.readSecrets('apps', provider).catch(() => null)
+    await deps.saveSecrets('apps', provider, { admin_user: owner.username, admin_password: owner.password })
+    job.vaultItem = { category: 'apps', provider, createdByJob: before !== null && Object.keys(before).length === 0 }
+    await persistJob(job).catch(e => persistFailed(job, e))
+
+    const res = await runHaSetup({
+      node: plan.node, vmid: plan.vmid,
+      plan: { storage: plan.storage, diskGb: plan.diskGb, ip: plan.ip, gateway: plan.gateway, dns: plan.dns },
+      image, name: options.HA_NAME || 'Home', units: options.HA_UNITS === 'us_customary' ? 'us_customary' : 'metric', timeZone: await ha.timeZone(plan.node).catch(() => 'UTC'),
+      owner, usb: usbList(options.HA_USB ?? ''), vault: { category: 'apps', provider }, publishing: !!plan.publish,
+    }, id => step(job, id), {
+      client: deps.client, nodeRun: arr.nodeRun, http: arr.http, socket: ha.socket, wait: deps.wait, saveSecrets: deps.saveSecrets,
+      connect: async o => { const r = await ha.connect(o); job.connected = { plugin: 'home-assistant', instanceId: r.id }; await persistJob(job).catch(e => persistFailed(job, e)); return r },
+      agentFile: ha.agentFile,
+    }, ip => { job.ip = ip })
+    job.ip = res.ip; job.url = res.url; job.haTrustNote = res.trustNote
+
+    // A public name only when Home Assistant trusts the proxy: without that every request through the proxy is refused with a 400.
+    if (plan.publish) {
+      if (res.trusted) {
+        job.ledger ??= {}
+        job.url = await runPublish(plan.publish, recipe, res.ip, job.owner, job.ledger,
+          { step: id => step(job, id), save: () => { void persistJob(job).catch(e => persistFailed(job, e)) } }, deps.publish)
+      } else {
+        for (const st of PUBLISH_STEPS) { const x = job.steps.find(y => y.id === st.id); if (x) { x.status = 'skipped'; x.detail = 'Not made: Home Assistant does not trust the proxy yet.' } }
+      }
+    }
+    job.adminCredential = { user: owner.username, vault: { category: 'apps', provider, key: 'admin_password' }, issuedAt: Date.now() }
+    job.status = 'completed'
+  } catch (e: any) {
+    job.status = 'failed'
+    job.error = e.message
+    const running = job.steps.find(x => x.status === 'running')
+    if (running) { running.status = 'failed'; running.detail = e.message }
+  } finally {
+    job.finishedAt = Date.now()
+    try { await persistJob(job) }
+    catch (e: any) {
+      job.storeError = `The result of this install could not be saved: ${e.message}. After a restart HyperProx will not know how it ended.`
+      installerLog.error({ err: e, jobId: job.jobId }, 'install result could not be saved')
+    }
+    await Promise.resolve(onSettled()).catch(() => {})
+    if (job.status === 'completed') for (const fn of INSTALL_LISTENERS) { try { fn(job) } catch { /* a listener never fails an install */ } }
+  }
+}
+
+/**
+ * Disconnect the plug-in this install connected, and only that: Immich and Open WebUI's own settings (the install did not
+ * replace a connection that was already there), or the Home Assistant instance it added. Returns a sentence to append.
+ */
+async function removeConnection(job: InstallJob, deps: WizardDeps): Promise<string> {
+  const c = job.connected
+  if (!c) return ''
+  try {
+    if (c.plugin === 'home-assistant') {
+      const store = new HaInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials })
+      if (c.instanceId && c.instanceId !== 'default') await store.remove(c.instanceId)
+      else { await deleteCredential('plugin', 'home-assistant', 'url'); await deleteCredential('plugin', 'home-assistant', 'token'); await deleteCredential('plugin', 'home-assistant', 'instances') }
+    } else await deleteProviderCredentials('plugin', c.plugin)
+    job.connected = undefined
+    return ` The ${c.plugin === 'home-assistant' ? 'Home Assistant' : c.plugin === 'immich' ? 'Immich' : 'Open WebUI'} plug-in connection this install made was removed.`
+  } catch (e: any) {
+    return ` The plug-in connection this install made could not be removed: ${e.message}`
+  }
 }

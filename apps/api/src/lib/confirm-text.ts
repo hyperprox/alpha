@@ -18,7 +18,7 @@ const guest = (type: string, vmid: string) => `${type === 'qemu' || type === 'vm
 const PLUGIN: Record<string, string> = {
   'home-assistant': 'Home Assistant', qnap: 'QNAP NAS', pihole: 'Pi-hole', adguard: 'AdGuard Home', asus: 'ASUS router',
   pbs: 'Proxmox Backup Server', nextcloud: 'Nextcloud', k3s: 'K3s cluster', homepage: 'Homepage', '3proxy': '3proxy',
-  'apt-cacher-ng': 'package cache', plex: 'Plex',
+  'apt-cacher-ng': 'package cache', plex: 'Plex', immich: 'Immich', openwebui: 'Open WebUI',
 }
 const pluginName = (id: string) => PLUGIN[id] ?? id
 
@@ -63,6 +63,15 @@ function vpnFixSentence(b: any): string {
     return Number.isInteger(p) && p! > 0 && p! < 65536 ? `Put port ${p} into qBittorrent?` : 'Put the port the VPN forwards into qBittorrent?'
   }
   return 'Run this fix on the VPN?'
+}
+
+const IMMICH_QUEUE = /^[A-Za-z]{1,40}$/
+/** What an Immich queue fix will do, in the page's words. The queue name is shown only when it is a plain name. */
+function immichSentence(b: any): string {
+  const q = typeof b?.queue === 'string' && IMMICH_QUEUE.test(b.queue) ? ` on the ${b.queue} queue` : ''
+  if (b?.action === 'clear-failed') return `Clear Immich's failed jobs${q}? Only the failed entries are removed; no photo or video is changed.`
+  if (b?.action === 'restart-queue') return `Restart the Immich job queue${q}? It is paused and resumed; no photo or video is changed.`
+  return `Resume the Immich job queue${q}? Its waiting jobs start again.`
 }
 
 function routerSettingsSentence(b: any): string {
@@ -185,6 +194,10 @@ const RULES: Rule[] = [
     'Remove the package cache setting from every guest? They download packages directly again.'],
   ['PUT', /^\/api\/plugins\/apt-cacher-ng\/use$/, (_m, _p, b) => b?.mode === 'off'
     ? 'Stop Updates using the package cache?' : 'Save how Updates uses the package cache for the guests it looks after?'],
+  ['POST', /^\/api\/plugins\/immich\/actions$/, (_m, _p, b) => immichSentence(b)],
+  ['POST', /^\/api\/plugins\/openwebui\/actions$/, (_m, _p, b) => b?.action === 'close-signup'
+    ? 'Turn off open sign-up in Open WebUI? People can then only be added by an administrator.'
+    : 'Point Open WebUI at the Ollama HyperProx knows, checked first? Open WebUI\'s connection settings change; no chat or account does.'],
   ['PUT', /^\/api\/plugins\/apt-cacher-ng\/caches\/[^/]+\/settings$/, () => 'Save the package cache settings? They decide who may use it.'],
   [/^(PUT|DELETE)$/, /^\/api\/plugins\/([^/]+)\/settings$/, (m, _p, _b) => `Save the connection settings for ${pluginName(m[1])}?`],
   // ── Setup checklist ──
