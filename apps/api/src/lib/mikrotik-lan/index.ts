@@ -349,7 +349,7 @@ export async function applyGuard(d: GuardDeps, asked: { interface?: unknown; sub
  */
 async function removeAdded(d: GuardDeps, before: Set<string>, rule: string | null, entries: string[]): Promise<void> {
   const maybeOurs = (rows: Row[]) => rows.filter(r => (ours.rule(r) && !before.has(String(r['.id']))) || (rule !== null && String(r['.id']) === rule))
-  const read = () => d.router.get('/rest/ip/firewall/filter', 15_000).then(arr)
+  const read = () => d.router.get('/rest/ip/firewall/filter', 15_000).then((v: any) => { if (!Array.isArray(v)) throw new Error("router gave an unreadable firewall list"); return v as Row[] })
   let clear = false
   try {
     for (const r of maybeOurs(await read())) await d.router.delete(`/rest/ip/firewall/filter/${r['.id']}`).catch(() => {})
