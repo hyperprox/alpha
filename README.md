@@ -1029,6 +1029,8 @@ such as "this node only gets `apt upgrade`" or "check these package holds" go in
 `config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
 Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled.
 
+The page opens simply: one line saying how things stand, an **Update now** button (it checks first when the last check is old or partial, shows exactly what it will do in one question, then runs it in the safe order; if the plan changes before it starts, it asks again) and an **Install updates automatically** switch (every morning at 08:00), off until you turn it on. Everything else is under **Advanced**. A daily check that was skipped while HyperProx was locked runs by itself after you sign in, and a plan you never confirm is cancelled after a day.
+
 **Package cache.** With the package cache from the Catalogue, each package is downloaded once for all your guests:
 Updates points each guest's apt at it just before apt runs, with a fallback to going direct whenever the cache does
 not answer. Nodes are left alone unless you include them. See [Package cache](#package-cache-apt-cacher-ng).

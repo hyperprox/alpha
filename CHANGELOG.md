@@ -21,6 +21,21 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-21 — Updates: simpler, and the daily check no longer gets stuck
+
+### New
+- **A simple Updates page.** It opens on one line that says how things stand ("Everything is up to date", "3 machines have updates (1 security)", "Updating 2 of 5…"), one **Update now** button, and a plain list of machines with ticks while it runs. If the last check is more than an hour old or did not read everything, Update now checks first, then shows what it will do in one question (how many machines, which guests cannot be snapshotted, anything left out) and runs it in the safe order. If the plan changes before it starts, it stops and asks you again. Everything the page did before is under **Advanced**.
+  - Technical: the question is bound to the plan's hash (`planHash` from `POST /api/updates/preview`, sent with `POST /api/updates/jobs`); a run whose re-read plan has the same hash goes ahead without stopping at `awaiting-confirm`, a different one stops with a plain reason. A reboot asked for with the run is queued only once the run actually starts. `lib/updates-simple.ts` holds the status line, the check-then-update flow and the plain sentences for refusals; the page keeps every earlier panel inside a collapsible Advanced section.
+- **Install updates automatically.** A switch on the simple page, off until you turn it on, that installs updates every morning at 08:00 in your cluster's time zone, after the busiest hours of the day, and leaves reboots to Automatic reboots and their window (pick a window that opens after installs have finished). Turning it on or off asks you to confirm and is recorded.
+  - Technical: `GET`/`PUT /api/updates/auto-install`, kept in `data/updates-auto.json`; while on it overrides the policy's schedule for the home cluster (daily 08:00, read in the reboot window's time zone).
+
+### Fixed
+- **A check missed while HyperProx was locked now runs by itself.** After a restart the vault stays locked until you sign in, and the 06:30 check was skipped three days running with nothing to run it afterwards. It now runs a short while after you sign in.
+- **A plan waiting for your OK no longer blocks the check, and expires after a day.** If you do not confirm it within 24 hours it is cancelled, nothing is changed, and it is recorded.
+- **A check that was stopped early now runs again once the update that stopped it is over,** and an update finishing or being cancelled never stops a check on its own.
+- **Update everything and Dry run no longer show a raw error when nothing is listed.** They say "Nothing to update yet — checking now…" and start a check, or "Everything is up to date" when a full recent check found nothing. Errors on the Updates page are now plain sentences.
+- **The Daily check card says why a result is partial** and shows a Check now button you cannot miss.
+
 ## 2026-11-20 — Updates: automatic reboots
 
 ### New

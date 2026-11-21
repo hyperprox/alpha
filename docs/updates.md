@@ -320,6 +320,20 @@ Adding the home cluster again as a remote is refused ("This is your home cluster
 as Home"): the same address as the home cluster or one of its nodes, the same certificate, the same
 cluster name, the same set of node names, or a lone node with the home node's name and address.
 
+## The simple page and Install updates automatically
+
+The Updates page opens on one status line, an **Update now** button and a list of machines while a run is
+going; everything else (Everything or Guests only, Dry run, Refresh, choosing targets, policy, the daily check,
+history, Automatic reboots) is under **Advanced**. **Update now** checks first when the last check is more than an
+hour old or partial, then shows the real plan in one question (how many machines, snapshots first where possible and which
+guests cannot have one, anything left out, reboots in the reboot window or left for you by hand) and runs it. The
+question is bound to that plan's hash: when the run re-reads the plan after refreshing and it is the same, it goes
+ahead on that one confirmation; when a machine or step was added, or something is refused or no longer refused, it
+stops at "Go ahead" with a plain line. A reboot asked for with the run is queued only once the run starts, so a plan
+that is cancelled or expires leaves none waiting. The Advanced path (Update selected, Dry run) is unchanged. **Install updates automatically** (home cluster, off by default, admin, confirmed
+and audited) turns on the scheduled run every morning at 08:00 in the cluster's time zone (the Automatic reboots window's), after the busiest hours of the day; choose a reboot window that opens after installs have finished. It is kept in `data/updates-auto.json` and overrides the
+policy's `schedule:` while on. `GET`/`PUT /api/updates/auto-install`.
+
 ## The daily check
 
 Once a day (default 06:30, local time) and whenever you press **Check now** on the Updates page,
@@ -335,12 +349,19 @@ it, and while an Updates job is active anywhere. A check that falls while HyperP
 and logged (the credentials are in the vault). Only one check runs at a time.
 
 **The check gives way.** Before every machine it asks again whether an Updates job has started; if one
-has, it stops there and reports the rest as "not checked". Starting a run by hand stops a running check
+has, it stops there and reports the rest as "not checked". Starting a run by hand, or pressing Go ahead or Resume, stops a running check
 at the next machine (the run starts once it has). One cluster gets at most 20 minutes; what was not read
 by then is listed as not checked and the cluster is marked partial. While a check is reading, a scheduled
 run waits for its next time, and Confirm, Resume, Roll back and Reboot answer that the check is running.
 **Check now** is admin-only, cannot be started with an API token, and runs at most once every 15 minutes
 (it runs `apt update` on every node and guest).
+
+**A check that could not run is owed.** One skipped because HyperProx was locked (after a restart the vault
+stays locked until someone signs in), or stopped early because an Updates run was started, runs again by
+itself: a short while after unlock, or once that run is over, never while locked and never while a job is
+running. An Updates job that merely ends, is cancelled or is waiting for someone's OK (`awaiting-confirm`)
+does not stop or skip a check; only a run that is actually running does. An owed re-run holds off while a plan waits for Go ahead. A plan nobody confirms within 24 hours is
+cancelled (nothing was changed, audited, the lock released).
 
 **When the policy file is wrong or missing.** A policy file that exists but was rejected turns the check
 off (the Daily check card says why) and a Check now reads nothing: the broken file may be the one that
