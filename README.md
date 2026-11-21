@@ -1276,7 +1276,7 @@ checklist of settings to copy between six web pages.
 | SABnzbd | Downloads from Usenet, if you have a Usenet provider | no |
 | Bazarr | Fetches subtitles for what Sonarr and Radarr download | no |
 | Lidarr | Finds and downloads music | no |
-| Seerr | A page where family and friends ask for films and shows (it follows on from Overseerr and Jellyseerr) | no |
+| Seerr (formerly Jellyseerr and Overseerr) | A page where family and friends ask for films and shows | no |
 | FlareSolverr | Gets Prowlarr past the "checking your browser" page some indexers show | no |
 
 Prowlarr stays ticked while Sonarr, Radarr or Lidarr is, because they find releases through it. Bazarr and Seerr
@@ -1359,12 +1359,16 @@ when the read-back agrees. The steps:
 9. Adds Sonarr, Radarr and Lidarr to Prowlarr, so every indexer you add there reaches them. FlareSolverr, if picked,
    is added as an indexer proxy for indexers tagged `flaresolverr`.
 10. Connects Bazarr to Sonarr and Radarr.
-11. Seerr: only when the Plex plug-in has a Plex server address and token. Then Seerr starts, signs in with that Plex
-    account (which becomes its owner), turns on the Plex libraries, adds Sonarr and Radarr, and finishes its own
-    setup. Without one, Seerr is installed but not started, because a Seerr nobody has signed in to belongs to
-    whoever opens it first. Connect Plex in HyperProx (the Plex plug-in's server and token), then press
-    **Finish Seerr** on the Catalogue page. That does the same start and sign-in at once, and needs an admin and
-    a confirmation. If it fails, Seerr is stopped again.
+11. Seerr (formerly Jellyseerr and Overseerr): only when HyperProx knows a media server to sign it in with: the Plex
+    plug-in's server and token, or the Jellyfin plug-in's address, API key and an administrator's sign-in (all kept in
+    the vault). Then Seerr starts, signs in with that account (which becomes its owner), turns on the libraries, adds
+    Sonarr and Radarr, and finishes its own setup. If both Plex and Jellyfin are known, Seerr reads the one you pick in
+    the picker, and Plex when you pick nothing. A Jellyfin whose administrator sign-in is not saved yet counts as not
+    known, because a Jellyfin account can only be signed in with a password. Without a media server, Seerr is installed
+    but not started, because a Seerr nobody has signed in to belongs to whoever opens it first. Connect Plex or
+    Jellyfin in HyperProx, then press **Finish Seerr** on the Catalogue page. That does the same start and sign-in at
+    once, and needs an admin and a confirmation. If it fails, Seerr is stopped again. The Catalogue's search finds the
+    Arr Stack by typing jellyseerr, overseerr or requests.
 12. Points HyperProx's Arr Stack plug-in at the new Sonarr, Radarr, Lidarr (if picked), Prowlarr and qBittorrent. If
     the plug-in already reads a stack, it is left as it is, except that a Lidarr you picked is added to it when the
     plug-in has no Lidarr address or key yet (an address or key already there is never replaced). The Plex plug-in has no Arr setting of its own: where it reaches
@@ -1905,7 +1909,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 
 | Plug-in | What it shows |
 |---|---|
-| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, **see what's available** for any missing item, **find a better copy** of anything you have or a faster copy of a slow download, a **VPN panel** for stacks behind Gluetun, and **sorting new requests into your folders** |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, **see what's available** for any missing item, **find a better copy** of anything you have or a faster copy of a slow download, a **VPN panel** for stacks behind Gluetun, a **Requests** tab for Seerr, and **sorting new requests into your folders** |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
 | Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
@@ -1927,7 +1931,7 @@ the router (DHCP leases, ARP comments) and, where it has none, from HyperProx's 
 guest has which address. On the Arr Stack page, an import blocked because the filenames carry no season
 and episode offers **Map by filename**, the same rescue as before.
 
-**Arr Stack queue.** The Arr Stack page opens on a **Queue** tab (next to Overview, Upcoming and Sorting) that
+**Arr Stack queue.** The Arr Stack page opens on a **Queue** tab (next to Requests, Overview, Upcoming and Sorting) that
 updates by itself, like the Plex page: the queue about every 4 seconds and the rest of the page every 30
 seconds. Both stop while the browser tab is hidden and catch up when you come back. The **pause** button
 turns it off, and **Refresh** is now a small extra for when you want a reading right away. Behind the page, HyperProx
@@ -2206,6 +2210,25 @@ shown to admins only; everyone else sees that it is hidden. Without Gluetun, the
 - Viewers see the panel without the public address, and a plain sentence instead of the details when it cannot be
   read; admins see why.
 
+**Requests.** When Seerr (formerly Jellyseerr and Overseerr) is connected, the Arr Stack page has a **Requests** tab
+next to Queue: what people have asked for, as cards with a poster, in groups with counts (waiting, approved,
+downloading, available, failed, declined), and where each one is now. Built for a phone: the cards wrap to one column.
+
+- **Who asked.** Admins see the name Seerr shows for the person. Viewers, and API tokens, see "a family member".
+- **Where it is now.** Waiting for approval, approved and looking for a copy, downloading with a progress bar,
+  available, or failed. When the folder sorter moved the title, the card says which folder it was sorted into.
+- **Approve, Decline, Try again.** For admins only. Approve and Decline work on a request waiting for approval, and
+  Decline takes an optional reason. Try again sends a failed request to Radarr or Sonarr again, and says plainly when it
+  fails again. Each asks first (the server asks for the confirmation, a page's own flag is not enough), is written to the
+  audit log before anything is sent, and is read back from Seerr afterwards. API tokens cannot use any of them.
+- **When Seerr itself is the problem.** Above the cards, HyperProx checks that Seerr can reach Radarr, Sonarr and your
+  media server. A link it cannot use shows a plain sentence and a **Reconnect** button, which puts back the key or
+  sign-in HyperProx has saved. When Seerr still points at a quality profile or library folder that Radarr or Sonarr no
+  longer has (the usual reason requests fail), **Fix Seerr's settings** points it at the profile with the same name and
+  the folder with the same name, or the first one there is, and says what it will use before you confirm. Only Seerr's
+  own settings change; nothing in Radarr or Sonarr is touched.
+- Seerr's address and key are never on the page: posters come through HyperProx, one checked file name at a time.
+
 **Sort requests into folders.** Request apps such as Seerr send every film to one folder and every show to another,
 and the person asking cannot choose. On the Arr Stack's **Sorting** tab, HyperProx can move each new request into the
 folder it belongs in, about a minute after it is added and usually before it downloads.
@@ -2213,7 +2236,7 @@ folder it belongs in, about a minute after it is added and usually before it dow
 - **Your folders, your order.** For films and for shows there is a list of rules, each a kind of item and the folder it
   goes to, picked from Radarr's or Sonarr's own folders. You can switch each rule on or off, point it at another
   folder and move it up or down; the first rule that fits wins. The suggested rules are matched to your folders by
-  their names. The folder requests arrive in is read from Seerr (or Overseerr, Jellyseerr) when you add its address and
+  their names. The folder requests arrive in is read from Seerr (formerly Jellyseerr and Overseerr) when you add its address and
   API key to the plug-in's settings, which an Arr Stack installed with Seerr does for you; otherwise it is the folder
   most new items went to. Either way you can change it.
 - **Films**: hand-picked (a folder nothing is ever sorted into), documentaries, Christmas and holiday films,

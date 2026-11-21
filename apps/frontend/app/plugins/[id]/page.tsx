@@ -32,6 +32,7 @@ import { ArrUpcoming } from '@/components/plugins/arr/Upcoming'
 import { ArrQueue, useArrQueue } from '@/components/plugins/arr/Queue'
 import { ArrVpn } from '@/components/plugins/arr/Vpn'
 import { ArrRouter } from '@/components/plugins/arr/Router'
+import { ArrRequests } from '@/components/plugins/arr/Requests'
 import { ArrView, MeshView, PlexView, RouterView, UnmanicView, arrChips, plexChips, routerChips, unmanicChips, type Stuck } from '@/components/plugins/visual/views'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
@@ -280,11 +281,11 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     try { const t = window.localStorage.getItem('hp.plex.tab'); if (t === 'now' || t === 'clearout' || t === 'library') setPlexTabRaw(t) } catch { /* no storage */ }
   }, [])
   const isArr = params.id === 'arrstack'
-  const [arrTab, setArrTabRaw] = useState<'overview' | 'queue' | 'upcoming' | 'sorting'>('queue')
+  const [arrTab, setArrTabRaw] = useState<'overview' | 'queue' | 'requests' | 'upcoming' | 'sorting'>('queue')
   useEffect(() => {
-    try { const t = window.localStorage.getItem('hp.arr.tab'); if (t === 'overview' || t === 'queue' || t === 'upcoming' || t === 'sorting') setArrTabRaw(t) } catch { /* no storage */ }
+    try { const t = window.localStorage.getItem('hp.arr.tab'); if (t === 'overview' || t === 'queue' || t === 'requests' || t === 'upcoming' || t === 'sorting') setArrTabRaw(t) } catch { /* no storage */ }
   }, [])
-  const setArrTab = (t: 'overview' | 'queue' | 'upcoming' | 'sorting') => { setArrTabRaw(t); try { window.localStorage.setItem('hp.arr.tab', t) } catch { /* no storage */ } }
+  const setArrTab = (t: 'overview' | 'queue' | 'requests' | 'upcoming' | 'sorting') => { setArrTabRaw(t); try { window.localStorage.setItem('hp.arr.tab', t) } catch { /* no storage */ } }
   // "See the queue" on a downloading item: the Queue tab.
   const showArrQueue = () => { setArrTab('queue'); window.scrollTo({ top: 0 }) }
   // The grouped queue every few seconds from one light call (like Plex's /live), paused while the tab is hidden.
@@ -454,7 +455,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
             )}
             {isArr && v?.kind === 'arrstack' && (
               <div role="tablist" aria-label="Arr Stack views" className="flex flex-wrap gap-2">
-                {([['queue', 'Queue'], ['overview', 'Overview'], ['upcoming', 'Upcoming'], ['sorting', 'Sorting']] as const).map(([k, label]) => (
+                {([['queue', 'Queue'], ['requests', 'Requests'], ['overview', 'Overview'], ['upcoming', 'Upcoming'], ['sorting', 'Sorting']] as const).map(([k, label]) => (
                   <button key={k} role="tab" aria-selected={arrTab === k} onClick={() => setArrTab(k)}
                     className="h-10 rounded-md border px-4 font-display text-sm font-semibold uppercase tracking-[0.1em]"
                     style={{ borderColor: arrTab === k ? 'color-mix(in srgb, var(--accent) 45%, transparent)' : 'var(--border-strong)',
@@ -469,6 +470,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
             {isPlex && plexTab === 'clearout' && <PlexClearOut live={live} />}
             {isPlex && plexTab === 'library' && <PlexLibrary />}
             {v?.kind === 'arrstack' && arrTab === 'queue' && <><ArrVpn /><ArrQueue q={arrQ} /></>}
+            {v?.kind === 'arrstack' && arrTab === 'requests' && <ArrRequests />}
             {v?.kind === 'arrstack' && arrTab === 'overview' && <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />}
             {v?.kind === 'arrstack' && arrTab === 'upcoming' && <ArrUpcoming onQueue={showArrQueue} />}
             {v?.kind === 'arrstack' && arrTab === 'sorting' && <ArrRouter />}

@@ -35,6 +35,19 @@ know or do before they install. Newest entry at the top.
 - **A check that was stopped early now runs again once the update that stopped it is over,** and an update finishing or being cancelled never stops a check on its own.
 - **Update everything and Dry run no longer show a raw error when nothing is listed.** They say "Nothing to update yet — checking now…" and start a check, or "Everything is up to date" when a full recent check found nothing. Errors on the Updates page are now plain sentences.
 - **The Daily check card says why a result is partial** and shows a Check now button you cannot miss.
+## 2026-11-21 — Arr Stack: a Requests tab, and Seerr with Jellyfin
+
+### New
+- **Requests tab.** The Arr Stack page now shows what people have asked Seerr for, as cards with a poster, grouped as waiting, approved, downloading, available, failed and declined, and where each one is now. When the folder sorter has filed a title, the card says which folder it went to. It works on a phone. Admins see who asked; everyone else sees "a family member".
+  - Technical: `GET /api/plugins/arrstack/requests`, `/requests/health`, `/requests/poster/:file` (a checked file name through Seerr's image proxy); service in `lib/arr-requests`.
+- **Approve, decline and try again from HyperProx.** Admins can approve a request, decline it with an optional reason, or send a failed one to Radarr or Sonarr again. Each one asks first, is written to the audit log before anything happens, and is checked afterwards. API tokens cannot do any of it.
+  - Technical: `POST /api/plugins/arrstack/requests/actions`, confirmed in the page (`lib/confirm.ts`), refused for API tokens in `tokenForbidden`; the audit actions are `arr.requests.*`.
+- **Problems with Seerr come with a fix button.** HyperProx checks that Seerr can reach Radarr, Sonarr and your media server, and a link that is broken has a Reconnect button that puts back the key HyperProx has saved. When Seerr still points at a quality profile or library folder that Radarr or Sonarr no longer has, which is the usual reason requests fail, "Fix Seerr's settings" points it at the current ones and says what it will use first.
+- **Seerr can use Jellyfin.** If you run Jellyfin instead of Plex, or as well, the Arr Stack install connects Seerr to it for you, using what the Jellyfin plug-in has in the vault. With both, Seerr uses the one you pick, and Plex if you pick nothing. A Jellyfin with no administrator sign-in saved leaves Seerr stopped until you add one and press Finish Seerr.
+  - Technical: Seerr's `/api/v1/auth/jellyfin` and `/api/v1/settings/jellyfin`; the install option `ARR_MEDIA_SERVER` (blank, `plex` or `jellyfin`); the Jellyfin plug-in's `jellyfin_url`, `jellyfin_key`, `jellyfin_user` and `jellyfin_password`.
+
+### Improved
+- **Seerr is named "Seerr (formerly Jellyseerr and Overseerr)"** wherever you read it, and the Catalogue's search finds the Arr Stack when you type jellyseerr, overseerr or requests.
 
 ## 2026-11-20 — Updates: automatic reboots
 

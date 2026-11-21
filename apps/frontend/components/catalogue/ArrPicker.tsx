@@ -21,6 +21,8 @@ interface Facts {
   apps: AppFact[]; vpnProviders: Array<{ id: string; name: string; portForwarding: boolean }>
   base: Cost; vpnCost: Cost; layoutLine: string; splitWarning: string
   mediaServer: { kind: string; url: string } | null; pluginConfigured: boolean
+  /** Which media servers HyperProx knows for Seerr to sign in with, and whether Jellyfin's administrator sign-in is saved. */
+  mediaServers?: { plex: boolean; jellyfin: boolean; jellyfinLogin: boolean }
   nas: Array<{ storage: string; server: string; export: string }>
 }
 interface AddressOptions { dnsConfigured: boolean; domains: string[]; proxies: Array<{ id: string; name: string; status: string | null; certificates: string }> }
@@ -29,6 +31,19 @@ export interface ArrVpn { wireguard_private_key?: string; wireguard_addresses?: 
 export interface ArrNames { zone: string; instanceId: string; names: Record<string, string> }
 
 const MONO = 'font-mono text-[12px]'
+
+/** What the picker says about the media server Seerr will sign in with (the owner's choice, else Plex first). */
+export function seerrNote(f: Pick<Facts, 'mediaServer' | 'mediaServers'>, chosen?: string): string {
+  const ms = f.mediaServers
+  const kind = chosen === 'jellyfin' && ms?.jellyfin ? 'jellyfin' : chosen === 'plex' && ms?.plex ? 'plex' : f.mediaServer?.kind
+  if (kind === 'jellyfin') {
+    return ms?.jellyfinLogin
+      ? ' It signs in with the Jellyfin server HyperProx knows.'
+      : ' HyperProx knows your Jellyfin server but not an administrator sign-in for it, so Seerr is installed but not started (a Seerr nobody has signed in to belongs to whoever opens it first). Add the sign-in to the Jellyfin plug-in, then press Finish Seerr on the Catalogue page.'
+  }
+  if (kind === 'plex') return ' It signs in with the Plex server HyperProx knows.'
+  return ' HyperProx knows no Plex or Jellyfin server yet, so Seerr is installed but not started (a Seerr nobody has signed in to belongs to whoever opens it first). Connect Plex or Jellyfin in HyperProx, then press Finish Seerr on the Catalogue page.'
+}
 /** What needs Prowlarr: the apps that find releases through it. */
 const FINDERS = ['ARR_SONARR', 'ARR_RADARR', 'ARR_LIDARR']
 
@@ -181,13 +196,17 @@ export function ArrPicker({ opts, setOpts, vpn, setVpn, names, setNames, onState
                     </span>
                     <span id={`arr-${a.id}-blurb`} className="block text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
                       {a.blurb}{locked ? ' Sonarr, Radarr and Lidarr find releases through it, so it stays on.' : ''}
-                      {a.id === 'seerr' && checked && (facts.mediaServer
-                        ? ` It signs in with the Plex server HyperProx knows.`
-                        : ' HyperProx knows no Plex server with a token yet, so Seerr is installed but not started (a Seerr nobody has signed in to belongs to whoever opens it first). Connect Plex in HyperProx, then press Finish Seerr on the Catalogue page.')}
+                      {a.id === 'seerr' && checked && seerrNote(facts, opts.ARR_MEDIA_SERVER)}
                     </span>
                     <span className={`${MONO} block mt-1`} style={{ color: 'var(--text-dimmer)' }}>{a.internal ? 'no port: only Prowlarr reaches it, inside the container' : `port ${a.port}`}</span>
                   </span>
                 </label>
+                {/* Both a Plex and a Jellyfin server are known: Seerr reads the one the owner picks (Plex when nothing is picked). */}
+                {a.id === 'seerr' && checked && facts.mediaServers?.plex && facts.mediaServers.jellyfin && (
+                  <div className="border-t px-3 py-3" style={{ borderColor: 'var(--border-soft)' }}>
+                    <Segmented label="Seerr reads" value={(opts.ARR_MEDIA_SERVER || 'plex') as 'plex' | 'jellyfin'} onChange={v => set('ARR_MEDIA_SERVER', v)} items={[['plex', 'Plex'], ['jellyfin', 'Jellyfin']]} />
+                  </div>
+                )}
                 {/* The VPN lives under qBittorrent: it covers that app only. */}
                 {a.id === 'qbittorrent' && checked && (
                   <div className="border-t px-3 py-3 space-y-3" style={{ borderColor: 'var(--border-soft)' }}>
