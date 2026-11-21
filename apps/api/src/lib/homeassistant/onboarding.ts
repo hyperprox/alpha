@@ -102,7 +102,11 @@ export async function setStaticAddress(sock: HaSocket, o: { address: string; gat
       data: { ipv4: { method: 'static', address: [o.address], ...(o.gateway ? { gateway: o.gateway } : {}), nameservers: o.dns?.length ? o.dns : o.gateway ? [o.gateway] : [] } },
     }, 15_000)
     return 'applied'
-  } catch { return 'maybe' }
+  } catch (e: any) {
+    // Only a cut or silent socket is "maybe". An answer that says no is a refusal, and its reason is the supervisor's.
+    if (e?.refused) throw new Error(`Home Assistant refused the address change: ${e.message}`)
+    return 'maybe'
+  }
 }
 
 /** The lines Home Assistant needs to trust a reverse proxy. `network` is the proxy's own address with /32. */

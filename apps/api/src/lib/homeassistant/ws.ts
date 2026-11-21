@@ -124,7 +124,7 @@ export async function haSocket(host: string, port: number, accessToken: string, 
     else if (m.type === 'auth_invalid') onReady?.(new Error('Home Assistant refused the access token.'))
     else if (m.type === 'result' && waiting.has(m.id)) {
       const w = waiting.get(m.id)!; waiting.delete(m.id)
-      if (m.success) w.ok(m.result); else w.no(new Error(String(m.error?.message ?? 'Home Assistant refused the request.').slice(0, 200)))
+      if (m.success) w.ok(m.result); else w.no(Object.assign(new Error(String(m.error?.message ?? 'Home Assistant refused the request.').slice(0, 200)), { refused: true }))
     }
   })
   ws.onClose(() => { for (const w of waiting.values()) w.no(new Error('The connection to Home Assistant closed.')); waiting.clear(); onReady?.(new Error('The connection to Home Assistant closed.')) })

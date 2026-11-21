@@ -307,7 +307,9 @@ test("the administrator password is blanked in the install folder after the firs
   assert.deepEqual(f.scripts, [CLEAN_SCRIPT]); assert.equal(s.m["owui-clean"].status, "done")
   assert.ok(f.order.lastIndexOf("sh") > f.order.indexOf("plugin"), "only after the key is kept and the plug-in connected")
   const bad = new FakeWebui(); bad.shCode = 1
-  await assert.rejects(runOpenWebuiSetup(input(), steps().step, sdeps(bad, { vault: [], plugin: {} })), /could not be blanked.*OWUI_ADMIN_PASSWORD in \/opt\/app\/\.env/)
+  const bs = steps(); const bo = await runOpenWebuiSetup(input(), bs.step, sdeps(bad, { vault: [], plugin: {} }))
+  assert.equal(bo.url, "http://10.0.0.51:8080", "the install finishes")
+  assert.equal(bs.m["owui-clean"].status, "failed"); assert.match(bs.m["owui-clean"].detail, /^Warning: .*OWUI_ADMIN_PASSWORD= to nothing.*docker compose up -d --force-recreate.*stays in the vault/)
   const w = wizard()
   const r = await previewInstall(base(), OWNER, w.d)
   const job = await settled((await applyPreview(r.preview!.id, OWNER, w.d)).jobId)

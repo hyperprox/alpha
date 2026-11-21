@@ -48,6 +48,7 @@ know or do before they install. Newest entry at the top.
 
 ### Improved
 - **Seerr is named "Seerr (formerly Jellyseerr and Overseerr)"** wherever you read it, and the Catalogue's search finds the Arr Stack when you type jellyseerr, overseerr or requests.
+
 ## 2026-11-21 — Catalogue: Home Assistant, Immich and Open WebUI
 
 ### New

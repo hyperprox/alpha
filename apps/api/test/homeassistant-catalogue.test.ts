@@ -172,6 +172,8 @@ test("usb: only what the node can do without is offered, each refusal says why, 
   assert.match(why({ net: true })!, /network adapter/)
   assert.match(why({ classes: ["02", "0a"], drivers: ["option"] })!, /modem or network device/)
   assert.equal(why({ classes: ["02", "0a"], drivers: ["cdc_acm", "cdc_acm"] }), null, "a CDC serial stick (Zigbee, Z-Wave) is what this is for")
+  assert.match(why({ classes: ["02", "0a"], drivers: [] })!, /not recognised as a Zigbee or Z-Wave stick/, "no driver bound: not passed in on a guess")
+  assert.match(why({ classes: ["0a"], drivers: [""] })!, /not recognised as a Zigbee or Z-Wave stick/)
   assert.equal(why({ drivers: ["cp210x"] }), null); assert.equal(why({ classes: ["03"], drivers: ["usbhid"] }), null)
   const mixed = parseUsb(U("0781:5581", "SanDisk|Ultra", "1-4", "00,08", "usb-storage", 1) + U("0bda:8153", "Realtek|LAN", "1-5", "00,ff", "r8152", 0, 1) + U("10c4:ea60", "Silicon Labs|CP210x", "1-2", "ff", "cp210x"))
   assert.deepEqual(mixed.map(d => d.refused === null), [false, false, true])
@@ -579,4 +581,18 @@ test("clean-up: the first Home Assistant instance's address and token go, only t
   const b = mk(); const f2 = await failing(b); b.creds.set("home-assistant/url", "http://192.0.2.9:8123")
   assert.match(await removeFailedInstall(f2.job.jobId, OWNER, f2.d), /no longer points at this install/)
   assert.equal(b.creds.get("home-assistant/url"), "http://192.0.2.9:8123"); assert.equal(b.creds.has("home-assistant/instances"), true)
+})
+
+test("static address: an answer that says no is rethrown with the supervisor's reason; only a cut or silent socket is carried on from", async () => {
+  const mkSock = (err: Error) => ({ call: async (m: any) => { if (m.endpoint === "/network/info") return { interfaces: [{ interface: "enp0s18", primary: true, enabled: true }] }; throw err } }) as any
+  const o = { address: "10.0.0.60/24" }
+  await assert.rejects(setStaticAddress(mkSock(Object.assign(new Error("Invalid gateway"), { refused: true })), o), /Home Assistant refused the address change: Invalid gateway/)
+  assert.equal(await setStaticAddress(mkSock(new Error("The connection to Home Assistant closed.")), o), "maybe")
+  assert.equal(await setStaticAddress(mkSock(new Error("Home Assistant did not answer in time.")), o), "maybe")
+  const s = await wsServer(m => (m.type === "boom" ? new Error("gateway is not in the network") : {}))
+  try {
+    const sock = await haSocket("127.0.0.1", s.port, "tok", 5000)
+    await assert.rejects(sock.call({ type: "boom" }), (e: any) => e.refused === true && /gateway is not in the network/.test(e.message))
+    sock.close()
+  } finally { s.close() }
 })

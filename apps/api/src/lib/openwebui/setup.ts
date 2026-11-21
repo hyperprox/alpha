@@ -97,7 +97,12 @@ export async function runOpenWebuiSetup(i: OpenWebuiSetupInput, step: (id: strin
   // container, so it is not left in a file (it stays in the vault); then wait for Open WebUI again.
   const s5 = step('owui-clean')
   const r = await d.sh(CLEAN_SCRIPT, 5 * 60_000)
-  if (r.code !== 0) throw new Error(`The administrator password could not be blanked in the install folder (exit ${r.code}). Open WebUI is installed and working; blank OWUI_ADMIN_PASSWORD in ${INSTALL_DIR}/.env and run docker compose up -d there.`)
+  if (r.code !== 0) {
+    // The install itself worked: finish it with a warning that says what to do by hand.
+    s5.status = 'failed'
+    s5.detail = `Warning: the administrator password could not be blanked in the install folder (exit ${r.code}). Open WebUI is installed and working. To remove the password from the folder, edit ${INSTALL_DIR}/.env, set OWUI_ADMIN_PASSWORD= to nothing, and run docker compose up -d --force-recreate there. It stays in the vault either way.`
+    return { url: base, models, connected: mine }
+  }
   if (!await waitForOpenWebui(i.ip, d)) throw new Error('Open WebUI did not answer after it was recreated without the administrator password. Check the container (docker compose logs).')
   s5.status = 'done'; s5.detail = 'The password is no longer in the install folder; it stays in the vault.'
   return { url: base, models, connected: mine }

@@ -52,7 +52,11 @@ export function whyRefused(o: { classes: string[]; drivers: string[]; blk: boole
   if (cls.has('e0')) return 'It is a wireless controller (Bluetooth or Wi-Fi), which the node may be using.'
   if (o.net || o.drivers.some(d => NET_DRIVERS.test(d))) return 'It is a network adapter, which the node may be using.'
   // Communications and data classes are how serial sticks (Zigbee, Z-Wave) appear, with the serial driver bound; with any other driver they are a modem or a network device.
-  if ((cls.has('02') || cls.has('0a')) && o.drivers.some(d => d && d !== 'cdc_acm')) return 'It is a modem or network device, not a serial stick.'
+  if (cls.has('02') || cls.has('0a')) {
+    if (o.drivers.some(d => d && d !== 'cdc_acm')) return 'It is a modem or network device, not a serial stick.'
+    // The serial driver must really be bound: without it nothing says this is a stick, and it is not passed in on a guess.
+    if (!o.drivers.includes('cdc_acm')) return 'It is not recognised as a Zigbee or Z-Wave stick (no serial driver is bound to it).'
+  }
   return null
 }
 
