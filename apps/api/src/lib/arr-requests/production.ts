@@ -31,6 +31,7 @@ export function requestsService(log?: (m: string) => void): RequestsService {
       return r ? (await r.recent()).map(m => ({ app: m.app, title: m.title, year: m.year, to: m.to, ok: m.ok })) : []
     },
     keys: async () => { const s = await getSettings('arrstack').catch(() => none); return { radarr: s.radarr_key || undefined, sonarr: s.sonarr_key || undefined } },
+    urls: async () => { const s = await getSettings('arrstack').catch(() => none); return { radarr: s.radarr_url || undefined, sonarr: s.sonarr_url || undefined } },
     media: async prefer => {
       const [p, j] = await Promise.all([getSettings('plex').catch(() => none), getSettings('jellyfin').catch(() => none)])
       const k = serversFromSettings(p, j)

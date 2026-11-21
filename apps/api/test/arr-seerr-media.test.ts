@@ -53,7 +53,10 @@ function rig() {
     const ok = (body: unknown, headers: Record<string, string> = {}) => ({ status: 200, headers, body: JSON.stringify(body) })
     if (u.pathname === '/api/v1/status') return ok({ version: '3.5.1' })
     if (u.pathname.startsWith('/api/v1/auth/')) return ok({ id: 1 }, { 'set-cookie': 'connect.sid=abc; Path=/; HttpOnly' })
-    if (u.pathname.endsWith('/library')) return ok(u.searchParams.has('enable') ? [] : [{ id: 'lib1', name: 'Films' }, { id: 'lib2', name: 'Shows' }])
+    // Seerr's real routes: POST .../library/sync lists what the server has, PUT .../library/{id} switches one on.
+    if (u.pathname.endsWith('/library/sync') && r.method === 'POST') return ok([{ id: 'lib1', name: 'Films', enabled: false }, { id: 'lib2', name: 'Shows', enabled: false }])
+    if (/\/library\/lib\d$/.test(u.pathname) && r.method === 'PUT') return ok({ id: u.pathname.split('/').pop(), enabled: true })
+    if (u.pathname.endsWith('/library')) return { status: 404, headers: {}, body: '{}' }
     if (u.pathname === '/api/v1/settings/radarr' && r.method === 'GET') return ok(calls.filter(c => c.method === 'POST' && c.url.endsWith('/settings/radarr')).length ? [{ id: 0, hostname: 'radarr', apiKey: 'radarr-key' }] : [])
     if (u.pathname === '/api/v1/settings/public') return ok({ initialized: true })
     if (u.port === '7878') return ok([{ id: 4, name: 'HD-1080p' }])
@@ -76,6 +79,7 @@ test('Plex: signs in with the Plex token, then Plex settings, libraries, Radarr;
   assert.ok(paths.includes('POST /api/v1/auth/plex')); assert.ok(!paths.some(p => /jellyfin/.test(p)))
   assert.deepEqual(calls.find(c => c.url.endsWith('/auth/plex'))!.json, { authToken: 'plex-token-xyz' })
   assert.deepEqual(calls.find(c => c.url.endsWith('/settings/plex'))!.json, { ip: '192.0.2.10', port: 32400, useSsl: false })
+  assert.deepEqual(paths.filter(p => /library/.test(p)), ['POST /api/v1/settings/plex/library/sync', 'PUT /api/v1/settings/plex/library/lib1', 'PUT /api/v1/settings/plex/library/lib2'], 'the same two real routes for Plex')
   assert.match(detail, /Signed in with your Plex account/); assert.equal(keys.seerr, 'seerr-key-999')
   assert.doesNotMatch(detail, /plex-token-xyz/)
 })
@@ -90,8 +94,10 @@ test('Jellyfin: signs in with the administrator\'s sign-in, then Jellyfin settin
   const set = calls.find(c => c.method === 'POST' && c.url.endsWith('/settings/jellyfin'))!
   assert.deepEqual(set.json, { ip: '192.0.2.20', port: 8096, useSsl: false, urlBase: '', apiKey: 'jelly-api-key-123' })
   assert.equal(set.headers!['X-Api-Key'], 'seerr-key-999'); assert.match(set.headers!.Cookie, /connect\.sid=abc/)
-  const enable = calls.find(c => /library\?enable=/.test(c.url))!
-  assert.match(enable.url, /enable=lib1%2Clib2|enable=lib1,lib2/)
+  assert.ok(!calls.some(c => /library\?/.test(c.url)), 'no GET with sync or enable: those routes do not exist')
+  const order = calls.map(c => `${c.method} ${new URL(c.url).pathname}`).filter(p => /library/.test(p))
+  assert.deepEqual(order, ['POST /api/v1/settings/jellyfin/library/sync', 'PUT /api/v1/settings/jellyfin/library/lib1', 'PUT /api/v1/settings/jellyfin/library/lib2'])
+  assert.deepEqual(calls.filter(c => c.method === 'PUT').map(c => c.json), [{ enabled: true }, { enabled: true }])
   assert.match(detail, /Signed in with your Jellyfin account/); assert.match(detail, /Radarr/)
   assert.doesNotMatch(detail, /jelly-pass-456|jelly-api-key-123/)
   assert.ok(paths.includes('POST /api/v1/settings/initialize'))

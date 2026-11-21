@@ -7,6 +7,8 @@
 //  viewer, and an API token, see "a family member". Nothing here makes a request; it only reads and shapes.
 // =============================================================================
 
+import { createHash } from 'node:crypto'
+
 export type Group = 'pending' | 'approved' | 'downloading' | 'available' | 'failed' | 'declined'
 export const GROUPS: Group[] = ['pending', 'approved', 'downloading', 'available', 'failed', 'declined']
 export const GROUP_WORD: Record<Group, string> = {
@@ -38,8 +40,6 @@ export interface RequestRow {
   seasons: number | null
   /** The folder the folder sorter put it in, when it did. */
   sortedInto: string | null
-  /** The decline reason, when Seerr kept one. */
-  reason: string | null
   /** The request is for 4K. */
   is4k: boolean
 }
@@ -126,7 +126,6 @@ export function buildRows(raw: any[], titles: Map<string, TitleInfo>, moves: Sor
       at: typeof r?.createdAt === 'string' ? r.createdAt.slice(0, 40) : '',
       seasons: seasons || null,
       sortedInto: c.group === 'available' || c.group === 'downloading' || c.group === 'approved' ? sortedFor(kind, title, info?.year ?? null, moves) : null,
-      reason: c.group === 'declined' ? (clean(r?.declineReason ?? r?.reason, 200) || null) : null,
       is4k: r?.is4k === true,
     })
   }
@@ -143,66 +142,130 @@ export function countsOf(rows: RequestRow[]): Record<Group, number> {
 
 export type ArrApp = 'radarr' | 'sonarr'
 export interface ArrFacts { profiles: Array<{ id: number; name: string }>; roots: string[] }
+export type FixField = 'profile' | 'folder' | 'animeProfile' | 'animeFolder'
+export const FIX_FIELDS: FixField[] = ['profile', 'folder', 'animeProfile', 'animeFolder']
+export interface Prof { id: number; name: string }
+
+/** One thing in a Seerr server entry that points at something the arr no longer has. `want` is null when nothing the arr has matches by name: the admin chooses from `options`. */
+export interface StaleField<T> { now: string; want: T | null; options: T[] }
 
 export interface StaleServer {
   app: ArrApp
   /** Seerr's id for this server entry. */
   serverId: number
   name: string
-  /** What Seerr points at now, in words. */
-  nowProfile: string
-  nowFolder: string
-  profileStale: boolean
-  folderStale: boolean
-  /** What it would be pointed at. */
-  wantProfileId: number | null
-  wantProfile: string | null
-  wantFolder: string | null
+  profile?: StaleField<Prof>
+  folder?: StaleField<string>
+  /** Sonarr only: the anime profile and folder. */
+  animeProfile?: StaleField<Prof>
+  animeFolder?: StaleField<string>
 }
 
 const trimSlash = (s: string) => (s.length > 1 ? s.replace(/\/+$/, '') : s)
 const last = (p: string) => trimSlash(p).split('/').pop() ?? ''
 
-/** A profile the arr has now, matched by name when Seerr's id is gone, else the arr's first. */
-export function wantedProfile(profiles: ArrFacts['profiles'], wasName: string): { id: number; name: string } | null {
-  return profiles.find(p => p.name.toLowerCase() === wasName.toLowerCase()) ?? profiles[0] ?? null
+/** A profile the arr has now with the same name as the one Seerr remembers. No match is null: nothing is guessed. */
+export function wantedProfile(profiles: ArrFacts['profiles'], wasName: string): Prof | null {
+  return wasName ? profiles.find(p => p.name.toLowerCase() === wasName.toLowerCase()) ?? null : null
 }
 
-/** A root folder the arr has now: the same last folder name when there is one, else the arr's first. */
+/** A root folder the arr has now with the same last folder name. No match is null: nothing is guessed. */
 export function wantedFolder(roots: string[], was: string): string | null {
-  return roots.find(r => last(r).toLowerCase() === last(was).toLowerCase() && last(was)) ?? roots[0] ?? null
+  const l = last(was).toLowerCase()
+  return l ? roots.find(r => last(r).toLowerCase() === l) ?? null : null
+}
+
+const profField = (id: unknown, name: unknown, facts: ArrFacts): StaleField<Prof> | undefined => {
+  if (id === null || id === undefined || id === '') return undefined
+  const n = Number(id)
+  if (facts.profiles.some(p => p.id === n)) return undefined
+  const was = clean(name, 80)
+  return { now: was || `profile ${Number.isFinite(n) ? n : '?'}`, want: wantedProfile(facts.profiles, was), options: facts.profiles }
+}
+const dirField = (dir: unknown, facts: ArrFacts): StaleField<string> | undefined => {
+  const d = clean(dir, 300)
+  if (!d || facts.roots.some(r => trimSlash(r) === trimSlash(d))) return undefined
+  return { now: d, want: wantedFolder(facts.roots, d), options: facts.roots }
 }
 
 /**
- * Seerr's server entries whose quality profile or root folder id/path no longer exists in the arr (a profile re-made,
- * a library folder renamed). Seerr keeps sending requests to them and the arr refuses: they show as Failed.
+ * Seerr's server entries whose quality profile or root folder (Sonarr: and anime profile and folder) no longer exists in
+ * the arr (a profile re-made, a library folder renamed). Seerr keeps sending requests to them and the arr refuses.
  */
 export function staleServers(app: ArrApp, servers: any[], facts: ArrFacts): StaleServer[] {
   const out: StaleServer[] = []
   for (const s of Array.isArray(servers) ? servers : []) {
     const serverId = Number(s?.id)
     if (!Number.isInteger(serverId)) continue
-    const profileStale = !facts.profiles.some(p => p.id === Number(s?.activeProfileId))
-    const dir = clean(s?.activeDirectory, 300)
-    const folderStale = !facts.roots.some(r => trimSlash(r) === trimSlash(dir))
-    if (!profileStale && !folderStale) continue
-    const wp = profileStale ? wantedProfile(facts.profiles, clean(s?.activeProfileName, 80)) : null
-    out.push({
-      app, serverId, name: clean(s?.name, 60) || (app === 'radarr' ? 'Radarr' : 'Sonarr'),
-      nowProfile: clean(s?.activeProfileName, 80) || `profile ${Number(s?.activeProfileId) || '?'}`, nowFolder: dir || 'none',
-      profileStale, folderStale,
-      wantProfileId: wp?.id ?? null, wantProfile: wp?.name ?? null,
-      wantFolder: folderStale ? wantedFolder(facts.roots, dir) : null,
-    })
+    const e: StaleServer = { app, serverId, name: clean(s?.name, 60) || (app === 'radarr' ? 'Radarr' : 'Sonarr') }
+    const p = profField(s?.activeProfileId, s?.activeProfileName, facts); if (p) e.profile = p
+    const f = dirField(s?.activeDirectory, facts); if (f) e.folder = f
+    if (app === 'sonarr') {
+      const ap = profField(s?.activeAnimeProfileId, s?.activeAnimeProfileName, facts); if (ap) e.animeProfile = ap
+      const af = dirField(s?.activeAnimeDirectory, facts); if (af) e.animeFolder = af
+    }
+    if (e.profile || e.folder || e.animeProfile || e.animeFolder) out.push(e)
   }
   return out
 }
 
-/** The server entry with the fix applied: the whole object, since Seerr's PUT replaces it. */
-export function fixedServer(entry: any, s: StaleServer): Record<string, unknown> {
+/** What an admin picked where nothing matched by name: the value is a profile id or a folder path. */
+export interface FixChoice { app: ArrApp; serverId: number; field: FixField; value: string }
+
+export interface FixLine { field: FixField; from: string; to: string; toId?: number }
+export interface FixItem { app: ArrApp; serverId: number; name: string; lines: FixLine[] }
+
+const FIELD_WORD: Record<FixField, string> = { profile: 'quality profile', folder: 'folder', animeProfile: 'anime profile', animeFolder: 'anime folder' }
+
+/**
+ * The exact changes for a stale set and the admin's choices, plus the fields still waiting for a choice. The same function
+ * builds the confirmation's words and the changes the action makes.
+ */
+export function planFix(stale: StaleServer[], choices: FixChoice[] = []): { items: FixItem[]; unresolved: Array<{ app: ArrApp; serverId: number; name: string; field: FixField }>; invalid: string[] } {
+  const items: FixItem[] = [], unresolved: Array<{ app: ArrApp; serverId: number; name: string; field: FixField }> = [], invalid: string[] = []
+  for (const c of choices) if (!stale.some(s => s.app === c.app && s.serverId === c.serverId && s[c.field])) invalid.push(`${c.app} ${c.serverId} ${c.field}`)
+  for (const s of stale) {
+    const lines: FixLine[] = []
+    for (const field of FIX_FIELDS) {
+      const f = s[field] as StaleField<Prof | string> | undefined
+      if (!f) continue
+      const pick = choices.find(c => c.app === s.app && c.serverId === s.serverId && c.field === field)
+      let to: Prof | string | null = f.want
+      if (pick) {
+        const hit = field === 'profile' || field === 'animeProfile'
+          ? (f.options as Prof[]).find(p => String(p.id) === pick.value) ?? null
+          : (f.options as string[]).find(r => r === pick.value) ?? null
+        if (!hit) { invalid.push(`${s.app} ${s.serverId} ${field}`); continue }
+        to = hit
+      }
+      if (to === null) { unresolved.push({ app: s.app, serverId: s.serverId, name: s.name, field }); continue }
+      lines.push(typeof to === 'string' ? { field, from: f.now, to } : { field, from: f.now, to: to.name, toId: to.id })
+    }
+    if (lines.length) items.push({ app: s.app, serverId: s.serverId, name: s.name, lines })
+  }
+  return { items, unresolved, invalid }
+}
+
+/** The confirmation sentence: server, old to new profile and folder, nothing hidden. */
+export function describeFix(items: FixItem[]): string {
+  const parts = items.map(i => `${i.name} (${i.app === 'radarr' ? 'Radarr' : 'Sonarr'}): ${i.lines.map(l => `${FIELD_WORD[l.field]} "${l.from}" → "${l.to}"`).join(', ')}`)
+  return `Change Seerr's settings? ${parts.join('; ')}. Only Seerr's own settings change; nothing in Radarr or Sonarr is touched.`
+}
+
+/** A short fingerprint of the stale set, so an action can tell that what was confirmed is what it is about to change. */
+export function staleId(stale: StaleServer[]): string {
+  return createHash('sha256').update(JSON.stringify(stale)).digest('hex').slice(0, 16)
+}
+
+/** The server entry with the plan applied: the whole object, since Seerr's PUT replaces it. */
+export function fixedServer(entry: any, item: FixItem): Record<string, unknown> {
   const out: Record<string, unknown> = { ...entry }
-  if (s.profileStale && s.wantProfileId !== null) { out.activeProfileId = s.wantProfileId; out.activeProfileName = s.wantProfile }
-  if (s.folderStale && s.wantFolder) out.activeDirectory = s.wantFolder
+  for (const l of item.lines) {
+    if (l.field === 'profile') { out.activeProfileId = l.toId; out.activeProfileName = l.to }
+    else if (l.field === 'animeProfile') { out.activeAnimeProfileId = l.toId; out.activeAnimeProfileName = l.to }
+    else if (l.field === 'folder') out.activeDirectory = l.to
+    else out.activeAnimeDirectory = l.to
+  }
   return out
 }
 

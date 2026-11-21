@@ -202,7 +202,7 @@ void HOUR
 export const MEDIA_ROUTES: FixtureRoute[] = [
   { path: '/api/plugins/arrstack/vpn', get: () => ok(arrVpn()) },
   { path: '/api/plugins/arrstack/requests', get: () => ok(arrRequests()) },
-  { path: '/api/plugins/arrstack/requests/health', get: () => ok({ configured: true, problems: [], stale: [], readAt: new Date().toISOString() }) },
+  { path: '/api/plugins/arrstack/requests/health', get: () => ok({ configured: true, problems: [], stale: [], staleId: '0000000000000000', readAt: new Date().toISOString() }) },
   { path: '/api/plugins/plex/live', get: () => ok(plexLive()) },
   { path: '/api/plugins/plex/library', get: () => ok(plexLibrary()) },
   { path: '/api/plugins/plex/library/show/:id', get: p => ok(plexShow(p.id)) },

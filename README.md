@@ -2217,16 +2217,22 @@ downloading, available, failed, declined), and where each one is now. Built for 
 - **Who asked.** Admins see the name Seerr shows for the person. Viewers, and API tokens, see "a family member".
 - **Where it is now.** Waiting for approval, approved and looking for a copy, downloading with a progress bar,
   available, or failed. When the folder sorter moved the title, the card says which folder it was sorted into.
-- **Approve, Decline, Try again.** For admins only. Approve and Decline work on a request waiting for approval, and
-  Decline takes an optional reason. Try again sends a failed request to Radarr or Sonarr again, and says plainly when it
-  fails again. Each asks first (the server asks for the confirmation, a page's own flag is not enough), is written to the
-  audit log before anything is sent, and is read back from Seerr afterwards. API tokens cannot use any of them.
+- **Approve, Decline, Try again.** For admins only. Approve and Decline work on a request waiting for approval (Seerr
+  keeps no reason for a decline, so none is asked for). Try again sends a failed request to Seerr to hand to Radarr or
+  Sonarr again. Seerr does that in the background, so the answer is "Sent to Seerr. It will show as downloading once
+  Radarr or Sonarr accept it", and a request that still reads failed says so. Each asks first (the server asks for the
+  confirmation, a page's own flag is not enough), is written to the audit log before anything is sent, and is read back
+  from Seerr afterwards. API tokens cannot use any of them.
 - **When Seerr itself is the problem.** Above the cards, HyperProx checks that Seerr can reach Radarr, Sonarr and your
-  media server. A link it cannot use shows a plain sentence and a **Reconnect** button, which puts back the key or
-  sign-in HyperProx has saved. When Seerr still points at a quality profile or library folder that Radarr or Sonarr no
-  longer has (the usual reason requests fail), **Fix Seerr's settings** points it at the profile with the same name and
-  the folder with the same name, or the first one there is, and says what it will use before you confirm. Only Seerr's
-  own settings change; nothing in Radarr or Sonarr is touched.
+  media server, using reads that really ask them (never a library sync), and shares one reading for a minute between open
+  pages. A link it cannot use shows a plain sentence and a **Reconnect** button. For Radarr and Sonarr it tests the key
+  HyperProx has saved first and writes it into Seerr only if that works, and only for Seerr's entry for that app; for the
+  media server it puts back the saved address and sign-in. When Seerr still points at a quality profile or library folder
+  (for Sonarr, also the anime ones) that Radarr or Sonarr no longer has, which is the usual reason requests fail,
+  **Fix Seerr's settings** names the server and each change, old to new, before you confirm. It proposes the profile or
+  folder with the same name; where nothing has the same name it guesses nothing and gives you a menu of what the arr has.
+  If anything changed between your looking and your confirming, nothing is changed. Only Seerr's own settings change;
+  nothing in Radarr or Sonarr is touched.
 - Seerr's address and key are never on the page: posters come through HyperProx, one checked file name at a time.
 
 **Sort requests into folders.** Request apps such as Seerr send every film to one folder and every show to another,

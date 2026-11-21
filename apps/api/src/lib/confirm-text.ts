@@ -36,6 +36,8 @@ export interface ConfirmNames {
   routerLibraryUndo?: (app: unknown) => { count: number } | null
   /** The title of a Seerr request in the last reading, for the Requests tab's confirmation. */
   requestTitle?: (id: unknown) => string | null
+  /** The exact changes of "Fix Seerr's settings" for these choices (server, old to new), from the same plan the action uses. */
+  requestsFix?: (choices: unknown) => string | null
 }
 const names: ConfirmNames = {}
 export function setConfirmNames(n: ConfirmNames): void { Object.assign(names, n) }
@@ -93,9 +95,9 @@ function requestActionSentence(b: any): string {
   const what = title && str(title, 100) ? `"${str(title, 100)}"` : 'this request'
   switch (b?.action) {
     case 'approve': return `Approve ${what}? Seerr sends it to Radarr or Sonarr to download.`
-    case 'decline': return `Decline ${what}${str(b?.reason, 200) ? ' with your reason' : ''}? It will not be downloaded.`
+    case 'decline': return `Decline ${what}? It will not be downloaded.`
     case 'retry': return `Send ${what} to Radarr or Sonarr again?`
-    case 'fix-settings': return 'Point Seerr\'s Radarr and Sonarr settings at the quality profile and library folder they have now? Only Seerr\'s own settings change.'
+    case 'fix-settings': return names.requestsFix?.(b?.choices) ?? 'Point Seerr\'s Radarr and Sonarr settings at the quality profile and library folder they have now? Only Seerr\'s own settings change.'
     case 'reconnect': return b?.target === 'media'
       ? 'Reconnect Seerr to your media server with the sign-in HyperProx has saved? Only Seerr\'s own settings change.'
       : `Put the ${b?.target === 'sonarr' ? 'Sonarr' : 'Radarr'} key HyperProx has saved back into Seerr? Only Seerr\'s own settings change.`

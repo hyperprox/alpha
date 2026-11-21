@@ -599,6 +599,16 @@ export function missingSettings(manifest: PluginManifest, stored: Record<string,
  * BrokerContext (what a plug-in gets) keeps one in an ES private field and exposes only get and post; the
  * delete, image and other host-only calls exist only on this class, which is not exported.
  */
+/**
+ * The image type a response may be served as, or null when it is not an image we pass on. Seerr's image proxy answers
+ * `image/jpg`, which is not a registered type: it is a JPEG, and is served as one.
+ */
+export function imageType(raw: unknown): 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif' | null {
+  const t = String(raw ?? '').split(';')[0].trim().toLowerCase()
+  const u = t === 'image/jpg' ? 'image/jpeg' : t
+  return u === 'image/jpeg' || u === 'image/png' || u === 'image/webp' || u === 'image/gif' ? u : null
+}
+
 class Requester {
   readonly endpoint: PluginEndpoint
   constructor(readonly manifest: PluginManifest, private settings: Record<string, string>, endpointKey?: string) {
@@ -646,8 +656,8 @@ class Requester {
     headers.Accept = 'image/*'
     const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, 'GET', undefined, timeoutMs, maxBytes)
     if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
-    const contentType = String(res.contentType ?? '').split(';')[0].trim().toLowerCase()
-    if (!/^image\/(jpeg|png|webp|gif)$/.test(contentType)) throw new Error(`${this.manifest.name} did not return an image`)
+    const contentType = imageType(res.contentType)
+    if (!contentType) throw new Error(`${this.manifest.name} did not return an image`)
     return { contentType, body: await res.buffer() }
   }
 

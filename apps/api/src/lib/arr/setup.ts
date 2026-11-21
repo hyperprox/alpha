@@ -538,8 +538,11 @@ export async function connectSeerr(ip: string, s: Selection, keys: Partial<Recor
   const ok = (a: HttpAnswer, what: string) => { if (a.status < 200 || a.status >= 300) fail(`${what} answered ${a.status}`); return parse(a) }
   const name = MEDIA_NAME[ms.kind]
   ok(await d.http({ method: 'POST', url: `${base}/api/v1/settings/${ms.kind}`, headers: h, json: mediaSettingsBody(ms) }), `Seerr's ${name} settings`)
-  const libs: any[] = ok(await d.http({ method: 'GET', url: `${base}/api/v1/settings/${ms.kind}/library?sync=true`, headers: h }), `Seerr's ${name} libraries`) ?? []
-  if (libs.length) ok(await d.http({ method: 'GET', url: `${base}/api/v1/settings/${ms.kind}/library?enable=${libs.map(l => encodeURIComponent(String(l.id))).join(',')}`, headers: h }), `Seerr's ${name} libraries`)
+  // Seerr's own order: start a sync of the media server's libraries, then switch each one on.
+  const libs: any[] = ok(await d.http({ method: 'POST', url: `${base}/api/v1/settings/${ms.kind}/library/sync`, headers: h }), `Seerr's ${name} libraries`) ?? []
+  for (const l of libs) {
+    ok(await d.http({ method: 'PUT', url: `${base}/api/v1/settings/${ms.kind}/library/${encodeURIComponent(String(l.id))}`, headers: h, json: { enabled: true } }), `Seerr's ${name} libraries`)
+  }
   const linked: string[] = []
   for (const id of (['sonarr', 'radarr'] as const)) {
     if (!has(s, id)) continue

@@ -14,23 +14,28 @@ export const GROUP_WORD: Record<Group, string> = {
 
 export interface RequestRow {
   id: number; kind: 'movie' | 'tv'; title: string; year: number | null; poster: string | null; group: Group; where: string
-  progress: number | null; who: string; at: string; seasons: number | null; sortedInto: string | null; reason: string | null; is4k: boolean
+  progress: number | null; who: string; at: string; seasons: number | null; sortedInto: string | null; is4k: boolean
 }
 export interface Listing { configured: boolean; rows: RequestRow[]; counts: Record<Group, number>; readAt: string; capped: boolean }
 
+export type FixField = 'profile' | 'folder' | 'animeProfile' | 'animeFolder'
+export interface Prof { id: number; name: string }
+/** Something Seerr points at that the arr no longer has. `want` is null when nothing has the same name: the admin chooses. */
+export interface StaleField<T> { now: string; want: T | null; options: T[] }
 export interface StaleServer {
-  app: 'radarr' | 'sonarr'; serverId: number; name: string; nowProfile: string; nowFolder: string
-  profileStale: boolean; folderStale: boolean; wantProfileId: number | null; wantProfile: string | null; wantFolder: string | null
+  app: 'radarr' | 'sonarr'; serverId: number; name: string
+  profile?: StaleField<Prof>; folder?: StaleField<string>; animeProfile?: StaleField<Prof>; animeFolder?: StaleField<string>
 }
+export interface FixChoice { app: 'radarr' | 'sonarr'; serverId: number; field: FixField; value: string }
 export interface HealthProblem { kind: 'radarr' | 'sonarr' | 'media'; serverId?: number; why: 'key' | 'down' | 'other'; text: string }
-export interface Health { configured: boolean; problems: HealthProblem[]; stale: StaleServer[]; readAt: string }
+export interface Health { configured: boolean; problems: HealthProblem[]; stale: StaleServer[]; staleId: string; readAt: string }
 export interface ActResult { action: string; done: boolean; summary: string; notes: string[] }
 
 export type Act =
   | { action: 'approve'; id: number }
-  | { action: 'decline'; id: number; reason?: string }
+  | { action: 'decline'; id: number }
   | { action: 'retry'; id: number }
-  | { action: 'fix-settings' }
+  | { action: 'fix-settings'; baseId: string; choices: FixChoice[] }
   | { action: 'reconnect'; target: 'radarr' | 'sonarr' | 'media' }
 
 export const ACT_LABEL = { approve: 'Approve', decline: 'Decline', retry: 'Try again', 'fix-settings': 'Fix Seerr\'s settings' } as const
@@ -57,9 +62,9 @@ export function confirmText(a: Act, title?: string): string {
   const what = title ? `"${title}"` : 'this request'
   switch (a.action) {
     case 'approve': return `Approve ${what}? Seerr sends it to Radarr or Sonarr to download.`
-    case 'decline': return `Decline ${what}${a.reason ? ' with your reason' : ''}? It will not be downloaded.`
+    case 'decline': return `Decline ${what}? It will not be downloaded.`
     case 'retry': return `Send ${what} to Radarr or Sonarr again?`
-    case 'fix-settings': return 'Point Seerr\'s Radarr and Sonarr settings at the quality profile and library folder they have now? Only Seerr\'s own settings change.'
+    case 'fix-settings': return 'Change Seerr\'s settings? Only Seerr\'s own settings change; nothing in Radarr or Sonarr is touched.'
     case 'reconnect': return a.target === 'media'
       ? 'Reconnect Seerr to your media server with the sign-in HyperProx has saved? Only Seerr\'s own settings change.'
       : `Put the ${a.target === 'sonarr' ? 'Sonarr' : 'Radarr'} key HyperProx has saved back into Seerr? Only Seerr\'s own settings change.`
@@ -68,12 +73,28 @@ export function confirmText(a: Act, title?: string): string {
 
 export const reconnectLabel = (k: HealthProblem['kind']) => (k === 'media' ? 'Reconnect the media server' : `Reconnect ${k === 'sonarr' ? 'Sonarr' : 'Radarr'}`)
 
-/** What a stale entry is pointed at now and what the fix will use, in one sentence. */
-export function staleWords(s: StaleServer): string {
-  const bits: string[] = []
-  if (s.profileStale) bits.push(`the quality profile "${s.nowProfile}"${s.wantProfile ? `, which ${s.app === 'radarr' ? 'Radarr' : 'Sonarr'} no longer has, so it would use "${s.wantProfile}"` : ''}`)
-  if (s.folderStale) bits.push(`the folder ${s.nowFolder}${s.wantFolder ? `, which is gone, so it would use ${s.wantFolder}` : ''}`)
-  return `Seerr's ${s.name} still points at ${bits.join(' and ')}. Requests sent there fail.`
+export const FIELD_WORD: Record<FixField, string> = { profile: 'quality profile', folder: 'folder', animeProfile: 'anime profile', animeFolder: 'anime folder' }
+export const FIELDS: FixField[] = ['profile', 'folder', 'animeProfile', 'animeFolder']
+
+/** What one field would change to: the admin's choice, else the match by name, else nothing yet. */
+export function fixTarget(s: StaleServer, field: FixField, choices: FixChoice[]): string | null {
+  const f = s[field] as StaleField<Prof | string> | undefined
+  if (!f) return null
+  const pick = choices.find(c => c.app === s.app && c.serverId === s.serverId && c.field === field)
+  if (pick) {
+    const hit = (f.options as Array<Prof | string>).find(o => (typeof o === 'string' ? o : String(o.id)) === pick.value)
+    return hit === undefined ? null : typeof hit === 'string' ? hit : hit.name
+  }
+  return f.want === null ? null : typeof f.want === 'string' ? f.want : f.want.name
+}
+
+/** True while some field has no match by name and no choice yet. */
+export const needsChoice = (stale: StaleServer[], choices: FixChoice[]) => stale.some(s => FIELDS.some(f => s[f] && fixTarget(s, f, choices) === null))
+
+/** The confirmation for "Fix Seerr's settings": every server, old to new. The same words the server confirms (lib/confirm-text.ts, from lib/arr-requests/logic.ts describeFix). */
+export function fixSentence(stale: StaleServer[], choices: FixChoice[]): string {
+  const parts = stale.map(s => `${s.name} (${s.app === 'radarr' ? 'Radarr' : 'Sonarr'}): ${FIELDS.filter(f => s[f]).map(f => `${FIELD_WORD[f]} "${(s[f] as StaleField<unknown>).now}" → "${fixTarget(s, f, choices)}"`).join(', ')}`)
+  return `Change Seerr's settings? ${parts.join('; ')}. Only Seerr's own settings change; nothing in Radarr or Sonarr is touched.`
 }
 
 /** The rows of one group, or all of them. */
