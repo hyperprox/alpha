@@ -550,3 +550,59 @@ test('findLan: excludes every WAN; for the guard only a bridge, VLAN or Ethernet
   assert.equal(await findLan(ctx, ['ether1', 'ether2'], { guard: true }), 'ether5', 'a tunnel is not offered as the LAN')
   assert.equal(await findLan(ctx, ['ether1'], { guard: true }), 'ether2')
 })
+
+test('a rule create that times out client-side but landed on the router is found by its comment and removed before the entries', async () => {
+  const r = fakeRouter()
+  const put = r.put
+  r.put = async (p, body) => { const x = await put(p, body); if (p === '/rest/ip/firewall/filter') throw new Error('request timed out'); return x }
+  const before = OTHERS(r)
+  await assert.rejects(applyGuard(mkDeps(r), ASKED), /timed out/)
+  assert.equal(OTHERS(r), before)
+  assert.ok(!r.filter.some(x => x.comment === GUARD_RULE_COMMENT) && !r.list.some(x => x.list === GUARD_LIST))
+  const firstEntryDelete = r.writes.findIndex(w => w.startsWith('DELETE') && w.includes('/address-list/'))
+  const ruleDelete = r.writes.findIndex(w => w.startsWith('DELETE') && w.includes('/filter/'))
+  assert.ok(ruleDelete >= 0 && ruleDelete < firstEntryDelete, 'rule deleted first')
+})
+
+test('a timed-out rule create whose rule cannot be removed keeps the entries and says the rule is still there', async () => {
+  const r = fakeRouter({ failDeleteFilter: true })
+  const put = r.put
+  r.put = async (p, body) => { const x = await put(p, body); if (p === '/rest/ip/firewall/filter') throw new Error('request timed out'); return x }
+  await assert.rejects(applyGuard(mkDeps(r), ASKED), /STILL on the router/)
+  assert.equal(r.list.filter(x => x.list === GUARD_LIST).length, 2)
+  assert.ok(!r.writes.some(w => w.startsWith('DELETE') && w.includes('/address-list/')))
+})
+
+test('a failure after the rule was created and moved removes the rule, then the entries', async () => {
+  const r = fakeRouter()
+  const post = r.post!
+  r.post = async (p, b) => { await post(p, b); throw new Error('MikroTik returned HTTP 500') }
+  const before = OTHERS(r)
+  await assert.rejects(applyGuard(mkDeps(r), ASKED), /HTTP 500/)
+  assert.equal(OTHERS(r), before)
+  assert.ok(!r.filter.some(x => x.comment === GUARD_RULE_COMMENT) && !r.list.some(x => x.list === GUARD_LIST))
+  const firstEntryDelete = r.writes.findIndex(w => w.startsWith('DELETE') && w.includes('/address-list/'))
+  assert.ok(r.writes.findIndex(w => w.startsWith('DELETE') && w.includes('/filter/')) < firstEntryDelete)
+})
+
+test('a faulty rule replaced by Finish and then rolled back leaves no rule dangling', async () => {
+  const r = fakeRouter()
+  await applyGuard(mkDeps(r), ASKED)
+  const own = r.filter.find(x => x.comment === GUARD_RULE_COMMENT)
+  own.disabled = 'true' // problem: Finish deletes it and adds a fresh one, then the check fails
+  const post = r.post!
+  r.post = async (p, b) => { await post(p, b); throw new Error('MikroTik returned HTTP 500') }
+  await assert.rejects(applyGuard(mkDeps(r), ASKED), /HTTP 500/)
+  assert.ok(!r.filter.some(x => x.comment === GUARD_RULE_COMMENT), 'nothing of ours is left dangling')
+})
+
+test('with several rules of ours, every one is checked: a broken second copy makes the state partial', async () => {
+  const r = fakeRouter()
+  await applyGuard(mkDeps(r), ASKED)
+  const good = r.filter[0]
+  r.filter.splice(1, 0, { ...good, '.id': '*DUP', disabled: 'true' })
+  const v = guardView({ addresses: ADDRESSES, wan: ['ether1'], lan: 'bridge-lan', addressList: r.list, filter: r.filter, users: [], groups: [] })
+  assert.equal(v.state, 'partial'); assert.match(v.ruleProblem ?? '', /switched off/)
+  const v2 = guardView({ addresses: ADDRESSES, wan: ['ether1'], lan: 'bridge-lan', addressList: r.list, filter: [r.filter[0], { ...good, '.id': '*DUP2', 'in-interface': 'ether9' }, ...r.filter.slice(2)], users: [], groups: [] })
+  assert.equal(v2.state, 'partial'); assert.match(v2.ruleProblem ?? '', /ether9/)
+})

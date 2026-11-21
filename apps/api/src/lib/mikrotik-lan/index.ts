@@ -228,11 +228,12 @@ export function guardView(i: {
   // shadowed by an earlier accept and protects nothing.
   const firstForward = i.filter.find(f => f.chain === 'forward' && f.dynamic !== 'true' && f.disabled !== 'true')
   let ruleProblem: string | undefined
-  if (ruleRows.length) {
-    const r = ruleRows[0]
+  // Every rule of ours is checked, not only the first: a second, broken copy is a problem too.
+  for (const r of ruleRows) {
     if (r.disabled === 'true') ruleProblem = 'The guard\'s rule is on the router but switched off.'
     else if (String(r['in-interface'] ?? '') !== iface) ruleProblem = `The guard's rule is on the router but watches ${r['in-interface'] || 'no link'}, not ${iface}.`
     else if (firstForward !== r) ruleProblem = 'The guard\'s rule is on the router but is not the first rule of the forward chain, so earlier rules let traffic past it.'
+    if (ruleProblem) break
   }
   const state = ruleIds.length && !missing.length && !ruleProblem ? 'on' : (ruleIds.length || entryIds.length ? 'partial' : 'off')
   return { ...base, state, plan, missing, ...(ruleProblem ? { ruleProblem } : {}) }
@@ -331,7 +332,7 @@ export async function applyGuard(d: GuardDeps, asked: { interface?: unknown; sub
     if (after.state !== 'on') throw new Error('The router does not show the guard in place and first in the forward chain after the change.')
   } catch (e: any) {
     // Undo exactly what this call made, rule first.
-    await removeAdded(d, addedRule, addedEntries)
+    await removeAdded(d, new Set(v.ruleIds), addedRule, addedEntries)
     await d.audit('mikrotik.lan-guard.apply.failed', { error: String(e?.message ?? e).slice(0, 200) }).catch(() => {})
     throw readOnly(e) ?? e
   }
@@ -340,20 +341,22 @@ export async function applyGuard(d: GuardDeps, asked: { interface?: unknown; sub
 }
 
 /**
- * Roll back what one apply made. The rule goes first and the list entries only once the rule is certainly gone: a drop
- * rule with an empty list would cut off the whole LAN, so if the rule cannot be shown to be gone, the entries stay and
- * the error says how to remove the rule.
+ * Roll back what one apply made. A rule create that failed or timed out client-side may still have happened on the
+ * router, so the rule is not trusted to be "ours" by id alone: after any failure the filter table is read again and
+ * every rule carrying the guard's comment that was not there before this call is removed by its id. The list entries
+ * go only once a final read shows no such rule remains: a drop rule with an empty list would cut off the whole LAN,
+ * so otherwise the entries stay and the error says how to remove the rule.
  */
-async function removeAdded(d: GuardDeps, rule: string | null, entries: string[]): Promise<void> {
-  if (rule) {
-    let gone = true
-    try { await d.router.delete(`/rest/ip/firewall/filter/${rule}`) } catch {
-      gone = await d.router.get('/rest/ip/firewall/filter', 15_000).then(
-        rows => !arr(rows).some(r => String(r['.id']) === rule), () => false)
-    }
-    if (!gone) {
-      throw new Error(`The guard's rule is STILL on the router and HyperProx could not remove it, so its address list was left in place (without it the rule would block your whole network). Remove the rule by hand: in the router's firewall, Filter rules, delete the rule commented "${GUARD_RULE_COMMENT}", then delete the list "${GUARD_LIST}" entries commented "${GUARD_ENTRY_COMMENT}".`)
-    }
+async function removeAdded(d: GuardDeps, before: Set<string>, rule: string | null, entries: string[]): Promise<void> {
+  const maybeOurs = (rows: Row[]) => rows.filter(r => (ours.rule(r) && !before.has(String(r['.id']))) || (rule !== null && String(r['.id']) === rule))
+  const read = () => d.router.get('/rest/ip/firewall/filter', 15_000).then(arr)
+  let clear = false
+  try {
+    for (const r of maybeOurs(await read())) await d.router.delete(`/rest/ip/firewall/filter/${r['.id']}`).catch(() => {})
+    clear = maybeOurs(await read()).length === 0
+  } catch { clear = false }
+  if (!clear) {
+    throw new Error(`The guard's rule is STILL on the router and HyperProx could not remove it, so its address list was left in place (without it the rule would block your whole network). Remove the rule by hand: in the router's firewall, Filter rules, delete the rule commented "${GUARD_RULE_COMMENT}", then delete the list "${GUARD_LIST}" entries commented "${GUARD_ENTRY_COMMENT}".`)
   }
   for (const id of entries) await d.router.delete(`/rest/ip/firewall/address-list/${id}`).catch(() => {})
 }
