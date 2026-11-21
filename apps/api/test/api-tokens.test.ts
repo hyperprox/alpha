@@ -67,6 +67,7 @@ test('tokenForbidden: the refused list', () => {
     ['GET', '/api/secrets'], ['POST', '/api/secrets/reveal'], ['POST', '/api/secrets/send'], ['POST', '/api/secrets/generate'],
     ['GET', '/api/terminal/hosts'], ['PUT', '/api/terminal/credentials/a'], ['GET', '/ws'], ['GET', '/ws/terminal/term'], ['GET', '/ws/updates'],
     ['GET', '/api/secrets/?x=1'],
+    ['POST', '/api/plugins/mikrotik/lan-guard/apply'], ['POST', '/api/plugins/mikrotik/lan-guard/undo'], ['GET', '/api/plugins/mikrotik/lan-guard/apply'],
   ]) assert.equal(tokenForbidden(m, p), true, `${m} ${p}`)
   for (const [m, p] of [
     ['GET', '/api/auth/status'], ['GET', '/api/proxmox/resources'], ['POST', '/api/certs/managed/x/issue'],

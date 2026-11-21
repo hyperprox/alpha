@@ -16,9 +16,9 @@ import { needsReconfirm, requiredRole } from '../src/lib/roles'
 import { describeAction } from '../src/lib/confirm-text'
 import {
   GUARD_ENTRY_COMMENT, GUARD_LIST, GUARD_RULE_COMMENT, GuardRefusal, applyGuard, canWriteFrom, guardView, inSubnet, isSoftwareMac,
-  isStrayAddress, neighbourIndex, networkOf, ownSubnets, portIndex, portText, undoGuard, type GuardRouter,
+  isStrayAddress, neighbourIndex, networkOf, ownSubnets, portIndex, portText, routedSubnets, undoGuard, type GuardRouter,
 } from '../src/lib/mikrotik-lan'
-import { mikrotikPlugin } from '../src/plugins/mikrotik'
+import { mikrotikPlugin, findLan } from '../src/plugins/mikrotik'
 import type { PluginContext } from '../src/lib/plugin-host'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
@@ -37,7 +37,7 @@ const ARP = [
   { address: '10.0.0.20', 'mac-address': '00:00:5E:00:53:20', interface: 'bridge-lan', complete: 'true' },
   { address: '10.0.0.21', 'mac-address': '00:00:5E:00:53:21', interface: 'bridge-lan', complete: 'true' },
   { address: '198.51.100.7', 'mac-address': '02:00:5E:00:53:07', interface: 'bridge-lan', complete: 'true' },
-  { address: '198.51.100.8', 'mac-address': '00:00:5E:00:53:08', interface: 'bridge-lan', complete: 'true', 'last-seen': '4s' },
+  { address: '198.51.100.8', 'mac-address': '00:00:5E:00:53:08', interface: 'bridge-lan', complete: 'true' },
   { address: '203.0.113.1', 'mac-address': '00:00:5E:00:53:99', interface: 'ether1', complete: 'true' },
   { address: '169.254.3.3', 'mac-address': '00:00:5E:00:53:33', interface: 'bridge-lan', complete: 'true' },
 ]
@@ -57,7 +57,8 @@ function detailRouter(over: Record<string, any> = {}) {
     '/rest/system/routerboard': { model: 'RB-test' },
     '/rest/system/health': [],
     '/rest/ip/arp': ARP,
-    '/rest/ip/dhcp-server/lease': [{ address: '10.0.0.20', 'mac-address': '00:00:5E:00:53:20', 'host-name': 'laptop', status: 'bound' }],
+    '/rest/ip/dhcp-server/lease': [{ address: '10.0.0.20', 'mac-address': '00:00:5E:00:53:20', 'host-name': 'laptop', status: 'bound' },
+      { address: '198.51.100.8', 'mac-address': '00:00:5E:00:53:08', status: 'bound', 'last-seen': '4s' }],
     '/rest/interface': [{ name: 'bridge-lan', type: 'bridge', running: 'true' }, { name: 'ether1', type: 'ether', running: 'true' }],
     '/rest/ip/address': ADDRESSES,
     '/rest/ip/firewall/nat': [], '/rest/ip/firewall/filter': [], '/rest/interface/wireguard/peers': [],
@@ -145,7 +146,9 @@ test('detail: a Port column, a neighbour column, Wi-Fi signal, and strays flagge
   const hard = bad.rows.find(r => r.address === '198.51.100.8')!
   assert.match(String(hard.detail), /burned into the hardware/i)
   assert.match(String(hard.detail), /No live connections/)
-  assert.match(String(hard.detail), /last seen 4s/)
+  assert.match(String(hard.detail), /last seen 4s ago by DHCP/)
+  assert.doesNotMatch(String(hard.detail), /first seen/)
+  assert.match(String(soft.detail), /last seen 9s ago on its port/)
   assert.ok(!tables.some(t => t.rows.some(r => r.address === '169.254.3.3')), 'link-local is not a device')
   assert.ok(!tables.some(t => t.rows.some(r => r.address === '203.0.113.1')), 'the upstream gateway is not a device')
 
@@ -177,7 +180,7 @@ test('detail: routers without bridge hosts, Wi-Fi or neighbours simply lose thos
 })
 
 test('detail: a flat network with no strays is unchanged apart from the Port column', async () => {
-  const { ctx } = detailRouter({ '/rest/ip/arp': ARP.slice(0, 2), '/rest/ip/neighbor': [] })
+  const { ctx } = detailRouter({ '/rest/ip/arp': ARP.slice(0, 2), '/rest/ip/neighbor': [], '/rest/ip/dhcp-server/lease': [] })
   const d = await mikrotikPlugin.detail!(ctx)
   const t = d.tables.filter(x => x.title.startsWith('Devices'))
   assert.equal(t.length, 1)
@@ -196,7 +199,7 @@ test('detail makes no write calls to the router', async () => {
 
 // ── the guard, against a router that keeps its tables ────────────────────────
 
-function fakeRouter(opts: { group?: string; failOn?: string; users?: any[]; groups?: any[]; extraFilter?: any[]; extraList?: any[] } = {}) {
+function fakeRouter(opts: { routes?: any[]; failDeleteFilter?: boolean; noPost?: boolean; group?: string; failOn?: string; users?: any[]; groups?: any[]; extraFilter?: any[]; extraList?: any[] } = {}) {
   let n = 100
   const filter: any[] = opts.extraFilter ?? [
     { '.id': '*A', chain: 'input', action: 'accept', comment: 'existing input' },
@@ -208,6 +211,7 @@ function fakeRouter(opts: { group?: string; failOn?: string; users?: any[]; grou
     filter, list, writes, moved: [],
     async get(p) {
       if (p === '/rest/ip/address') return ADDRESSES
+      if (p === '/rest/ip/route') return opts.routes ?? []
       if (p === '/rest/ip/firewall/address-list') return list.map(x => ({ ...x }))
       if (p === '/rest/ip/firewall/filter') return filter.map(x => ({ ...x }))
       if (p === '/rest/user') return opts.users ?? [{ name: 'hp', group: 'writers' }]
@@ -225,6 +229,7 @@ function fakeRouter(opts: { group?: string; failOn?: string; users?: any[]; grou
     },
     async delete(p) {
       writes.push(`DELETE ${p}`)
+      if (opts.failDeleteFilter && p.includes('/filter/')) throw new Error('MikroTik returned HTTP 500')
       const id = p.split('/').pop()!
       const t = p.includes('/address-list/') ? list : filter
       const i = t.findIndex(x => x['.id'] === id); if (i < 0) throw new Error('MikroTik returned HTTP 404')
@@ -237,6 +242,7 @@ function fakeRouter(opts: { group?: string; failOn?: string; users?: any[]; grou
       const [row] = filter.splice(i, 1); filter.splice(j, 0, row); r.moved.push(String(body.numbers)); return null
     },
   }
+  if (opts.noPost) delete r.post
   return r
 }
 
@@ -442,4 +448,105 @@ test('a read-only router login: the page is told plainly (409), nothing is writt
   assert.equal(res.json().code, 'read_only_login')
   assert.match(res.json().error, /can only read/)
   assert.equal(router.writes.length, 0)
+})
+
+// ── review follow-ups ────────────────────────────────────────────────────────
+
+const ROUTES = [
+  { '.id': '*r1', 'dst-address': '0.0.0.0/0', gateway: '203.0.113.1', 'immediate-gw': '203.0.113.1%ether1', active: 'true' },
+  { '.id': '*r2', 'dst-address': '10.0.0.0/24', 'immediate-gw': 'bridge-lan', active: 'true', connect: 'true' },
+  { '.id': '*r3', 'dst-address': '10.50.0.0/16', gateway: '10.0.0.5', 'immediate-gw': '10.0.0.5%bridge-lan', active: 'true' },
+  { '.id': '*r4', 'dst-address': '10.60.0.0/16', gateway: '10.0.0.5', 'immediate-gw': '10.0.0.5%bridge-lan', active: 'true', disabled: 'true' },
+  { '.id': '*r5', 'dst-address': '10.70.0.0/16', gateway: '203.0.113.9', 'immediate-gw': '203.0.113.9%ether1', active: 'true' },
+  { '.id': '*r6', 'dst-address': '10.80.0.0/16', gateway: '10.0.0.6', active: 'false' },
+  { '.id': '*r7', 'dst-address': '10.0.1.0/24', gateway: '10.0.0.7', 'immediate-gw': '10.0.0.7%bridge-lan', active: 'true' },
+]
+const ASKED_ROUTED = { ...ASKED, routed: [{ subnet: '10.50.0.0/16', via: '10.0.0.5' }] }
+
+test('routed networks: a static route via a LAN next hop is allowed too; WAN, disabled, inactive, default and connected ones are not', () => {
+  assert.deepEqual(routedSubnets(ROUTES, ADDRESSES, ['ether1']), [{ subnet: '10.50.0.0/16', via: '10.0.0.5' }])
+})
+
+test('guard plan lists routed networks apart, adds them to the list, and refuses a plan that did not show them', async () => {
+  const r = fakeRouter({ routes: ROUTES })
+  await assert.rejects(applyGuard(mkDeps(r), ASKED), (e: any) => e.code === 'plan_changed')
+  assert.equal(r.writes.length, 0)
+  const out = await applyGuard(mkDeps(r), ASKED_ROUTED)
+  assert.deepEqual(out.added, ['10.0.0.0/24', '10.0.1.0/24', '10.50.0.0/16'])
+  assert.deepEqual(r.list.filter(x => x.list === GUARD_LIST).map(x => x.address), ['10.0.0.0/24', '10.0.1.0/24', '10.50.0.0/16'])
+  const v = guardView({ addresses: ADDRESSES, routes: ROUTES, wan: ['ether1'], lan: 'bridge-lan', addressList: r.list, filter: r.filter, users: [], groups: [] })
+  assert.equal(v.state, 'on'); assert.deepEqual(v.plan!.routed, [{ subnet: '10.50.0.0/16', via: '10.0.0.5' }])
+})
+
+test('the confirmation lists every network, with the routed ones named, and cuts nothing off', () => {
+  const nets = Array.from({ length: 15 }, (_, i) => `10.${i}.0.0/24`)
+  const say = describeAction('POST', `${BASE}/apply`, `${BASE}/apply`, {}, { interface: 'bridge-lan', subnets: nets, routed: [{ subnet: '10.50.0.0/16', via: '10.0.0.5' }] })
+  for (const n of nets) assert.ok(say.includes(n), n)
+  assert.match(say, /also allows 10\.50\.0\.0\/16 reached via 10\.0\.0\.5/)
+})
+
+test('rollback never leaves the drop rule with an empty list: a rule that will not delete keeps its entries and the error says so', async () => {
+  const r = fakeRouter({ failDeleteFilter: true })
+  // Fail the check after the rule is in place (a post that throws), so the rollback runs.
+  r.post = async () => { throw new Error('MikroTik returned HTTP 500') }
+  await assert.rejects(applyGuard(mkDeps(r), ASKED), (e: any) => /STILL on the router/.test(e.message) && /Remove the rule by hand/.test(e.message))
+  assert.ok(r.filter.some(x => x.comment === GUARD_RULE_COMMENT), 'the rule is still there')
+  assert.equal(r.list.filter(x => x.list === GUARD_LIST).length, 2, 'so its list was NOT emptied')
+  assert.ok(!r.writes.some(w => w.startsWith('DELETE') && w.includes('/address-list/')), 'no list entry was deleted')
+})
+
+test('rollback: a rule delete that errors but the re-read shows the rule gone still removes the entries', async () => {
+  const r = fakeRouter()
+  const del = r.delete
+  r.delete = async p => { if (p.includes('/filter/')) { await del(p); throw new Error('MikroTik returned HTTP 500') } return del(p) }
+  r.post = async () => { throw new Error('MikroTik returned HTTP 500') }
+  const before = OTHERS(r)
+  await assert.rejects(applyGuard(mkDeps(r), ASKED), (e: any) => !/STILL on the router/.test(e.message))
+  assert.equal(OTHERS(r), before)
+  assert.ok(!r.list.some(x => x.list === GUARD_LIST))
+})
+
+test('a connection that cannot move the rule fails the apply and leaves nothing at the bottom', async () => {
+  const r = fakeRouter({ noPost: true })
+  const before = OTHERS(r)
+  await assert.rejects(applyGuard(mkDeps(r), ASKED), /top of the forward chain/)
+  assert.equal(OTHERS(r), before)
+  assert.ok(!r.filter.some(x => x.comment === GUARD_RULE_COMMENT) && !r.list.some(x => x.list === GUARD_LIST))
+})
+
+test('"on" needs the rule enabled, first in the forward chain, and on the LAN link; a faulty rule of ours is replaced by Finish', async () => {
+  const r = fakeRouter()
+  await applyGuard(mkDeps(r), ASKED)
+  const view = () => guardView({ addresses: ADDRESSES, wan: ['ether1'], lan: 'bridge-lan', addressList: r.list, filter: r.filter, users: [], groups: [] })
+  assert.equal(view().state, 'on')
+  const rule = r.filter[0]
+  r.filter.splice(0, 1); r.filter.push(rule)
+  assert.equal(view().state, 'partial'); assert.match(view().ruleProblem!, /not the first rule/)
+  r.filter.splice(r.filter.indexOf(rule), 1); r.filter.unshift({ ...rule, disabled: 'true' })
+  assert.equal(view().state, 'partial'); assert.match(view().ruleProblem!, /switched off/)
+  r.filter[0] = { ...rule, 'in-interface': 'ether9' }
+  assert.equal(view().state, 'partial'); assert.match(view().ruleProblem!, /watches ether9/)
+  const out = await applyGuard(mkDeps(r), ASKED)
+  assert.equal(out.changed, true)
+  assert.equal(r.filter.filter(x => x.comment === GUARD_RULE_COMMENT).length, 1)
+  assert.equal(r.filter[0].comment, GUARD_RULE_COMMENT); assert.equal(r.filter[0]['in-interface'], 'bridge-lan')
+  assert.equal(view().state, 'on')
+})
+
+test('only HTTP 401 and 403 are "read-only"; other 4xx errors pass through as themselves', async () => {
+  const r = fakeRouter(); r.put = async () => { throw new Error('MikroTik returned HTTP 400') }
+  await assert.rejects(applyGuard(mkDeps(r), ASKED), (e: any) => !(e instanceof GuardRefusal) && /HTTP 400/.test(e.message))
+  const r2 = fakeRouter(); r2.put = async () => { throw new Error('MikroTik returned HTTP 401') }
+  await assert.rejects(applyGuard(mkDeps(r2), ASKED), (e: any) => e.code === 'read_only_login')
+})
+
+test('findLan: excludes every WAN; for the guard only a bridge, VLAN or Ethernet port unless the setting names another', async () => {
+  const ifaces = [
+    { name: 'ether1', type: 'ether', running: 'true', 'rx-byte': '999' }, { name: 'ether2', type: 'ether', running: 'true', 'rx-byte': '900' },
+    { name: 'wg0', type: 'wg', running: 'true', 'rx-byte': '500' }, { name: 'ether5', type: 'ether', running: 'true', 'rx-byte': '5' },
+  ]
+  const ctx = { get: async () => ifaces, option: () => undefined } as unknown as PluginContext
+  assert.equal(await findLan(ctx, ['ether1', 'ether2']), 'wg0', 'both WANs are excluded')
+  assert.equal(await findLan(ctx, ['ether1', 'ether2'], { guard: true }), 'ether5', 'a tunnel is not offered as the LAN')
+  assert.equal(await findLan(ctx, ['ether1'], { guard: true }), 'ether2')
 })

@@ -54,7 +54,7 @@ export function buildMikrotikRoutes(deps: MikrotikRouteDeps = {}): FastifyPlugin
     // The plug-in's own read helpers want a context; they only ever call get and option.
     const ctx = { get: (p: string, o?: { timeoutMs?: number }) => r.get(p, o?.timeoutMs), post: async () => null, option: (k: string) => opt[k] || undefined, from() { return ctx }, has: () => true } as unknown as PluginContext
     const wan = await findWans(ctx, opt.wan || undefined)
-    const lan = opt.lan || await findLan(ctx, wan[0] ?? null)
+    const lan = opt.lan || await findLan(ctx, wan, { guard: true })
     return { router: r, wan, lan, username: opt.username }
   }
 

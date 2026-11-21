@@ -107,7 +107,7 @@ export interface RouterVisual {
   subnets: Array<{ net: string; uplink: string | null; devices: number; downBps: number; upBps: number; own?: boolean }>
   /** Addresses outside the router's own networks, and the guard that blocks them. Absent from an older API. */
   lan?: {
-    strays: Array<{ address: string; mac: string; net: string; name: string | null; port: string; firstSeen: string | null; lastSeen: string | null; softwareMade: boolean; connections: number }>
+    strays: Array<{ address: string; mac: string; net: string; name: string | null; port: string; lastSeen: string | null; softwareMade: boolean; connections: number }>
     guard: {
       state: 'off' | 'on' | 'partial'
       /** true / false when the router says whether this login may write; null when it does not say. */
@@ -116,7 +116,11 @@ export interface RouterVisual {
       /** The networks the router owns: what the guard lets through. */
       subnets: string[]
       /** Networks the guard's list does not hold yet. */
+      /** Networks reached through a next hop on the LAN; also allowed. */
+      routed: Array<{ subnet: string; via: string }>
       missing: string[]
+      /** Set when the guard's rule is on the router but disabled, not first, or on another link. */
+      ruleProblem?: string
       listName: string
       ruleComment: string
       unavailable?: string

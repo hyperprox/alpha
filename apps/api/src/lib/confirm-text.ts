@@ -13,8 +13,9 @@ type Rule = [method: string | RegExp, path: RegExp, say: (m: RegExpExecArray, p:
 
 const str = (v: unknown, max = 60) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, '').slice(0, max) : '')
 /** The MikroTik LAN guard's confirmation (routes/mikrotik.ts). Kept here, not imported: the demo bundles this file alone. */
-const guardSummary = (iface: string, nets: string[]) =>
-  `Add to the router: the address list "hyperprox-lan" with ${nets.join(', ')}, and one rule at the top of the forward chain that drops traffic coming in on ${iface} from any address not in that list. Nothing else is changed. Undo removes exactly those two things.`
+const guardSummary = (iface: string, nets: string[], routed: Array<{ subnet: string; via: string }> = []) =>
+  `Add to the router: the address list "hyperprox-lan" with ${nets.join(', ')}${routed.length ? `, which also allows ${routed.map(r => `${r.subnet} reached via ${r.via}`).join(', ')}` : ''}, and one rule at the top of the forward chain that drops traffic coming in on ${iface} from any address not in that list. Nothing else is changed. Undo removes exactly those two things.`
+const CIDR = /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/
 const named = (v: unknown, fallback: string) => (str(v) ? `"${str(v)}"` : fallback)
 const guest = (type: string, vmid: string) => `${type === 'qemu' || type === 'vm' ? 'VM' : 'container'} ${vmid}`
 
@@ -165,9 +166,11 @@ const RULES: Rule[] = [
     b?.action === 'shutdown' ? 'Shut down this NAS? Everything stored on it is unreachable until someone presses its power button.'
       : b?.action === 'restart' ? 'Restart this NAS? Everything stored on it is unreachable for 3 to 10 minutes.' : 'Run this action on the NAS?'],
   ['POST', /^\/api\/plugins\/mikrotik\/lan-guard\/apply$/, (_m, _p, b) => {
-    const nets = (Array.isArray(b?.subnets) ? b.subnets : []).map((x: unknown) => String(x)).filter((x: string) => /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(x)).slice(0, 12)
+    const nets = (Array.isArray(b?.subnets) ? b.subnets : []).map((x: unknown) => String(x)).filter((x: string) => CIDR.test(x))
+    const routed = (Array.isArray(b?.routed) ? b.routed : []).map((x: any) => ({ subnet: String(x?.subnet ?? ''), via: String(x?.via ?? '').replace(/[^\w .:%-]/g, '').slice(0, 40) }))
+      .filter((x: { subnet: string; via: string }) => CIDR.test(x.subnet) && x.via)
     const iface = String(b?.interface ?? '').replace(/[^\w .:-]/g, '').slice(0, 40)
-    return nets.length && iface ? guardSummary(iface, nets) : 'Add the LAN guard to the router?'
+    return nets.length && iface ? guardSummary(iface, nets, routed) : 'Add the LAN guard to the router?'
   }],
   ['POST', /^\/api\/plugins\/mikrotik\/lan-guard\/undo$/, () => 'Remove the LAN guard from the router? Exactly the address list "hyperprox-lan" and the one rule HyperProx added are deleted; nothing else is touched.'],
   ['POST', /^\/api\/plugins\/asus\/instances\/[^/]+\/actions$/, () => 'Run this action on the router? Your network may drop for a few minutes.'],

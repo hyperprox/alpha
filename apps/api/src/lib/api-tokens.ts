@@ -164,6 +164,8 @@ export function tokenForbidden(method: string, path: string): boolean {
   if (m !== 'GET' && m !== 'HEAD' && /^\/api\/plugins\/arrstack\/requests(\/|$)/.test(p)) return true
   // Arr Stack folder sorter: the library test, the rules, moves and graduating finished shows, never a token's.
   if (m !== 'GET' && m !== 'HEAD' && /^\/api\/plugins\/arrstack\/router(\/|$)/.test(p)) return true
+  // MikroTik LAN guard (adds and removes a firewall rule on the router): a signed-in admin's act, never a token's.
+  if (/^\/api\/plugins\/mikrotik\/lan-guard(\/|$)/.test(p)) return true
   // Automatic reboots: settings, Reboot now and Make safe are a signed-in admin's act, never a token's.
   if (m !== 'GET' && m !== 'HEAD' && /^\/api\/updates\/reboots\//.test(p)) return true
   // Install updates automatically: the switch is a signed-in admin's act, never a token's.

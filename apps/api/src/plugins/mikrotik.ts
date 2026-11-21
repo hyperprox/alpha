@@ -15,7 +15,7 @@
 import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric, PluginLink } from '../lib/plugin-host'
 import type { RouterVisual } from '../lib/plugin-visual-types'
 import {
-  GUARD_LIST, GUARD_RULE_COMMENT, guardView, isSoftwareMac, isStrayAddress, neighbourIndex, overlaps, ownSubnets,
+  GUARD_LIST, GUARD_RULE_COMMENT, guardView, isSoftwareMac, isStrayAddress, neighbourIndex, overlaps, ownSubnets, routedSubnets,
   portIndex, portText, type GuardView,
 } from '../lib/mikrotik-lan'
 
@@ -142,11 +142,15 @@ function isLanNeighbour(a: any, lan: string[]): boolean {
  * loopback — on a router whose LAN is a single trunk to a switch, that trunk is
  * the honest answer and no bridge would have found it.
  */
-export async function findLan(ctx: PluginContext, wan: string | null): Promise<string | null> {
+export async function findLan(ctx: PluginContext, wan: string[] | string | null, opts: { guard?: boolean } = {}): Promise<string | null> {
   try {
+    const wans = Array.isArray(wan) ? wan : wan ? [wan] : []
     const ifaces: any[] = await ctx.get('/rest/interface')
+    // For the guard, only a bridge, VLAN or Ethernet port is a LAN a person would mean. Anything else (a tunnel, a
+    // PPP link, a virtual interface) is used only when the plug-in's "lan" setting names it.
+    const kinds = opts.guard ? ['bridge', 'vlan', 'ether'] : null
     const usable = ifaces.filter(i =>
-      i.running === 'true' && i.name !== wan && i.type !== 'loopback' && i.disabled !== 'true')
+      i.running === 'true' && !wans.includes(i.name) && i.type !== 'loopback' && i.disabled !== 'true' && (!kinds || kinds.includes(String(i.type))))
     const bridge = usable.find(i => i.type === 'bridge')
     if (bridge) return bridge.name
     const busiest = usable
@@ -393,8 +397,9 @@ export function buildRouterVisual(input: {
 export function guardForPage(g: GuardView): NonNullable<RouterVisual['lan']>['guard'] {
   return {
     state: g.state, canWrite: g.canWrite, interface: g.plan?.interface ?? null, subnets: g.plan?.subnets ?? [],
-    missing: g.missing, listName: GUARD_LIST, ruleComment: GUARD_RULE_COMMENT,
+    routed: g.plan?.routed ?? [], missing: g.missing, listName: GUARD_LIST, ruleComment: GUARD_RULE_COMMENT,
     ...(g.unavailable ? { unavailable: g.unavailable } : {}),
+    ...(g.ruleProblem ? { ruleProblem: g.ruleProblem } : {}),
   }
 }
 
@@ -540,7 +545,7 @@ export const mikrotikPlugin: Plugin = {
    */
   async bandwidth(ctx: PluginContext): Promise<PluginLink[]> {
     const wans = await findWans(ctx, ctx.option('wan'))
-    const lan = ctx.option('lan') || await findLan(ctx, wans[0] ?? null)
+    const lan = ctx.option('lan') || await findLan(ctx, wans)
 
     const wanted = [...wans, lan].filter(Boolean) as string[]
     if (!wanted.length) return []
@@ -645,7 +650,9 @@ export const mikrotikPlugin: Plugin = {
     const lists = await interfaceLists(ctx)
     const ports = portIndex(bridgeHosts, [...wifiOld, ...wifiNew])
     const neighbourBy = neighbourIndex(neighbors)
-    const own = ownSubnets(addresses, wan)
+    const routes = await list('/rest/ip/route')
+    // Networks behind a LAN next hop belong to the router's side too: a device there is not a stray.
+    const own = [...ownSubnets(addresses, wan), ...routedSubnets(routes, addresses, wan).map(r => r.subnet)]
     // Addresses that are not on any of the router's networks, so connection counting also looks at them.
     const strayIps = new Set<string>(arp
       .filter(a => isLanNeighbour(a, lists.lan) && !wan.includes(String(a.interface ?? '')) && isStrayAddress(String(a.address ?? ''), own))
@@ -709,9 +716,8 @@ export const mikrotikPlugin: Plugin = {
       if (d.stray) {
         d.softwareMade = isSoftwareMac(String(d.mac))
         d.connections = connsByIp.get(String(d.address)) ?? 0
-        const seen = (d.arp?.['last-seen'] ?? (d.lastSeen !== '—' ? d.lastSeen : null) ?? (where?.age ? `${where.age} ago` : null)) || null
-        d.lastSeenText = seen
-        d.firstSeenText = d.arp?.['first-seen'] ?? null
+        // ARP rows carry no times. The honest sources are the DHCP lease's last-seen and the bridge host table's age.
+        d.lastSeenText = d.lastSeen !== '—' ? `${d.lastSeen} ago by DHCP` : where?.age ? `${where.age} ago on its port` : null
       }
     }
 
@@ -739,14 +745,13 @@ export const mikrotikPlugin: Plugin = {
       ...(hasStray ? [{ key: 'warning', label: 'Warning' }, { key: 'detail', label: 'Detail' }] : []),
     ]
     const deviceRow = (d: any) => {
-      const { arp: _a, wifi: _w, stray, softwareMade, connections, lastSeenText, firstSeenText, ...row } = d
+      const { arp: _a, wifi: _w, stray, softwareMade, connections, lastSeenText, ...row } = d
       return {
         ...row, iface: d.iface ?? '—', neighbour: d.neighbour || '—',
         warning: stray ? strayText : '—',
         detail: stray ? [
           softwareMade ? 'Software-made address' : 'Address burned into the hardware',
           connections ? `${connections} live connection${connections === 1 ? '' : 's'}` : 'No live connections',
-          firstSeenText ? `first seen ${firstSeenText}` : null,
           lastSeenText ? `last seen ${lastSeenText}` : null,
         ].filter(Boolean).join(' · ') : '—',
       }
@@ -878,13 +883,13 @@ export const mikrotikPlugin: Plugin = {
       .then(m => m.clusterGuestNames())
       .catch(() => new Map<string, string>())
     // The LAN guard: what it would add, whether it is already there, and whether this login may write.
-    const lanIface = ctx.option('lan') || await findLan(ctx, wan[0] ?? null)
-    const guard = guardView({ addresses, wan, lan: lanIface, addressList, filter, users, groups, username: ctx.option('username') })
+    const lanIface = ctx.option('lan') || await findLan(ctx, wan, { guard: true })
+    const guard = guardView({ addresses, routes, wan, lan: lanIface, addressList, filter, users, groups, username: ctx.option('username') })
     const strays = devices.filter(d => d.stray).map(d => ({
       address: String(d.address), mac: String(d.mac), net: subnetOf(String(d.address)) ?? String(d.address),
       name: d.name !== '—' ? String(d.name) : null,
       port: d.port as string,
-      firstSeen: (d.firstSeenText ?? null) as string | null, lastSeen: (d.lastSeenText ?? null) as string | null,
+      lastSeen: (d.lastSeenText ?? null) as string | null,
       softwareMade: Boolean(d.softwareMade), connections: Number(d.connections ?? 0),
     }))
     const visual = buildRouterVisual({

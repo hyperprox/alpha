@@ -26,7 +26,6 @@ export function strayFacts(d: Lan['strays'][number]): string[] {
     `Port ${d.port}`,
     d.softwareMade ? 'Software-made address' : 'Hardware address',
     d.connections ? `${d.connections} live connection${d.connections === 1 ? '' : 's'}` : 'No live connections',
-    ...(d.firstSeen ? [`First seen ${d.firstSeen}`] : []),
     ...(d.lastSeen ? [`Last seen ${d.lastSeen}`] : []),
   ]
 }
@@ -34,19 +33,24 @@ export function strayFacts(d: Lan['strays'][number]): string[] {
 /** What the guard card says and which buttons it offers, from the guard's state. Pure, so it is tested. */
 export function guardCard(g: Lan['guard'], canAct: boolean): {
   headline: string; detail: string; apply: { label: string; disabled: boolean } | null; undo: boolean; note?: string
+  /** Shown as a warning with the Finish button when the guard is only partly in place. */
+  warning?: string
 } {
   const where = g.interface ? ` coming in on ${g.interface}` : ''
+  const routedText = g.routed.length ? ` It also allows ${g.routed.map(r => `${r.subnet} reached via ${r.via}`).join(', ')}.` : ''
   const nets = g.subnets.join(', ')
   const blocked = canAct && g.canWrite === false
     ? 'This router login can only read, so HyperProx cannot add this. Give that router user a group with the write policy first.'
     : !canAct ? 'Only an admin can do this.' : undefined
   if (g.state === 'on') {
-    return { headline: 'Blocked', detail: `The router drops traffic${where} from any address outside ${nets}.`, apply: null, undo: canAct && g.canWrite !== false, note: blocked }
+    return { headline: 'Blocked', detail: `The router drops traffic${where} from any address outside ${nets}.${routedText}`, apply: null, undo: canAct && g.canWrite !== false, note: blocked }
   }
   if (g.state === 'partial') {
+    const why = g.ruleProblem ?? (g.missing.length ? `The guard's list is missing ${g.missing.join(', ')}. Until it is added, traffic from there is dropped too.` : 'The guard is only partly on the router.')
     return {
       headline: 'Partly in place',
-      detail: g.missing.length ? `The guard's list is missing ${g.missing.join(', ')}. Until it is added, traffic from there is dropped too.` : 'The guard is only partly on the router.',
+      warning: why,
+      detail: why,
       apply: g.interface ? { label: 'Finish the guard', disabled: !canAct || g.canWrite === false } : null, undo: canAct && g.canWrite !== false, note: blocked,
     }
   }
@@ -55,7 +59,7 @@ export function guardCard(g: Lan['guard'], canAct: boolean): {
   }
   return {
     headline: 'Not blocked',
-    detail: `Adds the address list "${g.listName}" with ${nets}, and one rule at the top of the forward chain that drops traffic${where} from any other address. Nothing else changes, and Undo removes exactly those two things.`,
+    detail: `Adds the address list "${g.listName}" with ${nets}, and one rule at the top of the forward chain that drops traffic${where} from any other address.${routedText} Nothing else changes, and Undo removes exactly those two things.`,
     apply: { label: 'Block addresses that are not yours', disabled: !canAct || g.canWrite === false }, undo: false, note: blocked,
   }
 }
@@ -64,7 +68,16 @@ export function StrayPanel({ lan, canAct, busy, msg, err, onApply, onUndo }: {
   lan: Lan; canAct: boolean; busy: boolean; msg?: string | null; err?: string | null; onApply: () => void; onUndo: () => void
 }) {
   const card = guardCard(lan.guard, canAct)
+  const warn = card.warning && (
+    <div className={`${s.alert} ${s.alertWarn}`} role="group" aria-label="The LAN guard is only partly in place">
+      <Icon name="warn" size={22} label="Warning" />
+      <div className={s.alertBody}><b>The LAN guard is only partly in place</b><small>{card.warning}</small></div>
+      {card.apply && <div className={s.alertAct}><button type="button" className={`${s.btn} ${s.btnPri}`} disabled={busy || card.apply.disabled} onClick={onApply}>{card.apply.label}</button></div>}
+    </div>
+  )
   return (
+    <>
+    {warn}
     <Panel title="Addresses that are not yours" sub={lan.strays.length ? `${lan.strays.length} FOUND` : 'GUARD ON'} label="Addresses that are not yours">
       {lan.strays.length === 0 ? <p className={s.empty}>No device is using an address outside your networks right now.</p> : (
         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 10 }} aria-label="Devices with addresses outside your networks">
@@ -88,13 +101,14 @@ export function StrayPanel({ lan, canAct, busy, msg, err, onApply, onUndo }: {
         <p style={{ margin: '0 0 6px' }}><b>{card.headline}.</b> {card.detail}</p>
         {card.note && <p className={s.note} style={{ color: 'var(--warn)' }}>{card.note}</p>}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-          {card.apply && <button type="button" className={`${s.btn} ${s.btnPri}`} disabled={busy || card.apply.disabled} onClick={onApply}>{card.apply.label}</button>}
+          {card.apply && !card.warning && <button type="button" className={`${s.btn} ${s.btnPri}`} disabled={busy || card.apply.disabled} onClick={onApply}>{card.apply.label}</button>}
           {card.undo && <button type="button" className={s.btn} disabled={busy} onClick={onUndo}>Undo: remove the guard</button>}
         </div>
         {err && <p role="alert" style={{ color: 'var(--crit)', marginTop: 8 }}>{err}</p>}
         {msg && <p role="status" style={{ marginTop: 8 }}>{msg}</p>}
       </div>
     </Panel>
+    </>
   )
 }
 
@@ -114,7 +128,7 @@ export function LanGuard({ lan, onChanged }: { lan?: RouterVisual['lan']; onChan
   }
   return (
     <StrayPanel lan={lan} canAct={atLeast(role, 'admin')} busy={busy} msg={msg} err={err}
-      onApply={() => run('apply', { interface: lan.guard.interface, subnets: lan.guard.subnets })}
+      onApply={() => run('apply', { interface: lan.guard.interface, subnets: lan.guard.subnets, routed: lan.guard.routed })}
       onUndo={() => run('undo', {})} />
   )
 }

@@ -69,6 +69,43 @@ export function ownSubnets(addresses: Row[], wan: string[]): string[] {
   return [...out].sort()
 }
 
+export interface RoutedSubnet { subnet: string; via: string }
+
+/** The interface a route leaves by: "192.0.2.5%bridge-lan" or "192.0.2.5 reachable via  bridge-lan". */
+function routeInterface(r: Row): string | null {
+  const imm = String(r['immediate-gw'] ?? '')
+  if (imm.includes('%')) return imm.split('%')[1].trim() || null
+  const m = /\bvia\s+(\S+)/.exec(String(r['gateway-status'] ?? ''))
+  return m ? m[1] : null
+}
+
+/**
+ * Networks the router reaches through a next hop on the LAN: a second router, a Docker or Kubernetes host, an SDN or
+ * VPN/Tailscale subnet router. Every active, enabled, non-default route in the main table whose gateway is on a
+ * non-internet interface, and whose destination is not already a connected network. Without these the guard would
+ * drop their traffic.
+ */
+export function routedSubnets(routes: Row[], addresses: Row[], wan: string[]): RoutedSubnet[] {
+  const connected = ownSubnets(addresses, wan)
+  const out = new Map<string, string>()
+  for (const r of routes) {
+    if (r.disabled === 'true' || r.active !== 'true' || r.invalid === 'true' || r.connect === 'true') continue
+    if (r['routing-table'] && r['routing-table'] !== 'main') continue
+    if (r.blackhole === 'true' || r.unreachable === 'true' || r.prohibit === 'true') continue
+    const dst = String(r['dst-address'] ?? '')
+    const net = networkOf(dst)
+    if (!net || net.endsWith('/0')) continue
+    const ip = net.split('/')[0]
+    if (isLinkLocal(ip) || ip.startsWith('127.')) continue
+    const iface = routeInterface(r)
+    if (!iface || wan.includes(iface)) continue
+    if (connected.includes(net)) continue
+    const gw = String(r['immediate-gw'] ?? r.gateway ?? '').split('%')[0].split(' ')[0]
+    if (!out.has(net)) out.set(net, gw || iface)
+  }
+  return [...out.entries()].map(([subnet, via]) => ({ subnet, via })).sort((a, b) => a.subnet.localeCompare(b.subnet))
+}
+
 /** An address outside every one of the router's networks. Unknown networks flag nothing. */
 export function isStrayAddress(ip: string, own: string[]): boolean {
   if (!own.length || toInt(ip) === null || isLinkLocal(ip)) return false
@@ -129,7 +166,14 @@ export function portText(p: { port: string; signal: string | null; wireless: boo
 
 // ── the guard ────────────────────────────────────────────────────────────────
 
-export interface GuardPlan { interface: string; list: string; subnets: string[]; comment: string }
+export interface GuardPlan {
+  interface: string; list: string
+  /** Networks the router is directly on. */
+  subnets: string[]
+  /** Networks reached through a next hop on the LAN. Also allowed, and listed apart so the person sees them. */
+  routed: RoutedSubnet[]
+  comment: string
+}
 
 export interface GuardView {
   state: 'off' | 'on' | 'partial'
@@ -137,6 +181,8 @@ export interface GuardView {
   plan: GuardPlan | null
   /** Networks in the plan that the list does not hold yet. */
   missing: string[]
+  /** The rule is on the router but is disabled, not first in the forward chain, or on another link. */
+  ruleProblem?: string
   /** true / false when the router says whether this login may write; null when it does not say. */
   canWrite: boolean | null
   unavailable?: string
@@ -161,24 +207,40 @@ export function canWriteFrom(users: Row[], groups: Row[], username: string | und
 
 export function guardView(i: {
   addresses: Row[]; wan: string[]; lan: string | null
-  addressList: Row[]; filter: Row[]; users: Row[]; groups: Row[]; username?: string
+  addressList: Row[]; filter: Row[]; users: Row[]; groups: Row[]; username?: string; routes?: Row[]
 }): GuardView {
   const subnets = ownSubnets(i.addresses, i.wan)
+  const routed = routedSubnets(i.routes ?? [], i.addresses, i.wan)
   const entries = i.addressList.filter(e => e.list === GUARD_LIST && e.disabled !== 'true')
   const ruleRows = i.filter.filter(ours.rule)
   const ruleIds = ruleRows.map(r => String(r['.id'])).filter(Boolean)
   const entryIds = i.addressList.filter(ours.entry).map(e => String(e['.id'])).filter(Boolean)
   const held = new Set(entries.map(e => networkOf(String(e.address ?? '')) ?? String(e.address)))
   const base = { ruleIds, entryIds, canWrite: canWriteFrom(i.users, i.groups, i.username) }
-  const iface = ruleRows[0]?.['in-interface'] ? String(ruleRows[0]['in-interface']) : i.lan
+  const iface = i.lan || (ruleRows[0]?.['in-interface'] ? String(ruleRows[0]['in-interface']) : null)
   if (!iface || !subnets.length) {
     return { ...base, state: ruleIds.length || entryIds.length ? 'partial' : 'off', plan: null, missing: [],
       unavailable: !iface ? 'HyperProx could not tell which of the router\'s links is your network.' : 'The router has no network of its own that HyperProx can read.' }
   }
-  const plan: GuardPlan = { interface: iface, list: GUARD_LIST, subnets, comment: GUARD_RULE_COMMENT }
-  const missing = subnets.filter(n => !held.has(n))
-  const state = ruleIds.length && !missing.length ? 'on' : (ruleIds.length || entryIds.length ? 'partial' : 'off')
-  return { ...base, state, plan, missing }
+  const plan: GuardPlan = { interface: iface, list: GUARD_LIST, subnets, routed, comment: GUARD_RULE_COMMENT }
+  const missing = [...subnets, ...routed.map(r => r.subnet)].filter(n => !held.has(n))
+  // "On" means the rule is there, enabled, on this link and first in the forward chain: a rule further down is
+  // shadowed by an earlier accept and protects nothing.
+  const firstForward = i.filter.find(f => f.chain === 'forward' && f.dynamic !== 'true' && f.disabled !== 'true')
+  let ruleProblem: string | undefined
+  if (ruleRows.length) {
+    const r = ruleRows[0]
+    if (r.disabled === 'true') ruleProblem = 'The guard\'s rule is on the router but switched off.'
+    else if (String(r['in-interface'] ?? '') !== iface) ruleProblem = `The guard's rule is on the router but watches ${r['in-interface'] || 'no link'}, not ${iface}.`
+    else if (firstForward !== r) ruleProblem = 'The guard\'s rule is on the router but is not the first rule of the forward chain, so earlier rules let traffic past it.'
+  }
+  const state = ruleIds.length && !missing.length && !ruleProblem ? 'on' : (ruleIds.length || entryIds.length ? 'partial' : 'off')
+  return { ...base, state, plan, missing, ...(ruleProblem ? { ruleProblem } : {}) }
+}
+
+/** The routed networks the person saw, as one comparable string. Missing means none were shown. */
+function askedRouted(v: unknown): string {
+  return (Array.isArray(v) ? v : []).map(x => String((x as any)?.subnet ?? x)).sort().join(',')
 }
 
 export class GuardRefusal extends Error {
@@ -203,14 +265,14 @@ export const READ_ONLY_TEXT = 'The router refused the change: the login HyperPro
 /** Everything the guard needs, read now. Each read that fails is an empty answer, never a thrown error. */
 export async function readGuardInputs(r: GuardRouter) {
   const g = (p: string) => r.get(p, 15_000).then(arr, () => [] as Row[])
-  const [addresses, addressList, filter, users, groups] = await Promise.all([
-    g('/rest/ip/address'), g('/rest/ip/firewall/address-list'), g('/rest/ip/firewall/filter'), g('/rest/user'), g('/rest/user/group'),
+  const [addresses, addressList, filter, users, groups, routes] = await Promise.all([
+    g('/rest/ip/address'), g('/rest/ip/firewall/address-list'), g('/rest/ip/firewall/filter'), g('/rest/user'), g('/rest/user/group'), g('/rest/ip/route'),
   ])
-  return { addresses, addressList, filter, users, groups }
+  return { addresses, addressList, filter, users, groups, routes }
 }
 
 function readOnly(e: any): GuardRefusal | null {
-  return /HTTP 40[13]\b|HTTP 4\d\d/.test(String(e?.message ?? '')) ? new GuardRefusal(409, 'read_only_login', READ_ONLY_TEXT) : null
+  return /HTTP 40[13]\b/.test(String(e?.message ?? '')) ? new GuardRefusal(409, 'read_only_login', READ_ONLY_TEXT) : null
 }
 
 export interface GuardDeps {
@@ -227,18 +289,19 @@ export interface GuardDeps {
  * Order matters: the list first, the rule last, so a failure part-way never leaves a rule that drops everything
  * because its list is empty. A failure undoes what this call added.
  */
-export async function applyGuard(d: GuardDeps, asked: { interface?: unknown; subnets?: unknown }): Promise<{ changed: boolean; added: string[]; message: string }> {
+export async function applyGuard(d: GuardDeps, asked: { interface?: unknown; subnets?: unknown; routed?: unknown }): Promise<{ changed: boolean; added: string[]; message: string }> {
   const inputs = await readGuardInputs(d.router)
   const v = guardView({ ...inputs, wan: d.wan, lan: d.lan, username: d.username })
   if (!v.plan) throw new GuardRefusal(409, 'no_plan', v.unavailable ?? 'There is nothing to add.')
   if (v.canWrite === false) throw new GuardRefusal(409, 'read_only_login', READ_ONLY_TEXT)
   const same = asked.interface === v.plan.interface && Array.isArray(asked.subnets)
     && [...asked.subnets].map(String).sort().join(',') === v.plan.subnets.join(',')
+    && askedRouted(asked.routed) === v.plan.routed.map(r => r.subnet).sort().join(',')
   if (!same) throw new GuardRefusal(409, 'plan_changed', 'The router\'s networks changed since this page was loaded. Reload it and look at the new plan.')
   if (d.wan.includes(v.plan.interface)) throw new GuardRefusal(409, 'wan_interface', 'That link faces the internet; the guard is for your own network.')
   if (v.state === 'on') return { changed: false, added: [], message: 'The guard is already on. Nothing was changed.' }
 
-  await d.audit('mikrotik.lan-guard.apply.start', { interface: v.plan.interface, networks: v.missing, rule: v.ruleIds.length ? 'present' : 'to add' })
+  await d.audit('mikrotik.lan-guard.apply.start', { interface: v.plan.interface, networks: v.missing, rule: v.ruleIds.length && !v.ruleProblem ? 'present' : 'to add' })
   const addedEntries: string[] = []
   let addedRule: string | null = null
   try {
@@ -247,26 +310,52 @@ export async function applyGuard(d: GuardDeps, asked: { interface?: unknown; sub
       const id = idOf(res)
       if (id) addedEntries.push(id)
     }
-    if (!v.ruleIds.length) {
+    if (v.ruleIds.length && v.ruleProblem) {
+      // Our own rule, found by its comment, is wrong: remove it (the list is complete by now, and with the rule gone
+      // nothing is dropped) and add a correct one below.
+      for (const id of v.ruleIds) await d.router.delete(`/rest/ip/firewall/filter/${id}`)
+    }
+    if (!v.ruleIds.length || v.ruleProblem) {
       const res = await d.router.put('/rest/ip/firewall/filter', {
         chain: 'forward', action: 'drop', 'in-interface': v.plan.interface, 'src-address-list': `!${GUARD_LIST}`, comment: GUARD_RULE_COMMENT,
       })
       addedRule = idOf(res)
       if (!addedRule) throw new Error('The router did not say which rule it made.')
-      const first = idOf(inputs.filter.find(f => f.dynamic !== 'true') ?? null)
-      if (first && d.router.post) await d.router.post('/rest/ip/firewall/filter/move', { numbers: addedRule, destination: first })
+      const first = idOf(inputs.filter.find(f => f.dynamic !== 'true' && !v.ruleIds.includes(String(f['.id']))) ?? null)
+      if (first) {
+        if (!d.router.post) throw new Error('This connection cannot move the rule to the top of the forward chain, so it was not left at the bottom.')
+        await d.router.post('/rest/ip/firewall/filter/move', { numbers: addedRule, destination: first })
+      }
     }
     const after = guardView({ ...(await readGuardInputs(d.router)), wan: d.wan, lan: d.lan, username: d.username })
-    if (after.state !== 'on') throw new Error('The router does not show the guard after the change.')
+    if (after.state !== 'on') throw new Error('The router does not show the guard in place and first in the forward chain after the change.')
   } catch (e: any) {
     // Undo exactly what this call made, rule first.
-    if (addedRule) await d.router.delete(`/rest/ip/firewall/filter/${addedRule}`).catch(() => {})
-    for (const id of addedEntries) await d.router.delete(`/rest/ip/firewall/address-list/${id}`).catch(() => {})
+    await removeAdded(d, addedRule, addedEntries)
     await d.audit('mikrotik.lan-guard.apply.failed', { error: String(e?.message ?? e).slice(0, 200) }).catch(() => {})
     throw readOnly(e) ?? e
   }
   await d.audit('mikrotik.lan-guard.apply.done', { interface: v.plan.interface, networks: v.missing }).catch(() => {})
   return { changed: true, added: v.missing, message: `The guard is on: traffic from addresses outside ${v.plan.subnets.join(', ')} is dropped.` }
+}
+
+/**
+ * Roll back what one apply made. The rule goes first and the list entries only once the rule is certainly gone: a drop
+ * rule with an empty list would cut off the whole LAN, so if the rule cannot be shown to be gone, the entries stay and
+ * the error says how to remove the rule.
+ */
+async function removeAdded(d: GuardDeps, rule: string | null, entries: string[]): Promise<void> {
+  if (rule) {
+    let gone = true
+    try { await d.router.delete(`/rest/ip/firewall/filter/${rule}`) } catch {
+      gone = await d.router.get('/rest/ip/firewall/filter', 15_000).then(
+        rows => !arr(rows).some(r => String(r['.id']) === rule), () => false)
+    }
+    if (!gone) {
+      throw new Error(`The guard's rule is STILL on the router and HyperProx could not remove it, so its address list was left in place (without it the rule would block your whole network). Remove the rule by hand: in the router's firewall, Filter rules, delete the rule commented "${GUARD_RULE_COMMENT}", then delete the list "${GUARD_LIST}" entries commented "${GUARD_ENTRY_COMMENT}".`)
+    }
+  }
+  for (const id of entries) await d.router.delete(`/rest/ip/firewall/address-list/${id}`).catch(() => {})
 }
 
 /** Remove exactly the guard's rule and its address-list entries, matched by HyperProx's own comment. */
