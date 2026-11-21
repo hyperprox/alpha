@@ -1198,8 +1198,48 @@ reports, are passed on as they were written.
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, HAProxy, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
 Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic, Tdarr, Plex, the 3proxy
-forward proxy, K3s and a package cache for Updates (below), and three proxies: NGINX, Caddy and Envoy (see [NGINX, Caddy and Envoy](#nginx-caddy-and-envoy)). Websites are not listed here: they have their own section,
+forward proxy, K3s, a package cache for Updates (below), Home Assistant, Immich and Open WebUI (below), and three proxies: NGINX, Caddy and Envoy (see [NGINX, Caddy and Envoy](#nginx-caddy-and-envoy)). Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
+
+**Search.** The Catalogue page has a search box that reads each app's name, category, summary and the words people use for it, so
+"google photos" finds Immich, "chatgpt" finds Open WebUI and "smart home" finds Home Assistant. Every word you type has to match.
+
+#### Home Assistant, Immich and Open WebUI
+
+Three apps that do their own first-run chores, so you land on a working page and not a setup form. Each shows what it needs
+(cores, RAM, disk) before anything is made, keeps every generated password in the vault, can be given a public name with a
+certificate (the same DNS record, proxy host and certificate the Websites wizard makes). When an install fails halfway, its clean-up
+removes what that install made: the machine or container, its public name, the vault item and the plug-in connection.
+
+- **Home Assistant** runs as Home Assistant OS in a virtual machine, the way Home Assistant recommends, because the add-on store
+  and backups only exist there. HyperProx downloads the official image for the node's processor (a pinned release, checked
+  against its published SHA-256 before it is used), makes a UEFI machine (2 cores, 4 GB RAM and a 32 GB disk by default, VirtIO
+  disk and network, the guest agent on, starting with the node), imports the disk and starts it. Then it completes Home
+  Assistant's first-run itself: the owner account with a generated password (in the vault), your home's name, the time zone of the
+  node and your choice of units, a long-lived access token for HyperProx, and your Home Assistant plug-in connected with it.
+  A fixed address is applied through Home Assistant's own network settings. You can pass a Zigbee or Z-Wave stick in: the wizard
+  lists the USB devices plugged into the node you chose (a machine holding one cannot move to another node). A public name needs
+  Home Assistant to trust the proxy (`use_x_forwarded_for` and `trusted_proxies`): HyperProx adds them through the machine's guest
+  agent, checks the configuration, restarts Home Assistant and proves it accepts a forwarded request, and makes the name only then.
+  If it cannot, it says exactly what to add and leaves the name for you.
+- **Immich** is your own photo and video library, like Google Photos. It runs Immich's server, its machine-learning service, PostgreSQL
+  with the vector extension Immich needs and Valkey, in Docker in one unprivileged container, at a pinned release. You choose where
+  the photos live: a new disk, a folder on a NAS, or a folder that already exists on the node (a mounted share, CephFS or a CIFS share);
+  HyperProx checks the folder from the node, and that the container's user can write there, before anything is made. Hardware
+  acceleration is offered only for what the chosen node really has: Intel or AMD graphics (video conversion, and recognition on
+  Intel) or an NVIDIA card (both), and the wizard shows what the node has. HyperProx makes the administrator account itself, makes an
+  API key for itself that can read the numbers and look after the job queues and cannot open a photo, and turns on hardware video
+  conversion in Immich's settings. A public name gets no upload limit and ten-minute timeouts, so large videos from a phone go through.
+- **Open WebUI** is a ChatGPT-style page for the models you run yourself. It runs in Docker in an unprivileged container at a pinned
+  release. It is pointed at the Ollama HyperProx already knows (the one installed from the Catalogue or connected on the AI page), or
+  one you name, checked to list its models before anything is made; with none, the install offers to install Ollama next, and the
+  plug-in connects the two. The administrator is made on Open WebUI's first start from a generated password. Open sign-up is off and
+  new accounts start as pending, so the administrator invites people. A public name gets websockets, no response buffering and long
+  timeouts, so answers appear as they are written.
+
+The Immich and Open WebUI plug-ins are described under [Plug-ins](#plug-ins). The install wizard, the vault and the plug-in
+connection follow the same rules as every other Catalogue install; a connection that already follows another Immich or Open WebUI
+is left alone, and the new one's key is kept in the vault.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
 It asks the places HyperProx already knows serve the web (every enabled proxy host's forward target, and
@@ -1921,6 +1961,8 @@ happened and the site record stays, so **Preview again** offers only what is lef
 | 3proxy | A forward proxy: open connections per protocol (HTTP and SOCKS5), traffic, refusals and who used it; restart, users and allowed networks (see below) |
 | K3s | Each Kubernetes cluster: nodes with CPU and memory rings, pods in trouble (crash loop, an image that cannot be pulled, pending and why, restarting) with their last log lines and a fix for each, workloads with ready against desired, warning events, ingresses and services with their addresses, namespaces, and whether a newer K3s is out. Restart, roll back, scale, delete a pod, cordon, uncordon and drain, each confirmed (see below) |
 | Package cache | How much of what your guests download comes from the cache, hour by hour, the cache disk, the busiest packages and repositories, which guests use it (by name), and the last clean-up; with Updates' **Use the package cache** switch and a fix button for every problem (see below) |
+| Immich | The library at a glance (photos, videos, how the storage splits), who uses how much, the server's version and whether a newer release exists, and every job queue as a bar. A paused queue or failed jobs are problems with a fix button each (resume, restart, clear failed jobs): admin only, confirmed first, audited before it runs and read back after. Connected by itself after a Catalogue install with a key that cannot read a photo |
+| Open WebUI | The models available, whether the Ollama behind it answers (a **Reconnect** button points it at the Ollama HyperProx knows, checked first), and whether open sign-up is off (a **Close sign-up** button). Admin only, confirmed first, audited before it runs and read back after. Connected by itself after a Catalogue install |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health

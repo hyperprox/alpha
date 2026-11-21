@@ -17,6 +17,22 @@ Before the wizard, `POST /api/catalogue/install` with no container ID ran `creat
 The page sent only `{ recipeId }` and showed a confirm box with the size, so none of those choices were
 shown or could be changed.
 
+## Virtual machines and the apps with their own setup
+
+A recipe's `install` is a compose file, a script, or (since Home Assistant OS) `{ kind: 'vm' }`: a virtual machine made from a
+vendor disk image. The wizard's checks are the container's own (node, sizes, ID, hostname, bridge, address, naming settings);
+only the storage rule changes, from "holds containers" to "holds disk images", and the template step becomes the image for the
+node's processor. The job is its own list of steps (`lib/homeassistant/job.ts`): the machine through the API, the disk imported
+over the node login (an API token cannot import a disk or pass a USB device in), the start, the address from the guest agent,
+the first-run chores, and the plug-in connection. A failed install is cleaned up through the machine's own API, after its mark is
+checked, together with its vault item and plug-in connection.
+
+Immich and Open WebUI are Docker installs like the others with a `setup` of their own (`lib/immich/`, `lib/openwebui/`): after the
+install answers they make the administrator, make HyperProx's API key, keep it in the vault, connect the plug-in (never replacing one
+that already follows another instance) and read each result back. Immich reuses the Unmanic and Tdarr code for the node's hardware
+and the library; Open WebUI asks Ollama for its models in the preview. A recipe with `publishable` gets the optional public name
+block in the wizard, and its `proxyAdvanced` is put in the proxy host (no upload limit and long timeouts for Immich).
+
 ## How it works now
 
 | Step | What the person sees | Where it is decided |

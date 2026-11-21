@@ -48,6 +48,23 @@ know or do before they install. Newest entry at the top.
 
 ### Improved
 - **Seerr is named "Seerr (formerly Jellyseerr and Overseerr)"** wherever you read it, and the Catalogue's search finds the Arr Stack when you type jellyseerr, overseerr or requests.
+## 2026-11-21 — Catalogue: Home Assistant, Immich and Open WebUI
+
+### New
+- **Home Assistant in the Catalogue, set up for you.** It installs Home Assistant OS in its own virtual machine, then makes your account, names your home, sets the time zone and units, and connects your Home Assistant plug-in, so you open a working page. The password it makes is kept in the vault. You can pass a Zigbee or Z-Wave stick in from the node.
+  - Technical: first recipe with `install: { kind: 'vm' }` (`lib/homeassistant/`): the pinned HAOS 18.4 `qcow2.xz` for the node's architecture is downloaded on the node, checked against its SHA-256, imported with `qm disk import`, and the machine (q35, OVMF, VirtIO, agent on) is created through the API; USB devices are set with `qm set --usbN` over the node login. Onboarding uses `/api/onboarding/*`, `/auth/token` and, over a small built-in WebSocket client (`lib/homeassistant/ws.ts`, no new dependency), `config/core/update` and `auth/long_lived_access_token`; the plug-in is connected through the existing instance store. A fixed address is applied with the supervisor's `/network/interface/<name>/update`.
+- **A public name for Home Assistant works from the start.** HyperProx lets Home Assistant trust your proxy and proves it before it makes the name. If it cannot do that, it tells you the lines to add and leaves the name for you.
+  - Technical: `http: use_x_forwarded_for` and `trusted_proxies` are appended to `configuration.yaml` through the guest agent only when there is no `http:` section, checked with `check_config`, applied with a restart and proved with a forwarded `/manifest.json` request; any failure puts the file back.
+- **Immich in the Catalogue: your own photo library.** It installs Immich with its search and face recognition, makes the administrator account for you and keeps its password in the vault. You choose where the photos live (a new disk, a NAS folder or a folder on the node) and, only if the node really has it, hardware acceleration.
+  - Technical: `lib/immich/` (pinned v3.4.2, PostgreSQL with VectorChord and pgvecto.rs, Valkey, digests pinned). The library and hardware code is the Unmanic and Tdarr recipes' own (`lib/transcode`); the NVIDIA libraries step is now one shared constant, `NVIDIA_USERLAND_SCRIPT`, unchanged in effect. Setup: `/api/auth/admin-sign-up`, an API key with only server, queue and job permissions, and `ffmpeg.accel` read back.
+- **An Immich plug-in with fix buttons.** It shows photos, videos, storage by user, the version and whether an update exists, and every job queue. A paused queue or failed jobs get a button to resume, restart or clear them.
+  - Technical: plug-in `immich`, routes `/api/plugins/immich/overview` and `/actions` (admin, confirmed in the page, audited before the action, API tokens refused, read back after).
+- **Open WebUI in the Catalogue: a chat page for your own models.** It finds the Ollama HyperProx already knows and connects to it, or offers to install one. The administrator is made for you, and open sign-up is off, so you invite people.
+  - Technical: `lib/openwebui/` (pinned v0.13.4; `WEBUI_ADMIN_EMAIL` and `WEBUI_ADMIN_PASSWORD` create the administrator, `ENABLE_SIGNUP=false`, `ENABLE_API_KEYS=true`); the Ollama is read from the AI page's `ai/ollama/url` and asked for its models in the preview; no Ollama sets `tcFollowUp` to the Ollama recipe.
+- **An Open WebUI plug-in with fix buttons.** It shows the models available and whether the Ollama behind it answers, with a Reconnect button, and whether open sign-up is off, with a button to close it.
+  - Technical: plug-in `openwebui`, routes `/api/plugins/openwebui/overview` and `/actions` (same rules as Immich's); reconnect checks the address with `/ollama/verify`, saves with `/ollama/config/update` and reads it back.
+- **Search in the Catalogue, and a public name for these apps.** Type "google photos", "chatgpt" or "smart home" and the right app appears. The install can also give Immich, Open WebUI and Home Assistant a name and a certificate; for Immich the proxy accepts any upload size and waits long enough for big videos, and for Open WebUI answers stream as they are written.
+  - Technical: recipes carry `keywords`, `publishable` and `proxyAdvanced` (nginx advanced config for the proxy host); options can be menus (`choices`), depend on another answer (`showWhen`) or be filled by the preview only (`hidden`).
 
 ## 2026-11-20 — Updates: automatic reboots
 
