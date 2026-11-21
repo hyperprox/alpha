@@ -332,6 +332,8 @@ test('which Seerr entries are the app HyperProx holds the key for: the same port
   assert.equal(isThatApp({ hostname: '192.0.2.5', port: 7878 }, 'radarr', 'http://192.0.2.5:7878'), true)
   assert.equal(isThatApp({ hostname: 'radarr4k', port: 7879 }, 'radarr', 'http://192.0.2.5:7878'), false, 'a second Radarr (4K) is another entry')
   assert.equal(isThatApp({ hostname: 'other.example', port: 7878 }, 'radarr', 'http://192.0.2.5:7878'), false)
+  for (const h of ['127.0.0.1', '::1', '[::1]', 'localhost']) assert.equal(isThatApp({ hostname: h, port: 7878 }, 'radarr', 'http://192.0.2.5:7878'), true, h + ' on a host-network stack')
+  assert.equal(isThatApp({ hostname: '127.0.0.1', port: 7879 }, 'radarr', 'http://192.0.2.5:7878'), false, 'loopback on another port is another app')
   assert.equal(isThatApp({ hostname: 'radarr', port: 1 }, 'radarr', undefined), true); assert.equal(isThatApp({ hostname: 'x', port: 1 }, 'radarr', undefined), false)
 })
 
@@ -415,6 +417,12 @@ test('routes: a viewer reads without names; an admin sees them; actions need an 
     assert.equal(JSON.parse(flag.body).code, 'confirm_required', 'the page\'s own flag is not a confirmation')
     assert.equal(JSON.parse((await post({ action: 'decline', id: 1 })).body).confirm.summary, 'Decline "Paper Lanterns"? It will not be downloaded.')
     assert.match(JSON.parse((await post({ action: 'retry', id: 5 })).body).confirm.summary, /Send "Copper Hills"|Send "Glass Orchard"|Send "[^"]+" to Radarr or Sonarr again\?/)
+    ;(svc as any).healthMemo = null
+    // With no health reading yet there is nothing to name: the confirmation says to look again, and the action is refused.
+    const early = await post({ action: 'fix-settings', baseId: '0123456789abcdef', choices: [] })
+    assert.match(JSON.parse(early.body).confirm.summary, /^Look at the Requests tab again first/)
+    const earlyDone = await injectConfirmed(a, { method: 'POST', url, headers: { cookie: adm.cookie }, payload: { action: 'fix-settings', baseId: '0123456789abcdef', choices: [] } })
+    assert.equal(earlyDone.statusCode, 409); assert.equal(JSON.parse(earlyDone.body).code, 'look_again')
     // The page's health read comes first; the confirmation then names exactly what changes, from the same plan the action uses.
     const hr = JSON.parse((await a.inject({ method: 'GET', url: '/api/plugins/arrstack/requests/health', headers: { cookie: adm.cookie } })).body).data
     assert.match(hr.staleId, /^[0-9a-f]{16}$/); assert.equal(hr.stale.length, 1)

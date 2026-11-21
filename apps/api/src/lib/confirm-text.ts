@@ -97,7 +97,7 @@ function requestActionSentence(b: any): string {
     case 'approve': return `Approve ${what}? Seerr sends it to Radarr or Sonarr to download.`
     case 'decline': return `Decline ${what}? It will not be downloaded.`
     case 'retry': return `Send ${what} to Radarr or Sonarr again?`
-    case 'fix-settings': return names.requestsFix?.(b?.choices) ?? 'Point Seerr\'s Radarr and Sonarr settings at the quality profile and library folder they have now? Only Seerr\'s own settings change.'
+    case 'fix-settings': return names.requestsFix?.(b?.choices) ?? 'Look at the Requests tab again first: HyperProx cannot say what this would change, so it will not do it.'
     case 'reconnect': return b?.target === 'media'
       ? 'Reconnect Seerr to your media server with the sign-in HyperProx has saved? Only Seerr\'s own settings change.'
       : `Put the ${b?.target === 'sonarr' ? 'Sonarr' : 'Radarr'} key HyperProx has saved back into Seerr? Only Seerr\'s own settings change.`

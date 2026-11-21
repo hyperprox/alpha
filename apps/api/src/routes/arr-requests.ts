@@ -105,6 +105,8 @@ export function buildArrRequestsRoutes(deps: { service?: () => RequestsService |
         choices = c
       } else if (b.baseId !== undefined || b.choices !== undefined) return sendRefusal(reply, 400, 'bad_request', 'Only fixing Seerr\'s settings takes choices.')
       if (action === 'reconnect' && !TARGETS.includes(b.target as Target)) return sendRefusal(reply, 400, 'bad_request', 'Name radarr, sonarr or media.')
+      // Never confirm a fix without naming what it changes: with no fresh reading to name it, look again first.
+      if (action === 'fix-settings' && !svc()?.describeFix(choices)) return sendRefusal(reply, 409, 'look_again', 'Look at the Requests tab again first: HyperProx cannot say what this would change.')
       // The gate has already taken and audited the confirmation; this only makes sure it did.
       if (!(await requireConfirm(req, reply))) return
       if (!limiter.allow(session.email)) return sendRefusal(reply, 429, 'rate_limited', 'Too many changes in a minute. Wait a moment and try again.')

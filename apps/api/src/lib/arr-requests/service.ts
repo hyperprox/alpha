@@ -321,13 +321,15 @@ export class RequestsService {
   }
 }
 
-/** True when a Seerr server entry is the app HyperProx holds the key for: same port, and either the address the plug-in uses or the app's own name on the container network. */
+/** True when a Seerr server entry is the app HyperProx holds the key for: same port, and either the address the plug-in uses the app's own name on the container network, or loopback (a stack on the host network). */
 export function isThatApp(entry: any, app: ArrApp, url?: string): boolean {
   let host = '', port = ''
   try { const u = new URL(url ?? ''); host = u.hostname.toLowerCase(); port = u.port || (u.protocol === 'https:' ? '443' : '80') } catch { /* no address saved */ }
-  const eh = String(entry?.hostname ?? '').toLowerCase()
+  const eh = String(entry?.hostname ?? '').toLowerCase().replace(/^\[|\]$/g, '')
   if (!url) return eh === app
-  return String(entry?.port) === port && (eh === host || eh === app)
+  // A stack on the host network keeps Seerr's entry on loopback while the plug-in uses the LAN address.
+  const loopback = eh === '127.0.0.1' || eh === '::1' || eh === 'localhost'
+  return String(entry?.port) === port && (eh === host || eh === app || loopback)
 }
 
 export { GROUPS }
