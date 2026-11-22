@@ -1,0 +1,88 @@
+{
+ "11111111-aaaa-4aaa-8aaa-000000000001": {
+  "icon": {
+   "path": "",
+   "width": 0,
+   "duration": 0,
+   "position": "bottom-right"
+  },
+  "name": "Example One",
+  "number": 1,
+  "id": "11111111-aaaa-4aaa-8aaa-000000000001",
+  "programs": [
+   {
+    "type": "content",
+    "persisted": true,
+    "duration": 10800000,
+    "id": "22222222-bbbb-4bbb-8bbb-000000000001",
+    "subtype": "movie",
+    "summary": "Invented summary.",
+    "date": "2026-07-23",
+    "rating": "PG",
+    "title": "Example Film A",
+    "start": 1795339374790,
+    "stop": 1795350174790,
+    "uniqueId": "u1",
+    "externalIds": []
+   },
+   {
+    "type": "content",
+    "persisted": true,
+    "duration": 136800000,
+    "id": "22222222-bbbb-4bbb-8bbb-000000000002",
+    "subtype": "movie",
+    "summary": "Invented summary.",
+    "date": "2026-07-23",
+    "rating": "PG",
+    "title": "Example Film B",
+    "start": 1795350174790,
+    "stop": 1795486974790,
+    "uniqueId": "u2",
+    "externalIds": []
+   }
+  ]
+ },
+ "11111111-aaaa-4aaa-8aaa-000000000002": {
+  "icon": {
+   "path": "/images/example.png",
+   "width": 0,
+   "duration": 0,
+   "position": "bottom-right"
+  },
+  "name": "Example Two",
+  "number": 2,
+  "id": "11111111-aaaa-4aaa-8aaa-000000000002",
+  "programs": [
+   {
+    "type": "content",
+    "persisted": true,
+    "duration": 14400000,
+    "id": "22222222-bbbb-4bbb-8bbb-000000000003",
+    "subtype": "movie",
+    "summary": "Invented summary.",
+    "date": "2026-07-23",
+    "rating": "PG",
+    "title": "Example Film C",
+    "start": 1795339374790,
+    "stop": 1795353774790,
+    "uniqueId": "u3",
+    "externalIds": []
+   },
+   {
+    "type": "content",
+    "persisted": true,
+    "duration": 25200000,
+    "id": "22222222-bbbb-4bbb-8bbb-000000000004",
+    "subtype": "movie",
+    "summary": "Invented summary.",
+    "date": "2026-07-23",
+    "rating": "PG",
+    "title": "Example Film D",
+    "start": 1795353774790,
+    "stop": 1795378974790,
+    "uniqueId": "u4",
+    "externalIds": []
+   }
+  ]
+ }
+}

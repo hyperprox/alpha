@@ -1,0 +1,16 @@
+[
+ {
+  "id": "update-xmltv",
+  "name": "UpdateXmlTvTask",
+  "running": false,
+  "lastExecution": "2026-11-22T00:11:07-05:00",
+  "lastExecutionEpoch": 1795324267,
+  "nextExecution": "2026-11-22T04:00:00-05:00",
+  "nextExecutionEpoch": 1795338000
+ },
+ {
+  "id": "cleanup-sessions",
+  "name": "CleanupSessionsTask",
+  "running": false
+ }
+]

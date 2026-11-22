@@ -14,6 +14,8 @@ import { compareVersions, isVersion } from '../app-updates/versions'
 
 /** A guide shorter than this is a problem: a player that asks for tomorrow's schedule gets nothing. */
 export const GUIDE_MIN_HOURS = 24
+/** How far ahead the guide is asked for. */
+export const GUIDE_WINDOW_HOURS = 48
 
 export interface TvProgram { title: string; at: string; until: string }
 export interface TvSession { state: string; viewers: number; who: Array<{ ip: string; agent: string }>; mode: string }
@@ -120,6 +122,17 @@ export function guideHoursOf(status: any, id: string, now: number): number | nul
   return Number.isFinite(end) ? Math.max(0, Math.round(((end - now) / 3_600_000) * 10) / 10) : null
 }
 
+/**
+ * Hours of guide from the programmes themselves, for a Tunarr whose guide status carries no end times (0.12 answers
+ * only lastUpdate and channelIds): the last programme's end, counted from `now`. It is a floor, capped at the window
+ * that was asked for, so a guide that reaches the end of the window reads as that many hours.
+ */
+export function guideHoursFromPrograms(programs: unknown, now: number, capHours: number): number | null {
+  const ends = (Array.isArray(programs) ? programs : []).map(p => num(p?.stop)).filter((x): x is number => x !== null)
+  if (!ends.length) return null
+  return Math.min(capHours, Math.max(0, Math.round(((Math.max(...ends) - now) / 3_600_000) * 10) / 10))
+}
+
 export function sessionsOf(raw: unknown): TvSession[] {
   return (Array.isArray(raw) ? raw : []).map(s => ({
     state: str(s?.state, 20) || 'unknown',
@@ -141,7 +154,7 @@ export function buildLiveTv(r: RawReading, detail: boolean): LiveTv {
     const sessions = sessionsOf(bySession[id] ?? c.sessions)
     const { now: on, next } = nowAndNext(rec(guideBy[id]).programs, now)
     const programCount = Math.max(0, Math.round(num(c.programCount) ?? 0))
-    const hours = guideHoursOf(r.guideStatus, id, now)
+    const hours = guideHoursOf(r.guideStatus, id, now) ?? (guideRead ? guideHoursFromPrograms(rec(guideBy[id]).programs, now, GUIDE_WINDOW_HOURS) : null)
     const problems: string[] = []
     if (programCount === 0) problems.push('It has no programming, so there is nothing to stream.')
     else if (guideRead && !on) problems.push('Nothing is scheduled on it right now, so a player gets no stream.')
@@ -189,7 +202,7 @@ export function buildLiveTv(r: RawReading, detail: boolean): LiveTv {
     if (t.type === 'warning' || t.type === 'error') warnings.push({ level: t.type, text: `Tunarr reports: ${str(name, 60)}${str(t.context, 200) ? ` — ${str(t.context, 200)}` : ''}` })
   }
   if (version.behind === true) warnings.push({ level: 'notice', text: `Tunarr ${version.installed} is behind the newest release, ${version.latest}.` })
-  if (r.guideStatus === undefined || r.guideStatus === null) warnings.push({ level: 'notice', text: 'Tunarr did not report how much guide is published, so the guide length is not checked.' })
+  if (channels.length && channels.every(c => c.guideHours === null)) warnings.push({ level: 'notice', text: 'Tunarr did not report how much guide is published, so the guide length is not checked.' })
 
   const hrs = channels.map(c => c.guideHours).filter((h): h is number => h !== null)
   const tasks: any[] = Array.isArray(r.tasks) ? r.tasks : []
@@ -201,7 +214,7 @@ export function buildLiveTv(r: RawReading, detail: boolean): LiveTv {
       guideShort: short.length, cannotStream: channels.filter(c => !c.canStream).length,
       shortestGuideHours: hrs.length ? Math.min(...hrs) : null,
     },
-    actions: { refreshGuide: tasks.some(t => t?.id === 'UpdateXmlTvTask'), stopSession: true },
+    actions: { refreshGuide: tasks.some(t => t?.id === 'UpdateXmlTvTask' || t?.id === 'update-xmltv'), stopSession: true },
     readAt: new Date(now).toISOString(),
   }
 }

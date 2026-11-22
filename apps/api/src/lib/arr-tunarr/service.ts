@@ -18,7 +18,7 @@
 // =============================================================================
 
 import type { CoreEndpointClient } from '../plugin-host'
-import { buildLiveTv, forViewer, sessionsOf, type LiveTv, type RawReading } from './logic'
+import { GUIDE_WINDOW_HOURS, buildLiveTv, forViewer, sessionsOf, type LiveTv, type RawReading } from './logic'
 
 export class TunarrRefusal extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); this.name = 'TunarrRefusal' }
@@ -36,26 +36,57 @@ export interface TunarrDeps {
   /** Throws when the entry cannot be written: the action then does not run. */
   audit(action: string, details: Record<string, unknown>): Promise<void>
   now(): number
+  /** The whole reading's deadline in ms (default 20 s); tests shorten it. */
+  deadlineMs?: number
 }
 
 const CACHE_MS = 20_000
+const FAIL_CACHE_MS = 15_000
+const READING_DEADLINE_MS = 20_000
 const msg = (e: any) => String(e?.message ?? e).slice(0, 200)
-const TASK = 'UpdateXmlTvTask'
-const GUIDE_WINDOW_MS = 6 * 3_600_000
+
+/** Resolves with the value, or null once `ms` has passed (the timer is always cleared). */
+function within<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise<T | null>(resolve => {
+    const t = setTimeout(() => resolve(null), Math.max(0, ms))
+    p.then(v => { clearTimeout(t); resolve(v) }, () => { clearTimeout(t); resolve(null) })
+  })
+}
 
 export class TunarrService {
   private memo: { at: number; v: LiveTv } | null = null
+  /** A failed reading, kept 15 s so a page that polls a dead Tunarr does not hammer it. */
+  private failed: { at: number; err: unknown } | null = null
+  /** The reading in flight: concurrent callers wait for it instead of starting their own. */
+  private inflight: Promise<LiveTv> | null = null
+  private generation = 0
   private icons = new Map<string, string>()
   constructor(private d: TunarrDeps) {}
 
   async read(admin: boolean): Promise<LiveTv> {
+    const v = await this.shared()
+    return admin ? v : forViewer(v)
+  }
+
+  private shared(): Promise<LiveTv> {
     const now = this.d.now()
-    if (!this.memo || now - this.memo.at >= CACHE_MS) this.memo = { at: now, v: await this.reading() }
-    return admin ? this.memo.v : forViewer(this.memo.v)
+    if (this.memo && now - this.memo.at < CACHE_MS) return Promise.resolve(this.memo.v)
+    if (this.failed && now - this.failed.at < FAIL_CACHE_MS) return Promise.reject(this.failed.err)
+    if (this.inflight) return this.inflight
+    const gen = this.generation
+    const p = this.reading().then(v => {
+      if (gen === this.generation) { this.memo = { at: this.d.now(), v }; this.failed = null }
+      return v
+    }, err => {
+      if (gen === this.generation) this.failed = { at: this.d.now(), err }
+      throw err
+    }).finally(() => { if (this.inflight === p) this.inflight = null })
+    this.inflight = p
+    return p
   }
 
   /** A person has just acted: the next read must look again. */
-  private forget() { this.memo = null }
+  private forget() { this.memo = null; this.failed = null; this.generation++ }
 
   private async reading(): Promise<LiveTv> {
     const c = await this.d.client()
@@ -63,46 +94,70 @@ export class TunarrService {
     if (!c) {
       return { ...buildLiveTv({ now }, false), configured: false, warnings: [] }
     }
-    const soft = async <T>(p: Promise<T>): Promise<T | null> => { try { return await p } catch { return null } }
+    // One deadline for the whole reading: whatever has not answered by then is "unknown", never a hung page.
+    const total = this.d.deadlineMs ?? READING_DEADLINE_MS
+    const t0 = Date.now()
+    const left = () => total - (Date.now() - t0)
     const iso = (t: number) => new Date(t).toISOString()
-    // The channel list is the one answer the tab cannot do without: a failure here is the tab's error.
-    const channels = await c.get('/api/channels', 15_000)
+    // The channel list is the one answer the tab cannot do without: no answer here is the tab's error.
+    // A real error from Tunarr (HTTP 500, refused) is passed on as it is; only silence becomes "did not answer in time".
+    const channels = await new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new TunarrRefusal(504, 'tunarr_slow', 'Tunarr did not answer in time. It may be down, or the saved address may be wrong.')), Math.max(0, Math.min(15_000, left())))
+      c.get('/api/channels', 15_000).then(v => { clearTimeout(t); resolve(v) }, e => { clearTimeout(t); reject(e) })
+    })
+    const soft = <T>(p: Promise<T>): Promise<T | null> => within(p, left())
     const [version, guideStatus, guide, sessions, health, sources, tasks, latest] = await Promise.all([
       soft(c.get('/api/version', 10_000)),
       soft(c.get('/api/guide/status', 20_000)),
-      soft(c.get(`/api/guide/channels?dateFrom=${encodeURIComponent(iso(now))}&dateTo=${encodeURIComponent(iso(now + GUIDE_WINDOW_MS))}`, 20_000)),
+      soft(c.get(`/api/guide/channels?dateFrom=${encodeURIComponent(iso(now))}&dateTo=${encodeURIComponent(iso(now + GUIDE_WINDOW_HOURS * 3_600_000))}`, 20_000)),
       soft(c.get('/api/sessions', 10_000)),
       soft(c.get('/api/system/health', 15_000)),
-      soft(this.sourceStates(c)),
-      soft(c.get('/api/tasks', 10_000)),
+      // Bounds itself (the list and every status stop at the deadline), so a slow status leaves "unknown", not no sources.
+      this.sourceStates(c, left).catch(() => null),
+      soft(this.guideTasks(c).then(t => t?.list ?? null)),
       soft(this.d.latest()),
     ])
     const tv = buildLiveTv({ version, channels, guideStatus, guide, sessions, health, sources, tasks, latest, now }, true)
     this.icons = new Map((Array.isArray(channels) ? channels : []).filter((x: any) => typeof x?.icon?.path === 'string' && x.icon.path.startsWith('/') && !x.icon.path.startsWith('//')).map((x: any) => [String(x.id), String(x.icon.path)]))
+    this.iconsKnown = true
     return tv
   }
 
-  private async sourceStates(c: CoreEndpointClient): Promise<Array<{ source: any; status: any }>> {
-    const list = await c.get('/api/media-sources', 10_000)
-    const out: Array<{ source: any; status: any }> = []
-    for (const s of (Array.isArray(list) ? list : []).slice(0, 12)) {
-      const id = String(s?.id ?? '')
-      if (!/^[A-Za-z0-9-]{1,64}$/.test(id)) continue
-      let status: any = null
-      try { status = await c.get(`/api/media-sources/${id}/status`, 12_000) } catch { /* unknown */ }
-      out.push({ source: s, status })
+  private iconsKnown = false
+
+  /**
+   * Tunarr's task list and which spelling this release uses: 2026.11 answers /api/tasks (id UpdateXmlTvTask), the 0.12
+   * line /api/jobs (id update-xmltv). Null when neither lists the guide task.
+   */
+  private async guideTasks(c: CoreEndpointClient): Promise<{ list: any[]; runPath: string } | null> {
+    for (const [base, id] of [['/api/tasks', 'UpdateXmlTvTask'], ['/api/jobs', 'update-xmltv']] as const) {
+      try {
+        const t = await c.get(base, 10_000)
+        const list = Array.isArray(t) ? t : []
+        if (list.some(x => x?.id === id)) return { list, runPath: `${base}/${id}/run` }
+      } catch { /* try the other spelling */ }
     }
-    return out
+    return null
   }
 
-  /** One channel's icon, or null. The path is the one Tunarr gave for that channel in the last reading. */
+  /** Every media source's status in parallel, each cut off at the reading's deadline: an unfinished one is "unknown". */
+  private async sourceStates(c: CoreEndpointClient, left: () => number): Promise<Array<{ source: any; status: any }>> {
+    const list = await within(c.get('/api/media-sources', 10_000), left())
+    const rows = (Array.isArray(list) ? list : []).slice(0, 12).filter(s => /^[A-Za-z0-9-]{1,64}$/.test(String(s?.id ?? '')))
+    return Promise.all(rows.map(async source => ({ source, status: await within(c.get(`/api/media-sources/${String(source.id)}/status`, 12_000), left()) })))
+  }
+
+  /**
+   * One channel's icon, or null. The path is the one Tunarr gave for that channel in the last reading. An id Tunarr
+   * never listed answers null without a look at Tunarr; only when nothing has been read yet does it share a reading.
+   */
   async icon(id: string): Promise<{ contentType: string; body: Buffer } | null> {
     if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) return null
-    const c = await this.d.client()
-    if (!c?.image) return null
-    if (!this.icons.has(id)) await this.read(true).catch(() => null)
+    if (!this.iconsKnown) await this.shared().catch(() => null)
     const p = this.icons.get(id)
     if (!p) return null
+    const c = await this.d.client()
+    if (!c?.image) return null
     try { return await c.image(p, 10_000) } catch { return null }
   }
 
@@ -119,13 +174,13 @@ export class TunarrService {
   }
 
   private async refreshGuide(c: CoreEndpointClient, by: string): Promise<ActResult> {
-    let tasks: any[]
-    try { const t = await c.get('/api/tasks', 10_000); tasks = Array.isArray(t) ? t : [] } catch (e) {
+    let task: { list: any[]; runPath: string } | null
+    try { task = await this.guideTasks(c) } catch (e) {
       throw new TunarrRefusal(502, 'tunarr_down', `Tunarr did not answer (${msg(e)}). Nothing was changed.`)
     }
-    if (!tasks.some(t => t?.id === TASK)) throw new TunarrRefusal(409, 'no_task', 'This Tunarr has no guide task to run (it may be too old). Open its own Settings, Tasks page to rebuild the guide there.')
+    if (!task) throw new TunarrRefusal(409, 'no_task', 'This Tunarr has no guide task to run (it may be too old). Open its own Settings, Tasks page to rebuild the guide there.')
     await this.d.audit('arr.tunarr.refresh-guide', { by })
-    await c.post!(`/api/tasks/${TASK}/run`, {}, 20_000)
+    await c.post!(task.runPath, {}, 20_000)
     this.forget()
     // Tunarr runs it in the background. Say what the guide holds now, so the page never claims more than it saw.
     const notes: string[] = ['Tunarr runs this in the background. Look at the tab again in a minute for the new guide length.']

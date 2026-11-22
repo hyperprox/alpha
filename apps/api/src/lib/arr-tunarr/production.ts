@@ -14,13 +14,26 @@ import { TunarrService } from './service'
 
 export const TUNARR_RELEASES = 'https://api.github.com/repos/chrisbenincasa/tunarr/releases/latest'
 
-/** The newest stable release's number, or null. */
-export async function latestTunarr(get: (url: string) => Promise<any> = u => fetchJson(u)): Promise<string | null> {
-  try {
-    const r = await get(TUNARR_RELEASES)
-    return typeof r?.tag_name === 'string' ? r.tag_name : null
-  } catch { return null }
+const LATEST_FAIL_MS = 10 * 60_000
+
+/**
+ * The newest stable release's number, or null. A failed lookup (GitHub's anonymous allowance used up, offline) is
+ * remembered for ten minutes, so a page that polls does not ask again every time; a good answer is cached by
+ * lib/app-updates/net.ts. `now` is for tests.
+ */
+export function makeLatestTunarr(get: (url: string) => Promise<any> = u => fetchJson(u), now: () => number = Date.now): () => Promise<string | null> {
+  let failedAt: number | null = null
+  return async () => {
+    if (failedAt !== null && now() - failedAt < LATEST_FAIL_MS) return null
+    try {
+      const r = await get(TUNARR_RELEASES)
+      if (typeof r?.tag_name === 'string') { failedAt = null; return r.tag_name }
+      failedAt = now(); return null
+    } catch { failedAt = now(); return null }
+  }
 }
+
+export const latestTunarr = makeLatestTunarr()
 
 let shared: TunarrService | null = null
 

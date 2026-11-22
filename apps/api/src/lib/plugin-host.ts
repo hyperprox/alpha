@@ -26,6 +26,19 @@ export interface PluginSetting {
   hint?:    string
   /** A heading the settings form shows above this setting and the ones after it. */
   section?: string
+  /** An address that must be http or https and carry no login in it (a saved value is checked on save). */
+  webAddress?: boolean
+}
+
+/** Why a saved address is refused, in words, or null. Empty is fine (it clears the setting). */
+export function webAddressProblem(label: string, v: string): string | null {
+  const t = v.trim()
+  if (!t) return null
+  let u: URL
+  try { u = new URL(t) } catch { return `${label} must be a full web address such as http://example-host:8000.` }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return `${label} must start with http:// or https://.`
+  if (u.username || u.password) return `${label} must not have a user name or password in it.`
+  return null
 }
 
 /** How the host authenticates this plug-in's HTTP calls on its behalf. */
@@ -514,6 +527,13 @@ export async function saveSettings(
     const owned = [manifest.baseUrlSetting, ...authSecrets(manifest.auth)]
     const hit = owned.filter(k => values[k] !== undefined && values[k] !== '')
     if (hit.length) throw new PluginSettingsError(`${manifest.name}'s ${hit.join(' and ')} are set on its own page, not here.`)
+  }
+  for (const setting of manifest.settings) {
+    const v = values[setting.key]
+    if (setting.webAddress && typeof v === 'string') {
+      const bad = webAddressProblem(setting.label, v)
+      if (bad) throw new PluginSettingsError(bad)
+    }
   }
   const problem = settingsChangeProblem(manifest, await getSettings(manifest.id), values)
   if (problem) throw new PluginSettingsError(problem)

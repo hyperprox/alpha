@@ -1,0 +1,5 @@
+{
+ "tunarr": "0.12.2",
+ "ffmpeg": "n7.1-example",
+ "nodejs": "20.15.1"
+}

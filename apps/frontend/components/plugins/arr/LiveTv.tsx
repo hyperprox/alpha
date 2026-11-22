@@ -12,14 +12,14 @@
 //  tab is visible. No address of Tunarr or of its media sources is ever on this page.
 // =============================================================================
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
 import { IN_PAGE } from '@/lib/confirm-bus'
 import { useSession } from '@/lib/session'
 import { Panel, Pill, RingGauge, styles as s } from '@/components/visual/kit'
 import c from './livetv.module.css'
 import {
-  ACT_LABEL, confirmText, guideFill, guideWord, iconPath, untilWord, versionWord, viewersWord,
+  ACT_LABEL, confirmText, guideFill, pollDue, guideWord, iconPath, untilWord, versionWord, viewersWord,
   type Act, type ActResult, type LiveTv, type TvChannel,
 } from './livetv-view'
 
@@ -126,14 +126,20 @@ export function ArrLiveTv() {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<ActResult | null>(null)
 
+  // One reading at a time: a poll that finds the last one still running is skipped, never queued behind it.
+  const loading = useRef(false)
   const load = useCallback(async () => {
-    const r = await apiJson<{ data: LiveTv }>('/api/plugins/arrstack/tunarr')
-    if (!r.ok || !r.body?.data) { setErr(r.error ?? 'Tunarr could not be read.'); return }
-    setErr(null); setTv(r.body.data)
+    if (loading.current) return
+    loading.current = true
+    try {
+      const r = await apiJson<{ data: LiveTv }>('/api/plugins/arrstack/tunarr')
+      if (!r.ok || !r.body?.data) { setErr(r.error ?? 'Tunarr could not be read.'); return }
+      setErr(null); setTv(r.body.data)
+    } finally { loading.current = false }
   }, [])
   useEffect(() => {
     void load()
-    const t = setInterval(() => { if (!document.hidden) void load() }, 20_000)
+    const t = setInterval(() => { if (pollDue(document.hidden, loading.current)) void load() }, 20_000)
     return () => clearInterval(t)
   }, [load])
 

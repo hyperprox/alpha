@@ -412,7 +412,7 @@ export const arrstackPlugin: Plugin = {
       { key: 'seerr_url',    label: 'Seerr address (formerly Jellyseerr and Overseerr)', type: 'url', required: false,
         hint: 'Optional. Shows people\'s requests on the Requests tab, and lets the folder sorter see which folders they arrive in.' },
       { key: 'seerr_key',    label: 'Seerr API key (formerly Jellyseerr and Overseerr)',    type: 'secret', required: false, hint: 'Seerr → Settings → General → API Key.' },
-      { key: 'tunarr_url',   label: 'Tunarr address', type: 'url', required: false,
+      { key: 'tunarr_url',   label: 'Tunarr address', type: 'url', required: false, webAddress: true,
         hint: 'Optional, for live TV: http://example-host:8000. Tunarr has no API key. Shows channels, the guide and who is streaming on the Live TV tab. A Tunarr protected with a basic-auth login is not supported yet.' },
       { key: 'prowlarr_url', label: 'Prowlarr address', type: 'url',    required: false, hint: 'Enables Search across every indexer.' },
       { key: 'prowlarr_key', label: 'Prowlarr API key', type: 'secret', required: false },

@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { ChannelCard, ConfirmBox, LiveTvView } from '../components/plugins/arr/LiveTv'
-import { confirmText, guideFill, guideWord, iconPath, versionWord, viewersWord, type LiveTv, type TvChannel } from '../components/plugins/arr/livetv-view'
+import { confirmText, guideFill, pollDue, guideWord, iconPath, versionWord, viewersWord, type LiveTv, type TvChannel } from '../components/plugins/arr/livetv-view'
 
 const noop = () => {}
 const CH = 'aaaaaaaa-1111-4111-8111-111111111111'
@@ -96,4 +96,10 @@ test('no address or key of Tunarr is in the tab\'s source', () => {
   const dir = path.join(__dirname, '..', 'components', 'plugins', 'arr')
   const src = ['LiveTv.tsx', 'livetv-view.ts'].map(f => fs.readFileSync(path.join(dir, f), 'utf8')).join('\n')
   assert.doesNotMatch(src, /tunarr_url|192\.168\.|https?:\/\/(?!github)/)
+})
+
+test('polling: a tick is skipped while the tab is hidden or the last reading is still running, and the tab guards its load with one flag', () => {
+  assert.equal(pollDue(false, false), true); assert.equal(pollDue(true, false), false); assert.equal(pollDue(false, true), false); assert.equal(pollDue(true, true), false)
+  const src = fs.readFileSync(path.join(__dirname, '..', 'components', 'plugins', 'arr', 'LiveTv.tsx'), 'utf8')
+  assert.match(src, /if \(loading\.current\) return/); assert.match(src, /finally \{ loading\.current = false \}/); assert.match(src, /pollDue\(document\.hidden, loading\.current\)/)
 })

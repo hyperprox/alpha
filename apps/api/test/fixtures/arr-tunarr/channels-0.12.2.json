@@ -1,0 +1,52 @@
+[
+ {
+  "disableFillerOverlay": true,
+  "duration": 46515998,
+  "groupTitle": "Example Group",
+  "guideMinimumDuration": 300,
+  "icon": {
+   "path": "",
+   "width": 0,
+   "duration": 0,
+   "position": "bottom-right"
+  },
+  "id": "11111111-aaaa-4aaa-8aaa-000000000001",
+  "name": "Example One",
+  "number": 1,
+  "offline": {
+   "mode": "pic"
+  },
+  "startTime": 1787847970000,
+  "stealth": false,
+  "onDemand": {
+   "enabled": false
+  },
+  "programCount": 7,
+  "streamMode": "hls"
+ },
+ {
+  "disableFillerOverlay": true,
+  "duration": 1804455561,
+  "groupTitle": "Example Group",
+  "guideMinimumDuration": 300,
+  "icon": {
+   "path": "/images/example.png",
+   "width": 0,
+   "duration": 0,
+   "position": "bottom-right"
+  },
+  "id": "11111111-aaaa-4aaa-8aaa-000000000002",
+  "name": "Example Two",
+  "number": 2,
+  "offline": {
+   "mode": "pic"
+  },
+  "startTime": 1793662717000,
+  "stealth": false,
+  "onDemand": {
+   "enabled": false
+  },
+  "programCount": 250,
+  "streamMode": "hls"
+ }
+]

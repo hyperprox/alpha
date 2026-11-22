@@ -65,3 +65,6 @@ export function confirmText(a: Act, channelName?: string): string {
   if (a.action === 'refresh-guide') return 'Rebuild Tunarr\'s TV guide now? Tunarr re-reads every channel\'s schedule in the background and rewrites its guide file. Nothing is deleted.'
   return `Stop the stream on ${channelName ? `channel ${channelName}` : 'this channel'}? Tunarr ends its ffmpeg, so anyone watching it is cut off until their player reconnects. Nothing is deleted.`
 }
+
+/** Whether a timer tick should read Tunarr: not while the tab is hidden, and not while the last reading is still running. */
+export const pollDue = (hidden: boolean, loading: boolean): boolean => !hidden && !loading

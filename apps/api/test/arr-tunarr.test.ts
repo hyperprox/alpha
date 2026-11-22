@@ -13,10 +13,12 @@ import { injectConfirmed } from './fakes/confirm'
 import { buildArrTunarrRoutes } from '../src/routes/arr-tunarr'
 import { GUIDE_MIN_HOURS, buildLiveTv, forViewer, guideHoursOf, nowAndNext, splitVersion, versionState } from '../src/lib/arr-tunarr/logic'
 import { TunarrRefusal, TunarrService, type TunarrDeps } from '../src/lib/arr-tunarr/service'
-import { latestTunarr } from '../src/lib/arr-tunarr/production'
+import { makeLatestTunarr } from '../src/lib/arr-tunarr/production'
 import { DETECT_SCRIPT, imageTag, parseDetect, tunarrProvider } from '../src/lib/arr-tunarr/provider'
 import { arrstackPlugin } from '../src/plugins/arrstack'
-import { appUpdateProviders, type AppContext, type CoreEndpointClient } from '../src/lib/plugin-host'
+import { appUpdateProviders, saveSettings, webAddressProblem, PluginSettingsError, type AppContext, type CoreEndpointClient } from '../src/lib/plugin-host'
+import fs from 'node:fs'
+import path from 'node:path'
 import { signIn } from './fakes/app'
 import { FakeBroker } from './fakes/fake-broker'
 import { setBroker } from '../src/lib/vault/broker'
@@ -52,6 +54,10 @@ interface Fake {
   channels: any[]; guideEnd: Record<string, number>; programs: Record<string, any[]>; sessions: Record<string, any[]>
   version: string; health: Record<string, any>; sources: Array<{ id: string; name: string; type: string; healthy: boolean | null }>
   tasks: any[]; down: Set<string>; calls: string[]; keepSessions: boolean
+  /** Paths whose request never resolves (a hung Tunarr). */
+  hang: Set<string>; delayMs: Record<string, number>
+  /** 0.12's task list, answered at /api/jobs. */
+  jobs?: any[]
 }
 const prog = (title: string, from: number, to: number, type = 'content') => ({ type, title, start: from, stop: to })
 
@@ -68,12 +74,14 @@ function fake(o: Partial<Fake> = {}): { f: Fake; client: CoreEndpointClient } {
     },
     sessions: { [CH1]: [{ type: 'hls', state: 'started', numConnections: 2, connections: [{ ip: '198.51.100.7', userAgent: 'Example Player/1.0' }, { ip: '198.51.100.8' }] }] },
     version: '2026.11.1', health: {}, sources: [{ id: 'src1', name: 'Library Server', type: 'plex', healthy: true }],
-    tasks: [{ id: 'UpdateXmlTvTask', name: 'UpdateXmlTvTask' }], down: new Set(), calls: [], keepSessions: false, ...o,
+    tasks: [{ id: 'UpdateXmlTvTask', name: 'UpdateXmlTvTask' }], down: new Set(), calls: [], keepSessions: false, hang: new Set(), delayMs: {}, ...o,
   }
   const get = async (path: string): Promise<any> => {
     const u = new URL(path, 'http://tunarr.invalid')
     f.calls.push(`GET ${u.pathname}`)
     if (f.down.has(u.pathname)) throw new Error('Arr Stack returned HTTP 500')
+    if (f.hang.has(u.pathname)) return new Promise(() => {})
+    if (f.delayMs[u.pathname]) await new Promise(r => setTimeout(r, f.delayMs[u.pathname]))
     if (u.pathname === '/api/channels') return f.channels
     if (u.pathname === '/api/version') return { tunarr: f.version, ffmpeg: '7.1' }
     if (u.pathname === '/api/guide/status') return { guideTimes: Object.fromEntries(Object.entries(f.guideEnd).map(([k, v]) => [k, { start: new Date(NOW).toISOString(), end: new Date(v).toISOString() }])) }
@@ -84,6 +92,7 @@ function fake(o: Partial<Fake> = {}): { f: Fake; client: CoreEndpointClient } {
     const m = /^\/api\/media-sources\/([^/]+)\/status$/.exec(u.pathname)
     if (m) { const s = f.sources.find(x => x.id === m[1]); if (!s || s.healthy === null) throw new Error('timeout'); return s.healthy ? { healthy: true } : { healthy: false, status: 'unreachable' } }
     if (u.pathname === '/api/tasks') return f.tasks
+    if (u.pathname === '/api/jobs' && f.jobs) return f.jobs
     throw new Error(`no such route ${u.pathname}`)
   }
   const client = {
@@ -182,7 +191,7 @@ test('version comparison: current, edge build, unreadable and unknown latest nev
 })
 
 test('a part Tunarr does not answer is left out; the channel list failing is the tab\'s error', async () => {
-  const { svc } = rig({ down: new Set(['/api/guide/status', '/api/sessions', '/api/version', '/api/media-sources', '/api/tasks']) })
+  const { svc } = rig({ down: new Set(['/api/guide/status', '/api/guide/channels', '/api/sessions', '/api/version', '/api/media-sources', '/api/tasks', '/api/jobs']) })
   const tv = await svc.read(true)
   assert.equal(tv.channels.length, 2); assert.equal(tv.channels[0].guideHours, null); assert.equal(tv.version.installed, null)
   assert.ok(tv.warnings.some(w => /did not report how much guide is published/.test(w.text)))
@@ -409,9 +418,114 @@ test('provider: behind means a blocking issue that sends the update through the 
   assert.match(tunarrProvider.rollback(latestInstall, null), /Nothing here changes Tunarr/)
 })
 
-test('the newest release is the GitHub tag, and a failure is "unknown", never an error', async () => {
-  assert.equal(await latestTunarr(async () => ({ tag_name: 'v2026.11.2' })), 'v2026.11.2')
-  assert.equal(await latestTunarr(async () => { throw new Error('offline') }), null)
-  assert.equal(await latestTunarr(async () => ({})), null)
+test('the newest release is the GitHub tag; a failure is "unknown" and is not asked again for ten minutes', async () => {
+  assert.equal(await makeLatestTunarr(async () => ({ tag_name: 'v2026.11.2' }))(), 'v2026.11.2')
+  assert.equal(await makeLatestTunarr(async () => ({}))(), null)
+  let t = NOW, calls = 0
+  const latest = makeLatestTunarr(async () => { calls++; throw new Error('offline') }, () => t)
+  assert.equal(await latest(), null); assert.equal(await latest(), null); assert.equal(calls, 1)
+  t += 9 * 60_000; await latest(); assert.equal(calls, 1)
+  t += 2 * 60_000; await latest(); assert.equal(calls, 2)
   assert.equal(buildLiveTv({ now: NOW, latest: 'v2026.11.2' }, true).version.behind, null)
+})
+
+// ── a hung or slow Tunarr, shared and cached readings ─────────────────────────────────────────
+
+const count = (f: Fake, p: string) => f.calls.filter(c => c === `GET ${p}`).length
+
+test('a Tunarr that never answers: the reading gives up at its deadline with a plain error, and the failure is cached for 15 s', async () => {
+  const { svc, f, setNow } = rig({ hang: new Set(['/api/channels']) }, { deadlineMs: 150 })
+  const t0 = Date.now()
+  await assert.rejects(svc.read(true), (e: any) => e.code === 'tunarr_slow' && /did not answer in time/.test(e.message))
+  assert.ok(Date.now() - t0 < 1500, 'returned within the deadline')
+  assert.equal(count(f, '/api/channels'), 1)
+  await assert.rejects(svc.read(true), (e: any) => e.code === 'tunarr_slow'); assert.equal(count(f, '/api/channels'), 1, 'cached failure: no second call')
+  setNow(NOW + 16_000)
+  f.hang.clear()
+  assert.equal((await svc.read(true)).channels.length, 2); assert.equal(count(f, '/api/channels'), 2, 'after 15 s it looks again')
+})
+
+test('parts that hang are "unknown" under ONE overall deadline: three slow media sources do not add up', async () => {
+  const sources = [1, 2, 3].map(i => ({ id: `s${i}`, name: `Source ${i}`, type: 'plex', healthy: true }))
+  const { svc } = rig({ sources, hang: new Set(['/api/media-sources/s1/status', '/api/media-sources/s2/status', '/api/media-sources/s3/status', '/api/system/health', '/api/guide/status']) }, { deadlineMs: 300 })
+  const t0 = Date.now()
+  const tv = await svc.read(true)
+  const took = Date.now() - t0
+  assert.ok(took < 1500, `one deadline, not three in a row (took ${took} ms)`)
+  assert.deepEqual(tv.sources.map(x => x.state), ['unknown', 'unknown', 'unknown'])
+  assert.equal(tv.channels.length, 2)
+})
+
+test('everything but the channel list hanging still gives the channels', async () => {
+  const hang = new Set(['/api/version', '/api/guide/status', '/api/guide/channels', '/api/sessions', '/api/system/health', '/api/media-sources', '/api/jobs', '/api/tasks'])
+  const { svc } = rig({ hang }, { deadlineMs: 200, latest: () => new Promise(() => {}) })
+  const tv = await svc.read(true)
+  assert.equal(tv.channels.length, 2); assert.equal(tv.version.installed, null); assert.equal(tv.channels[0].now, null)
+})
+
+test('many callers at once make one upstream reading', async () => {
+  const { svc, f } = rig({ delayMs: { '/api/channels': 60 } })
+  const all = await Promise.all(Array.from({ length: 12 }, (_, i) => svc.read(i % 2 === 0)))
+  assert.equal(all.length, 12); assert.equal(count(f, '/api/channels'), 1); assert.equal(count(f, '/api/sessions'), 1); assert.equal(count(f, '/api/version'), 1)
+  await svc.read(true); assert.equal(count(f, '/api/channels'), 1, 'the 20 s memo still holds')
+  const bad = rig({ down: new Set(['/api/channels']), delayMs: { '/api/channels': 30 } })
+  const settled = await Promise.allSettled(Array.from({ length: 8 }, () => bad.svc.read(true)))
+  assert.ok(settled.every(x => x.status === 'rejected')); assert.equal(count(bad.f, '/api/channels'), 1, 'one failing call serves every waiter')
+})
+
+test('icons for an unknown id never start another reading; with nothing read yet they share the one in flight', async () => {
+  const { svc, f } = rig({ delayMs: { '/api/channels': 40 } })
+  const [a, b, c] = await Promise.all([svc.icon(CH1), svc.icon('eeeeeeee-5555-4555-8555-555555555555'), svc.read(true)])
+  assert.equal(a?.contentType, 'image/png'); assert.equal(b, null); assert.ok(c)
+  assert.equal(count(f, '/api/channels'), 1)
+  for (let i = 0; i < 20; i++) assert.equal(await svc.icon(`ffffffff-0000-4000-8000-${String(i).padStart(12, '0')}`), null)
+  assert.equal(count(f, '/api/channels'), 1, 'unknown ids cost nothing')
+  const dead = rig({ down: new Set(['/api/channels']) })
+  assert.equal(await dead.svc.icon(CH1), null); assert.equal(await dead.svc.icon(CH1), null); assert.equal(count(dead.f, '/api/channels'), 1)
+})
+
+// ── Tunarr 0.12.2's real shapes (sanitized fixtures, recorded read-only) ──────────────────────
+
+const fx = (n: string) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'arr-tunarr', n), 'utf8'))
+
+test('Tunarr 0.12.2: no guideTimes in the status, so guide hours come from the guide itself; tasks are /api/jobs (update-xmltv)', async () => {
+  const channels = fx('channels-0.12.2.json'), guide = fx('guide-channels-0.12.2.json'), status = fx('guide-status-0.12.2.json'), jobs = fx('jobs-0.12.2.json')
+  assert.deepEqual(Object.keys(status).sort(), ['channelIds', 'lastUpdate'])
+  const now = 1795342974790
+  const tv = buildLiveTv({ now, channels, guideStatus: status, guide, version: fx('version-0.12.2.json'), tasks: jobs, latest: 'v2026.11.2', sessions: {} }, true)
+  assert.deepEqual(tv.channels.map(c => [c.number, c.programCount, c.guideHours, c.guideShort]), [[1, 7, 40, false], [2, 250, 10, true]])
+  assert.equal(tv.channels[0].now?.title, 'Example Film A'); assert.equal(tv.channels[0].next?.title, 'Example Film B')
+  assert.equal(tv.channels[1].hasIcon, true); assert.equal(tv.channels[0].hasIcon, false)
+  assert.equal(tv.actions.refreshGuide, true); assert.equal(tv.version.installed, '0.12.2'); assert.equal(tv.version.behind, true)
+  assert.ok(!tv.warnings.some(w => /did not report how much guide/.test(w.text)))
+  // a guide that reaches past the window reads as the window, not more
+  const far = buildLiveTv({ now: now - 100 * 3_600_000, channels, guide, guideStatus: status, sessions: {} }, true)
+  assert.equal(far.channels[0].guideHours, 48)
+  // nothing to derive from: said plainly
+  assert.ok(buildLiveTv({ now, channels, guideStatus: status, sessions: {} }, true).warnings.some(w => /did not report how much guide/.test(w.text)))
+})
+
+test('Tunarr 0.12.2: Refresh guide runs /api/jobs/update-xmltv/run; one with neither list is refused in words', async () => {
+  const old = rig({ down: new Set(['/api/tasks']), jobs: fx('jobs-0.12.2.json') })
+  const tv = await old.svc.read(true)
+  assert.equal(tv.actions.refreshGuide, true)
+  const r = await old.svc.act({ action: 'refresh-guide' }, 'admin@example.com')
+  assert.equal(r.done, true); assert.ok(old.f.calls.includes('POST /api/jobs/update-xmltv/run')); assert.deepEqual(old.audits.map(a => a.action), ['arr.tunarr.refresh-guide'])
+  const none = rig({ tasks: [], down: new Set(['/api/jobs']) })
+  await assert.rejects(none.svc.act({ action: 'refresh-guide' }, 'a@example.com'), (e: any) => e.code === 'no_task')
+})
+
+// ── the address setting ───────────────────────────────────────────────────────────────────────
+
+test('the Tunarr address must be http(s) with no login in it; empty clears it', async () => {
+  assert.equal(webAddressProblem('Tunarr address', ''), null)
+  assert.equal(webAddressProblem('Tunarr address', 'http://example-host:8000'), null)
+  assert.equal(webAddressProblem('Tunarr address', 'https://tv.example.org/'), null)
+  assert.match(webAddressProblem('Tunarr address', 'ftp://example-host')!, /must start with http:\/\/ or https:\/\//)
+  assert.match(webAddressProblem('Tunarr address', 'http://user:pw@example-host:8000')!, /must not have a user name or password/)
+  assert.match(webAddressProblem('Tunarr address', 'example-host:8000')!, /http|full web address/)
+  assert.match(webAddressProblem('Tunarr address', 'not a url')!, /full web address/)
+  for (const bad of ['javascript:alert(1)', 'http://u@example-host', 'file:///etc/passwd']) {
+    await assert.rejects(saveSettings(arrstackPlugin.manifest, { tunarr_url: bad }), (e: any) => e instanceof PluginSettingsError && /Tunarr address/.test(e.message), bad)
+  }
 })
