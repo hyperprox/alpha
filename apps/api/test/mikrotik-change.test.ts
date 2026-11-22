@@ -999,3 +999,16 @@ test('the unblock\'s put-back goes in at the top, in the router\'s script and in
   await undoChange(d, ub.id)
   assert.equal(r.tables['/ip/firewall/filter'][0].comment, 'HyperProx block: pc [hpx-123456]')
 })
+
+test('engine: clearing a block schedule unsets `time` (an empty PATCH value is refused by RouterOS) and an undo puts it back', async () => {
+  const r = makeRouter()
+  const first = planBlock(await inputsOf(r), { action: 'block', mac: '00:00:5E:00:53:31', schedule: { from: '22:00', to: '06:00' } })
+  const row = { '.id': '*b9', ...(first.steps[0].forward as any).props }
+  r.tables['/ip/firewall/filter'].unshift(row)
+  const { d } = engine(r)
+  const clear = planBlock(await inputsOf(r), { action: 'schedule', id: '*b9', schedule: null })
+  const res = await applyPlan(d, clear)
+  assert.equal(r.tables['/ip/firewall/filter'].find((x: any) => x['.id'] === '*b9').time, undefined)
+  await undoChange(d, res.id)
+  assert.match(r.tables['/ip/firewall/filter'].find((x: any) => x['.id'] === '*b9').time, /^22:00:00-06:00:00/)
+})

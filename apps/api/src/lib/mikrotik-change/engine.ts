@@ -114,7 +114,14 @@ async function runOp(router: ChangeRouter, op: Op, opts: { inverse?: boolean } =
       const rows = setRows(await table(router, op.path), op)
       if (!rows.length || (op.ids?.length && rows.length < op.ids.length)) throw new Error('The router no longer has the entry this change was going to edit.')
       if (!router.patch) throw new Error('This connection cannot edit router entries.')
-      for (const r of rows) await router.patch(`${opPath(op.path)}/${r['.id']}`, op.props)
+      // A property set to nothing is cleared with `unset` (REST refuses an empty `time`); a comment is set to "".
+      const set = Object.fromEntries(Object.entries(op.props).filter(([k, v]) => v !== '' || k === 'comment'))
+      const clear = Object.entries(op.props).filter(([k, v]) => v === '' && k !== 'comment').map(([k]) => k)
+      if (clear.length && !router.post) throw new Error('This connection cannot clear router entry properties.')
+      for (const r of rows) {
+        if (Object.keys(set).length) await router.patch(`${opPath(op.path)}/${r['.id']}`, set)
+        for (const k of clear) await router.post!(`${opPath(op.path)}/unset`, { numbers: String(r['.id']), 'value-name': k })
+      }
       return
     }
     case 'remove': {

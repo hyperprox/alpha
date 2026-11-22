@@ -126,6 +126,10 @@ export function makeRouter(seed: Record<string, Row[]> = {}, opts: FakeOpts = {}
         files.set(`${body.file}.rsc`, text)
         tables['/file'].push({ '.id': `*F${n++}`, name: `${body.file}.rsc`, contents: text.slice(0, 4095), size: String(text.length) }); return []
       }
+      if (q.endsWith('/unset')) {
+        const row = tableOf(q.replace(/\/unset$/, '')).find(x => x['.id'] === body.numbers); if (!row) throw new Error('MikroTik returned HTTP 404')
+        delete row[String(body['value-name'])]; return null
+      }
       if (q.endsWith('/move')) {
         const t = tableOf(q.replace(/\/move$/, ''))
         const i = t.findIndex(x => x['.id'] === body.numbers), j = t.findIndex(x => x['.id'] === body.destination)
