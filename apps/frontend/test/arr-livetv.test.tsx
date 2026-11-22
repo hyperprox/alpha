@@ -24,7 +24,7 @@ const ch = (o: Partial<TvChannel> = {}): TvChannel => ({
 const tv = (o: Partial<LiveTv> = {}): LiveTv => ({
   configured: true, channels: [ch()], sources: [{ name: 'Library Server', type: 'plex', state: 'ok', why: null }],
   version: { installed: '2026.11.1', latest: '2026.11.2', behind: true, edge: false, ffmpeg: '7.1' }, warnings: [],
-  summary: { channels: 1, viewers: 0, streaming: 0, guideShort: 0, cannotStream: 0, shortestGuideHours: 30, synced: 1, unsynced: 0, unsyncedProgrammes: 0 },
+  summary: { channels: 1, viewers: 0, streaming: 0, guideShort: 0, cannotStream: 0, shortestGuideHours: 30, synced: 1, unsynced: 0, unsyncedProgrammes: 0, notRescanning: 0 },
   actions: { refreshGuide: true, stopSession: true }, readAt: '2026-11-20T12:00:00Z', detail: true, ...o,
 })
 
@@ -53,10 +53,10 @@ test('a channel whose guide differs, or is short, gets its own chip; the rest sa
   assert.equal(guideWord(null), 'Guide length unknown'); assert.equal(guideWord(0), 'No guide published'); assert.equal(guideWord(60), '2 days 12 h of guide')
 })
 
-test('programmes not in step with the libraries say how much, and count as needing attention', () => {
+test('programmes Tunarr marks missing say how much, and count as needing attention', () => {
   const c = ch({ ready: { programmes: 12, synced: 3, pct: 25 } })
-  assert.match(row(c), /25% in sync/); assert.equal(needsAttention(c), true); assert.equal(needsAttention(ch()), false)
-  assert.ok(!/in sync/.test(row(ch())))
+  assert.match(row(c), /25% present/); assert.equal(needsAttention(c), true); assert.equal(needsAttention(ch()), false)
+  assert.ok(!/present/.test(row(ch())))
   assert.equal(needsAttention(ch({ ready: null })), false, 'no reading, no claim')
 })
 
@@ -102,7 +102,7 @@ test('the tab: summary, version, media sources, warnings with their fix buttons,
       { level: 'error', text: 'Media source Library Server is not answering (unreachable). Channels that play from it cannot stream.' },
       { level: 'notice', text: 'Tunarr 2026.11.1 is behind the newest release, 2026.11.2.' }],
     sources: [{ name: 'Library Server', type: 'plex', state: 'down', why: 'unreachable' }],
-    summary: { channels: 1, viewers: 0, streaming: 0, guideShort: 1, cannotStream: 0, shortestGuideHours: 6, synced: 1, unsynced: 0, unsyncedProgrammes: 0 },
+    summary: { channels: 1, viewers: 0, streaming: 0, guideShort: 1, cannotStream: 0, shortestGuideHours: 6, synced: 1, unsynced: 0, unsyncedProgrammes: 0, notRescanning: 0 },
   })
   const adm = renderToStaticMarkup(<LiveTvView tv={t} canAct onAct={noop} nowMs={NOW_MS} />)
   assert.match(adm, /Shortest guide 6 h/); assert.match(adm, /Tunarr 2026\.11\.1, newest is 2026\.11\.2/); assert.match(adm, /FFmpeg 7\.1/); assert.match(adm, /Library Server: not answering/)
@@ -117,7 +117,7 @@ test('the tab: summary, version, media sources, warnings with their fix buttons,
 
 test('all well, and no channels, say so in words', () => {
   assert.match(renderToStaticMarkup(<LiveTvView tv={tv()} canAct onAct={noop} />), /All well/)
-  assert.match(renderToStaticMarkup(<LiveTvView tv={tv({ channels: [], summary: { channels: 0, viewers: 0, streaming: 0, guideShort: 0, cannotStream: 0, shortestGuideHours: null, synced: 0, unsynced: 0, unsyncedProgrammes: 0 } })} canAct onAct={noop} />), /Tunarr has no channels yet/)
+  assert.match(renderToStaticMarkup(<LiveTvView tv={tv({ channels: [], summary: { channels: 0, viewers: 0, streaming: 0, guideShort: 0, cannotStream: 0, shortestGuideHours: null, synced: 0, unsynced: 0, unsyncedProgrammes: 0, notRescanning: 0 } })} canAct onAct={noop} />), /Tunarr has no channels yet/)
 })
 
 test('words: versions, icon paths, and the confirmations match the server\'s sentences', () => {
@@ -145,12 +145,12 @@ test('polling: a tick is skipped while the tab is hidden or the last reading is 
 test('the top: sync ring and one sentence; FFmpeg is short; the guide length is said once; no "can stream" claim', () => {
   const bad = tv({
     channels: [ch(), ch({ id: 'bbbbbbbb-2222-4222-8222-222222222222', number: 5, ready: { programmes: 10, synced: 4, pct: 40 } })],
-    summary: { channels: 2, viewers: 0, streaming: 0, guideShort: 0, cannotStream: 0, shortestGuideHours: 46.3, synced: 1, unsynced: 1, unsyncedProgrammes: 6 },
+    summary: { channels: 2, viewers: 0, streaming: 0, guideShort: 0, cannotStream: 0, shortestGuideHours: 46.3, synced: 1, unsynced: 1, unsyncedProgrammes: 6, notRescanning: 2 },
     version: { installed: '2026.11.2', latest: '2026.11.2', behind: false, edge: false, ffmpeg: '7.1' },
   })
   const html = renderToStaticMarkup(<LiveTvView tv={bad} canAct onAct={noop} nowMs={NOW_MS} />)
-  assert.match(html, />1\/2</); assert.match(html, /In sync/); assert.ok(!/Can stream|CAN STREAM/i.test(html))
-  assert.match(html, /1 channel has programmes from a library Tunarr is not keeping in step \(6 in the next 48 hours\)/)
+  assert.match(html, />1\/2</); assert.match(html, /Present/); assert.ok(!/Can stream|CAN STREAM/i.test(html))
+  assert.match(html, /1 channel has programmes Tunarr marks as missing \(6 in the next 48 hours\)/); assert.match(html, /2 libraries are not rescanning in Tunarr\. That does not stop their programmes playing/)
   assert.match(html, /FFmpeg 7\.1/); assert.ok(!/N7\.1-214/i.test(html)); assert.match(html, /Guide 46\.3 h or more/)
   assert.equal((html.match(/of guide/g) ?? []).length, 0, 'not repeated on every row')
   assert.equal(syncedWord(tv({ channels: [ch({ ready: null })] })), null)
@@ -160,7 +160,7 @@ test('the top: sync ring and one sentence; FFmpeg is short; the guide length is 
 
 test('a long list is grouped and collapsed: only groups to look at are open; a short list is all open; search and filters are there', () => {
   const many = Array.from({ length: 30 }, (_, i) => ch({ id: `aaaaaaaa-0000-4000-8000-${String(i).padStart(12, '0')}`, number: i + 1, name: `Chan ${i + 1}`, ...(i === 24 ? { guideHours: 5, guideShort: true } : {}) }))
-  const html = renderToStaticMarkup(<LiveTvView tv={tv({ channels: many, summary: { ...tv().summary, channels: 30, synced: 30 } })} canAct onAct={noop} nowMs={NOW_MS} />)
+  const html = renderToStaticMarkup(<LiveTvView tv={tv({ channels: many, summary: { ...tv().summary, channels: 30, synced: 30, notRescanning: 0 } })} canAct onAct={noop} nowMs={NOW_MS} />)
   const opens = [...html.matchAll(/<details([^>]*)><summary[^>]*><span>(Channels [^<]*)</g)].map(m => [m[2], /\sopen=""/.test(m[1])])
   assert.deepEqual(opens, [['Channels 1\u20139', true], ['Channels 10\u201319', false], ['Channels 20\u201329', true], ['Channels 30\u201339', false]])
   assert.match(html, /1 to check/); assert.match(html, /type="search"/); assert.match(html, /aria-pressed="true"[^>]*>All 30/); assert.match(html, /Needs attention 1/); assert.match(html, /Watching 0/)

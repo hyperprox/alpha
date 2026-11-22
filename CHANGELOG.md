@@ -31,8 +31,8 @@ know or do before they install. Newest entry at the top.
 
 ### Improved
 - **Live TV is a compact guide.** Channels are short rows in groups with a progress bar for what is on now, a search box and filters. The guide length is said once at the top, and a channel mentions it only if it differs.
-- **"In sync" replaces "can stream".** The tab now counts how much of each channel's next 48 hours comes from libraries Tunarr keeps in step, and warns about the rest, because those programmes may not play. It no longer claims that every channel can stream.
-  - Technical: readiness is read from each guide programme's `state` and its library's `enabled` flag in Tunarr's media-source list; it is what Tunarr reports, not a play test.
+- **"Present" replaces "can stream".** The tab now counts how many of each channel's next 48 hours Tunarr marks as missing, and warns about those, because they may not play. It no longer claims that every channel can stream. A library Tunarr has stopped rescanning is only a note.
+  - Technical: readiness is each guide programme's `state` (`ok` or `missing`) in Tunarr's answer; a library's `enabled` flag only feeds the "not rescanning" note. It is what Tunarr reports, not a play test.
 
 ## 2026-11-22 — Arr Stack: sort new shows by kind
 

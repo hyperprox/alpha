@@ -2146,9 +2146,9 @@ while you look at it, and everyone who can open the Arr Stack page can see it.
 - **Guide length.** The top of the tab says how many hours of guide are published; a channel shows its own number only
   when it is shorter or differs from the rest. A short guide raises a warning, because players that look a day ahead
   then show gaps.
-- **In sync.** Tunarr marks each programme as present or missing and each library as on or off. The tab counts how much
-  of the next 48 hours of each channel comes from libraries Tunarr keeps in step, and warns about the rest, because those
-  programmes may not play. It is what Tunarr reports, not a play test.
+- **Missing programmes.** Tunarr marks each programme as present or missing. The tab counts how many of each channel's next
+  48 hours are marked missing and warns about them, because those programmes may not play. A library that Tunarr no longer
+  rescans is only mentioned as a note, since its programmes still play. It is what Tunarr reports, not a play test.
 - **Health.** Tunarr's version against the newest release, its ffmpeg version (the number, such as 7.1), whether each media source answers, and
   Tunarr's own health warnings. A channel that cannot stream says why: it has no programming, nothing is scheduled on it
   right now, or its stream session has failed. A media source that does not answer is a warning of its own, because

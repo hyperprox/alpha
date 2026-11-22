@@ -21,7 +21,7 @@ export interface TvVersion { installed: string | null; latest: string | null; be
 export interface TvWarning { level: 'error' | 'warning' | 'notice'; text: string; fix?: 'refresh-guide' | 'stop-session'; channelId?: string }
 export interface LiveTv {
   configured: boolean; channels: TvChannel[]; sources: TvSource[]; version: TvVersion; warnings: TvWarning[]
-  summary: { channels: number; viewers: number; streaming: number; guideShort: number; cannotStream: number; shortestGuideHours: number | null; synced: number; unsynced: number; unsyncedProgrammes: number }
+  summary: { channels: number; viewers: number; streaming: number; guideShort: number; cannotStream: number; shortestGuideHours: number | null; synced: number; unsynced: number; unsyncedProgrammes: number; notRescanning: number }
   actions: { refreshGuide: boolean; stopSession: boolean }
   readAt: string; detail: boolean
 }
@@ -142,7 +142,7 @@ export function filterChannels(channels: TvChannel[], query: string, filter: TvF
   })
 }
 
-/** How many channels are fully in step with Tunarr's libraries, or null when this Tunarr gave nothing to judge by. */
+/** How many channels are free of programmes Tunarr marks missing, or null when this Tunarr gave nothing to judge by. */
 export const syncedWord = (tv: LiveTv): { value: number; text: string } | null => {
   const judged = tv.channels.filter(c => c.ready).length
   return judged ? { value: tv.summary.synced / judged, text: `${tv.summary.synced}/${judged}` } : null

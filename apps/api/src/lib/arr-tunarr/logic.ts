@@ -22,7 +22,7 @@ export const GUIDE_WINDOW_HOURS = 48
  * `code` its season and episode ("S2E20"), `kind` what it is. A break is Tunarr's filler between programmes.
  */
 export interface TvProgram { title: string; episode: string | null; code: string | null; kind: 'movie' | 'episode' | 'other' | 'break'; at: string; until: string }
-/** How much of a channel's guide window is in step with Tunarr's libraries (see readinessOf). */
+/** How much of a channel's guide window Tunarr has not marked missing (see readinessOf). */
 export interface TvReady { programmes: number; synced: number; pct: number }
 export interface TvSession { state: string; viewers: number; who: Array<{ ip: string; agent: string }>; mode: string }
 export interface TvChannel {
@@ -39,7 +39,7 @@ export interface TvChannel {
   guideShort: boolean
   /** The channel's group in Tunarr (its own label), or null. */
   group: string | null
-  /** Share of the guide window that comes from libraries Tunarr keeps in sync, or null when it cannot tell. */
+  /** Share of the guide window whose programmes Tunarr has not marked missing, or null when it cannot tell. */
   ready: TvReady | null
   canStream: boolean
   problems: string[]
@@ -66,8 +66,10 @@ export interface LiveTv {
   warnings: TvWarning[]
   summary: {
     channels: number; viewers: number; streaming: number; guideShort: number; cannotStream: number; shortestGuideHours: number | null
-    /** Channels whose whole guide window is in step with Tunarr's libraries, and the ones that are not. */
+    /** Channels with no programme marked missing in the guide window, and the ones with some. */
     synced: number; unsynced: number; unsyncedProgrammes: number
+    /** Libraries the guide plays from that Tunarr is no longer rescanning (a neutral note: their programmes still play). */
+    notRescanning: number
   }
   /** The fixes this Tunarr can take, said plainly. */
   actions: { refreshGuide: boolean; stopSession: boolean }
@@ -164,7 +166,7 @@ export function nowAndNext(programs: unknown, now: number): { now: TvProgram | n
   return { now: i < 0 ? null : programOf(list[i]), next: programOf(real) }
 }
 
-/** Library ids Tunarr has switched off (not kept in step with the source), from the media sources it lists. */
+/** Library ids Tunarr has switched off (it no longer rescans them), from the media sources it lists. */
 export function offLibraries(sources: Array<{ source: any }> | null | undefined): Set<string> {
   const off = new Set<string>()
   for (const { source } of sources ?? []) {
@@ -174,19 +176,19 @@ export function offLibraries(sources: Array<{ source: any }> | null | undefined)
 }
 
 /**
- * How much of a channel's guide window can be trusted to play. A programme counts as in step when Tunarr has its
- * details, does not mark it "missing", and its library is one Tunarr keeps in sync. Breaks and rows with no details
- * (the old shape) are not counted either way. Null when nothing could be judged. This is what Tunarr's own answers
- * prove, not a play test: a file Tunarr believes in can still be gone from the server.
+ * How much of a channel's guide window Tunarr has not marked missing. Only the programme's own `state` counts: a
+ * programme is "missing" when Tunarr says so. A switched-off library says nothing about it (its programmes still play),
+ * so it is not counted here. Breaks and rows with no details (the old shape) are not counted either way. Null when
+ * nothing could be judged. This is what Tunarr's answers prove, not a play test.
  */
-export function readinessOf(programs: unknown, off: Set<string>): TvReady | null {
+export function readinessOf(programs: unknown): TvReady | null {
   let programmes = 0, synced = 0
   for (const p of Array.isArray(programs) ? programs : []) {
     if (p?.type === 'flex' || p?.type === 'redirect') continue
     const inner = rec(p?.program)
     if (!Object.keys(inner).length) continue
     programmes++
-    if (inner.state !== 'missing' && !(typeof inner.libraryId === 'string' && off.has(inner.libraryId))) synced++
+    if (inner.state !== 'missing') synced++
   }
   return programmes ? { programmes, synced, pct: Math.round((synced / programmes) * 100) } : null
 }
@@ -225,6 +227,8 @@ export function buildLiveTv(r: RawReading, detail: boolean): LiveTv {
   const guideBy = rec(r.guide)
   const guideRead = r.guide !== undefined && r.guide !== null
   const off = offLibraries(r.sources)
+  const usedOff = new Set<string>()
+  for (const g of Object.values(guideBy)) for (const p of Array.isArray(rec(g).programs) ? rec(g).programs : []) { const l = rec(p?.program).libraryId; if (typeof l === 'string' && off.has(l)) usedOff.add(l) }
   const channels: TvChannel[] = channelsRaw.filter(c => ID.test(String(c?.id ?? ''))).map(c => {
     const id = String(c.id)
     const sessions = sessionsOf(bySession[id] ?? c.sessions)
@@ -236,7 +240,7 @@ export function buildLiveTv(r: RawReading, detail: boolean): LiveTv {
     else if (guideRead && !on) problems.push('Nothing is scheduled on it right now, so a player gets no stream.')
     if (sessions.some(s => s.state === 'error')) problems.push('Its stream session has failed (Tunarr marks it as an error).')
     const guideShort = hours !== null && hours < GUIDE_MIN_HOURS
-    const ready = guideRead ? readinessOf(rec(guideBy[id]).programs, off) : null
+    const ready = guideRead ? readinessOf(rec(guideBy[id]).programs) : null
     return {
       id, number: Math.round(num(c.number) ?? 0), name: str(c.name, 80) || 'Unnamed channel',
       hasIcon: typeof c?.icon?.path === 'string' && c.icon.path.startsWith('/') && !c.icon.path.startsWith('//'),
@@ -275,7 +279,7 @@ export function buildLiveTv(r: RawReading, detail: boolean): LiveTv {
   if (unsynced.length) {
     const lost = unsynced.reduce((t, c) => t + (c.ready!.programmes - c.ready!.synced), 0)
     warnings.push({ level: 'warning',
-      text: `${unsynced.length === 1 ? `Channel ${unsynced[0].number} ${unsynced[0].name} has` : `${unsynced.length} channels have`} programmes that Tunarr is not keeping in step with its libraries (${lost} in the next ${GUIDE_WINDOW_HOURS} h of guide), so they may not play. Switch the library on in Tunarr's Settings, Sources, then scan it.` })
+      text: `${unsynced.length === 1 ? `Channel ${unsynced[0].number} ${unsynced[0].name} has` : `${unsynced.length} channels have`} programmes that Tunarr marks as missing from their library (${lost} in the next ${GUIDE_WINDOW_HOURS} h of guide), so they may not play. Scan the library again in Tunarr, or take them off the channel.` })
   }
   for (const s of sources) {
     if (s.state === 'down') warnings.push({ level: 'error', text: `Media source ${s.name} is not answering (${s.why}). Channels that play from it cannot stream.` })
@@ -299,6 +303,7 @@ export function buildLiveTv(r: RawReading, detail: boolean): LiveTv {
       shortestGuideHours: hrs.length ? Math.min(...hrs) : null,
       synced: channels.filter(c => c.ready && c.ready.synced === c.ready.programmes).length,
       unsynced: unsynced.length,
+      notRescanning: usedOff.size,
       unsyncedProgrammes: unsynced.reduce((t, c) => t + (c.ready!.programmes - c.ready!.synced), 0),
     },
     actions: { refreshGuide: tasks.some(t => t?.id === 'UpdateXmlTvTask' || t?.id === 'update-xmltv'), stopSession: true },

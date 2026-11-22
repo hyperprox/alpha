@@ -553,22 +553,26 @@ test('old shape still reads: title and subtitle on the row itself', () => {
   assert.equal(programOf({ type: 'content', title: 'x' }), null)
 })
 
-test('readiness: programmes from a library Tunarr has switched off, or marked missing, are not in step; the share is per channel', () => {
+test('readiness: only a programme Tunarr marks missing may not play; a switched-off library is a neutral note, never a warning', () => {
   const guide = fx('guide-channels-2026.11.2.json'), channels = fx('channels-2026.11.2.json')
   const src = [{ source: fx('media-sources-2026.11.2.json')[0], status: { healthy: true } }]
   assert.deepEqual([...offLibraries(src)], ['33333333-cccc-4ccc-8ccc-333333333333'])
   const tv = buildLiveTv({ now: 1795342974790, channels, guide, sources: src, sessions: {} }, true)
   assert.deepEqual(tv.channels[0].ready, { programmes: 2, synced: 2, pct: 100 })
-  assert.deepEqual(tv.channels[1].ready, { programmes: 3, synced: 1, pct: 33 })
-  assert.deepEqual([tv.summary.synced, tv.summary.unsynced, tv.summary.unsyncedProgrammes], [1, 1, 2])
-  const w = tv.warnings.find(x => /not keeping in step/.test(x.text))!
-  assert.equal(w.level, 'warning'); assert.match(w.text, /Channel 2 Sample Movies has programmes/); assert.match(w.text, /\(2 in the next 48 h of guide\)/)
-  // with no media-source list nothing is called off; a missing state alone still counts
-  assert.equal(buildLiveTv({ now: 1795342974790, channels, guide, sessions: {} }, true).channels[1].ready?.synced, 2)
+  // one programme is in the switched-off library (state ok: counts as present), one is marked missing
+  assert.deepEqual(tv.channels[1].ready, { programmes: 3, synced: 2, pct: 67 })
+  assert.deepEqual([tv.summary.synced, tv.summary.unsynced, tv.summary.unsyncedProgrammes, tv.summary.notRescanning], [1, 1, 1, 1])
+  const w = tv.warnings.find(x => /marks as missing/.test(x.text))!
+  assert.equal(w.level, 'warning'); assert.match(w.text, /Channel 2 Sample Movies has programmes/); assert.match(w.text, /\(1 in the next 48 h of guide\)/)
+  assert.ok(!tv.warnings.some(x => /rescan|switched off|not keeping/i.test(x.text)), 'a disabled library is not a warning')
+  // a channel whose programmes all sit in the switched-off library is fully present
+  const only = { ...guide, [Object.keys(guide)[1]]: { ...guide[Object.keys(guide)[1]], programs: guide[Object.keys(guide)[1]].programs.filter((p: any) => p.program.title === 'Paper Kites') } }
+  const t2 = buildLiveTv({ now: 1795342974790, channels, guide: only, sources: src, sessions: {} }, true)
+  assert.deepEqual(t2.channels[1].ready, { programmes: 1, synced: 1, pct: 100 }); assert.equal(t2.summary.unsynced, 0); assert.ok(!t2.warnings.some(x => /missing/.test(x.text))); assert.equal(t2.summary.notRescanning, 1)
   // the old shape has no details to judge: no claim either way
-  assert.equal(readinessOf([{ type: 'content', title: 'x', start: 0, stop: 1 }], new Set()), null)
-  assert.equal(readinessOf([{ type: 'flex', start: 0, stop: 1, program: {} }], new Set()), null)
-  assert.equal(readinessOf('nope', new Set()), null)
+  assert.equal(readinessOf([{ type: 'content', title: 'x', start: 0, stop: 1 }]), null)
+  assert.equal(readinessOf([{ type: 'flex', start: 0, stop: 1, program: {} }]), null)
+  assert.equal(readinessOf('nope'), null)
 })
 
 test('ffmpeg is shown short: the number, never the build string', () => {

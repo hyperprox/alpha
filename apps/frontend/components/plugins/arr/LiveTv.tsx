@@ -5,8 +5,8 @@
 //
 //  A guide: channels as compact rows in groups (Tunarr's own groups, else bands of ten by number) with a search box and
 //  filters. Each row has the number and icon (a letter when Tunarr has none), what is on now (show and episode) with a
-//  progress bar, and what is next. A chip appears only when a channel differs: a shorter guide, programmes that are not
-//  in step with Tunarr's libraries, viewers (an admin sees the address and player; everyone else a count). The guide
+//  progress bar, and what is next. A chip appears only when a channel differs: a shorter guide, programmes Tunarr marks
+//  marked missing by Tunarr, viewers (an admin sees the address and player; everyone else a count). The guide
 //  length and the library sync are said once, at the top. Above them, anything wrong carries its fix button for an admin: "Refresh guide"
 //  when a guide is short, "Restart stream" for a channel whose stream session has failed. Both ask first, and the
 //  server asks again (IN_PAGE sends the confirmation the server's token stands for). Tunarr's API has no other action
@@ -71,7 +71,7 @@ export function ChannelRow({ ch, canAct, onAct, nowMs, typical }: { ch: TvChanne
           <div className={c.chips}>
             {ch.viewers > 0 && <Pill tone="accent">{viewersWord(ch.viewers)}</Pill>}
             {guideDiffers(ch, typical) && <Pill tone={ch.guideShort ? 'warn' : undefined}>{guideWord(ch.guideHours)}</Pill>}
-            {ch.ready && unsynced > 0 && <Pill tone="warn" title="Programmes in the next 48 hours that come from a library Tunarr is not keeping in step">{ch.ready.pct}% in sync</Pill>}
+            {ch.ready && unsynced > 0 && <Pill tone="warn" title="Programmes in the next 48 hours that Tunarr does not mark as missing">{ch.ready.pct}% present</Pill>}
             {!ch.canStream && <Pill tone="warn">Cannot stream</Pill>}
           </div>
         )}
@@ -112,7 +112,7 @@ export function LiveTvView({ tv, canAct, onAct, nowMs = Date.now() }: { tv: Live
   return (
     <>
       <div className={c.summary}>
-        <RingGauge value={ringValue} size={84} big text={ringText} label={sync ? 'In sync' : 'Playable'} color={bad ? 'var(--warn)' : 'var(--hx-accent)'} />
+        <RingGauge value={ringValue} size={84} big text={ringText} label={sync ? 'Present' : 'Playable'} color={bad ? 'var(--warn)' : 'var(--hx-accent)'} />
         <div className={c.facts}>
           <div className={c.row}>
             <Pill tone={tv.summary.viewers ? 'accent' : undefined}>{viewersWord(tv.summary.viewers)}</Pill>
@@ -120,7 +120,8 @@ export function LiveTvView({ tv, canAct, onAct, nowMs = Date.now() }: { tv: Live
             <Pill tone={tv.version.behind ? 'warn' : undefined}>Tunarr {versionWord(tv.version)}</Pill>
             {tv.version.ffmpeg && <Pill>FFmpeg {tv.version.ffmpeg}</Pill>}
           </div>
-          {sync && <p className={c.note}>{sync.value === 1 ? 'Every channel\u2019s next 48 hours comes from libraries Tunarr keeps in step.' : `${tv.summary.unsynced} ${tv.summary.unsynced === 1 ? 'channel has' : 'channels have'} programmes from a library Tunarr is not keeping in step (${tv.summary.unsyncedProgrammes} in the next 48 hours).`}</p>}
+          {sync && <p className={c.note}>{sync.value === 1 ? 'No programme in any channel\u2019s next 48 hours is marked missing by Tunarr.' : `${tv.summary.unsynced} ${tv.summary.unsynced === 1 ? 'channel has' : 'channels have'} programmes Tunarr marks as missing (${tv.summary.unsyncedProgrammes} in the next 48 hours).`}</p>}
+          {tv.summary.notRescanning > 0 && <p className={c.note}>{tv.summary.notRescanning} {tv.summary.notRescanning === 1 ? 'library is' : 'libraries are'} not rescanning in Tunarr. That does not stop their programmes playing.</p>}
           {tv.sources.length > 0 && (
             <ul className={c.sources} aria-label="Media sources">
               {tv.sources.map(x => <li key={x.name}><Pill tone={x.state === 'ok' ? 'good' : x.state === 'down' ? 'warn' : undefined}>{x.name}: {x.state === 'ok' ? 'connected' : x.state === 'down' ? 'not answering' : 'no answer'}</Pill></li>)}
@@ -138,7 +139,7 @@ export function LiveTvView({ tv, canAct, onAct, nowMs = Date.now() }: { tv: Live
             </li>
           ))}
         </ul>
-      ) : <p className={c.allwell}><Pill tone="good">All well</Pill> Every channel has something on, every guide holds a day or more{sync ? ', and every programme is in step with its library' : ''}.</p>}
+      ) : <p className={c.allwell}><Pill tone="good">All well</Pill> Every channel has something on, every guide holds a day or more{sync ? ', and no programme is marked missing' : ''}.</p>}
       {tv.channels.length === 0
         ? <p className={s.empty}>Tunarr has no channels yet.</p>
         : (
