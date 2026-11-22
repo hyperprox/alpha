@@ -18,6 +18,9 @@ export interface Snapshot {
   users: Row[]
   interfaces: Row[]
   filter: Row[]
+  /** What the router knows about who has which MAC: used to see that a block does not name HyperProx by another way. */
+  arp: Row[]
+  leases: Row[]
 }
 
 export const MANAGEMENT_SERVICES = ['www', 'www-ssl', 'api', 'api-ssl', 'winbox', 'ssh']
@@ -177,12 +180,35 @@ export function checkLockout(plan: Pick<ChangePlan, 'steps'>, m: Management, sna
   }
 }
 
-/** A device block must never name the router itself, HyperProx, or an address the router answers on. */
+/** The MAC the router has for an address (ARP first, then the lease table). */
+function macFor(address: string, snap: Snapshot): string {
+  const a = snap.arp.find(r => r.address === address && r['mac-address'])
+  if (a) return String(a['mac-address']).toUpperCase()
+  const l = snap.leases.find(r => (r.address === address || r['active-address'] === address) && (r['mac-address'] || r['active-mac-address']))
+  return l ? String(l['mac-address'] || l['active-mac-address']).toUpperCase() : ''
+}
+
+/**
+ * A device block must never name the router, HyperProx, or an address the router answers on, by address or by MAC:
+ * a block by MAC for HyperProx's own card cuts it off as surely as one by address.
+ */
 function checkSelfBlock(op: Op, m: Management, snap: Snapshot): void {
   if (op.kind !== 'add' || op.path !== '/ip/firewall/filter' || op.props.chain !== 'forward' || !dropsInput(op.props.action)) return
   const src = String(op.props['src-address'] ?? '').split('/')[0]
-  if (!src) return
-  const own = snap.addresses.map(a => String(a.address ?? '').split('/')[0])
-  if (own.includes(src) || src === m.host) refuse('That address is the router itself. HyperProx will not block it.')
-  if (m.selfAddress && src === m.selfAddress) refuse('That address is HyperProx. Blocking it would cut HyperProx off from the internet.')
+  const mac = String(op.props['src-mac-address'] ?? '').toUpperCase()
+  const selfMac = String(m.selfMac ?? '').toUpperCase()
+  const ownMacs = new Set(snap.interfaces.map(r => String(r['mac-address'] ?? '').toUpperCase()).filter(Boolean))
+  if (src) {
+    const own = snap.addresses.map(a => String(a.address ?? '').split('/')[0])
+    if (own.includes(src) || src === m.host) refuse('That address is the router itself. HyperProx will not block it.')
+    if (m.selfAddress && src === m.selfAddress) refuse('That address is HyperProx. Blocking it would cut HyperProx off from the internet.')
+    const theirMac = macFor(src, snap)
+    if (selfMac && theirMac === selfMac) refuse('That address belongs to the same device as HyperProx. Blocking it would cut HyperProx off from the internet.')
+    if (theirMac && ownMacs.has(theirMac)) refuse('That address belongs to the router itself. HyperProx will not block it.')
+  }
+  if (mac) {
+    if (selfMac && mac === selfMac) refuse('That device is HyperProx. Blocking it would cut HyperProx off from the internet.')
+    if (ownMacs.has(mac)) refuse('That is one of the router\'s own network ports. HyperProx will not block it.')
+    if (m.selfAddress && macFor(m.selfAddress, snap) === mac) refuse('That device is HyperProx. Blocking it would cut HyperProx off from the internet.')
+  }
 }

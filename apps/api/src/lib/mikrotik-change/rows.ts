@@ -28,6 +28,17 @@ export function settable(row: Row): Record<string, string> {
   return out
 }
 
+/**
+ * The properties that say whether an added row is already there. A row that is put back must not be added twice when
+ * the first attempt had in fact landed: by address + MAC when it has both (a lease), else by its comment tag, else by
+ * everything it says.
+ */
+export function guardOf(props: Record<string, string>): Where {
+  if (props['mac-address'] && props.address) return { address: props.address, 'mac-address': props['mac-address'] }
+  if (props.comment) return { comment: props.comment }
+  return { ...props }
+}
+
 /** A short, steady tag from the parameters, so the same request always makes the same comment. */
 export function tagOf(...parts: unknown[]): string {
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 6)

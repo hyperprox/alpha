@@ -8,7 +8,7 @@
 //    GET  /control                                  what the manager page shows: devices, fixed addresses, forwards, blocks, history
 //    POST /change/plan      { action, params }      the plan in words and its hash; reads only
 //    POST /change/apply     { action, params, planHash, riskTick? }   re-plans, checks the hash (409 plan_changed), confirms, applies
-//    POST /changes/:id/undo {}                      puts one recorded change back, through the same engine
+//    POST /changes/:id/undo { riskTick? }           puts one recorded change back, through the same engine and the same checks
 //
 //  Roles (lib/roles.ts): everything here is admin. Every write is confirmed in the page (lib/confirm.ts, bound to the
 //  request body, so the confirmation covers exactly the plan that was shown) and an API token is refused by name here
@@ -22,8 +22,8 @@ import { sendFailure, sendRefusal } from '../lib/failure'
 import { auditBy } from '../lib/http/request-actor'
 import { GuardRefusal, applyGuard, canWriteFrom, undoGuard, type GuardDeps, type GuardRouter } from '../lib/mikrotik-lan'
 import {
-  ChangeRefusal, HAIRPIN_NOTE, RISKY, applyPlan, blockViews, defaultChangeStore, devicesOf, forwardViews, hasHairpin, historyView, leaseViews, planBlock,
-  planForward, planHash, planLease, planSummary, planView, readInputs, routerKeyOf, undoChange, undoPlan,
+  ChangeRefusal, HAIRPIN_NOTE, applyPlan, blockViews, defaultChangeStore, devicesOf, forwardViews, hasHairpin, historyView, leaseViews, planBlock,
+  findSelf, planForward, planHash, planLease, planSummary, planView, readInputs, riskyPorts, routerKeyOf, undoChange, undoPlan,
   type ChangePlan, type ChangeRouter, type ChangeStore, type EngineDeps, type Management, type RouterInputs,
 } from '../lib/mikrotik-change'
 import { getSettings, pluginAddress, pluginEndpointClient, pluginOptions, type PluginContext } from '../lib/plugin-host'
@@ -103,7 +103,10 @@ export function buildMikrotikRoutes(deps: MikrotikRouteDeps = {}): FastifyPlugin
     const base = await prepare()
     const m = await management()
     if (!m) throw new GuardRefusal(409, 'not_set_up', 'HyperProx does not know the address it reaches the router on, so it cannot check that a change keeps it reachable.')
-    const mgmt: Management = { ...m, username: base.username, wan: base.wan }
+    // HyperProx's own address, as the router sees it: the guard refuses to block it. Unknown is not an error here, but
+    // it is said in the plan (see inputsFor).
+    const self = await findSelf(base.router, { ...m, username: base.username }).catch(() => null)
+    const mgmt: Management = { ...m, username: base.username, wan: base.wan, ...(self ? { selfAddress: self.address, ...(self.mac ? { selfMac: self.mac } : {}) } : {}) }
     return { d: { router: base.router, management: mgmt, store, routerKey: routerKeyOf(m.host), by, audit, ...deps.engine }, wan: base.wan, router: base.router }
   }
 
@@ -115,12 +118,22 @@ export function buildMikrotikRoutes(deps: MikrotikRouteDeps = {}): FastifyPlugin
     return canWriteFrom(Array.isArray(users) ? users : [], Array.isArray(groups) ? groups : [], username)
   }
 
+  /** The router's tables for planning: every one must be readable, and HyperProx's own address rides along. */
+  async function inputsFor(r: RouterClient, d: EngineDeps, wan: string[]): Promise<RouterInputs> {
+    const i = await readInputs(r, wan)
+    i.selfAddress = d.management.selfAddress
+    return i
+  }
+
   function buildPlan(inputs: RouterInputs, canWrite: boolean | null, action: unknown, params: unknown): ChangePlan {
     const b = typeof action === 'string' && Object.prototype.hasOwnProperty.call(BUILDERS, action) ? BUILDERS[action] : undefined
     if (!b) throw new ChangeRefusal(400, 'bad_request', 'HyperProx does not know that change.')
     if (!params || typeof params !== 'object' || Array.isArray(params)) throw new ChangeRefusal(400, 'bad_request', 'The request is missing its details.')
     if (canWrite === false) throw new ChangeRefusal(409, 'read_only_login', 'The router refused the change: the login HyperProx uses for it can only read. Give that router user a group with the write policy, then try again.')
-    return b(inputs, params)
+    const plan = b(inputs, params)
+    // A block cannot be checked against HyperProx's own address when that address could not be found: say so.
+    if (plan.kind === 'block.add' && !inputs.selfAddress) plan.warnings.push('HyperProx could not work out which address it reaches the router from, so it cannot check that this block does not cut it off.')
+    return plan
   }
 
   return async (fastify) => {
@@ -147,7 +160,8 @@ export function buildMikrotikRoutes(deps: MikrotikRouteDeps = {}): FastifyPlugin
       if (noToken(req, reply)) return
       try {
         const { d, wan, router: r } = await engineDeps(req.session?.email ?? 'unknown', async () => {})
-        const inputs = await readInputs(r, wan)
+        const inputs = await readInputs(r, wan, { strict: false })
+        inputs.selfAddress = d.management.selfAddress
         const hairpin = hasHairpin(inputs)
         return {
           success: true,
@@ -155,7 +169,7 @@ export function buildMikrotikRoutes(deps: MikrotikRouteDeps = {}): FastifyPlugin
             canWrite: await canWriteNow(r, d.management.username), wans: wan, devices: devicesOf(inputs), leases: leaseViews(inputs),
             forwards: forwardViews(inputs), blocks: blockViews(inputs),
             hairpin: { present: hairpin, note: hairpin ? null : HAIRPIN_NOTE },
-            risky: Object.entries(RISKY).map(([port, why]) => ({ port: Number(port), why })),
+            risky: Object.entries(riskyPorts()).map(([port, why]) => ({ port: Number(port), why })),
             history: historyView(await store.list(d.routerKey)),
           },
         }
@@ -166,7 +180,7 @@ export function buildMikrotikRoutes(deps: MikrotikRouteDeps = {}): FastifyPlugin
       if (noToken(req, reply)) return
       try {
         const { wan, router: r, d } = await engineDeps(req.session?.email ?? 'unknown', async () => {})
-        const plan = buildPlan(await readInputs(r, wan), await canWriteNow(r, d.management.username), req.body?.action, req.body?.params)
+        const plan = buildPlan(await inputsFor(r, d, wan), await canWriteNow(r, d.management.username), req.body?.action, req.body?.params)
         return { success: true, data: planView(plan) }
       } catch (e) { return fail(reply, e) }
     })
@@ -176,7 +190,7 @@ export function buildMikrotikRoutes(deps: MikrotikRouteDeps = {}): FastifyPlugin
       const by = req.session?.email ?? 'unknown'
       try {
         const { d, wan, router: r } = await engineDeps(by, auditFor(by))
-        const plan = buildPlan(await readInputs(r, wan), await canWriteNow(r, d.management.username), req.body?.action, req.body?.params)
+        const plan = buildPlan(await inputsFor(r, d, wan), await canWriteNow(r, d.management.username), req.body?.action, req.body?.params)
         if (typeof req.body?.planHash !== 'string' || req.body.planHash !== planHash(plan)) {
           throw new ChangeRefusal(409, 'plan_changed', 'The router changed since this page was loaded, so the plan is different now. Look at the new plan and try again.')
         }
@@ -192,6 +206,7 @@ export function buildMikrotikRoutes(deps: MikrotikRouteDeps = {}): FastifyPlugin
       try {
         const { d } = await engineDeps(by, auditFor(by))
         const { plan } = await undoPlan(d, String(req.params.id))
+        if (plan.needsTick && req.body?.riskTick !== true) throw new ChangeRefusal(409, 'risk_tick_required', plan.needsTick)
         if (!(await requireConfirm(req, reply, planSummary(plan)))) return
         return { success: true, data: await undoChange(d, String(req.params.id)) }
       } catch (e) { return fail(reply, e) }

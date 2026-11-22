@@ -15,15 +15,69 @@ export interface RouterInputs {
   listMembers: Row[]
   /** The internet-facing links, as the plug-in works them out. */
   wan: string[]
+  /** What the router's neighbour discovery sees (other routers, access points). Empty when it cannot be read. */
+  neighbors: Row[]
+  /** HyperProx's own address as the router sees it, when known. */
+  selfAddress?: string
 }
 
-export async function readInputs(router: ChangeRouter, wan: string[]): Promise<RouterInputs> {
-  const g = (p: string) => router.get(`/rest${p}`, 15_000).then(arr, () => [] as Row[])
+/** A table the router must answer: a failed or unreadable answer is an error, never an empty table. */
+async function must(router: ChangeRouter, path: string): Promise<Row[]> {
+  const v = await router.get(`/rest${path}`, 15_000)
+  if (!Array.isArray(v)) throw new Error(`The router gave an unreadable answer for ${path}.`)
+  return v
+}
+
+/**
+ * Everything the plan builders read. By default (planning, applying) any table that cannot be read is an error, so a plan
+ * is never built from a router that answered half of its questions. The page's own listing passes `strict: false`.
+ */
+export async function readInputs(router: ChangeRouter, wan: string[], opts: { strict?: boolean } = {}): Promise<RouterInputs> {
+  const strict = opts.strict !== false
+  const g = (p: string) => strict ? must(router, p) : router.get(`/rest${p}`, 15_000).then(arr, () => [] as Row[])
   const [leases, dhcpServers, dhcpNetworks, addresses, arp, nat, filter, listMembers] = await Promise.all([
     g('/ip/dhcp-server/lease'), g('/ip/dhcp-server'), g('/ip/dhcp-server/network'), g('/ip/address'), g('/ip/arp'),
     g('/ip/firewall/nat'), g('/ip/firewall/filter'), g('/interface/list/member'),
   ])
-  return { leases, dhcpServers, dhcpNetworks, addresses, arp, nat, filter, listMembers, wan }
+  // Neighbour discovery may be switched off; its absence only means fewer warnings.
+  const neighbors = await router.get('/rest/ip/neighbor', 15_000).then(arr, () => [] as Row[])
+  return { leases, dhcpServers, dhcpNetworks, addresses, arp, nat, filter, listMembers, wan, neighbors }
+}
+
+/**
+ * HyperProx's address as the router sees it, and the MAC behind it. Read from the router's own sessions: the login's
+ * active session, else the connection that carries this very request. Null when neither says.
+ */
+export async function findSelf(router: ChangeRouter, m: { host: string; port: number | null; service: string; username?: string }): Promise<{ address: string; mac: string | null } | null> {
+  const ipOf = (v: unknown) => String(v ?? '').split(':')[0]
+  const valid = (x: string) => /^\d{1,3}(\.\d{1,3}){3}$/.test(x) && x !== m.host
+  let address = ''
+  try {
+    const active = arr(await router.get('/rest/user/active', 10_000))
+    const mine = active.find(r => (!m.username || r.name === m.username) && /api|web|rest|http/i.test(String(r.via ?? '')) && valid(ipOf(r.address)))
+    if (mine) address = ipOf(mine.address)
+  } catch { /* try the connection table */ }
+  if (!address) {
+    try {
+      const port = m.port ?? (m.service === 'www-ssl' ? 443 : 80)
+      const conns = arr(await router.get(`/rest/ip/firewall/connection?dst-address=${encodeURIComponent(`${m.host}:${port}`)}`, 10_000))
+      const mine = conns.find(r => valid(ipOf(r['src-address'])))
+      if (mine) address = ipOf(mine['src-address'])
+    } catch { /* unknown */ }
+  }
+  if (!address) return null
+  let mac: string | null = null
+  try {
+    const arpRows = arr(await router.get('/rest/ip/arp', 10_000))
+    const a = arpRows.find(r => r.address === address && r['mac-address'])
+    mac = a ? String(a['mac-address']).toUpperCase() : null
+    if (!mac) {
+      const leases = arr(await router.get('/rest/ip/dhcp-server/lease', 10_000))
+      const l = leases.find(r => (r.address === address || r['active-address'] === address) && (r['mac-address'] || r['active-mac-address']))
+      mac = l ? String(l['mac-address'] || l['active-mac-address']).toUpperCase() : null
+    }
+  } catch { /* the address alone is still checked */ }
+  return { address, mac }
 }
 
 // ── devices ──────────────────────────────────────────────────────────────────
@@ -91,6 +145,19 @@ export const RISKY: Record<number, string> = {
   3389: 'Remote Desktop', 22: 'SSH remote login', 23: 'Telnet (unencrypted remote login)', 445: 'Windows file sharing', 139: 'Windows file sharing (NetBIOS)',
   5900: 'VNC screen sharing', 3306: 'a MySQL database', 5432: 'a PostgreSQL database', 8006: 'Proxmox management', 8007: 'Proxmox Backup management',
   2375: 'Docker remote control (unencrypted)', 2376: 'Docker remote control',
+  21: 'FTP (unencrypted file transfer)', 1433: 'a Microsoft SQL Server database', 6379: 'a Redis database', 27017: 'a MongoDB database',
+  9200: 'an Elasticsearch search server', 5985: 'Windows remote management', 5986: 'Windows remote management', 161: 'SNMP device monitoring',
+  8291: 'MikroTik Winbox management', 8728: 'MikroTik API management', 8729: 'MikroTik API management',
+}
+
+/** HyperProx's own listening port (the API's), as a risky port too: nothing from the internet should reach it directly. */
+function ownPort(): number | null {
+  const p = Number(process.env.PORT ?? 3002)
+  return Number.isInteger(p) && p > 0 && p < 65536 ? p : null
+}
+export function riskyPorts(): Record<number, string> {
+  const own = ownPort()
+  return own && !(own in RISKY) ? { ...RISKY, [own]: 'HyperProx itself' } : RISKY
 }
 
 export function parsePorts(text: unknown): { from: number; to: number } | null {
@@ -103,9 +170,10 @@ export function parsePorts(text: unknown): { from: number; to: number } | null {
 
 export function riskyIn(...texts: unknown[]): Array<{ port: number; why: string }> {
   const out = new Map<number, string>()
-  for (const t of texts) {
-    const r = parsePorts(t); if (!r) continue
-    for (const [p, why] of Object.entries(RISKY)) if (Number(p) >= r.from && Number(p) <= r.to) out.set(Number(p), why)
+  const risky = riskyPorts()
+  for (const t of texts) for (const part of String(t ?? '').split(',')) {
+    const r = parsePorts(part); if (!r) continue
+    for (const [p, why] of Object.entries(risky)) if (Number(p) >= r.from && Number(p) <= r.to) out.set(Number(p), why)
   }
   return [...out.entries()].map(([port, why]) => ({ port, why })).sort((a, b) => a.port - b.port)
 }

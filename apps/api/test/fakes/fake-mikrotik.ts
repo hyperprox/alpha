@@ -10,10 +10,16 @@ export interface FakeOpts {
   noExport?: boolean
   noScheduler?: boolean
   pingFails?: boolean
-  /** Makes one write throw: matched against "METHOD path". */
+  /** Makes the first matching write throw (once: a transient failure): matched against "METHOD path". */
   failOn?: string
+  /** The write goes through on the router but its answer is lost (a timeout): matched against "METHOD path". */
+  landThenFail?: string
   /** Deleting a row of a real table fails (so a rollback cannot finish). */
   failRollback?: boolean
+  /** The export is this many bytes (default: a few lines). The file table, like the real router's, shows only 4095 characters of it. */
+  exportBytes?: number
+  /** Reading the export back in chunks fails after this many chunks. */
+  readFailsAfter?: number
 }
 
 export function makeRouter(seed: Record<string, Row[]> = {}, opts: FakeOpts = {}) {
@@ -52,9 +58,13 @@ export function makeRouter(seed: Record<string, Row[]> = {}, opts: FakeOpts = {}
     '/user/group': [{ name: 'writers', policy: 'read,write,api,rest-api,test' }],
     '/interface': [{ '.id': '*e1', name: 'ether1', type: 'ether' }, { '.id': '*e2', name: 'bridge-lan', type: 'bridge' }],
     '/ip/route': [{ '.id': '*r1', 'dst-address': '0.0.0.0/0', gateway: '203.0.113.1', active: 'true' }],
+    '/ip/neighbor': [], '/ip/firewall/connection': [],
     '/system/scheduler': [], '/system/script': [], '/file': [],
     ...structuredClone(seed),
   }
+  const files = new Map<string, string>()
+  let chunkReads = 0
+  let failedOnce = false
   const writes: string[] = []
   const log: Array<{ w: string; scheduler: boolean }> = []
   let writeCount = 0
@@ -64,42 +74,57 @@ export function makeRouter(seed: Record<string, Row[]> = {}, opts: FakeOpts = {}
   const note = (w: string) => {
     writes.push(w); writeCount++
     log.push({ w, scheduler: tables['/system/scheduler'].length > 0 })
-    if (opts.failOn && w.includes(opts.failOn)) throw new Error('MikroTik returned HTTP 500')
+    if (opts.failOn && !failedOnce && w.includes(opts.failOn)) { failedOnce = true; throw new Error('MikroTik returned HTTP 500') }
   }
-  const r: ChangeRouter & { tables: Record<string, Row[]>; writes: string[]; log: typeof log } = {
-    tables, writes, log,
+  let landedOnce = false
+  const lost = (w: string) => { if (opts.landThenFail && !landedOnce && w.includes(opts.landThenFail)) { landedOnce = true; throw new Error('MikroTik did not answer (timeout)') } }
+  const r: ChangeRouter & { tables: Record<string, Row[]>; writes: string[]; log: typeof log; files: Map<string, string> } = {
+    tables, writes, log, files,
     async get(p) {
       const q = p.replace(/^\/rest/, '')
       if (q === '/system/resource' || q === '/system/identity') { if (gone()) throw new Error('MikroTik did not answer'); return { name: 'edge', version: '7.20' } }
       if (q === '/system/clock') return { date: '2026-11-21', time: '12:00:00' }
-      return structuredClone(tableOf(q))
+      const [path, query] = q.split('?')
+      const rows = structuredClone(tableOf(path))
+      if (!query) return rows
+      const want = [...new URLSearchParams(query).entries()]
+      return rows.filter(r => want.every(([k, v]) => String(r[k] ?? '') === v))
     },
     async put(p, body: any) {
       const q = p.replace(/^\/rest/, '')
       if (q === '/system/scheduler' && opts.noScheduler) throw new Error('MikroTik returned HTTP 403')
       note(`PUT ${q}`)
       const row = { '.id': `*N${n++}`, ...body }
-      tableOf(q).push(row); return row
+      tableOf(q).push(row); lost(`PUT ${q}`); return row
     },
     async patch(p, body) {
       const { base, id } = split(p); note(`PATCH ${base}`)
       const row = tableOf(base).find(x => x['.id'] === id); if (!row) throw new Error('MikroTik returned HTTP 404')
-      Object.assign(row, body); return row
+      Object.assign(row, body); lost(`PATCH ${base}`); return row
     },
     async delete(p) {
       const { base, id } = split(p); note(`DELETE ${base}`)
       if (opts.failRollback && !base.startsWith('/system') && base !== '/file') throw new Error('MikroTik returned HTTP 500')
       const t = tableOf(base); const i = t.findIndex(x => x['.id'] === id); if (i < 0) throw new Error('MikroTik returned HTTP 404')
-      t.splice(i, 1); return null
+      if (base === '/file') files.delete(t[i].name)
+      t.splice(i, 1); lost(`DELETE ${base}`); return null
     },
     async post(p, body: any) {
       const q = p.replace(/^\/rest/, '')
       if (q === '/tool/ping') return opts.pingFails ? [{ received: '0', 'packet-loss': '100' }] : [{ received: '1' }, { received: '3', 'packet-loss': '0' }]
+      if (q === '/file/read') {
+        const text = files.get(String(body.file))
+        if (text === undefined) throw new Error('MikroTik returned HTTP 404')
+        if (opts.readFailsAfter !== undefined && chunkReads++ >= opts.readFailsAfter) throw new Error('MikroTik did not answer')
+        return [{ data: text.slice(Number(body.offset), Number(body.offset) + Number(body['chunk-size'])) }]
+      }
       note(`POST ${q}`)
       if (q === '/export') {
         if (opts.noExport) throw new Error('MikroTik returned HTTP 403')
-        const text = `# export ${body.file}\n/ip address\nadd address=10.0.0.1/24 interface=bridge-lan\n`
-        tables['/file'].push({ '.id': `*F${n++}`, name: `${body.file}.rsc`, contents: text, size: String(text.length) }); return []
+        let text = `# export ${body.file}\n/ip address\nadd address=10.0.0.1/24 interface=bridge-lan\n`
+        while (opts.exportBytes && text.length < opts.exportBytes) text += `/ip firewall address-list add list=x${text.length} address=10.1.${text.length % 250}.1\n`
+        files.set(`${body.file}.rsc`, text)
+        tables['/file'].push({ '.id': `*F${n++}`, name: `${body.file}.rsc`, contents: text.slice(0, 4095), size: String(text.length) }); return []
       }
       if (q.endsWith('/move')) {
         const t = tableOf(q.replace(/\/move$/, ''))

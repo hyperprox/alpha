@@ -139,6 +139,8 @@ export function planLease(i: RouterInputs, p: LeaseParams): ChangePlan {
 
 const PROTOS = ['tcp', 'udp']
 
+export const SELF_FORWARD_TEXT = 'This forward sends traffic from the internet straight to HyperProx itself, which can reach and manage your servers. Tick the box only if that is really what you want.'
+
 function natKey(r: Row): Record<string, string> {
   const k: Record<string, string> = { chain: 'dstnat', action: 'dst-nat' }
   for (const f of ['protocol', 'dst-port', 'to-addresses', 'to-ports', 'in-interface', 'in-interface-list', 'dst-address', 'comment']) if (r[f] !== undefined && r[f] !== '') k[f] = String(r[f])
@@ -161,23 +163,40 @@ function wanChoice(i: RouterInputs, wan: unknown): Record<string, string> {
   return refuse('wan_needed', i.wan.length ? `The router has several internet links (${i.wan.join(', ')}) and no interface list named WAN. Say which one the forward is on.` : 'HyperProx cannot tell which of the router\'s links faces the internet, so it cannot make a forward.')
 }
 
-function overlap(a: { from: number; to: number }, b: { from: number; to: number }) { return a.from <= b.to && b.from <= a.to }
+type Range = { from: number; to: number }
+function overlap(a: Range, b: Range) { return a.from <= b.to && b.from <= a.to }
+
+/**
+ * The ports a rule's `dst-port` covers: a list ("80,443"), ranges, or nothing at all, which on the router means every
+ * port. Anything that cannot be read is treated as every port, because a conflict check must err toward refusing.
+ */
+export function rangesOf(text: unknown): Range[] {
+  const t = String(text ?? '').trim()
+  if (!t) return [{ from: 1, to: 65535 }]
+  const out: Range[] = []
+  for (const part of t.split(',')) {
+    const r = parsePorts(part)
+    if (!r) return [{ from: 1, to: 65535 }]
+    out.push(r)
+  }
+  return out
+}
 
 export interface ForwardParams {
   action: 'add' | 'edit' | 'toggle' | 'remove'
   id?: unknown; address?: unknown; proto?: unknown; extPort?: unknown; toPort?: unknown; name?: unknown; wan?: unknown; disabled?: unknown
 }
 
-function conflict(i: RouterInputs, scope: Record<string, string>, proto: string, ext: { from: number; to: number }, selfId: string | null): void {
+export function conflict(i: RouterInputs, scope: Record<string, string>, proto: string, ext: Range[], selfId: string | null): void {
   const devs = devicesOf(i)
   for (const r of i.nat) {
     if (!isForward(r) || isTrue(r.disabled) || String(r['.id']) === selfId) continue
-    const rp = parsePorts(String(r['dst-port'] ?? '')); if (!rp || !overlap(rp, ext)) continue
-    if (r.protocol && r.protocol !== proto) continue
+    const rp = rangesOf(r['dst-port']); if (!rp.some(a => ext.some(b => overlap(a, b)))) continue
+    if (r.protocol && proto && r.protocol !== proto) continue
     const theirs = scopeOf(r), mine = scope['in-interface'] || scope['in-interface-list'] || ''
     if (theirs && mine && theirs !== mine && !(theirs.toUpperCase() === 'WAN' || mine.toUpperCase() === 'WAN')) continue
     const to = String(r['to-addresses'] ?? '')
-    refuse('port_conflict', `Outside port ${r['dst-port']} (${String(r.protocol || 'tcp').toUpperCase()}) already goes to ${nameOfAddress(devs, to) ? `${nameOfAddress(devs, to)} (${to})` : to}. Change or remove that forward first.`)
+    refuse('port_conflict', `Outside port ${r['dst-port'] || 'any'} (${String(r.protocol || 'any protocol').toUpperCase()}) already goes to ${nameOfAddress(devs, to) ? `${nameOfAddress(devs, to)} (${to})` : to}. Change or remove that forward first.`)
   }
 }
 
@@ -214,14 +233,15 @@ export function planForward(i: RouterInputs, p: ForwardParams): ChangePlan {
   if (i.addresses.some(a => String(a.address ?? '').split('/')[0] === address)) refuse('is_router', `${address} is the router itself. A forward to it would expose the router's own services.`)
   const scope = existing ? (existing['in-interface-list'] ? { 'in-interface-list': String(existing['in-interface-list']) } : existing['in-interface'] ? { 'in-interface': String(existing['in-interface']) } : wanChoice(i, p.wan)) : wanChoice(i, p.wan)
   const extText = ext!.from === ext!.to ? String(ext!.from) : `${ext!.from}-${ext!.to}`
-  conflict(i, scope, proto, ext!, existing ? String(existing['.id']) : null)
+  conflict(i, scope, proto, [ext!], existing ? String(existing['.id']) : null)
   const devName = nameOfAddress(devs, address)
   const label = clean(p.name) || devName || address
   const tag = tagOf('fwd', proto, extText, address, toText, scope)
   const comment = existing && p.name === undefined ? String(existing.comment ?? '') : `${HYPERPROX_FORWARD} ${label} [hpx-${tag}]`
   const props: Record<string, string> = { chain: 'dstnat', action: 'dst-nat', protocol: proto, 'dst-port': extText, 'to-addresses': address, ...(toText ? { 'to-ports': toText } : {}), ...scope, comment }
   const risk = riskyIn(extText, toText)
-  const needsTick = risk.length ? riskText(risk) : null
+  const toSelf = !!i.selfAddress && address === i.selfAddress
+  const needsTick = [risk.length ? riskText(risk) : '', toSelf ? SELF_FORWARD_TEXT : ''].filter(Boolean).join(' ') || null
   const words = `Outside port ${extText} → ${devName ? `${devName} (${address})` : address} port ${toText || extText}, ${proto.toUpperCase()}`
   const warnings = needsTick ? [needsTick] : []
   if (!hasHairpinFor(i)) warnings.push('No "hairpin" rule exists on the router: devices on your own network that open this forward through the router\'s public address will not get through (they can use the device\'s own address). HyperProx does not add one.')
@@ -259,6 +279,18 @@ export function timeValue(s: unknown): string {
   const from = t(o.from), to = t(o.to)
   if (from === to) bad('The start and end time are the same.')
   return `${from}-${to},${DAYS.filter(d => days.includes(d)).join(',')}`
+}
+
+/** A device that other devices sit behind: the router's neighbour list knows it, or many addresses answer for one MAC. */
+export function looksLikeInfrastructure(i: RouterInputs, mac: string, address: string): string | null {
+  const seen = i.neighbors.some(n => (mac && upperMac(n['mac-address']) === mac) || (address && String(n.address ?? '').split('/')[0] === address))
+  const ips = new Set<string>()
+  if (mac) {
+    for (const a of i.arp) if (upperMac(a['mac-address']) === mac && a.address) ips.add(String(a.address))
+    for (const l of i.leases) if (upperMac(l['mac-address'] || l['active-mac-address']) === mac && (l.address || l['active-address'])) ips.add(String(l.address || l['active-address']))
+  }
+  if (!seen && ips.size < 3) return null
+  return `This looks like a router or access point (${seen ? 'the router sees it as a network device' : `${ips.size} addresses answer for it`}). Blocking it can cut the internet for every device behind it. Tick the box only if you are sure.`
 }
 
 export interface BlockParams { action: 'block' | 'unblock' | 'schedule'; mac?: unknown; address?: unknown; name?: unknown; schedule?: unknown; id?: unknown }
@@ -302,11 +334,61 @@ export function planBlock(i: RouterInputs, p: BlockParams): ChangePlan {
   const target = mac || address
   for (const r of i.filter) if (isBlock(r) && ((mac && upperMac(r['src-mac-address']) === mac) || (!mac && r['src-address'] === address))) refuse('already_blocked', `${clean(dev?.name) || target} is already blocked. Remove that block first, or change its schedule.`)
   const label = clean(p.name) || dev?.name || target
+  const infra = looksLikeInfrastructure(i, mac, address)
   const time = p.schedule ? timeValue(p.schedule) : ''
   const comment = `${BLOCK_PREFIX} ${label} [hpx-${tagOf('block', target, time)}]`
   const props: Record<string, string> = { chain: 'forward', action: 'drop', ...(mac ? { 'src-mac-address': mac } : { 'src-address': address }), ...blockOut(i), ...(time ? { time } : {}), comment }
   const when = time ? ` ${time.replace(/^(\d\d:\d\d):00-(\d\d:\d\d):00,(.*)$/, 'from $1 to $2 on $3')}` : ''
   return plan('block.add', `Block internet for ${label}`, [
-    step(`Add a firewall rule that drops internet traffic from ${label} (${target})${when}. Its own network and the router stay reachable.`, { kind: 'add', path: '/ip/firewall/filter', props, top: true }, [{ kind: 'remove', path: '/ip/firewall/filter', where: { chain: 'forward', comment } }]),
-  ], { checkWan: true })
+    step(`Add a firewall rule that drops internet traffic from ${label} (${target})${when}. Its own network and the router stay reachable. Connections the device already has open are not cut; they carry on until they end.`, { kind: 'add', path: '/ip/firewall/filter', props, top: true }, [{ kind: 'remove', path: '/ip/firewall/filter', where: { chain: 'forward', comment } }]),
+  ], { checkWan: true, warnings: infra ? [infra] : [], needsTick: infra })
+}
+
+// ── undo: the same checks the builders make ──────────────────────────────────
+
+const rowOf = (table: Row[], op: Extract<Op, { kind: 'set' }>): Row | undefined =>
+  table.find(r => op.ids?.length ? op.ids.includes(String(r['.id'])) : Object.entries(op.where).every(([k, v]) => String(r[k] ?? '') === String(v)))
+
+/**
+ * Putting a change back is a change: what it restores can now clash with something made since (a port another forward
+ * took, an address another device was given, a block that was set again), or open a risky port again. Each operation an
+ * undo is about to run goes through the same checks a new change would. Throws a ChangeRefusal, or returns the tick
+ * and warnings the person must see.
+ */
+export function checkRestore(i: RouterInputs, steps: PlanStep[]): { warnings: string[]; needsTick: string | null } {
+  const ticks: string[] = []
+  const warnings: string[] = []
+  for (const s of steps) {
+    const op = s.forward
+    if (op.kind === 'add' && op.path === '/ip/firewall/nat' && op.props.chain === 'dstnat' && op.props.action === 'dst-nat') {
+      const scope: Record<string, string> = op.props['in-interface-list'] ? { 'in-interface-list': op.props['in-interface-list'] } : op.props['in-interface'] ? { 'in-interface': op.props['in-interface'] } : {}
+      if (!isTrue(op.props.disabled)) {
+        conflict(i, scope, String(op.props.protocol ?? ''), rangesOf(op.props['dst-port']), null)
+        const risk = riskyIn(op.props['dst-port'], op.props['to-ports'])
+        if (risk.length) ticks.push(riskText(risk))
+        if (i.selfAddress && op.props['to-addresses'] === i.selfAddress) ticks.push(SELF_FORWARD_TEXT)
+      }
+    } else if (op.kind === 'set' && op.path === '/ip/firewall/nat' && op.props.disabled !== undefined && !isTrue(op.props.disabled)) {
+      const row = rowOf(i.nat, op)
+      if (row && isForward(row)) {
+        const scope: Record<string, string> = scopeOf(row) ? (row['in-interface-list'] ? { 'in-interface-list': String(row['in-interface-list']) } : { 'in-interface': String(row['in-interface']) }) : {}
+        conflict(i, scope, String(row.protocol ?? ''), rangesOf(row['dst-port']), String(row['.id']))
+        const risk = riskyIn(row['dst-port'], row['to-ports'])
+        if (risk.length) ticks.push(riskText(risk))
+      }
+    } else if (op.kind === 'add' && op.path === '/ip/dhcp-server/lease') {
+      const mac = upperMac(op.props['mac-address']), address = String(op.props.address ?? '')
+      if (mac && i.leases.some(l => upperMac(l['mac-address']) === mac && isStatic(l) && !isTrue(l.disabled))) refuse('already_fixed', 'That device has been given a fixed address since, so the old one is not put back. Edit the new one instead.')
+      if (address) checkAddress(i, pickServer(i, { server: op.props.server, mac, address }), address, mac, null)
+    } else if (op.kind === 'set' && op.path === '/ip/dhcp-server/lease' && op.props.address) {
+      const row = rowOf(i.leases, op)
+      if (!row) refuse('not_found', 'The router no longer has that fixed address, so there is nothing to put back.')
+      const mac = upperMac(row!['mac-address'])
+      checkAddress(i, pickServer(i, { mac, address: op.props.address, existing: row }), op.props.address, mac, String(row!['.id']))
+    } else if (op.kind === 'add' && op.path === '/ip/firewall/filter' && String(op.props.comment ?? '').startsWith(BLOCK_PREFIX)) {
+      const mac = upperMac(op.props['src-mac-address']), addr = String(op.props['src-address'] ?? '')
+      if (i.filter.some(r => isBlock(r) && ((mac && upperMac(r['src-mac-address']) === mac) || (addr && r['src-address'] === addr)))) refuse('already_blocked', 'That device has been blocked again since, so the old block is not put back.')
+    }
+  }
+  return { warnings: warnings, needsTick: [...new Set(ticks)].join(' ') || null }
 }

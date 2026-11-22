@@ -12,8 +12,9 @@ export type Where = Record<string, string>
 export type Op =
   /** Add a row. `top` puts it first among the rules of its table (firewall rules only). */
   | { kind: 'add'; path: string; props: Record<string, string>; top?: boolean }
-  /** Change the rows that match `where`. At least one must match. */
-  | { kind: 'set'; path: string; where: Where; props: Record<string, string> }
+  /** Change the rows that match `where`. At least one must match. `ids` are the rows' router ids, captured just before
+   *  the safety switch is armed: when present they, not `where`, select the rows (in the router's script too). */
+  | { kind: 'set'; path: string; where: Where; props: Record<string, string>; ids?: string[] }
   /** Remove the rows that match `where`. Matching nothing is fine (the row is already gone). */
   | { kind: 'remove'; path: string; where: Where }
   /** Run a command on the rows that match (`/ip/dhcp-server/lease/make-static`). */
@@ -64,8 +65,10 @@ export interface Management {
   username?: string
   /** The internet-facing links, as the page reads them. */
   wan: string[]
-  /** HyperProx's own address, when known: a block must never name it. */
+  /** HyperProx's own address as the router sees it, when it could be read: a block must never name it. */
   selfAddress?: string
+  /** The MAC address behind that address (from the router's ARP table or leases). */
+  selfMac?: string
 }
 
 export type Row = Record<string, any>
@@ -78,6 +81,7 @@ export interface HistoryEntry {
   title: string
   /** The plain words of each step. */
   steps: string[]
+  /** 'rolled-back' covers both HyperProx putting it back and the router's own switch doing it (see `note`). */
   status: 'applied' | 'undone' | 'rolled-back' | 'failed'
   /** Set on an entry that undid another. */
   undoOf?: string
