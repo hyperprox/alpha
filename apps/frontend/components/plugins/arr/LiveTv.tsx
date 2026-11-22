@@ -3,9 +3,11 @@
 // =============================================================================
 //  HyperProx — Arr Stack, Live TV (Tunarr)
 //
-//  The channels as cards: number and icon, what is on now and next, how many programmes, how many hours of guide are
-//  published (a bar that fills at 24 hours and turns warm below it), and who is watching (an admin sees the address and
-//  player; everyone else a count). Above them, anything wrong carries its fix button for an admin: "Refresh guide"
+//  A guide: channels as compact rows in groups (Tunarr's own groups, else bands of ten by number) with a search box and
+//  filters. Each row has the number and icon (a letter when Tunarr has none), what is on now (show and episode) with a
+//  progress bar, and what is next. A chip appears only when a channel differs: a shorter guide, programmes that are not
+//  in step with Tunarr's libraries, viewers (an admin sees the address and player; everyone else a count). The guide
+//  length and the library sync are said once, at the top. Above them, anything wrong carries its fix button for an admin: "Refresh guide"
 //  when a guide is short, "Restart stream" for a channel whose stream session has failed. Both ask first, and the
 //  server asks again (IN_PAGE sends the confirmation the server's token stands for). Tunarr's API has no other action
 //  this page uses, so everything else is read-only, and it says so. Read from routes/arr-tunarr.ts every 20 s while the
@@ -19,8 +21,9 @@ import { useSession } from '@/lib/session'
 import { Panel, Pill, RingGauge, styles as s } from '@/components/visual/kit'
 import c from './livetv.module.css'
 import {
-  ACT_LABEL, confirmText, guideFill, pollDue, guideWord, iconPath, untilWord, versionWord, viewersWord,
-  type Act, type ActResult, type LiveTv, type TvChannel,
+  ACT_LABEL, confirmText, filterChannels, groupChannels, guideDiffers, guideWord, iconPath, leftWord, needsAttention, pollDue, programText,
+  progressOf, syncedWord, typicalGuideHours, untilWord, versionWord, viewersWord,
+  type Act, type ActResult, type LiveTv, type TvChannel, type TvFilter, type TvGroup,
 } from './livetv-view'
 
 export function ConfirmBox({ text, yes, busy, onYes, onNo }: { text: string; yes: string; busy?: boolean; onYes: () => void; onNo: () => void }) {
@@ -35,33 +38,43 @@ export function ConfirmBox({ text, yes, busy, onYes, onNo }: { text: string; yes
   )
 }
 
-/** One channel, as a card. */
-export function ChannelCard({ ch, canAct, onAct }: { ch: TvChannel; canAct: boolean; onAct: (a: Act, name: string) => void }) {
+/** One channel as a guide row: number and icon, what is on now with its progress, and what is next. */
+export function ChannelRow({ ch, canAct, onAct, nowMs, typical }: { ch: TvChannel; canAct: boolean; onAct: (a: Act, name: string) => void; nowMs: number; typical: number | null }) {
   const icon = iconPath(ch)
   const [broken, setBroken] = useState(false)
   const failed = ch.sessions.some(x => x.state === 'error')
+  const pct = Math.round(progressOf(ch.now, nowMs) * 100)
+  const unsynced = ch.ready ? ch.ready.programmes - ch.ready.synced : 0
   return (
-    <li className={c.card} data-live={ch.viewers > 0} data-ok={ch.canStream} data-channel={ch.number}>
+    <li className={c.row2} data-live={ch.viewers > 0} data-ok={ch.canStream} data-attn={needsAttention(ch)} data-channel={ch.number}>
       <div className={c.badge} aria-hidden>
         <span>{ch.name.slice(0, 1).toUpperCase()}</span>
         {icon && !broken && <img src={icon} alt="" loading="lazy" decoding="async" onError={() => setBroken(true)} />}
-        <b>{ch.number}</b>
       </div>
       <div className={c.body}>
-        <h3 className={c.title}>{ch.name}<small>Channel {ch.number}</small></h3>
+        <h3 className={c.title}><b className={c.num}>{ch.number}</b>{ch.name}</h3>
         <p className={c.on}>
-          {ch.now ? <>On now: <b>{ch.now.title}</b> until {untilWord(ch.now.until)}</> : 'Nothing on right now'}
-          {ch.next ? <> · Next: {ch.next.title} at {untilWord(ch.next.at)}</> : null}
+          {ch.now
+            ? <><span className={c.tag}>{ch.now.kind === 'break' ? 'Break' : 'Now'}</span> <b>{ch.now.kind === 'break' ? 'Between programmes' : ch.now.title}</b>{ch.now.episode ? <> — {ch.now.episode}</> : null}{ch.now.code ? <em> {ch.now.code}</em> : null}</>
+            : <span className={c.dim}>Nothing on right now</span>}
         </p>
-        <div className={c.bar} role="progressbar" aria-label="Hours of guide published" aria-valuemin={0} aria-valuemax={24} aria-valuenow={Math.round((ch.guideHours ?? 0))} data-short={ch.guideShort}>
-          <i style={{ width: `${Math.round(guideFill(ch.guideHours) * 100)}%` }} />
-        </div>
-        <div className={c.row}>
-          <Pill tone={ch.guideShort ? 'warn' : undefined}>{guideWord(ch.guideHours)}</Pill>
-          <Pill>{ch.programCount} {ch.programCount === 1 ? 'programme' : 'programmes'}</Pill>
-          <Pill tone={ch.viewers ? 'accent' : undefined}>{viewersWord(ch.viewers)}</Pill>
-          {!ch.canStream && <Pill tone="warn">Cannot stream</Pill>}
-        </div>
+        {ch.now && (
+          <div className={c.bar} role="progressbar" aria-label={`Progress through ${programText(ch.now)}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+            <i style={{ width: `${pct}%` }} />
+          </div>
+        )}
+        <p className={c.next}>
+          {ch.now ? <span className={c.dim}>{leftWord(ch.now, nowMs)}</span> : null}
+          {ch.next ? <>{ch.now ? ' · ' : ''}<span className={c.tag}>Next</span> {programText(ch.next)} <span className={c.dim}>at {untilWord(ch.next.at)}</span></> : null}
+        </p>
+        {(ch.viewers > 0 || guideDiffers(ch, typical) || unsynced > 0 || !ch.canStream) && (
+          <div className={c.chips}>
+            {ch.viewers > 0 && <Pill tone="accent">{viewersWord(ch.viewers)}</Pill>}
+            {guideDiffers(ch, typical) && <Pill tone={ch.guideShort ? 'warn' : undefined}>{guideWord(ch.guideHours)}</Pill>}
+            {ch.ready && unsynced > 0 && <Pill tone="warn" title="Programmes in the next 48 hours that come from a library Tunarr is not keeping in step">{ch.ready.pct}% in sync</Pill>}
+            {!ch.canStream && <Pill tone="warn">Cannot stream</Pill>}
+          </div>
+        )}
         {ch.sessions.some(x => x.who.length) && (
           <ul className={c.who} aria-label="Connected players">
             {ch.sessions.flatMap(x => x.who).map((w, i) => <li key={i}>{w.ip}{w.agent ? ` · ${w.agent}` : ''}</li>)}
@@ -69,28 +82,45 @@ export function ChannelCard({ ch, canAct, onAct }: { ch: TvChannel; canAct: bool
         )}
         {ch.problems.map(p => <p key={p} className={c.bad}>{p}</p>)}
         {canAct && failed && (
-          <div className={c.row}><button type="button" className={c.primary} onClick={() => onAct({ action: 'stop-session', channelId: ch.id }, `${ch.number} ${ch.name}`)}>{ACT_LABEL['stop-session']}</button></div>
+          <div className={c.chips}><button type="button" className={c.primary} onClick={() => onAct({ action: 'stop-session', channelId: ch.id }, `${ch.number} ${ch.name}`)}>{ACT_LABEL['stop-session']}</button></div>
         )}
       </div>
     </li>
   )
 }
 
-/** The tab's body for one reading (rendered in tests). */
-export function LiveTvView({ tv, canAct, onAct }: { tv: LiveTv; canAct: boolean; onAct: (a: Act, name: string) => void }) {
+const FILTERS: Array<[TvFilter, string]> = [['all', 'All'], ['attention', 'Needs attention'], ['watching', 'Watching']]
+
+/** The tab's body for one reading (rendered in tests). `nowMs` is the clock the progress bars use. */
+export function LiveTvView({ tv, canAct, onAct, nowMs = Date.now() }: { tv: LiveTv; canAct: boolean; onAct: (a: Act, name: string) => void; nowMs?: number }) {
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<TvFilter>('all')
+  const [toggled, setToggled] = useState<Record<string, boolean>>({})
   const hours = tv.summary.shortestGuideHours
+  const typical = typicalGuideHours(tv.channels)
+  const sync = syncedWord(tv)
+  const searching = query.trim() !== '' || filter !== 'all'
+  const shown = filterChannels(tv.channels, query, filter)
+  const groups = groupChannels(shown)
+  const attention = tv.channels.filter(needsAttention).length
+  const watching = tv.channels.filter(x => x.viewers > 0).length
+  // Short lists are all open; a long one opens only the groups someone should look at (and everything while searching).
+  const openByDefault = (g: TvGroup, i: number) => searching || tv.channels.length <= 12 || i === 0 || g.channels.some(x => needsAttention(x) || x.viewers > 0)
+  const ringValue = sync ? sync.value : tv.summary.channels ? 1 - tv.summary.cannotStream / tv.summary.channels : 0
+  const ringText = sync ? sync.text : `${tv.summary.channels - tv.summary.cannotStream}/${tv.summary.channels}`
+  const bad = sync ? sync.value < 1 : tv.summary.cannotStream > 0
   return (
     <>
       <div className={c.summary}>
-        <RingGauge value={tv.summary.channels ? 1 - tv.summary.cannotStream / tv.summary.channels : 0} size={84} big text={`${tv.summary.channels - tv.summary.cannotStream}/${tv.summary.channels}`} label="Can stream"
-          color={tv.summary.cannotStream ? 'var(--warn)' : 'var(--hx-accent)'} />
+        <RingGauge value={ringValue} size={84} big text={ringText} label={sync ? 'In sync' : 'Playable'} color={bad ? 'var(--warn)' : 'var(--hx-accent)'} />
         <div className={c.facts}>
           <div className={c.row}>
             <Pill tone={tv.summary.viewers ? 'accent' : undefined}>{viewersWord(tv.summary.viewers)}</Pill>
-            <Pill tone={tv.summary.guideShort ? 'warn' : 'good'}>{hours === null ? 'Guide length unknown' : `Shortest guide ${hours} h`}</Pill>
+            <Pill tone={tv.summary.guideShort ? 'warn' : 'good'}>{hours === null ? 'Guide length unknown' : tv.summary.guideShort ? `Shortest guide ${hours} h` : `Guide ${hours} h or more`}</Pill>
             <Pill tone={tv.version.behind ? 'warn' : undefined}>Tunarr {versionWord(tv.version)}</Pill>
-            {tv.version.ffmpeg && <Pill>ffmpeg {tv.version.ffmpeg}</Pill>}
+            {tv.version.ffmpeg && <Pill>FFmpeg {tv.version.ffmpeg}</Pill>}
           </div>
+          {sync && <p className={c.note}>{sync.value === 1 ? 'Every channel\u2019s next 48 hours comes from libraries Tunarr keeps in step.' : `${tv.summary.unsynced} ${tv.summary.unsynced === 1 ? 'channel has' : 'channels have'} programmes from a library Tunarr is not keeping in step (${tv.summary.unsyncedProgrammes} in the next 48 hours).`}</p>}
           {tv.sources.length > 0 && (
             <ul className={c.sources} aria-label="Media sources">
               {tv.sources.map(x => <li key={x.name}><Pill tone={x.state === 'ok' ? 'good' : x.state === 'down' ? 'warn' : undefined}>{x.name}: {x.state === 'ok' ? 'connected' : x.state === 'down' ? 'not answering' : 'no answer'}</Pill></li>)}
@@ -108,10 +138,38 @@ export function LiveTvView({ tv, canAct, onAct }: { tv: LiveTv; canAct: boolean;
             </li>
           ))}
         </ul>
-      ) : <p className={c.allwell}><Pill tone="good">All well</Pill> Every channel can stream and every guide holds a day or more.</p>}
+      ) : <p className={c.allwell}><Pill tone="good">All well</Pill> Every channel has something on, every guide holds a day or more{sync ? ', and every programme is in step with its library' : ''}.</p>}
       {tv.channels.length === 0
         ? <p className={s.empty}>Tunarr has no channels yet.</p>
-        : <ul className={c.list} aria-label="Channels">{tv.channels.map(ch => <ChannelCard key={ch.id} ch={ch} canAct={canAct} onAct={onAct} />)}</ul>}
+        : (
+          <>
+            <div className={c.tools} role="search">
+              <input type="search" className={c.search} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search channels or programmes" aria-label="Search channels or programmes" />
+              <div className={c.filters} role="group" aria-label="Show">
+                {FILTERS.map(([k, label]) => (
+                  <button key={k} type="button" className={c.filter} aria-pressed={filter === k} onClick={() => setFilter(k)}>
+                    {label}{k === 'attention' ? ` ${attention}` : k === 'watching' ? ` ${watching}` : ` ${tv.channels.length}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {shown.length === 0
+              ? <p className={s.empty}>No channel matches.</p>
+              : (
+                <div className={c.groups} aria-label="Channels">
+                  {groups.map((g, i) => (
+                    <details key={g.key} className={c.group} open={toggled[g.key] ?? openByDefault(g, i)} onToggle={e => { const o = (e.currentTarget as HTMLDetailsElement).open; setToggled(t => (t[g.key] === o ? t : { ...t, [g.key]: o })) }}>
+                      <summary className={c.groupHead}>
+                        <span>{g.label}</span>
+                        <small>{g.channels.length} {g.channels.length === 1 ? 'channel' : 'channels'}{g.channels.some(needsAttention) ? ` · ${g.channels.filter(needsAttention).length} to check` : ''}</small>
+                      </summary>
+                      <ul className={c.list}>{g.channels.map(ch => <ChannelRow key={ch.id} ch={ch} canAct={canAct} onAct={onAct} nowMs={nowMs} typical={typical} />)}</ul>
+                    </details>
+                  ))}
+                </div>
+              )}
+          </>
+        )}
       <p className={c.note}>{tv.actions.refreshGuide ? 'Refresh guide and Restart stream are the only changes this page can make; ' : 'Restart stream is the only change this page can make (this Tunarr has no guide task to run); '}everything else about Tunarr is read-only here. Channels, programming and settings are changed in Tunarr itself.</p>
     </>
   )

@@ -2139,12 +2139,17 @@ so the plug-in's settings have just one optional field, **Tunarr address** (a Tu
 basic-auth login is not supported yet and shows as not answering). The **Live TV** tab is read from Tunarr every 20 seconds
 while you look at it, and everyone who can open the Arr Stack page can see it.
 
-- **Channels.** One card per channel: number, icon, what is on now and what is next (from Tunarr's guide), how many
-  programmes it has, and how many people are watching. Who is watching (address and player) is shown to admins only;
-  everyone else, and API tokens, see counts.
-- **Guide length.** Each card shows how many hours of guide are published from now. A bar fills at 24 hours and turns warm
-  below it, and a short guide raises a warning, because players that look a day ahead then show gaps.
-- **Health.** Tunarr's version against the newest release, its ffmpeg version, whether each media source answers, and
+- **Channels.** A compact guide, grouped (Tunarr's own channel groups, or bands of ten by number) with a search box and
+  filters. Each channel is one short row: number and icon (a letter when Tunarr has no icon), what is on now as the show
+  and episode name with a progress bar, and what is next. Who is watching (address and player) is shown to admins only;
+  everyone else, and API tokens, see counts. A long list opens only its first group and the ones that need a look.
+- **Guide length.** The top of the tab says how many hours of guide are published; a channel shows its own number only
+  when it is shorter or differs from the rest. A short guide raises a warning, because players that look a day ahead
+  then show gaps.
+- **In sync.** Tunarr marks each programme as present or missing and each library as on or off. The tab counts how much
+  of the next 48 hours of each channel comes from libraries Tunarr keeps in step, and warns about the rest, because those
+  programmes may not play. It is what Tunarr reports, not a play test.
+- **Health.** Tunarr's version against the newest release, its ffmpeg version (the number, such as 7.1), whether each media source answers, and
   Tunarr's own health warnings. A channel that cannot stream says why: it has no programming, nothing is scheduled on it
   right now, or its stream session has failed. A media source that does not answer is a warning of its own, because
   Tunarr does not say which channels play from it.

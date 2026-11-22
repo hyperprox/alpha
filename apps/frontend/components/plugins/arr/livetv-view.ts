@@ -8,19 +8,20 @@
 
 export const GUIDE_MIN_HOURS = 24
 
-export interface TvProgram { title: string; at: string; until: string }
+export interface TvProgram { title: string; episode: string | null; code: string | null; kind: 'movie' | 'episode' | 'other' | 'break'; at: string; until: string }
+export interface TvReady { programmes: number; synced: number; pct: number }
 export interface TvSession { state: string; viewers: number; who: Array<{ ip: string; agent: string }>; mode: string }
 export interface TvChannel {
   id: string; number: number; name: string; hasIcon: boolean; programCount: number
   now: TvProgram | null; next: TvProgram | null; guideHours: number | null; guideShort: boolean
-  canStream: boolean; problems: string[]; viewers: number; sessions: TvSession[]
+  group: string | null; ready: TvReady | null; canStream: boolean; problems: string[]; viewers: number; sessions: TvSession[]
 }
 export interface TvSource { name: string; type: string; state: 'ok' | 'down' | 'unknown'; why: string | null }
 export interface TvVersion { installed: string | null; latest: string | null; behind: boolean | null; edge: boolean; ffmpeg: string | null }
 export interface TvWarning { level: 'error' | 'warning' | 'notice'; text: string; fix?: 'refresh-guide' | 'stop-session'; channelId?: string }
 export interface LiveTv {
   configured: boolean; channels: TvChannel[]; sources: TvSource[]; version: TvVersion; warnings: TvWarning[]
-  summary: { channels: number; viewers: number; streaming: number; guideShort: number; cannotStream: number; shortestGuideHours: number | null }
+  summary: { channels: number; viewers: number; streaming: number; guideShort: number; cannotStream: number; shortestGuideHours: number | null; synced: number; unsynced: number; unsyncedProgrammes: number }
   actions: { refreshGuide: boolean; stopSession: boolean }
   readAt: string; detail: boolean
 }
@@ -68,3 +69,81 @@ export function confirmText(a: Act, channelName?: string): string {
 
 /** Whether a timer tick should read Tunarr: not while the tab is hidden, and not while the last reading is still running. */
 export const pollDue = (hidden: boolean, loading: boolean): boolean => !hidden && !loading
+
+// ── the guide view: text, progress, groups, filters ────────────────────────────────────────────────
+
+/** "Show — Episode" for an episode, the title alone for a film or a break. */
+export const programText = (p: TvProgram): string => (p.episode ? `${p.title} — ${p.episode}` : p.title)
+
+/** How far through the programme on now is, 0 to 1 (0 when there is none or the times are unreadable). */
+export function progressOf(p: TvProgram | null, nowMs: number): number {
+  if (!p) return 0
+  const a = Date.parse(p.at), b = Date.parse(p.until)
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return 0
+  return Math.max(0, Math.min(1, (nowMs - a) / (b - a)))
+}
+
+/** "1 h 5 min left", "12 min left". */
+export function leftWord(p: TvProgram | null, nowMs: number): string {
+  if (!p) return ''
+  const mins = Math.max(0, Math.round((Date.parse(p.until) - nowMs) / 60_000))
+  if (!Number.isFinite(mins)) return ''
+  return mins >= 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min left` : `${mins} min left`
+}
+
+/** Anything about the channel a person should look at. */
+export const needsAttention = (c: TvChannel): boolean =>
+  !c.canStream || c.guideShort || (!!c.ready && c.ready.synced < c.ready.programmes) || c.sessions.some(x => x.state === 'error')
+
+/** The guide length most channels share, rounded to the hour; null when none reported one. */
+export function typicalGuideHours(channels: TvChannel[]): number | null {
+  const counts = new Map<number, number>()
+  for (const c of channels) if (c.guideHours !== null) counts.set(Math.round(c.guideHours), (counts.get(Math.round(c.guideHours)) ?? 0) + 1)
+  let best: number | null = null, n = 0
+  for (const [h, k] of counts) if (k > n || (k === n && best !== null && h < best)) { best = h; n = k }
+  return best
+}
+
+/** A channel's own guide length is worth a chip only when it is short or not the one the rest share. */
+export const guideDiffers = (c: TvChannel, typical: number | null): boolean =>
+  c.guideHours !== null && (c.guideShort || (typical !== null && Math.abs(c.guideHours - typical) >= 1.5))
+
+export interface TvGroup { key: string; label: string; channels: TvChannel[] }
+
+/**
+ * Channels in groups: Tunarr's own channel groups when it has more than one, otherwise bands of ten by number
+ * (1 to 9, 10 to 19, ...). Always in channel order.
+ */
+export function groupChannels(channels: TvChannel[]): TvGroup[] {
+  const sorted = [...channels].sort((a, b) => a.number - b.number)
+  const named = new Set(sorted.map(c => c.group).filter((g): g is string => !!g))
+  const out = new Map<string, TvGroup>()
+  for (const c of sorted) {
+    let key: string, label: string
+    if (named.size > 1) { key = `g:${c.group ?? ''}`; label = c.group ?? 'Other' }
+    else { const lo = Math.floor(c.number / 10) * 10; const from = Math.max(1, lo), to = lo + 9; key = `n:${lo}`; label = `Channels ${from}\u2013${to}` }
+    const g = out.get(key) ?? { key, label, channels: [] }
+    g.channels.push(c); out.set(key, g)
+  }
+  return [...out.values()]
+}
+
+export type TvFilter = 'all' | 'attention' | 'watching'
+
+/** Channels matching the search words (number, name, or what is on now or next) and the filter. */
+export function filterChannels(channels: TvChannel[], query: string, filter: TvFilter): TvChannel[] {
+  const q = query.trim().toLowerCase()
+  return channels.filter(c => {
+    if (filter === 'attention' && !needsAttention(c)) return false
+    if (filter === 'watching' && c.viewers === 0) return false
+    if (!q) return true
+    const hay = [String(c.number), c.name, c.now && programText(c.now), c.next && programText(c.next)].filter(Boolean).join(' ').toLowerCase()
+    return q.split(/\s+/).every(w => hay.includes(w))
+  })
+}
+
+/** How many channels are fully in step with Tunarr's libraries, or null when this Tunarr gave nothing to judge by. */
+export const syncedWord = (tv: LiveTv): { value: number; text: string } | null => {
+  const judged = tv.channels.filter(c => c.ready).length
+  return judged ? { value: tv.summary.synced / judged, text: `${tv.summary.synced}/${judged}` } : null
+}

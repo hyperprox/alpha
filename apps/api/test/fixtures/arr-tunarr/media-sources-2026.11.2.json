@@ -1,0 +1,19 @@
+[
+ {
+  "id": "11111111-aaaa-4aaa-8aaa-111111111111",
+  "name": "Example Library Server",
+  "type": "plex",
+  "libraries": [
+   {
+    "id": "22222222-bbbb-4bbb-8bbb-222222222222",
+    "name": "Movies",
+    "enabled": true
+   },
+   {
+    "id": "33333333-cccc-4ccc-8ccc-333333333333",
+    "name": "Old Movies",
+    "enabled": false
+   }
+  ]
+ }
+]

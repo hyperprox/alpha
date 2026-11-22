@@ -21,6 +21,19 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-22 — Live TV: real titles, a compact guide
+
+### Fixed
+- **Live TV shows what is on.** With Tunarr 2026.11 every programme read "Untitled". Now each channel shows the show and episode name, for example "Example Heroes: The Animated Series — Frozen Heart", for both now and next. Older Tunarr versions still read as before.
+  - Technical: 2026.11 nests details under each guide row's `program` (`title`, `show.title`, `season.index`, `episodeNumber`); the old `title`/`subtitle` on the row is still read as a fallback. A break is no longer offered as "next".
+- **FFmpeg is shown as a short version.** "FFmpeg 7.1" instead of the long build string.
+- **The Arr Stack tab bar stays in view.** On a phone it sits just under the top bar and scrolls sideways instead of hiding behind it.
+
+### Improved
+- **Live TV is a compact guide.** Channels are short rows in groups with a progress bar for what is on now, a search box and filters. The guide length is said once at the top, and a channel mentions it only if it differs.
+- **"In sync" replaces "can stream".** The tab now counts how much of each channel's next 48 hours comes from libraries Tunarr keeps in step, and warns about the rest, because those programmes may not play. It no longer claims that every channel can stream.
+  - Technical: readiness is read from each guide programme's `state` and its library's `enabled` flag in Tunarr's media-source list; it is what Tunarr reports, not a play test.
+
 ## 2026-11-22 — Arr Stack: sort new shows by kind
 
 ### New

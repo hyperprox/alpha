@@ -5,7 +5,7 @@
 //  browser can reach HyperProx (the live dot), the finder and the theme switch.
 // =============================================================================
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { useSession } from '@/lib/session'
 import { ThemeToggle } from './ThemeToggle'
@@ -80,8 +80,22 @@ export function TopBar({ full = false }: { full?: boolean }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // The bar's height, published as --hx-top-h, so a page can park its own tab bar just under it (position: sticky).
+  const bar = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = bar.current
+    if (!el) return undefined
+    const root = document.documentElement
+    const set = () => root.style.setProperty('--hx-top-h', full ? '0px' : `${Math.round(el.getBoundingClientRect().height)}px`)
+    set()
+    if (typeof ResizeObserver === 'undefined') return () => root.style.removeProperty('--hx-top-h')
+    const ro = new ResizeObserver(set)
+    ro.observe(el)
+    return () => { ro.disconnect(); root.style.removeProperty('--hx-top-h') }
+  }, [full])
+
   return (
-    <div className={`${s.top} ${full ? s.topFull : ''}`}>
+    <div ref={bar} className={`${s.top} ${full ? s.topFull : ''}`}>
       <div className={s.titleBlock}>
         {crumbHref
           ? <Link href={crumbHref} className={s.crumb}>← {crumb}</Link>

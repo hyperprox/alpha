@@ -386,7 +386,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
   )
 
   return (
-    <div className="overflow-x-hidden">
+    <div className="overflow-x-clip">
       <div className={vs.page}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -458,10 +458,11 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
               </div>
             )}
             {isArr && v?.kind === 'arrstack' && (
-              <div role="tablist" aria-label="Arr Stack views" className="flex flex-wrap gap-2">
+              <div role="tablist" aria-label="Arr Stack views" className="sticky z-10 -mx-1 flex gap-2 overflow-x-auto px-1 py-2"
+                style={{ top: 'var(--hx-top-h, 0px)', background: 'var(--ground)', scrollbarWidth: 'none' }}>
                 {([['queue', 'Queue'], ['requests', 'Requests'], ['overview', 'Overview'], ['upcoming', 'Upcoming'], ['sorting', 'Sorting'], ['livetv', 'Live TV']] as const).map(([k, label]) => (
                   <button key={k} role="tab" aria-selected={arrTab === k} onClick={() => setArrTab(k)}
-                    className="h-10 rounded-md border px-4 font-display text-sm font-semibold uppercase tracking-[0.1em]"
+                    className="h-10 shrink-0 rounded-md border px-4 font-display text-sm font-semibold uppercase tracking-[0.1em]"
                     style={{ borderColor: arrTab === k ? 'color-mix(in srgb, var(--accent) 45%, transparent)' : 'var(--border-strong)',
                       color: arrTab === k ? 'var(--accent)' : 'var(--text)', background: arrTab === k ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent' }}>
                     {label}

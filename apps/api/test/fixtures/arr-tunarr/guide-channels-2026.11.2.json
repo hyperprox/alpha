@@ -1,0 +1,170 @@
+{
+ "aaaaaaaa-1111-4111-8111-111111111111": {
+  "icon": {
+   "path": "/images/a.png"
+  },
+  "name": "Cartoon Corner",
+  "number": 1,
+  "id": "aaaaaaaa-1111-4111-8111-111111111111",
+  "programs": [
+   {
+    "type": "content",
+    "duration": 3600000,
+    "id": "p-1795341174790",
+    "program": {
+     "uuid": "p-1795341174790",
+     "sourceType": "plex",
+     "type": "episode",
+     "title": "Frozen Heart",
+     "sortTitle": "frozen heart",
+     "state": "ok",
+     "mediaSourceId": "11111111-aaaa-4aaa-8aaa-111111111111",
+     "libraryId": "22222222-bbbb-4bbb-8bbb-222222222222",
+     "identifiers": [],
+     "tags": [],
+     "artwork": [],
+     "duration": 3600000,
+     "episodeNumber": 20,
+     "season": {
+      "uuid": "s",
+      "type": "season",
+      "title": "Season 2",
+      "index": 2
+     },
+     "show": {
+      "uuid": "sh",
+      "type": "show",
+      "title": "Example Heroes: The Animated Series"
+     },
+     "showId": "sh",
+     "seasonId": "s"
+    },
+    "start": 1795341174790,
+    "stop": 1795344774790,
+    "isPaused": false
+   },
+   {
+    "type": "flex",
+    "duration": 20000,
+    "icon": "http://localhost:8001/images/tunarr.png",
+    "start": 1795344774790,
+    "stop": 1795344794790,
+    "isPaused": false,
+    "title": "Sample Channel",
+    "program": {}
+   },
+   {
+    "type": "content",
+    "duration": 3600000,
+    "id": "p-1795344794790",
+    "program": {
+     "uuid": "p-1795344794790",
+     "sourceType": "plex",
+     "type": "episode",
+     "title": "Night Watch",
+     "sortTitle": "night watch",
+     "state": "ok",
+     "mediaSourceId": "11111111-aaaa-4aaa-8aaa-111111111111",
+     "libraryId": "22222222-bbbb-4bbb-8bbb-222222222222",
+     "identifiers": [],
+     "tags": [],
+     "artwork": [],
+     "duration": 3600000,
+     "episodeNumber": 21,
+     "season": {
+      "uuid": "s",
+      "type": "season",
+      "title": "Season 2",
+      "index": 2
+     },
+     "show": {
+      "uuid": "sh",
+      "type": "show",
+      "title": "Example Heroes: The Animated Series"
+     },
+     "showId": "sh",
+     "seasonId": "s"
+    },
+    "start": 1795344794790,
+    "stop": 1795348394790,
+    "isPaused": false
+   }
+  ]
+ },
+ "bbbbbbbb-2222-4222-8222-222222222222": {
+  "icon": {
+   "path": ""
+  },
+  "name": "Sample Movies",
+  "number": 2,
+  "id": "bbbbbbbb-2222-4222-8222-222222222222",
+  "programs": [
+   {
+    "type": "content",
+    "duration": 7200000,
+    "id": "p-1795339374790",
+    "program": {
+     "uuid": "p-1795339374790",
+     "sourceType": "plex",
+     "type": "movie",
+     "title": "Moon Garden",
+     "sortTitle": "moon garden",
+     "state": "ok",
+     "mediaSourceId": "11111111-aaaa-4aaa-8aaa-111111111111",
+     "libraryId": "22222222-bbbb-4bbb-8bbb-222222222222",
+     "identifiers": [],
+     "tags": [],
+     "artwork": [],
+     "duration": 7200000
+    },
+    "start": 1795339374790,
+    "stop": 1795346574790,
+    "isPaused": false
+   },
+   {
+    "type": "content",
+    "duration": 7200000,
+    "id": "p-1795346574790",
+    "program": {
+     "uuid": "p-1795346574790",
+     "sourceType": "plex",
+     "type": "movie",
+     "title": "Paper Kites",
+     "sortTitle": "paper kites",
+     "state": "ok",
+     "mediaSourceId": "11111111-aaaa-4aaa-8aaa-111111111111",
+     "libraryId": "33333333-cccc-4ccc-8ccc-333333333333",
+     "identifiers": [],
+     "tags": [],
+     "artwork": [],
+     "duration": 7200000
+    },
+    "start": 1795346574790,
+    "stop": 1795353774790,
+    "isPaused": false
+   },
+   {
+    "type": "content",
+    "duration": 7200000,
+    "id": "p-1795353774790",
+    "program": {
+     "uuid": "p-1795353774790",
+     "sourceType": "plex",
+     "type": "movie",
+     "title": "Lost Reel",
+     "sortTitle": "lost reel",
+     "state": "missing",
+     "mediaSourceId": "11111111-aaaa-4aaa-8aaa-111111111111",
+     "libraryId": "22222222-bbbb-4bbb-8bbb-222222222222",
+     "identifiers": [],
+     "tags": [],
+     "artwork": [],
+     "duration": 7200000
+    },
+    "start": 1795353774790,
+    "stop": 1795360974790,
+    "isPaused": false
+   }
+  ]
+ }
+}

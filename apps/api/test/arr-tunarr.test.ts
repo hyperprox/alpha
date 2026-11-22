@@ -11,7 +11,7 @@ import { authRoutes } from '../src/routes/auth'
 import { requiredRole, needsConfirm, needsPassword } from '../src/lib/roles'
 import { injectConfirmed } from './fakes/confirm'
 import { buildArrTunarrRoutes } from '../src/routes/arr-tunarr'
-import { GUIDE_MIN_HOURS, buildLiveTv, forViewer, guideHoursOf, nowAndNext, splitVersion, versionState } from '../src/lib/arr-tunarr/logic'
+import { GUIDE_MIN_HOURS, buildLiveTv, ffmpegShort, forViewer, guideHoursOf, nowAndNext, programOf, readinessOf, offLibraries, splitVersion, versionState } from '../src/lib/arr-tunarr/logic'
 import { TunarrRefusal, TunarrService, type TunarrDeps } from '../src/lib/arr-tunarr/service'
 import { makeLatestTunarr } from '../src/lib/arr-tunarr/production'
 import { DETECT_SCRIPT, imageTag, parseDetect, tunarrProvider } from '../src/lib/arr-tunarr/provider'
@@ -83,7 +83,7 @@ function fake(o: Partial<Fake> = {}): { f: Fake; client: CoreEndpointClient } {
     if (f.hang.has(u.pathname)) return new Promise(() => {})
     if (f.delayMs[u.pathname]) await new Promise(r => setTimeout(r, f.delayMs[u.pathname]))
     if (u.pathname === '/api/channels') return f.channels
-    if (u.pathname === '/api/version') return { tunarr: f.version, ffmpeg: '7.1' }
+    if (u.pathname === '/api/version') return { tunarr: f.version, ffmpeg: "7.1" }
     if (u.pathname === '/api/guide/status') return { guideTimes: Object.fromEntries(Object.entries(f.guideEnd).map(([k, v]) => [k, { start: new Date(NOW).toISOString(), end: new Date(v).toISOString() }])) }
     if (u.pathname === '/api/guide/channels') return Object.fromEntries(Object.entries(f.programs).map(([k, v]) => [k, { id: k, programs: v }]))
     if (u.pathname === '/api/sessions') return f.sessions
@@ -223,7 +223,7 @@ test('now and next: the one on now, then the one after; between programmes only 
   assert.deepEqual([nowAndNext(p, 25).now, nowAndNext(p, 25).next?.title], [null, 'C'])
   assert.deepEqual(nowAndNext(p, 50), { now: null, next: null })
   assert.deepEqual(nowAndNext('nope', 1), { now: null, next: null })
-  assert.equal(nowAndNext([{ type: 'flex', start: 0, stop: 10 }], 5).now?.title, 'Off air')
+  assert.equal(nowAndNext([{ type: 'flex', start: 0, stop: 10 }], 5).now?.title, 'Break')
 })
 
 test('the icon is fetched from the path Tunarr gave for that channel, never from the request', async () => {
@@ -528,4 +528,61 @@ test('the Tunarr address must be http(s) with no login in it; empty clears it', 
   for (const bad of ['javascript:alert(1)', 'http://u@example-host', 'file:///etc/passwd']) {
     await assert.rejects(saveSettings(arrstackPlugin.manifest, { tunarr_url: bad }), (e: any) => e instanceof PluginSettingsError && /Tunarr address/.test(e.message), bad)
   }
+})
+
+// ── Tunarr 2026.11: titles live under `program` ───────────────────────────────────────────────
+
+test('Tunarr 2026.11: the show and the episode name come from the nested program; a film is its title; a break is a break', () => {
+  const guide = fx('guide-channels-2026.11.2.json'), channels = fx('channels-2026.11.2.json')
+  const now = 1795342974790
+  const tv = buildLiveTv({ now, channels, guide, version: { tunarr: '2026.11.2', ffmpeg: 'n7.1-214-g71889a8437-20250228' }, sources: [{ source: fx('media-sources-2026.11.2.json')[0], status: { healthy: true } }], sessions: {} }, true)
+  const [a, b] = tv.channels
+  assert.deepEqual([a.now?.title, a.now?.episode, a.now?.code, a.now?.kind], ['Example Heroes: The Animated Series', 'Frozen Heart', 'S2E20', 'episode'])
+  // the 20 s break between episodes is not "next"
+  assert.deepEqual([a.next?.title, a.next?.episode, a.next?.code], ['Example Heroes: The Animated Series', 'Night Watch', 'S2E21'])
+  assert.deepEqual([b.now?.title, b.now?.episode, b.now?.code, b.now?.kind], ['Moon Garden', null, null, 'movie'])
+  assert.ok(!JSON.stringify(tv.channels.map(c => [c.now, c.next])).includes('Untitled'))
+  assert.equal(a.group, 'Kids')
+  // the break itself, when it is what is on
+  assert.deepEqual([programOf({ type: 'flex', start: 0, stop: 5, program: {} })?.title, programOf({ type: 'flex', start: 0, stop: 5, program: {} })?.kind], ['Break', 'break'])
+})
+
+test('old shape still reads: title and subtitle on the row itself', () => {
+  assert.deepEqual(programOf({ type: 'content', title: 'Evening News', subtitle: 'Monday', start: 0, stop: 3_600_000 }), { title: 'Evening News', episode: 'Monday', code: null, kind: 'episode', at: new Date(0).toISOString(), until: new Date(3_600_000).toISOString() })
+  assert.equal(programOf({ type: 'content', start: 0, stop: 1 })?.title, 'Untitled')
+  assert.equal(programOf({ type: 'content', title: 'x' }), null)
+})
+
+test('readiness: programmes from a library Tunarr has switched off, or marked missing, are not in step; the share is per channel', () => {
+  const guide = fx('guide-channels-2026.11.2.json'), channels = fx('channels-2026.11.2.json')
+  const src = [{ source: fx('media-sources-2026.11.2.json')[0], status: { healthy: true } }]
+  assert.deepEqual([...offLibraries(src)], ['33333333-cccc-4ccc-8ccc-333333333333'])
+  const tv = buildLiveTv({ now: 1795342974790, channels, guide, sources: src, sessions: {} }, true)
+  assert.deepEqual(tv.channels[0].ready, { programmes: 2, synced: 2, pct: 100 })
+  assert.deepEqual(tv.channels[1].ready, { programmes: 3, synced: 1, pct: 33 })
+  assert.deepEqual([tv.summary.synced, tv.summary.unsynced, tv.summary.unsyncedProgrammes], [1, 1, 2])
+  const w = tv.warnings.find(x => /not keeping in step/.test(x.text))!
+  assert.equal(w.level, 'warning'); assert.match(w.text, /Channel 2 Sample Movies has programmes/); assert.match(w.text, /\(2 in the next 48 h of guide\)/)
+  // with no media-source list nothing is called off; a missing state alone still counts
+  assert.equal(buildLiveTv({ now: 1795342974790, channels, guide, sessions: {} }, true).channels[1].ready?.synced, 2)
+  // the old shape has no details to judge: no claim either way
+  assert.equal(readinessOf([{ type: 'content', title: 'x', start: 0, stop: 1 }], new Set()), null)
+  assert.equal(readinessOf([{ type: 'flex', start: 0, stop: 1, program: {} }], new Set()), null)
+  assert.equal(readinessOf('nope', new Set()), null)
+})
+
+test('ffmpeg is shown short: the number, never the build string', () => {
+  assert.equal(ffmpegShort('n7.1-214-g71889a8437-20250228'), '7.1')
+  assert.equal(ffmpegShort('7.1'), '7.1'); assert.equal(ffmpegShort('6.0.1-static'), '6.0.1'); assert.equal(ffmpegShort('ffmpeg version 5.1.2-3'), '5.1.2')
+  assert.equal(ffmpegShort('git-2025-02-28-abcdef'), 'custom build'); assert.equal(ffmpegShort(''), null); assert.equal(ffmpegShort(undefined), null)
+  assert.equal(versionState('2026.11.2', '2026.11.2', 'n7.1-214-g71889a8437-20250228').ffmpeg, '7.1')
+})
+
+test('health is read live: a warning goes when Tunarr stops reporting it', async () => {
+  const bad = { FfmpegVersion: { type: 'warning', context: 'ffprobe is missing' } }
+  const { f, svc, setNow } = rig({ health: bad })
+  assert.ok((await svc.read(true)).warnings.some(w => /Tunarr reports: FfmpegVersion/.test(w.text)))
+  f.health = { FfmpegVersion: { type: 'healthy' } }
+  setNow(NOW + 60_000)
+  assert.ok(!(await svc.read(true)).warnings.some(w => /Tunarr reports/.test(w.text)))
 })
