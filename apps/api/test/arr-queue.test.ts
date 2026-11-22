@@ -612,3 +612,22 @@ test('route: lookups that run out of time are dropped and the queue is still ret
   assert.equal(data.services.sonarr.ok, true)
   assert.equal(data.shows[0].seasons[0].downloads[0].why, null)
 })
+
+test('a pack whose rows are still pending (no downloadId) is counted once, not once per episode', () => {
+  const delayed = pack(70, { downloadId: undefined, status: 'delay', title: 'Example.Show.S02.2160p.WEB', size: 73.5 * GB, sizeleft: 73.5 * GB, seriesId: 7 })
+  const two = [row({ downloadId: 'ONE', seriesId: 8, size: 2 * GB, sizeleft: 1 * GB }), row({ downloadId: 'TWO', seriesId: 9, size: 3 * GB, sizeleft: 3 * GB })]
+  const rows = [...delayed, ...two]
+  assert.equal(collapseByDownload(delayed).length, 1)
+  assert.equal(collapseByDownload(delayed)[0].rows.length, 70)
+  const shows = groupSonarr(rows, NOW)
+  const bySeries = shows.find(s => s.seasons.some(se => se.downloads.some(d => d.name === 'Example.Show.S02.2160p.WEB')))!
+  assert.equal(bySeries.size, 73.5 * GB)
+  assert.equal(bySeries.sizeLeft, 73.5 * GB)
+  const sum = summarize(shows, [], rows.length)
+  assert.equal(sum.sizeLeft, 73.5 * GB + 1 * GB + 3 * GB)
+})
+
+test('rows with no downloadId and different releases stay separate', () => {
+  const a = row({ downloadId: undefined, status: 'delay', title: 'Example.A.S01', indexer: 'X' }), b = row({ downloadId: undefined, status: 'delay', title: 'Example.B.S01', indexer: 'X' })
+  assert.equal(collapseByDownload([a, b]).length, 2)
+})

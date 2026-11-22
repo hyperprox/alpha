@@ -21,7 +21,7 @@
 // =============================================================================
 
 import type { CoreEndpointClient } from '../plugin-host'
-import { collapseByDownload, importHint, isDone, isDoneMusic, problemOf, readAllQueue, stripPaths, type AlbumInfo, type FileInfo } from './logic'
+import { collapseByDownload, importHint, isDone, isDoneMusic, problemOf, readAllQueue, releaseKey, stripPaths, type AlbumInfo, type FileInfo } from './logic'
 import { FileCache, readAlbumInfo, readEpisodeInfo, readMovieInfo } from './lookup'
 import { auditBy } from '../http/request-actor'
 export { importHint }
@@ -65,7 +65,7 @@ export interface Plan {
 }
 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
-const ID_RE = /^(?:d:[\x21-\x7e]{1,200}|i:\d{1,12}|n:\d{1,6})$/
+const ID_RE = /^(?:d:[\x21-\x7e]{1,200}|i:\d{1,12}|n:\d{1,6}|r:[^\r\n]{1,700})$/
 const HASH_RE = /^(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$/
 const nameOf = (rows: any[]) => stripPaths(String(rows[0]?.title ?? 'unknown release')).slice(0, 160)
 const epIdOf = (r: any): number | null => { const n = Number(r?.episodeId ?? r?.episode?.id); return Number.isInteger(n) && n > 0 ? n : null }
@@ -86,6 +86,7 @@ export function resolveDownload(allRows: any[], id: string): any[] | null {
   const hit = collapseByDownload(allRows).find(d => d.id === id)
   if (!hit) return null
   const ok = id.startsWith('d:') ? hit.rows.every(r => `d:${r.downloadId}` === id)
+    : id.startsWith('r:') ? hit.rows.every(r => !r.downloadId && releaseKey(r) === id)
     : id.startsWith('i:') ? hit.rows.length === 1 && `i:${hit.rows[0].id}` === id
     : hit.rows.length === 1
   if (!ok || !hit.rows.length) throw new ActionRefusal(500, 'selection_mismatch', 'The rows picked from the queue did not all belong to that download, so nothing was changed.')
@@ -364,7 +365,7 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
       case 'clear-done': res.summary = `Cleared ${nm} from the queue (not blocklisted). Everything they cover is already in your library.${plan.skipped.length ? ` Skipped ${plural(plan.skipped.length, 'download')} that changed meanwhile.` : ''}`; break
       case 'swap-pack': res.summary = `Removed ${nm} (not blocklisted) and searched for a ${plan.seasonLabel} pack. Checking in about 20 seconds whether one was grabbed.`; break
       case 'retry-import': {
-        res.messages = [...new Set(rows.filter(r => `d:${r.downloadId}` === first.downloadId || `i:${r.id}` === first.downloadId).flatMap(r => [r.errorMessage, ...(r.statusMessages ?? []).flatMap((m: any) => m?.messages?.length ? m.messages : [m?.title])]).filter(Boolean).map((t: any) => stripPaths(String(t)).slice(0, 240)))].slice(0, 6)
+        res.messages = [...new Set(rows.filter(r => `d:${r.downloadId}` === first.downloadId || `i:${r.id}` === first.downloadId || releaseKey(r) === first.downloadId).flatMap(r => [r.errorMessage, ...(r.statusMessages ?? []).flatMap((m: any) => m?.messages?.length ? m.messages : [m?.title])]).filter(Boolean).map((t: any) => stripPaths(String(t)).slice(0, 240)))].slice(0, 6)
         res.hint = importHint(res.messages)
         res.summary = `Asked ${label(req.instance)} to check its downloads again. If "${first.name}" is still blocked in a minute, the reason below still stands.`
         break

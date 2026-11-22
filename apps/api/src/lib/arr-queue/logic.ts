@@ -304,13 +304,24 @@ function messagesOf(rows: any[]): string[] {
   return [...out].slice(0, 6)
 }
 
-/** Rows that share a downloadId are one download. Rows with none stand alone. */
+/**
+ * The key a row gets when the Arr sent it no downloadId (status "delay": found, not yet handed to a client). Rows of one
+ * pack all carry the same release title, indexer and protocol, so they are one release. Null when there is no title, or the row is not pending (a row already handed to a client stands alone).
+ */
+export function releaseKey(r: any): string | null {
+  const title = typeof r?.title === 'string' ? r.title.trim() : ''
+  if (!title || !/^(delay|pending)/i.test(String(r?.status ?? ''))) return null
+  const part = (v: unknown) => (v == null ? '' : String(v))
+  return `r:${[title, part(r.indexer), part(r.protocol), part(r.seriesId ?? r.series?.id), part(r.artistId ?? r.artist?.id), part(r.movieId ?? r.movie?.id)].join('|')}`
+}
+
+/** Rows that share a downloadId are one download. Rows with none share a release key, else stand alone. */
 export function collapseByDownload(rows: any[]): Array<{ id: string; rows: any[] }> {
   const by = new Map<string, any[]>()
   let anon = 0
   for (const r of rows) {
     if (!r || typeof r !== 'object') continue
-    const k = r.downloadId ? `d:${r.downloadId}` : r.id != null ? `i:${r.id}` : `n:${anon++}`
+    const k = r.downloadId ? `d:${r.downloadId}` : releaseKey(r) ?? (r.id != null ? `i:${r.id}` : `n:${anon++}`)
     const l = by.get(k); if (l) l.push(r); else by.set(k, [r])
   }
   return [...by.entries()].map(([id, rs]) => ({ id, rows: rs }))
