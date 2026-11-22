@@ -18,7 +18,7 @@ export const APPS: App[] = ['radarr', 'sonarr']
 
 export const FILM_CONDITIONS = ['curated', 'documentary', 'christmas', 'horror', 'superhero', 'animated-family', 'family-live-action', 'default'] as const
 /** The show conditions added later: off until a rule uses them, and always tried first, in this order (see SHOW_PRIORITY). */
-export const SHOW_KIND_CONDITIONS = ['anime', 'preschool', 'adult-animation', 'docuseries', 'kids-teens'] as const
+export const SHOW_KIND_CONDITIONS = ['preschool', 'anime', 'adult-animation', 'docuseries', 'kids-teens'] as const
 export const SHOW_CONDITIONS = [...SHOW_KIND_CONDITIONS, 'animated', 'ended', 'running', 'default'] as const
 export type FilmCondition = typeof FILM_CONDITIONS[number]
 export type ShowCondition = typeof SHOW_CONDITIONS[number]
@@ -421,9 +421,9 @@ export function parseSettings(app: App, raw: unknown, roots: string[] | null): A
   return { enabled, defaultRoot: def, rules, photoreal: [...new Set(photo as number[])], graduate: app === 'sonarr' && b.graduate === true, enabledAt: null }
 }
 
-/** The parts of the settings that decide where things go (what a library test is bound to). */
+/** The parts of the settings that decide where things go (what a library test is bound to). A switched-off rule with no folder decides nothing, so the padded list the page re-saves is the same rules. */
 export function ruleFingerprint(app: App, s: AppSettings): string {
-  return JSON.stringify([app, s.defaultRoot, s.rules.map(r => [r.condition, r.folder, r.enabled]), [...s.photoreal].sort((a, b) => a - b)])
+  return JSON.stringify([app, s.defaultRoot, s.rules.filter(r => r.enabled || r.folder).map(r => [r.condition, r.folder, r.enabled]), [...s.photoreal].sort((a, b) => a - b)])
 }
 
 // ── "Test on my library" ────────────────────────────────────────────────────

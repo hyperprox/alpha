@@ -71,10 +71,12 @@ test('missing metadata falls through to the older rules', () => {
   assert.equal(pickFolder('sonarr', s, show({ status: '' }))?.condition, 'default')
 })
 
-test('priority: anime, preschool, adult animation, documentary, kids, then animated, ended, running, default', () => {
-  const all = settings(rule('animated'), rule('ended'), rule('running'), rule('default'), rule('kids-teens'), rule('docuseries'), rule('adult-animation'), rule('preschool'), rule('anime'))
+test('priority: preschool, anime, adult animation, documentary, kids, then animated, ended, running, default', () => {
+  const all = settings(rule('animated'), rule('ended'), rule('running'), rule('default'), rule('kids-teens'), rule('docuseries'), rule('adult-animation'), rule('anime'), rule('preschool'))
   const pick = (o: Partial<Show>) => pickFolder('sonarr', all, show(o))?.condition
-  assert.equal(pick({ seriesType: 'anime', certification: 'TV-Y', genres: ['Documentary'] }), 'anime')
+  assert.equal(pick({ seriesType: 'anime', certification: 'TV-Y', genres: ['Documentary'] }), 'preschool', 'a TV-Y anime is a kids\' show first')
+  assert.equal(pick({ genres: ['Animation'], language: 'korean', certification: 'TV-Y' }), 'preschool')
+  assert.equal(pick({ seriesType: 'anime', certification: 'TV-14' }), 'anime')
   assert.equal(pick({ certification: 'TV-Y', genres: ['Animation', 'Documentary'] }), 'preschool')
   assert.equal(pick({ certification: 'TV-MA', genres: ['Animation', 'Documentary'] }), 'adult-animation')
   assert.equal(pick({ certification: 'TV-PG', genres: ['Family', 'Documentary'] }), 'docuseries')
@@ -107,6 +109,6 @@ test('the conditions list and the page: every show condition has a plain label, 
   const shown = withMissingRules('sonarr', saved)
   assert.equal(shown.length, SHOW_CONDITIONS.length)
   assert.deepEqual(shown.filter(r => !saved.some(x => x.condition === r.condition)).map(r => [r.folder, r.enabled]), [[null, false], [null, false], [null, false], [null, false], [null, false]])
-  assert.deepEqual(shown.slice(0, 5).map(r => r.condition), ['anime', 'preschool', 'adult-animation', 'docuseries', 'kids-teens'])
+  assert.deepEqual(shown.slice(0, 5).map(r => r.condition), ['preschool', 'anime', 'adult-animation', 'docuseries', 'kids-teens'])
   assert.deepEqual(withMissingRules('radarr', defaultSettings('radarr', [], null).rules).length, conditionsFor('radarr').length)
 })

@@ -16,7 +16,7 @@ import { requiredRole, needsConfirm, needsPassword } from '../src/lib/roles'
 import { injectConfirmed } from './fakes/confirm'
 import { buildArrRouterRoutes } from '../src/routes/arr-router'
 import {
-  defaultRules, defaultSettings, filmMatch, groupWord, leftAloneFolders, libraryPlan, filmOf, graduates, guessDefaultRoot, parseSettings, pickFolder, routable, ruleFingerprint, showMatch, showOf, testLibrary,
+  defaultRules, defaultSettings, filmMatch, groupWord, leftAloneFolders, libraryPlan, filmOf, graduates, guessDefaultRoot, parseSettings, pickFolder, routable, ruleFingerprint, showMatch, showOf, testLibrary, withMissingRules,
   whyWord, type AppSettings, type Film,
 } from '../src/lib/arr-router/rules'
 import { FULL_READ_MS, GRADUATE_EVERY_MS, LOOKBACK_MS, MAX_EXAMINED_PER_TICK, MAX_MOVES_PER_TICK, RouterRefusal, RouterService, type RouterDeps } from '../src/lib/arr-router/service'
@@ -314,6 +314,18 @@ test('the request folder comes from Seerr\'s settings when it is connected (its 
   assert.deepEqual(seerr.calls.sort(), ['/api/v1/settings/radarr', '/api/v1/settings/sonarr'], 'only its settings are read')
   const off = await rig({ seerr: async () => null }).svc.status()
   assert.equal(off.apps.find(a => a.app === 'radarr')!.suggestedFrom, 'guess')
+})
+
+test('re-saving the padded list from the page (switched-off, folderless rules added) needs no new library test', async () => {
+  const r = rig()
+  const s = (await r.svc.status()).apps.find(a => a.app === 'sonarr')!.settings!
+  const raw = { ...s, rules: s.rules.filter(x => x.enabled || x.folder) }
+  assert.equal(ruleFingerprint('sonarr', raw), ruleFingerprint('sonarr', { ...raw, rules: withMissingRules('sonarr', raw.rules) }))
+  await switchOn(r, 'sonarr', raw)
+  const padded = { ...raw, enabled: true, rules: withMissingRules('sonarr', raw.rules) }
+  assert.ok(padded.rules.length > raw.rules.length)
+  const saved = await r.svc.saveSettings('sonarr', padded, undefined, 'admin@example.com')
+  assert.equal(saved.enabled, true)
 })
 
 test('the library test moves nothing; switching on needs a test of exactly those rules, from the last 15 minutes', async () => {
