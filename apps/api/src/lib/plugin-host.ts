@@ -725,7 +725,7 @@ class Requester {
     if (this.manifest.coreTransport) {
       const t = transports.get(this.manifest.id)
       if (!t) throw new Error(`${this.manifest.name} is not connected yet.`)
-      if (method === 'DELETE' || method === 'PUT' || method === 'PATCH') throw new Error(`${this.manifest.name} takes no ${method === 'PUT' ? 'edits' : 'deletes'}.`)
+      if (method === 'DELETE' || method === 'PUT' || method === 'PATCH') throw new Error(`${this.manifest.name} takes no ${method === 'PUT' ? 'additions' : method === 'PATCH' ? 'edits' : 'deletes'}.`)
       return t(method, path, timeoutMs)
     }
     const { url, headers } = this.prepare(path, !!body)
