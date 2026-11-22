@@ -68,7 +68,7 @@ export function PlanCard({ pending, busy, tick, onTick, onApply, onCancel }: {
         {p.warnings.filter(w => w !== p.needsTick).map((w, i) => <small key={i} style={{ display: 'block', marginTop: 6, color: 'var(--text-muted)' }}>{w}</small>)}
         {p.needsTick && (
           <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8, color: 'var(--warn)' }}>
-            <input type="checkbox" checked={tick} onChange={e => onTick(e.target.checked)} aria-label="I understand this opens a risky port" />
+            <input type="checkbox" checked={tick} onChange={e => onTick(e.target.checked)} aria-label="I understand the risk" />
             <span>{p.needsTick}</span>
           </label>
         )}
@@ -182,7 +182,7 @@ export function Blocks({ c, canAct, busy, onPlan }: { c: Control; canAct: boolea
   const blocked = new Set(c.blocks.map(b => b.target))
   return (
     <Panel title="Block internet for a device" sub={`${c.blocks.length} BLOCKED`} label="Block internet for a device">
-      <p className={s.note}>The device keeps its own network and the router; only its way out to the internet is cut. A schedule limits it to certain hours.</p>
+      <p className={s.note}>The device keeps its own network and the router; only its way out to the internet is cut. A schedule limits it to certain hours. A block stops new connections: ones the device already has open (a video call, a download) carry on until they end.</p>
       {c.blocks.length === 0 ? <p className={s.empty}>No device is blocked.</p> : (
         <ul style={list} aria-label="Blocked devices">
           {c.blocks.map(b => (
@@ -252,12 +252,30 @@ export function History({ c, canAct, busy, onUndo }: { c: Control; canAct: boole
 export function ControlPanels(p: {
   c: Control; canAct: boolean; busy: boolean; pending: Pending | null; tick: boolean; msg?: string | null; err?: string | null
   onPlan: (action: string, params: Record<string, unknown>) => void; onTick: (v: boolean) => void; onApply: () => void; onCancel: () => void; onUndo: (id: string) => void
+  /** An undo that needs the person to tick first (it would open a risky port, or point a forward at HyperProx again). */
+  undoAsk?: { id: string; text: string } | null; onUndoConfirm?: (id: string) => void; onUndoCancel?: () => void
 }) {
   const note = p.canAct && p.c.canWrite === false ? 'This router login can only read, so HyperProx cannot change anything. Give that router user a group with the write policy first.' : !p.canAct ? 'Only an admin can change the router.' : null
   return (
     <>
       {note && <p className={s.note} style={{ color: 'var(--warn)' }}>{note}</p>}
       {p.pending && <PlanCard pending={p.pending} busy={p.busy} tick={p.tick} onTick={p.onTick} onApply={p.onApply} onCancel={p.onCancel} />}
+      {p.undoAsk && (
+        <div className={`${s.alert} ${s.alertWarn}`} role="group" aria-label="This undo needs your OK" style={{ marginTop: 12 }}>
+          <Icon name="warn" size={22} label="Warning" />
+          <div className={s.alertBody}>
+            <b>Putting this back needs your OK</b>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8, color: 'var(--warn)' }}>
+              <input type="checkbox" checked={p.tick} onChange={e => p.onTick(e.target.checked)} aria-label="I understand the risk" />
+              <span>{p.undoAsk.text}</span>
+            </label>
+          </div>
+          <div className={s.alertAct} style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className={`${s.btn} ${s.btnPri}`} disabled={p.busy || !p.tick} onClick={() => p.onUndoConfirm?.(p.undoAsk!.id)}>Undo anyway</button>
+            <button type="button" className={s.btn} disabled={p.busy} onClick={p.onUndoCancel}>Cancel</button>
+          </div>
+        </div>
+      )}
       {p.err && <p role="alert" style={{ color: 'var(--crit)' }}>{p.err}</p>}
       {p.msg && <p role="status">{p.msg}</p>}
       <FixedAddresses c={p.c} canAct={p.canAct && p.c.canWrite !== false} busy={p.busy} onPlan={p.onPlan} />
@@ -278,6 +296,7 @@ export function RouterControl({ onChanged }: { onChanged?: () => void }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [undoAsk, setUndoAsk] = useState<{ id: string; text: string } | null>(null)
 
   const load = useCallback(async () => {
     const res = await apiJson<{ data: Control }>(`${BASE}/control`)
@@ -300,12 +319,14 @@ export function RouterControl({ onChanged }: { onChanged?: () => void }) {
     if (res.ok) { setMsg(res.body?.data?.message ?? 'Done.'); setPending(null); await load(); onChanged?.() }
     else { setErr(res.error ?? 'That did not work.'); if (res.code === 'plan_changed') { setPending(null); await load() } }
   }
-  const undo = async (id: string) => {
+  const undo = async (id: string, ticked = false) => {
     setBusy(true); setErr(null); setMsg(null)
-    const res = await apiJson<{ data: { message: string } }>(`${BASE}/changes/${encodeURIComponent(id)}/undo`, 'POST', {})
+    const res = await apiJson<{ data: { message: string } }>(`${BASE}/changes/${encodeURIComponent(id)}/undo`, 'POST', ticked ? { riskTick: true } : {})
     setBusy(false)
-    if (res.ok) { setMsg(res.body?.data?.message ?? 'Undone.'); await load(); onChanged?.() } else setErr(res.error ?? 'That did not work.')
+    if (res.ok) { setUndoAsk(null); setMsg(res.body?.data?.message ?? 'Undone.'); await load(); onChanged?.() }
+    else if (res.code === 'risk_tick_required') { setTick(false); setUndoAsk({ id, text: res.error ?? 'This needs your OK first.' }) }
+    else { setUndoAsk(null); setErr(res.error ?? 'That did not work.') }
   }
   if (!c) return err ? <p role="alert" style={{ color: 'var(--crit)' }}>{err}</p> : null
-  return <ControlPanels c={c} canAct={admin} busy={busy} pending={pending} tick={tick} msg={msg} err={err} onPlan={plan} onTick={setTick} onApply={apply} onCancel={() => setPending(null)} onUndo={undo} />
+  return <ControlPanels c={c} canAct={admin} busy={busy} pending={pending} tick={tick} msg={msg} err={err} onPlan={plan} onTick={setTick} onApply={apply} onCancel={() => setPending(null)} onUndo={id => void undo(id)} undoAsk={undoAsk} onUndoConfirm={id => void undo(id, true)} onUndoCancel={() => setUndoAsk(null)} />
 }

@@ -84,3 +84,12 @@ test('form parameters: a forward needs a device and a port; a schedule is sent o
   assert.deepEqual(blockParams({ mac: 'AA', scheduled: false, from: '22:00', to: '06:00', days: ['mon'] }), { mac: 'AA' })
   assert.deepEqual(blockParams({ mac: 'AA', scheduled: true, from: '22:00', to: '06:00', days: ['mon'] }), { mac: 'AA', schedule: { from: '22:00', to: '06:00', days: ['mon'] } })
 })
+
+test('blocks say they do not cut connections already running; an undo that needs a tick asks for it before it goes ahead', () => {
+  assert.match(html(control()), /already has open[^<]*carry on until they end/)
+  const ask = html(control(), { undoAsk: { id: 'a1', text: 'Port 3389 (Remote Desktop) is risky.' }, tick: false })
+  assert.match(ask, /Putting this back needs your OK/); assert.match(ask, /Port 3389 \(Remote Desktop\) is risky\./)
+  assert.match(ask, /<button[^>]*disabled=""[^>]*>Undo anyway/)
+  assert.doesNotMatch(html(control(), { undoAsk: { id: 'a1', text: 'x' }, tick: true }), /<button[^>]*disabled=""[^>]*>Undo anyway/)
+  assert.doesNotMatch(html(control()), /Putting this back needs your OK/)
+})
