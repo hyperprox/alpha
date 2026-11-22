@@ -1027,7 +1027,7 @@ you run it, and it is checked again right before a reboot. If a restart fails, `
 you get an urgent notification, so Ceph never starts moving data because of it. A node update never upgrades Ceph by itself: HyperProx tries the update first without installing anything, and if any Ceph package would change, it stops and leaves Ceph to its own careful step. Rules
 such as "this node only gets `apt upgrade`" or "check these package holds" go in
 `config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
-Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled.
+Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled. Tunarr, when it runs in Docker, is also listed there: the Updates page shows when it is behind the newest release, and says that its image is updated by the guest's normal Docker update (HyperProx does not update Tunarr in any other way).
 
 The page opens simply: one line saying how things stand, an **Update now** button (it checks first when the last check is old or partial, shows exactly what it will do in one question, then runs it in the safe order; if the plan changes before it starts, it asks again) and an **Install updates automatically** switch (every morning at 08:00), off until you turn it on. Everything else is under **Advanced**. A daily check that was skipped while HyperProx was locked runs by itself after you sign in, and a plan you never confirm is cancelled after a day.
 
@@ -1960,7 +1960,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 
 | Plug-in | What it shows |
 |---|---|
-| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, **see what's available** for any missing item, **find a better copy** of anything you have or a faster copy of a slow download, a **VPN panel** for stacks behind Gluetun, a **Requests** tab for Seerr, and **sorting new requests into your folders** |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, **see what's available** for any missing item, **find a better copy** of anything you have or a faster copy of a slow download, a **VPN panel** for stacks behind Gluetun, a **Requests** tab for Seerr, **sorting new requests into your folders**, and a **Live TV** tab for Tunarr |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables (each device shows its port, or its Wi-Fi network and signal, and what your switch says it is), firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console. A device using an address outside your own networks is flagged "Address outside your networks" with its hardware address, port, last seen, whether the address was made by software, and whether it is talking. An admin can press "Block addresses that are not yours": after a confirmation that names what will be added, the router gets one list of your networks and one rule at the top of its forward rules that drops traffic from any other address on your network link. Undo removes exactly those two things. An admin can also manage the router from the page: make a device's address permanent (a fixed DHCP address), add, edit, switch off and remove port forwards (listed in plain words, with an extra tick for risky ports such as Remote Desktop, SSH, file sharing or databases), and block the internet for one device, on a schedule if wanted. Every change shows its plan in words first, saves the router's settings, and puts a safety switch on the router that undoes the change by itself if HyperProx cannot confirm it within 90 seconds. HyperProx refuses a change that would cut it off from the router, and the page keeps a change history with an Undo button for each change. It needs a router login that can write, and the plug-in says so if yours can only read |
 | Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
@@ -2133,6 +2133,30 @@ Lidarr address in the plug-in's settings, which says to leave it blank if you do
   still missing, and **Scheduled** before that. An album's release is a calendar date and is shown as written, not
   shifted by your time zone. **Missing, searching** gains a Music column of monitored albums already out with no
   files. The cover is fetched by HyperProx with the stored key, like the TV posters.
+
+**Live TV (Tunarr).** Tunarr is optional. With no address saved the tab says so and nothing else changes. Tunarr has no API key,
+so the plug-in's settings have just one optional field, **Tunarr address** (a Tunarr that is protected with its own
+basic-auth login is not supported yet and shows as not answering). The **Live TV** tab is read from Tunarr every 20 seconds
+while you look at it, and everyone who can open the Arr Stack page can see it.
+
+- **Channels.** One card per channel: number, icon, what is on now and what is next (from Tunarr's guide), how many
+  programmes it has, and how many people are watching. Who is watching (address and player) is shown to admins only;
+  everyone else, and API tokens, see counts.
+- **Guide length.** Each card shows how many hours of guide are published from now. A bar fills at 24 hours and turns warm
+  below it, and a short guide raises a warning, because players that look a day ahead then show gaps.
+- **Health.** Tunarr's version against the newest release, its ffmpeg version, whether each media source answers, and
+  Tunarr's own health warnings. A channel that cannot stream says why: it has no programming, nothing is scheduled on it
+  right now, or its stream session has failed. A media source that does not answer is a warning of its own, because
+  Tunarr does not say which channels play from it.
+- **Fix buttons (admin).** **Refresh guide** runs Tunarr's own guide task, which rebuilds the guide and the XMLTV file in the
+  background; the answer says Tunarr accepted it and how long the shortest guide is right now, not that it has finished.
+  **Restart stream** appears on a channel whose stream session has failed and ends that channel's sessions (anyone
+  watching is cut off until their player reconnects). Both ask first, are written to the audit log before they run, and
+  are refused to API tokens. Nothing else about Tunarr is changed from here: its API offers nothing else this page uses,
+  so channels, programming and settings stay in Tunarr itself.
+- **Updates.** When Tunarr runs as a Docker container in a guest HyperProx can look inside, the Updates page lists it with
+  its version and the newest release. The update itself is the guest's ordinary Docker update (pull the image, recreate
+  the stack); if the stack pins an exact tag, the Updates page says to edit the tag first.
 
 **Weekly search and give up.** Under **Missing, searching** on the Upcoming tab, for TV, films and music separately.
 

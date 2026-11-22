@@ -21,6 +21,17 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-22 — Live TV: Tunarr on the Arr Stack page
+
+### New
+- **A Live TV tab for Tunarr.** If you run Tunarr, add its address to the Arr Stack plug-in and a new tab shows every channel with its number and icon, what is on now and next, how many programmes it has, and who is watching. Everyone sees the counts; only admins see who is connected.
+  - Technical: optional `tunarr_url` setting and a `tunarr` endpoint with no credential; `GET /api/plugins/arrstack/tunarr` reads Tunarr's channels, guide, sessions, health and media sources.
+- **Guide length warnings.** Each channel shows how many hours of guide are published, and anything under 24 hours is flagged, because players that look a day ahead show gaps. The tab also says when a channel cannot stream (no programming, nothing scheduled right now, or a failed stream) and when a media source stops answering.
+- **Two fixes for admins.** "Refresh guide" asks Tunarr to rebuild its guide in the background, and "Restart stream" ends a channel's failed stream so players can start a new one. Both ask first and are recorded in the audit log. Nothing else about Tunarr is changed from HyperProx.
+  - Technical: `POST /api/plugins/arrstack/tunarr/actions` (`refresh-guide` runs Tunarr's `UpdateXmlTvTask`; `stop-session` is `DELETE /api/channels/:id/sessions`), confirmed on the page, audited before the call, refused to API tokens.
+- **Tunarr on the Updates page.** When Tunarr runs in Docker, Updates shows its version and the newest release, and tells you when it is behind. The update itself still goes through the guest's normal Docker update.
+  - Technical: an app-update provider that only reads (`docker ps`, Tunarr's version, GitHub's release list) and raises a blocking issue instead of installing.
+
 ## 2026-11-21 — MikroTik: manage the router from HyperProx
 
 ### New
