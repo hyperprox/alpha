@@ -40,7 +40,7 @@ import crypto from 'node:crypto'
 import type { CoreEndpointClient } from '../plugin-host'
 import {
   APPS, CONDITION_LABEL, ROUTED_TAG, conditionsFor, curatedFolders, filledFolders, groupWord, leftAloneFolders, libraryPlan, defaultSettings, filmOf, folderName, graduateFolders, graduates, guessDefaultRoot, normRoot, parseSettings,
-  pickFolder, routable, ruleFingerprint, showOf, testLibrary, whyWord,
+  pickFolder, routable, withMissingRules, ruleFingerprint, showOf, testLibrary, whyWord,
   type App, type AppSettings, type Condition, type Item, type LibraryTest, type PlanGroup, type Show,
 } from './rules'
 import type { RouterStore } from './store'
@@ -322,6 +322,7 @@ export class RouterService {
         base.roots = await this.roots(c, app)
         if (stored) base.settings = { ...stored }
         else { const sg = await this.suggest(c, app); base.settings = { ...sg.s }; base.suggestedFrom = sg.from }
+        base.settings.rules = withMissingRules(app, base.settings.rules)
         if (app === 'sonarr') base.settings.graduate = (await this.gradRecord())?.on === true
         base.saved = !!stored
         base.lastTick = st.lastTick ?? null

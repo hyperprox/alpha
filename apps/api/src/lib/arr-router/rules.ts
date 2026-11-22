@@ -17,7 +17,9 @@ export type App = 'radarr' | 'sonarr'
 export const APPS: App[] = ['radarr', 'sonarr']
 
 export const FILM_CONDITIONS = ['curated', 'documentary', 'christmas', 'horror', 'superhero', 'animated-family', 'family-live-action', 'default'] as const
-export const SHOW_CONDITIONS = ['animated', 'ended', 'running', 'default'] as const
+/** The show conditions added later: off until a rule uses them, and always tried first, in this order (see SHOW_PRIORITY). */
+export const SHOW_KIND_CONDITIONS = ['anime', 'preschool', 'adult-animation', 'docuseries', 'kids-teens'] as const
+export const SHOW_CONDITIONS = [...SHOW_KIND_CONDITIONS, 'animated', 'ended', 'running', 'default'] as const
 export type FilmCondition = typeof FILM_CONDITIONS[number]
 export type ShowCondition = typeof SHOW_CONDITIONS[number]
 export type Condition = FilmCondition | ShowCondition
@@ -35,6 +37,11 @@ export const CONDITION_LABEL: Record<Condition, string> = {
   animated: 'Animated or anime',
   ended: 'Ended',
   running: 'Still running',
+  anime: 'Anime (Japanese, Korean and Chinese animation)',
+  preschool: 'Preschool shows',
+  'adult-animation': 'Adult animation',
+  docuseries: 'Documentary series',
+  'kids-teens': 'Live-action kids and teens',
 }
 
 export interface Rule { condition: Condition; folder: string | null; enabled: boolean }
@@ -67,6 +74,8 @@ export interface Film {
 export interface Show {
   id: number; tvdbId: number; title: string; year: number
   genres: string[]; seriesType: string; status: string
+  /** Upper-case rating (TV-Y, TV-MA...), the broadcaster, and the original language's name or code, lower-case; '' when unknown. */
+  certification: string; network: string; language: string
   root: string; path: string; added: string; tags: number[]
   /** Episodes on disk, and the aired episodes Sonarr counts as wanted. */
   files: number; aired: number
@@ -95,6 +104,8 @@ export function showOf(s: any): Show {
   return {
     id: num(s?.id), tvdbId: num(s?.tvdbId), title: str(s?.title), year: num(s?.year),
     genres: strs(s?.genres), seriesType: str(s?.seriesType).toLowerCase(), status: str(s?.status).toLowerCase(),
+    certification: str(s?.certification).toUpperCase(), network: str(s?.network).trim(),
+    language: str(s?.originalLanguage?.name ?? s?.originalLanguage).toLowerCase(),
     root: normRoot(str(s?.rootFolderPath)), path: str(s?.path), added: str(s?.added), tags: nums(s?.tags),
     files: num(s?.statistics?.episodeFileCount), aired: num(s?.statistics?.episodeCount),
   }
@@ -211,9 +222,65 @@ export function filmMatch(c: Condition, f: Film, extra: ReadonlySet<number> = ne
   }
 }
 
+// ── the show-kind conditions ────────────────────────────────────────────────
+
+/** Broadcasters that make preschool television; a TV-G children's show from one of them is a preschool show. */
+export const PRESCHOOL_NETWORKS = ['nick jr.', 'nick jr', 'nickelodeon jr.', 'disney junior', 'disney jr.', 'playhouse disney', 'cbeebies', 'pbs kids', 'treehouse', 'treehouse tv', 'abc kids', 'cbc kids', 'sprout', 'universal kids preschool']
+const EAST_ASIAN_LANGUAGES = ['japanese', 'korean', 'chinese', 'mandarin', 'cantonese', 'ja', 'ko', 'zh']
+const isAnimation = (s: Show) => s.seriesType === 'anime' || has(s.genres, 'Animation') || has(s.genres, 'Anime')
+
+function anime(s: Show): string | null {
+  if (s.seriesType === 'anime') return 'series type anime'
+  if (has(s.genres, 'Anime')) return 'genre Anime'
+  if (has(s.genres, 'Animation') && EAST_ASIAN_LANGUAGES.includes(s.language)) return `animation in ${s.language}`
+  return null
+}
+
+function preschool(s: Show): string | null {
+  if (s.certification === 'TV-Y') return 'rated TV-Y'
+  if (s.certification === 'TV-G' && has(s.genres, 'Children')) {
+    if (PRESCHOOL_NETWORKS.includes(s.network.toLowerCase())) return `rated TV-G on ${s.network}`
+    if (has(s.genres, 'Preschool')) return 'rated TV-G, genre Preschool'
+  }
+  return null
+}
+
+function adultAnimation(s: Show): string | null {
+  if (!isAnimation(s) || anime(s)) return null
+  return s.certification === 'TV-MA' || s.certification === 'TV-14' ? `animated, rated ${s.certification}` : null
+}
+
+function kidsTeens(s: Show): string | null {
+  if (isAnimation(s)) return null
+  if (!['TV-Y7', 'TV-G', 'TV-PG'].includes(s.certification)) return null
+  return has(s.genres, 'Children') || has(s.genres, 'Family') ? `live action, rated ${s.certification}` : null
+}
+
+/** The order the show-kind conditions are tried in, whatever order the owner's rules are listed in. */
+export const SHOW_PRIORITY: readonly Condition[] = SHOW_KIND_CONDITIONS
+
+/** The rules in the order they are tried: show-kind rules first, in priority order; every other rule keeps the owner's order. */
+export function orderedRules(app: App, rules: Rule[]): Rule[] {
+  if (app !== 'sonarr') return rules
+  const kind = SHOW_PRIORITY.flatMap(c => rules.filter(r => r.condition === c))
+  return [...kind, ...rules.filter(r => !SHOW_PRIORITY.includes(r.condition))]
+}
+
+/** Saved rules plus a switched-off, folderless rule for every condition they lack, so the page can offer it. Display only. */
+export function withMissingRules(app: App, rules: Rule[]): Rule[] {
+  const have = new Set<string>(rules.map(r => r.condition))
+  const missing: Rule[] = conditionsFor(app).filter(c => !have.has(c)).map(condition => ({ condition, folder: null, enabled: false }))
+  return app === 'sonarr' ? [...missing.filter(r => SHOW_PRIORITY.includes(r.condition)), ...rules, ...missing.filter(r => !SHOW_PRIORITY.includes(r.condition))] : [...rules, ...missing]
+}
+
 /** Why this show matches the condition, or null. */
 export function showMatch(c: Condition, s: Show): string | null {
   switch (c) {
+    case 'anime': return anime(s)
+    case 'preschool': return preschool(s)
+    case 'adult-animation': return adultAnimation(s)
+    case 'docuseries': return has(s.genres, 'Documentary') ? 'genre Documentary' : null
+    case 'kids-teens': return kidsTeens(s)
     case 'animated':
       if (s.seriesType === 'anime') return 'series type anime'
       return has(s.genres, 'Animation') ? 'genre Animation' : null
@@ -230,7 +297,7 @@ export interface Pick { condition: Condition; folder: string; why: string }
 export function pickFolder(app: App, settings: Pick_<AppSettings, 'rules' | 'photoreal'>, item: Item): Pick | null {
   const extra = new Set(settings.photoreal ?? [])
   const curated = curatedFolders(settings.rules)
-  for (const r of settings.rules) {
+  for (const r of orderedRules(app, settings.rules)) {
     // A hand-picked folder is never a target, whichever rule points at it.
     if (!r.enabled || !r.folder || r.condition === 'curated' || curated.has(normRoot(r.folder))) continue
     const why = app === 'radarr' ? filmMatch(r.condition, item as Film, extra) : showMatch(r.condition, item as Show)
@@ -260,6 +327,7 @@ const FOLDER_HINTS: Record<Condition, RegExp | null> = {
   animated: /animat|cartoon|anime/i,
   ended: /complete|ended|finished|archive|full series/i,
   running: null,
+  anime: null, preschool: null, 'adult-animation': null, docuseries: null, 'kids-teens': null,
 }
 
 const leaf = (p: string) => normRoot(p).split(/[\\/]/).pop() ?? p

@@ -21,6 +21,12 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-22 — Arr Stack: sort new shows by kind
+
+### New
+- **More ways to sort new shows into folders.** The folder sorter can now send anime, preschool shows, adult cartoons, documentary series and live-action kids and teens shows to their own folders. Each one stays off until you pick a folder for it, so your saved rules work exactly as before. "Sort my library" and the library test take them into account too.
+  - Technical: new show conditions `anime`, `preschool`, `adult-animation`, `docuseries` and `kids-teens`, tried in that order ahead of the owner's other rules; they read Sonarr's certification, network, original language, genres and series type, and fall through when those are missing.
+
 ## 2026-11-22 — Live TV: Tunarr on the Arr Stack page
 
 ### New
