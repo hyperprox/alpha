@@ -42,6 +42,8 @@ export interface ConfirmNames {
   requestTitle?: (id: unknown) => string | null
   /** The exact changes of "Fix Seerr's settings" for these choices (server, old to new), from the same plan the action uses. */
   requestsFix?: (choices: unknown) => string | null
+  /** A Tunarr channel's number and name from the last reading, for the Live TV confirmation. */
+  tunarrChannel?: (id: unknown) => string | null
 }
 const names: ConfirmNames = {}
 export function setConfirmNames(n: ConfirmNames): void { Object.assign(names, n) }
@@ -118,6 +120,15 @@ function requestActionSentence(b: any): string {
   }
 }
 
+function tunarrActionSentence(b: any): string {
+  if (b?.action === 'refresh-guide') return 'Rebuild Tunarr\'s TV guide now? Tunarr re-reads every channel\'s schedule in the background and rewrites its guide file. Nothing is deleted.'
+  if (b?.action === 'stop-session') {
+    const n = names.tunarrChannel?.(b?.channelId) ?? null
+    return `Stop the stream on ${n && str(n, 100) ? `channel ${str(n, 100)}` : 'this channel'}? Tunarr ends its ffmpeg, so anyone watching it is cut off until their player reconnects. Nothing is deleted.`
+  }
+  return 'Make this change to Tunarr?'
+}
+
 const RULES: Rule[] = [
   // ── Updates and node reboots ──
   ['POST', /^\/api\/updates\/nodes\/([^/]+)\/reboot$/, m =>
@@ -188,6 +199,7 @@ const RULES: Rule[] = [
   ['POST', /^\/api\/plugins\/arrstack\/better\/grab$/, (_m, _p, b) => betterGrabSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/vpn\/actions$/, (_m, _p, b) => vpnFixSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/requests\/actions$/, (_m, _p, b) => requestActionSentence(b)],
+  ['POST', /^\/api\/plugins\/arrstack\/tunarr\/actions$/, (_m, _p, b) => tunarrActionSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/settings$/, (_m, _p, b) => routerSettingsSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/move$/, (_m, _p, b) => routerMoveSentence(b)],
   ['POST', /^\/api\/plugins\/arrstack\/router\/graduate$/, (_m, _p, b) => routerGraduateSentence(b)],

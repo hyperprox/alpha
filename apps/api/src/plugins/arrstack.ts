@@ -1,7 +1,7 @@
 // =============================================================================
 //  Plug-in — Arr Stack
 //
-//  Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr, when you run it) are one
+//  Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr, when you run it; Tunarr's live TV has its own tab) are one
 //  pipeline, not separate services,
 //  and splitting them across cards meant reading several places to answer one
 //  question: is anything stuck between "wanted" and "on disk".
@@ -22,6 +22,7 @@ import type {
 import type { ArrDownloadState, ArrVisual } from '../lib/plugin-visual-types'
 import { buildQueueData } from '../lib/arr-queue/logic'
 import { bytes as fmtBytes } from '../lib/arr-queue/format'
+import { tunarrProvider } from '../lib/arr-tunarr/provider'
 
 type Tone = 'good' | 'warn' | 'bad'
 const EPISODE = /[Ss]\d{1,2}[Ee]\d{1,2}|\b\d{1,2}x\d{2}\b/
@@ -393,6 +394,8 @@ export const arrstackPlugin: Plugin = {
       // Music. Lidarr's API is v1 (/api/v1/...), not v3.
       { key: 'lidarr',   label: 'Lidarr',   baseUrlSetting: 'lidarr_url',
         auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'lidarr_key' } },
+      // Tunarr (live TV channels) has no key by default.
+      { key: 'tunarr',   label: 'Tunarr', baseUrlSetting: 'tunarr_url', auth: { kind: 'none' } },
       { key: 'prowlarr', label: 'Prowlarr', baseUrlSetting: 'prowlarr_url',
         auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'prowlarr_key' } },
       // qBittorrent's WebUI is normally set to skip auth for the local subnet.
@@ -409,6 +412,8 @@ export const arrstackPlugin: Plugin = {
       { key: 'seerr_url',    label: 'Seerr address (formerly Jellyseerr and Overseerr)', type: 'url', required: false,
         hint: 'Optional. Shows people\'s requests on the Requests tab, and lets the folder sorter see which folders they arrive in.' },
       { key: 'seerr_key',    label: 'Seerr API key (formerly Jellyseerr and Overseerr)',    type: 'secret', required: false, hint: 'Seerr → Settings → General → API Key.' },
+      { key: 'tunarr_url',   label: 'Tunarr address', type: 'url', required: false,
+        hint: 'Optional, for live TV: http://example-host:8000. Tunarr has no API key. Shows channels, the guide and who is streaming on the Live TV tab. A Tunarr protected with a basic-auth login is not supported yet.' },
       { key: 'prowlarr_url', label: 'Prowlarr address', type: 'url',    required: false, hint: 'Enables Search across every indexer.' },
       { key: 'prowlarr_key', label: 'Prowlarr API key', type: 'secret', required: false },
       { key: 'qbit_url',     label: 'qBittorrent WebUI', type: 'url',   required: false,
@@ -737,4 +742,7 @@ export const arrstackPlugin: Plugin = {
     }
     return out
   },
+
+  // Tunarr, when it runs in a guest's Docker: the Updates page shows when it is behind (lib/arr-tunarr/provider.ts).
+  appUpdates: [tunarrProvider],
 }
