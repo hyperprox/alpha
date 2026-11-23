@@ -124,3 +124,10 @@
   .band[data-on="true"] .waves path, .wanState[data-up="false"] .wanWord i { animation: none; }
   .meter i, .trail i { transition: none; }
 }
+
+.meshNode[data-problem="true"] { --c: var(--warn-2, #f5a524); }
+.meshProblem { font-size: .78rem; line-height: 1.35; color: var(--text-soft); }
+.meshProblem b { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; color: var(--warn-2, #f5a524); }
+.meshBtn { align-self: flex-start; margin-top: 2px; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--hx-accent, #2fd6e8); background: transparent; color: var(--hx-accent, #2fd6e8); font: 600 .75rem var(--font-mono); cursor: pointer; }
+.meshBtn:hover:not(:disabled) { background: rgba(47, 214, 232, .12); }
+.meshBtn:disabled { opacity: .6; cursor: default; }

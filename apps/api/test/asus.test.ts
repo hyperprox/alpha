@@ -1010,3 +1010,77 @@ test('a unit with no name of its own takes the alias its mesh main reports for i
   const r = await main.svc.reading(nm.id)
   assert.ok(!JSON.stringify(viewerReading(r)).includes('00:00:5E:00:53:20'), 'its MAC is used to match, never shown')
 })
+
+// ── AiMesh nodes: problems read from the mesh list, and managing a node with its main unit's login ──
+
+const meshNode = (over: Record<string, unknown> = {}) => ({
+  key: 'k1', name: 'Hall', model: 'XX-NODE', firmware: '1.0.0.0', update: null, main: false, online: true,
+  backhaul: '5 GHz', rssi: -55, bars: 3, clients: 2, ip: '10.9.8.40', ...over,
+}) as any
+
+test('mesh health: an offline node, a weak wireless link and a node update each say so; wired and healthy say nothing', () => {
+  const base = { wan: { up: null } as any, cpuPct: 10, mem: { totalKiB: 1, usedKiB: 0, pct: 10 }, update: { available: false, version: null }, mode: { kind: 'ap' as const, label: 'Access point', aimesh: 'main' as const } }
+  assert.deepEqual(healthOf({ ...base, mesh: [meshNode({ main: true, backhaul: null, rssi: null }), meshNode()] }), { level: 'good', reasons: [] })
+  const h = healthOf({ ...base, mesh: [
+    meshNode({ name: 'Den', online: false }),
+    meshNode({ name: 'Loft', rssi: -78 }),
+    meshNode({ name: 'Shed', update: '2.0.0.0' }),
+    meshNode({ name: 'Wired one', backhaul: 'wired', rssi: null }),
+    meshNode({ name: '10.9.8.9', online: false }),
+  ] })
+  assert.equal(h.level, 'attention')
+  assert.deepEqual(h.reasons, ['Den is offline.', 'Loft has a weak wireless link to the mesh (-78 dBm).', 'Shed has a firmware update (2.0.0.0).', 'An AiMesh node is offline.'])
+})
+
+async function meshPair(over: { nodeLogin?: string } = {}) {
+  const main = await setup({ mode: 'ap-main', meshList: true, alias: 'Cellar' })
+  const node = fakeRouter({ mode: 'node', alias: 'Hall', ownMac: '00:00:5E:00:53:20', ...(over.nodeLogin ? { pass: over.nodeLogin } : {}) })
+  const srv = await listen(node.handler)
+  closers.push(srv.close)
+  const svc = new AsusService({
+    store: main.store, audit: async () => {}, now: main.now, sleep: async () => {}, readBackAt: [60_000],
+    transportFor: ({ url, meta }) => new DirectTransport({ url, insecureTLS: meta.insecureTLS, fingerprint: meta.fingerprint, resolve: async () => '127.0.0.1' }),
+    meshNodeUrl: () => `http://127.0.0.1:${srv.port}`,
+  })
+  const m = await main.store.create(await main.store.prepare(null, { url: main.url, username: 'admin', password: 'correct horse' }), undefined, { model: null, firmware: null })
+  const key = (await svc.reading(m.id)).mesh.find(n => !n.main)!.key
+  return { main, node, svc, m, key }
+}
+
+test('adopting a mesh node: the main unit\'s saved login is used server-side, the node is saved as its own device, nothing is changed on it', async () => {
+  const { main, node, svc, m, key } = await meshPair()
+  const r = await svc.adoptMeshNode(m.id, key, admin)
+  assert.equal(r.meta.name, 'Hall')
+  assert.equal((await main.store.list()).length, 2)
+  const conn = await main.store.connection(r.meta.id)
+  assert.equal(conn!.username, 'admin'); assert.equal(conn!.password, 'correct horse')
+  assert.equal(node.seen.filter(x => x.path === '/applyapp.cgi').length, 0, 'read-only: no change on the node')
+  assert.ok(!JSON.stringify(r).includes('correct horse'))
+})
+
+test('adopting a mesh node: admin only, never an API token, never the main unit, never an unknown key', async () => {
+  const { svc, m, key } = await meshPair()
+  await assert.rejects(svc.adoptMeshNode(m.id, key, operator), (e: any) => e.code === 'forbidden')
+  await assert.rejects(svc.adoptMeshNode(m.id, key, { ...admin, token: 'ops' }), (e: any) => e.code === 'token_forbidden')
+  await assert.rejects(svc.adoptMeshNode(m.id, 'nope', admin), (e: any) => e.code === 'no_node')
+  const mainKey = (await svc.reading(m.id)).mesh.find(n => n.main)?.key ?? 'none'
+  await assert.rejects(svc.adoptMeshNode(m.id, mainKey, admin), (e: any) => e.code === 'no_node')
+  assert.equal(requiredRole('POST', '/api/plugins/asus/instances/a12345678/mesh/abc/adopt'), 'admin')
+  assert.equal(needsReconfirm('POST', '/api/plugins/asus/instances/a12345678/mesh/abc/adopt'), true)
+})
+
+test('adopting a mesh node that refuses the main unit\'s login: nothing saved, one attempt, a plain message', async () => {
+  const { main, node, svc, m, key } = await meshPair({ nodeLogin: 'different' })
+  await assert.rejects(svc.adoptMeshNode(m.id, key, admin), (e: any) => /did not accept the main unit's login/.test(e.message) && !e.message.includes('correct horse'))
+  assert.equal((await main.store.list()).length, 1)
+  assert.equal(node.seen.filter(x => x.path === '/login.cgi').length, 1, 'one login attempt only')
+})
+
+test('meshManaged: a node is managed when a saved device has its address', async () => {
+  const { main, svc, m } = await meshPair()
+  const reading = await svc.reading(m.id)
+  const key = reading.mesh.find(n => !n.main)!.key
+  assert.deepEqual(await svc.meshManaged(reading), {})
+  const other = await main.store.create(await main.store.prepare(null, { url: 'http://10.9.8.40', username: 'admin', password: 'x' }), 'Hall unit', { model: null, firmware: null })
+  assert.deepEqual(await svc.meshManaged(reading), { [key]: other.id })
+})

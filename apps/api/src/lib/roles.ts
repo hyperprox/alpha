@@ -207,7 +207,7 @@ const DNS_RECONFIRM = /^\/api\/plugins\/(pihole|adguard)\/instances(\/[^/]+(\/se
 // The diagnostics read (raw, redacted router answers): admin even though it is a GET, not re-confirmed, so an admin's
 // API token may call it. It only reads.
 const ASUS_DIAGNOSTICS = /^\/api\/plugins\/asus\/instances\/[^/]+\/diagnostics$/
-const ASUS_RECONFIRM = /^\/api\/plugins\/asus\/instances(\/(?!probe-certificate$)[^/]+(\/actions)?)?$/
+const ASUS_RECONFIRM = /^\/api\/plugins\/asus\/instances(\/(?!probe-certificate$)[^/]+(\/actions|\/mesh\/[^/]+\/adopt)?)?$/
 // Plex clear-out and Library (routes/plex-clearout.ts). The lists are a read (viewer). Previewing a removal is
 // operator; removing (through Sonarr, Radarr or Plex itself) deletes files, so it is operator with an in-page confirmation, which keeps API
 // tokens out too.

@@ -127,12 +127,23 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
       // The name may have just changed to the unit's own (it is read on the 5-minute cycle): send it with the reading.
       const m = await svc().instances.get(req.params.iid)
       const named = m ? { name: view(m, isViewer(req)).name, phrase: view(m, isViewer(req)).phrase } : {}
-      return { success: true, data: { ok: true, ...named, reading: isViewer(req) ? viewerReading(r) : r, lastAction: actionFor(req.params.iid, isViewer(req)) } }
+      const managed = await svc().meshManaged(r).catch(() => ({}))
+      return { success: true, data: { ok: true, ...named, managed, reading: isViewer(req) ? viewerReading(r) : r, lastAction: actionFor(req.params.iid, isViewer(req)) } }
     } catch (e: any) {
       if (e instanceof AsusRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
       const known = e instanceof AsusRefusal || e instanceof AsusUnreachableError || e instanceof AsusLoginError
       return { success: true, data: { ok: false, held: e?.code === 'login_held' || e instanceof AsusLoginError, error: known ? e.message : 'The router could not be read.', lastAction: actionFor(req.params.iid, isViewer(req)) } }
     }
+  })
+
+  // Manage one of this router's AiMesh nodes as a device of its own, with the main unit's saved login (admin,
+  // in-page confirmation; see service.adoptMeshNode). The body names the node by the `key` its reading carries.
+  fastify.post<P & { Params: { iid: string; key: string } }>('/instances/:iid/mesh/:key/adopt', async (req, reply) => {
+    try {
+      const { meta, pinnedNow } = await svc().adoptMeshNode(req.params.iid, req.params.key, actorOf(req))
+      await auditCredentialUse('asus.instance.adopt', `asus:${meta.id}`, { ...auditBy(actorOf(req)), name: meta.name, model: meta.model, from: req.params.iid, pinned: pinnedNow })
+      return reply.status(201).send({ success: true, data: { ...view(meta, false), pinnedNow } })
+    } catch (e) { return fail(reply, e) }
   })
 
   fastify.get<P>('/instances/:iid/detail', async (req, reply) => {

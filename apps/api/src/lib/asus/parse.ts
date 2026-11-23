@@ -502,7 +502,22 @@ export const CPU_HIGH_PCT = 90
 /** Asuswrt keeps most of its memory in use as cache, so "high" sits well above where a PC would worry. */
 export const MEM_HIGH_PCT = 92
 
-export function healthOf(r: Pick<AsusReading, 'wan' | 'cpuPct' | 'mem' | 'update'> & { mode?: AsusMode }): AsusReading['health'] {
+/** A wireless backhaul weaker than this (dBm) is worth a look: streaming over it stutters before it drops. */
+export const BACKHAUL_WEAK_DBM = -75
+
+/** What the mesh's own list says is wrong with its units: offline, a weak wireless link, an update waiting. */
+export function meshReasons(mesh: MeshNode[] | undefined): string[] {
+  const out: string[] = []
+  for (const n of (mesh ?? []).filter(x => !x.main)) {
+    const who = addressLike(n.name) ? 'An AiMesh node' : n.name
+    if (!n.online) { out.push(`${who} is offline.`); continue }
+    if (n.backhaul && n.backhaul !== 'wired' && n.rssi !== null && n.rssi <= BACKHAUL_WEAK_DBM) out.push(`${who} has a weak wireless link to the mesh (${n.rssi} dBm).`)
+    if (n.update) out.push(`${who} has a firmware update (${n.update}).`)
+  }
+  return out
+}
+
+export function healthOf(r: Pick<AsusReading, 'wan' | 'cpuPct' | 'mem' | 'update'> & { mode?: AsusMode; mesh?: MeshNode[] }): AsusReading['health'] {
   const reasons: string[] = []
   // Only a router has a WAN of its own. An access point, repeater, bridge or mesh node reports its unused WAN
   // as "Disconnected", which is normal, never an alarm.
@@ -511,6 +526,7 @@ export function healthOf(r: Pick<AsusReading, 'wan' | 'cpuPct' | 'mem' | 'update
   if (r.cpuPct !== null && r.cpuPct >= CPU_HIGH_PCT) reasons.push(`CPU is at ${Math.round(r.cpuPct)}%.`)
   if (r.mem && r.mem.pct >= MEM_HIGH_PCT) reasons.push(`Memory is at ${r.mem.pct}%.`)
   if (r.update.available) reasons.push(`A firmware update is available${r.update.version ? ` (${r.update.version})` : ''}.`)
+  reasons.push(...meshReasons(r.mesh))
   return { level: reasons.length ? 'attention' : 'good', reasons }
 }
 
@@ -581,7 +597,7 @@ export function buildReading(raw: RawAnswers, o: { instanceId: string; prev: Cou
   const bands: AsusBand[] = radio.map(b => ({ ...b, clients: online.filter(d => d.band === b.label).length }))
 
   const model = str(n.odmpid, 40) ?? str(n.productid, 40)
-  const base = { wan, cpuPct: rates.cpuPct, mem, update, mode }
+  const base = { wan, cpuPct: rates.cpuPct, mem, update, mode, mesh: mesh.nodes }
   return {
     fetchedAt: (o.now ?? new Date()).toISOString(),
     unitName: unitNameOf(n, mesh.mainAlias, mesh.mainModels),

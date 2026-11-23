@@ -21,6 +21,15 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-23 — ASUS: AiMesh nodes you can manage
+
+### New
+- On an ASUS access point or router that leads an AiMesh network, every node now has a **Manage this node** button. It adds the node to HyperProx using the main unit's saved login, so you type nothing, and then the node has its own page with load, uptime, Wi-Fi and reboot.
+    - Technical: `POST /api/plugins/asus/instances/<id>/mesh/<key>/adopt`, admin, confirmed in the page, never an API token. The reading carries a `managed` map of node key to device id.
+
+### Improved
+- The ASUS page now flags AiMesh nodes that are offline, whose wireless link is weak (-75 dBm or worse) or that have a firmware update waiting, in the Needs attention list and on the mesh picture, with what to do about each.
+
 ## 2026-11-22 — Live TV: real titles, a compact guide
 
 ### Fixed

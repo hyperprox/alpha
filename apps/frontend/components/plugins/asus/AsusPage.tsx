@@ -25,7 +25,7 @@ import { useSession } from '@/lib/session'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Panel, Cols, Icon, styles as vs } from '@/components/visual/kit'
 import { DetailsSection, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
-import { BandTiles, DeviceList, HealthList, MeshView, UplinkPanel, WanPanel, hudChips, routes, type Reading } from './AsusVisual'
+import { BandTiles, DeviceList, HealthList, MeshView, type MeshActions, UplinkPanel, WanPanel, hudChips, routes, type Reading } from './AsusVisual'
 import a from './asus.module.css'
 
 const API = '/api/plugins/asus'
@@ -41,7 +41,7 @@ export interface Router {
   nameSource?: 'user' | 'device' | 'model'; deviceName?: string | null
 }
 
-type Answer = { ok: boolean; reading?: Reading; error?: string; held?: boolean; lastAction?: LastAction | null; name?: string; phrase?: string }
+type Answer = { ok: boolean; managed?: Record<string, string>; reading?: Reading; error?: string; held?: boolean; lastAction?: LastAction | null; name?: string; phrase?: string }
 
 function useRouters() {
   const [list, setList] = useState<Router[] | null>(null)
@@ -69,7 +69,7 @@ const ACTION_WORD: Record<LastAction['state'], string> = {
 
 // ── one router ───────────────────────────────────────────────────────────────
 
-function RouterView({ n: n0, onRenamed }: { n: Router; onRenamed?: () => void }) {
+function RouterView({ n: n0, onRenamed, onOpen }: { n: Router; onRenamed?: () => void; onOpen?: (id: string) => void }) {
   const { role } = useSession()
   const [data, setData] = useState<Answer | null>(null)
   // The name follows the unit's own (read every 5 minutes), so the latest reading's name and phrase win.
@@ -114,6 +114,18 @@ function RouterView({ n: n0, onRenamed }: { n: Router; onRenamed?: () => void })
     setNote(r.ok ? { text: r.body!.data.message, ok: true } : { text: r.error ?? 'That did not work.', ok: false })
   }
 
+  const [adding, setAdding] = useState<string | null>(null)
+  const [meshNote, setMeshNote] = useState<{ text: string; ok: boolean } | null>(null)
+  // Manage a mesh node as a device of its own, with this unit's saved login (the server does it; a confirmation first).
+  const adopt = async (m: { key: string; name: string }): Promise<void> => {
+    setAdding(m.key)
+    const r = await apiJson<{ data: { id: string; name: string } }>(`${API}/instances/${n.id}/mesh/${m.key}/adopt`, 'POST', {}, IN_PAGE)
+    setAdding(null)
+    if (!r.ok) { setMeshNote({ text: r.error ?? 'That did not work.', ok: false }); return }
+    setMeshNote({ text: `${r.body!.data.name} is now managed. Open it for its load, uptime and reboot.`, ok: true })
+    onRenamed?.()
+    void load(true)
+  }
   const admin = atLeast(role, 'admin')
   const operator = atLeast(role, 'operator')
   const r = data?.reading
@@ -168,7 +180,8 @@ function RouterView({ n: n0, onRenamed }: { n: Router; onRenamed?: () => void })
 
           {(r.mesh?.length ?? 0) > 0 && (
             <Panel title="AiMesh" sub={`${r.mesh!.length} unit${r.mesh!.length === 1 ? '' : 's'} · ${r.mesh!.filter(m => m.online).length} online`}>
-              <MeshView nodes={r.mesh!} />
+              {meshNote && <Notice kind={meshNote.ok ? 'info' : 'error'}>{meshNote.text}</Notice>}
+              <MeshView nodes={r.mesh!} act={{ managed: data?.managed ?? {}, canAdd: atLeast(role, 'admin'), busyKey: adding, onOpen: id => onOpen?.(id), onAdopt: adopt } satisfies MeshActions} />
             </Panel>
           )}
 
@@ -380,7 +393,7 @@ export function AsusPage() {
                 <button role="tab" aria-selected={tab === 'settings'} onClick={() => setTab('settings')}>Settings</button>
               </div>
             )}
-            {(tab === 'router' || !admin) && <RouterView key={n.id} n={n} onRenamed={reload} />}
+            {(tab === 'router' || !admin) && <RouterView key={n.id} n={n} onRenamed={reload} onOpen={id => { setSel(id); setTab('router') }} />}
             {tab === 'settings' && admin && <RouterForm key={n.id} n={n} onSaved={() => void reload()} />}
           </>
         )}

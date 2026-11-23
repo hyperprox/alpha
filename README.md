@@ -2805,8 +2805,9 @@ firmware (stock or Merlin), uptime, CPU and RAM. Under it:
   its network name, channel, width and how many clients are on it. A radio that is off says so.
 - **Health**, or **Needs attention** when something is wrong: the internet is down, CPU is at 90% or
   more, memory is at 92% or more (Asuswrt keeps a lot of memory busy as cache, so the bar is high), or
-  the router says a firmware update is available. HyperProx does not install firmware; do that on the
-  router.
+  the router says a firmware update is available. On a unit that leads an AiMesh network it also names
+  any node that is offline, any node whose wireless link to the mesh is at -75 dBm or weaker, and any
+  node with a firmware update waiting. HyperProx does not install firmware; do that on the router.
 - **Connected devices**: every device online now with its name, how it connects (wired or the Wi-Fi
   band), its signal as bars and dBm, and how long it has been on Wi-Fi. You can filter by wired or by
   band. Operators and admins also see each device's address and MAC; viewers never see MACs or
@@ -2828,7 +2829,19 @@ raises "internet down" for it: such a unit reports its unused WAN as disconnecte
 When a unit leads an AiMesh network and lists its nodes, an **AiMesh** panel draws the mesh as one
 picture: the main unit on top and each node under it, with its model, firmware (and whether an update is
 waiting), how it reaches the mesh (wired, or the band of its wireless backhaul, with the signal), and
-how many clients it carries. Each connected device also says which unit it is on.
+how many clients it carries. Each connected device also says which unit it is on. A node with a problem
+(offline, a weak wireless link, an update waiting) is outlined in amber on the picture and says what to do.
+
+**Managing a node.** The main unit's list shows each node's model, firmware, address, link and clients,
+but a node's own uptime, CPU load, radios and reboot need a reading of the node itself. A node that is
+not managed yet has a **Manage this node** button (admins; it asks you to confirm first). AiMesh nodes
+take the main unit's admin login, so HyperProx tries the main unit's saved login on the address the main
+unit lists for that node, once, on the server: nothing is typed and the password never reaches your
+browser. If the node accepts it, it is saved as a device of its own, with the same checks as any other
+router, and nothing is changed on the node. If it refuses, nothing is saved and the login is not tried
+again; use **Add a router** and enter that unit's own login instead. Once a node is managed, its card has
+an **Open** button that takes you to its page, with its load, uptime, Wi-Fi bands and the reboot.
+The add is in the audit log. API tokens cannot do it.
 
 **Diagnostics** (admins, API tokens allowed): `GET /api/plugins/asus/instances/<id>/diagnostics` returns
 the router's raw answer to every call the plug-in makes, plus a set of other read-only calls, to work out

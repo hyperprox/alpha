@@ -184,6 +184,7 @@ const RULES: Rule[] = [
     return nets.length && iface ? guardSummary(iface, nets, routed) : 'Add the LAN guard to the router?'
   }],
   ['POST', /^\/api\/plugins\/mikrotik\/lan-guard\/undo$/, () => 'Remove the LAN guard from the router? Exactly the address list "hyperprox-lan" and the one rule HyperProx added are deleted; nothing else is touched.'],
+  ['POST', /^\/api\/plugins\/asus\/instances\/[^/]+\/mesh\/[^/]+\/adopt$/, () => 'Add this AiMesh unit to HyperProx? Its address is the one the main unit lists, and the main unit\'s saved login is tried on it once. Nothing is changed on the unit.'],
   ['POST', /^\/api\/plugins\/asus\/instances\/[^/]+\/actions$/, () => 'Run this action on the router? Your network may drop for a few minutes.'],
   ['POST', /^\/api\/plugins\/(pihole|adguard)\/instances\/[^/]+\/secure-actions$/, m => `Make this change to ${pluginName(m[1])}? It affects DNS for everything that uses it.`],
   ['POST', /^\/api\/plugins\/pbs\/instances\/[^/]+\/actions\/verify$/, () => 'Start a verify on this backup server now? It reads every backup and can take hours.'],

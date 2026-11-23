@@ -213,11 +213,35 @@ export function DeviceList({ devices, bands, offline }: { devices: Device[]; ban
 
 // ── AiMesh ───────────────────────────────────────────────────────────────────
 
-function MeshCard({ n }: { n: MeshNode }) {
+/** A wireless backhaul at or below this (dBm) is flagged; the same line the API's health reasons use. */
+const WEAK_DBM = -75
+
+/** What is wrong with a node, in plain words, and what to do about it. Null when nothing is. */
+export function meshProblem(n: MeshNode): { text: string; hint: string } | null {
+  if (n.main) return null
+  if (!n.online) return { text: 'offline', hint: 'Check its power and cable, then give it a minute to rejoin.' }
+  if (n.backhaul && n.backhaul !== 'wired' && n.rssi !== null && n.rssi <= WEAK_DBM) return { text: 'weak link', hint: 'Move it closer to the main unit or give it a wired link.' }
+  if (n.update) return { text: 'update waiting', hint: 'Install the firmware from the unit’s own page (Administration → Firmware Upgrade).' }
+  return null
+}
+
+export interface MeshActions {
+  /** Node key -> the HyperProx device that is that node, for nodes already managed. */
+  managed: Record<string, string>
+  /** Whether this person may add a node as a device (admins). */
+  canAdd: boolean
+  busyKey: string | null
+  onOpen: (id: string) => void
+  onAdopt: (n: MeshNode) => void
+}
+
+function MeshCard({ n, act }: { n: MeshNode; act?: MeshActions }) {
   const via = n.main ? 'main unit' : n.backhaul === 'wired' ? 'wired backhaul' : n.backhaul ? `${n.backhaul} backhaul` : 'backhaul not reported'
+  const problem = meshProblem(n)
+  const mine = act?.managed[n.key]
   return (
-    <li className={a.meshNode} data-main={String(n.main)} data-online={String(n.online)}
-      aria-label={`${n.name}${n.model ? `, ${n.model}` : ''}: ${n.online ? 'online' : 'offline'}, ${via}${n.rssi !== null ? `, ${n.rssi} dBm` : ''}, ${n.clients} client${n.clients === 1 ? '' : 's'}`}>
+    <li className={a.meshNode} data-main={String(n.main)} data-online={String(n.online)} data-problem={String(!!problem)}
+      aria-label={`${n.name}${n.model ? `, ${n.model}` : ''}: ${n.online ? 'online' : 'offline'}, ${via}${n.rssi !== null ? `, ${n.rssi} dBm` : ''}, ${n.clients} client${n.clients === 1 ? '' : 's'}${problem ? `, ${problem.text}` : ''}`}>
       <span className={a.meshTop}><span className={a.meshName}>{n.name}</span>{n.main && <span className={a.meshBadge}>main</span>}</span>
       <span className={a.ssid}>{n.model ?? 'ASUS unit'}{n.online ? '' : ' · offline'}</span>
       <span className={a.bandRow}><span>link</span><b>{n.main ? '—' : n.backhaul === 'wired' ? 'wired' : n.backhaul ?? '—'}</b></span>
@@ -225,19 +249,24 @@ function MeshCard({ n }: { n: MeshNode }) {
       <span className={a.bandRow}><span>firmware</span><b>{n.firmware ?? '—'}{n.update ? ' · update' : ''}</b></span>
       {n.ip && <span className={a.bandRow}><span>address</span><b className="font-mono">{n.ip}</b></span>}
       <span className={a.clients}><b>{n.clients}</b><span>client{n.clients === 1 ? '' : 's'}</span></span>
+      {problem && <span className={a.meshProblem}><b>{problem.text}</b> {problem.hint}</span>}
+      {act && !n.main && mine && <button type="button" className={a.meshBtn} onClick={() => act.onOpen(mine)}>Open: load, uptime, reboot</button>}
+      {act && !n.main && !mine && act.canAdd && n.ip && (
+        <button type="button" className={a.meshBtn} disabled={act.busyKey === n.key} onClick={() => act.onAdopt(n)}>{act.busyKey === n.key ? 'Adding…' : 'Manage this node'}</button>
+      )}
     </li>
   )
 }
 
 /** The mesh as one picture: the main unit on top, every node under it, each saying how it is connected. */
-export function MeshView({ nodes }: { nodes: MeshNode[] }) {
+export function MeshView({ nodes, act }: { nodes: MeshNode[]; act?: MeshActions }) {
   const main = nodes.filter(n => n.main), rest = nodes.filter(n => !n.main)
   return (
     <div className={a.mesh}>
-      <ul className={a.meshRow} aria-label="AiMesh main unit" style={{ listStyle: 'none', margin: 0, padding: 0 }}>{main.map(n => <MeshCard key={n.key} n={n} />)}</ul>
+      <ul className={a.meshRow} aria-label="AiMesh main unit" style={{ listStyle: 'none', margin: 0, padding: 0 }}>{main.map(n => <MeshCard key={n.key} n={n} act={act} />)}</ul>
       {rest.length > 0 && <>
         <span className={a.meshTrunk} aria-hidden />
-        <ul className={a.meshNodes} aria-label="AiMesh nodes" style={{ listStyle: 'none', margin: 0, padding: 0 }}>{rest.map(n => <MeshCard key={n.key} n={n} />)}</ul>
+        <ul className={a.meshNodes} aria-label="AiMesh nodes" style={{ listStyle: 'none', margin: 0, padding: 0 }}>{rest.map(n => <MeshCard key={n.key} n={n} act={act} />)}</ul>
       </>}
     </div>
   )

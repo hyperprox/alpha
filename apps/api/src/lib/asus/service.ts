@@ -74,6 +74,8 @@ export interface ServiceDeps {
   limits?: Partial<Limits>
   /** When a reboot's read-back looks, in ms after it was sent. */
   readBackAt?: number[]
+  /** Where a mesh node's own web page is, from its address and its main unit's address. Tests replace it. */
+  meshNodeUrl?: (ip: string, mainUrl: string) => string
 }
 
 export const CACHE_MS = 8_000
@@ -376,6 +378,52 @@ export class AsusService {
     const meta = await this.d.store.update(id, { ...p, fingerprint: found ? found.fingerprint : p.fingerprint }, input.name, found && found.model ? found : null)
     this.forget(id)
     return { meta, pinnedNow: !!found?.pinnedNow, loginChanged: p.loginChanged }
+  }
+
+  // ── AiMesh nodes ───────────────────────────────────────────────────────────
+
+  /**
+   * Which of a mesh's units HyperProx already manages as a device of its own, by the node's `key`: the device whose
+   * saved address is that node's address. Read from the stored addresses, so it works for any role.
+   */
+  async meshManaged(reading: AsusReading): Promise<Record<string, string>> {
+    const out: Record<string, string> = {}
+    const hosts = new Map<string, string>()
+    for (const v of await this.d.store.views()) { try { hosts.set(new URL(v.url).hostname, v.id) } catch { /* no address */ } }
+    for (const n of reading.mesh) { const id = n.ip ? hosts.get(n.ip) : undefined; if (id) out[n.key] = id }
+    return out
+  }
+
+  /**
+   * Manage an AiMesh node as a device of its own. AiMesh nodes take the main unit's admin login (the main
+   * pushes it to them), so no login is typed: the main's saved login is tried once, server-side, against the
+   * address the main itself lists for that node. The password never reaches a browser. A node that refuses it
+   * is not saved and the login is not retried, so the node's own lockout is never reached. Admin only; the
+   * route re-confirms and audits.
+   */
+  async adoptMeshNode(mainId: string, nodeKey: string, actor: Actor): Promise<{ meta: AsusMeta; pinnedNow: boolean }> {
+    if (actor.token) throw new AsusRefusal('token_forbidden', 'API tokens cannot add a router.', 403)
+    if (!hasRole(actor.role, 'admin')) throw new AsusRefusal('forbidden', 'Adding a router needs the admin role.', 403)
+    this.limit(actor, 'setupsPerMinute', 'Too many routers tried in a minute; wait a moment.')
+    const conn = await this.d.store.connection(mainId)
+    if (!conn) throw new AsusRefusal('not_configured', 'This router has no address or login yet.', 409)
+    const reading = await this.reading(mainId, { fresh: true })
+    const node = reading.mesh.find(n => n.key === nodeKey && !n.main)
+    if (!node || !node.ip) throw new AsusRefusal('no_node', 'That unit is not in this router\'s AiMesh list, or it does not report an address.', 404)
+    if (Object.keys(await this.meshManaged(reading)).includes(node.key)) throw new AsusRefusal('already_managed', `${node.name} is already managed.`, 409)
+    const url = this.d.meshNodeUrl ? this.d.meshNodeUrl(node.ip, conn.url) : `${new URL(conn.url).protocol}//${node.ip}${new URL(conn.url).port ? `:${new URL(conn.url).port}` : ''}`
+    const input = { url, username: conn.username, password: conn.password, insecureTLS: conn.meta.insecureTLS }
+    const p = await this.d.store.prepare(null, input)
+    let found
+    try { found = await this.setUp(p) }
+    catch (e: any) {
+      if (e instanceof AsusRefusal && e.code.startsWith('login_')) {
+        throw new AsusRefusal(e.code, `${node.name} did not accept the main unit's login, so it was not added. Use "Add a router" and enter that unit's own login.`, 400)
+      }
+      throw e
+    }
+    const meta = await this.d.store.create({ ...p, fingerprint: found.fingerprint }, undefined, { ...found, deviceName: found.deviceName ?? node.name })
+    return { meta, pinnedNow: found.pinnedNow }
   }
 
   // ── the action ─────────────────────────────────────────────────────────────
