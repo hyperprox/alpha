@@ -1084,3 +1084,32 @@ test('meshManaged: a node is managed when a saved device has its address', async
   const other = await main.store.create(await main.store.prepare(null, { url: 'http://10.9.8.40', username: 'admin', password: 'x' }), 'Hall unit', { model: null, firmware: null })
   assert.deepEqual(await svc.meshManaged(reading), { [key]: other.id })
 })
+
+// ── a slow vault or router never holds a reading ─────────────────────────────
+
+test("a reading whose vault read never answers ends with a plain error at the deadline, and the next one is not stuck behind it", async () => {
+  const { url } = await setup()
+  let hang = true
+  const io = memoryIO()
+  const slow: CredentialIO = { ...io, get: (c, p, k) => (hang ? new Promise<string | null>(() => {}) : io.get(c, p, k)) }
+  const store = new AsusInstanceStore(io, async () => "127.0.0.1")
+  const meta = await store.create({ url, username: "admin", password: "correct horse", insecureTLS: false, fingerprint: null, moved: true, loginChanged: true }, "Hang", { model: null, firmware: null } as any)
+  const svc = new AsusService({
+    store: new AsusInstanceStore(slow, async () => "127.0.0.1"), audit: async () => {}, publish: async () => {},
+    transportFor: ({ url: u, meta: m }) => new DirectTransport({ url: u, insecureTLS: m.insecureTLS, fingerprint: m.fingerprint, resolve: async () => "127.0.0.1" }),
+    readDeadlineMs: 1_500, sleep: async () => {},
+  } as any)
+  const t0 = Date.now()
+  await assert.rejects(svc.reading(meta.id), /taking too long/)
+  assert.ok(Date.now() - t0 < 2_000)
+  hang = false
+  assert.equal((await svc.reading(meta.id)).model.length > 0, true)
+})
+
+test("meshManaged gives an empty answer at its deadline instead of holding the reading", async () => {
+  const never: CredentialIO = { get: () => new Promise(() => {}), set: async () => {}, remove: async () => {} }
+  const svc = new AsusService({ store: new AsusInstanceStore(never, async () => "127.0.0.1"), audit: async () => {}, publish: async () => {} } as any)
+  const t0 = Date.now()
+  assert.deepEqual(await svc.meshManaged({ mesh: [] } as any, 100), {})
+  assert.ok(Date.now() - t0 < 1_500)
+})

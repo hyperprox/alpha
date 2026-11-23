@@ -71,6 +71,8 @@ export interface ServiceDeps {
   probe?: (url: string) => Promise<PresentedCert>
   now?: () => number
   sleep?: (ms: number) => Promise<void>
+  /** Longest a whole reading may take (default READ_DEADLINE_MS). */
+  readDeadlineMs?: number
   limits?: Partial<Limits>
   /** When a reboot's read-back looks, in ms after it was sent. */
   readBackAt?: number[]
@@ -79,6 +81,16 @@ export interface ServiceDeps {
 }
 
 export const CACHE_MS = 8_000
+/** The longest a whole reading may take before the page is told the router is slow (each call to it has its own, shorter timeout). */
+export const READ_DEADLINE_MS = 30_000
+
+/** Race a promise against a deadline: resolves to fallback()/throws via onLate when it is late. The promise itself is left to finish alone. */
+export function withDeadline<T>(p: Promise<T>, ms: number, late: () => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => { try { resolve(late()) } catch (e) { reject(e) } }, ms)
+    p.then(v => { clearTimeout(t); resolve(v) }, e => { clearTimeout(t); reject(e) })
+  })
+}
 export const IDLE_LOGOUT_MS = 120_000
 /** No counter sample this recent: take a second one 1.5 s later so the first reading already has rates. */
 const SAMPLE_FRESH_MS = 60_000
@@ -239,6 +251,14 @@ export class AsusService {
 
   /** A reading, from the last 8 seconds when there is one. `fresh` asks again when the cached one is over 3 seconds old. */
   async reading(id: string, o: { actor?: Actor; fresh?: boolean } = {}): Promise<AsusReading> {
+    // Nothing under a reading (the vault, a router, a stuck earlier read) may hold the page for ever.
+    return withDeadline(this.readingInner(id, o), this.d.readDeadlineMs ?? READ_DEADLINE_MS, () => {
+      this.inflight.delete(id)
+      throw new AsusUnreachableError("The router is taking too long to answer. HyperProx will try again.")
+    })
+  }
+
+  private async readingInner(id: string, o: { actor?: Actor; fresh?: boolean } = {}): Promise<AsusReading> {
     await this.meta(id)
     if (o.actor) this.limit(o.actor, 'readsPerMinute')
     // Anything a reading learned while no vault write was possible (an API token, the card) is written now if it can be.
@@ -386,7 +406,12 @@ export class AsusService {
    * Which of a mesh's units HyperProx already manages as a device of its own, by the node's `key`: the device whose
    * saved address is that node's address. Read from the stored addresses, so it works for any role.
    */
-  async meshManaged(reading: AsusReading): Promise<Record<string, string>> {
+  async meshManaged(reading: AsusReading, deadlineMs = 3_000): Promise<Record<string, string>> {
+    // Never allowed to hold a reading: late or failed means no marks, not no page.
+    return withDeadline(this.meshManagedNow(reading), deadlineMs, () => ({})).catch(() => ({}))
+  }
+
+  private async meshManagedNow(reading: AsusReading): Promise<Record<string, string>> {
     const out: Record<string, string> = {}
     const hosts = new Map<string, string>()
     for (const v of await this.d.store.views()) { try { hosts.set(new URL(v.url).hostname, v.id) } catch { /* no address */ } }
