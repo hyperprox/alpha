@@ -13,7 +13,7 @@ URL="${HPX_GATE_URL:-https://127.0.0.1/grafana/api/health}"
 CONTAINER="${GRAFANA_CONTAINER:-hyperprox-grafana}"
 
 got=""
-for _ in $(seq 1 30); do   # nginx workers, and the API after its restart, take a moment
+for _ in $(seq 1 90); do   # nginx workers, and the API after its restart, take a moment
   got="$(curl -sk -o /dev/null --max-time 10 -w '%{http_code} %{redirect_url}' "$URL" 2>/dev/null || true)"
   if [[ "$got" =~ ^302\ .*/login(\?|$) ]]; then echo "  /grafana/ is gated (no session: 302 to /login)"; exit 0; fi
   sleep 1
