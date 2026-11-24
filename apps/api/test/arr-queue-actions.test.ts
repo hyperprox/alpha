@@ -206,7 +206,7 @@ test('prioritise: topPrio with the download id as the hash, only for a torrent q
   const r = await runAction(mkDeps(fa.client, null, q.client), req({ action: 'prioritise', downloadId: `d:${HASH}` }), 'a@example.com')
   assert.deepEqual(q.log.forms, [{ p: '/api/v2/torrents/topPrio', f: { hashes: HASH.toLowerCase() } }])
   assert.equal(fa.log.deletes.length + fa.log.posts.length, 0)
-  assert.match(r.result!.summary, /top of qBittorrent's queue/)
+  assert.match(r.result!.summary, /top of the download queue/)
   await refusal(runAction(mkDeps(fa.client, null, q.client), req({ action: 'prioritise', downloadId: 'd:nzb123' }), 'a@example.com'), 'not_a_torrent')
   await refusal(runAction(mkDeps(fa.client, null, null), req({ action: 'prioritise', downloadId: `d:${HASH}` }), 'a@example.com'), 'no_qbit')
   await refusal(runAction(mkDeps(fa.client, null, fakeQbit([]).client), req({ action: 'prioritise', downloadId: `d:${HASH}` }), 'a@example.com'), 'not_in_qbit')

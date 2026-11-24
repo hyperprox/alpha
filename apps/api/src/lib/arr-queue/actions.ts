@@ -21,16 +21,16 @@
 // =============================================================================
 
 import type { CoreEndpointClient } from '../plugin-host'
-import { collapseByDownload, importHint, isDone, isDoneMusic, problemOf, readAllQueue, releaseKey, stripPaths, type AlbumInfo, type FileInfo } from './logic'
+import { collapseByDownload, importHint, isDone, isDoneMusic, isIncomplete, isSampleOnly, problemOf, readAllQueue, releaseKey, stripPaths, type AlbumInfo, type FileInfo } from './logic'
 import { FileCache, readAlbumInfo, readEpisodeInfo, readMovieInfo } from './lookup'
 import { auditBy } from '../http/request-actor'
 export { importHint }
 
 export type Instance = 'sonarr' | 'radarr' | 'lidarr'
-export type ActionName = 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'clear-done' | 'swap-check'
-export const ACTIONS: ActionName[] = ['find-another', 'remove', 'retry-import', 'prioritise', 'swap-pack', 'fix-stalled', 'clear-done', 'swap-check']
+export type ActionName = 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'fix-many' | 'clear-done' | 'swap-check'
+export const ACTIONS: ActionName[] = ['find-another', 'remove', 'retry-import', 'prioritise', 'swap-pack', 'fix-stalled', 'fix-many', 'clear-done', 'swap-check']
 /** Actions that remove something from a client: the server wants `confirmed: true` for them. */
-export const DESTRUCTIVE: ActionName[] = ['find-another', 'remove', 'swap-pack', 'fix-stalled', 'clear-done']
+export const DESTRUCTIVE: ActionName[] = ['find-another', 'remove', 'swap-pack', 'fix-stalled', 'fix-many', 'clear-done']
 
 export interface ActionRequest {
   action: ActionName
@@ -59,6 +59,8 @@ export interface Plan {
   commands: Command[]
   skipped: Array<{ downloadId: string; name: string; reason: string }>
   qbitHash?: string
+  /** prioritise, for several downloads at once (a show's torrents). */
+  qbitHashes?: string[]
   /** swap-pack / swap-check: the multi-episode downloads that were already in the season. */
   packsBefore?: string[]
   seasonLabel?: string
@@ -168,6 +170,19 @@ export function planAction(allRows: any[], req: ActionRequest, info?: Map<number
 
   switch (req.action) {
     case 'remove': {
+      if (req.downloadIds?.length) {
+        // A whole show or film at once: every download named, each re-resolved from this fresh read.
+        const ids = distinct(req.downloadIds)
+        if (ids.length > 50) throw new ActionRefusal(400, 'bad_request', 'Name between 1 and 50 downloads.')
+        const items: PlanItem[] = [], skipped: Plan['skipped'] = [], rowIds: number[] = []
+        for (const id of ids) {
+          const rows = resolveDownload(allRows, id)
+          if (!rows) { skipped.push({ downloadId: id, name: id, reason: 'no longer in the queue' }); continue }
+          items.push(item(id, rows)); rowIds.push(...rowIdsOf(rows))
+        }
+        if (!items.length) throw gone()
+        return { ...base, items, skipped, rowIds: distinct(rowIds), blocklist: req.blocklist === true }
+      }
       const rows = resolveDownload(allRows, req.downloadId as string); if (!rows) throw gone()
       return { ...base, items: [item(req.downloadId!, rows)], rowIds: rowIdsOf(rows), blocklist: req.blocklist === true }
     }
@@ -183,6 +198,20 @@ export function planAction(allRows: any[], req: ActionRequest, info?: Map<number
       return { ...base, items: [item(req.downloadId!, rows)], commands: [{ name: 'RefreshMonitoredDownloads', body: { name: 'RefreshMonitoredDownloads' }, label: 'a re-check of its downloads' }] }
     }
     case 'prioritise': {
+      if (req.downloadIds?.length) {
+        const ids = distinct(req.downloadIds)
+        if (ids.length > 50) throw new ActionRefusal(400, 'bad_request', 'Name between 1 and 50 downloads.')
+        const items: PlanItem[] = [], skipped: Plan['skipped'] = [], hashes: string[] = []
+        for (const id of ids) {
+          const rows = resolveDownload(allRows, id)
+          if (!rows) { skipped.push({ downloadId: id, name: id, reason: 'no longer in the queue' }); continue }
+          const h = String(rows[0].downloadId ?? '')
+          if (String(rows[0].protocol ?? '') !== 'torrent' || !HASH_RE.test(h)) { skipped.push({ downloadId: id, name: nameOf(rows), reason: 'not a torrent' }); continue }
+          items.push(item(id, rows)); hashes.push(h.toLowerCase())
+        }
+        if (!items.length) throw new ActionRefusal(409, 'not_a_torrent', 'Only a torrent can be moved to the top of the queue.')
+        return { ...base, items, skipped, qbitHash: hashes[0], qbitHashes: hashes }
+      }
       const rows = resolveDownload(allRows, req.downloadId as string); if (!rows) throw gone()
       const hash = String(rows[0].downloadId ?? '')
       if (String(rows[0].protocol ?? '') !== 'torrent' || !HASH_RE.test(hash)) throw new ActionRefusal(409, 'not_a_torrent', 'Only a torrent can be moved to the top of the queue.')
@@ -227,6 +256,25 @@ export function planAction(allRows: any[], req: ActionRequest, info?: Map<number
         items.push(item(id, rows)); rowIds.push(...rowIdsOf(rows)); cmds.push(...c)
       }
       if (!items.length) throw new ActionRefusal(409, 'nothing_to_do', 'None of those downloads is still stalled, so nothing was changed.')
+      return { ...base, items, skipped, rowIds: distinct(rowIds), blocklist: true, commands: mergeCommands(cmds) }
+    }
+    case 'fix-many': {
+      // The Fix button on "Needs you": a new copy for every download of one show, film or artist that has a problem.
+      // Each is re-checked on this fresh read, so a download that has since cleared up (or finished) is left alone.
+      const ids = distinct(req.downloadIds ?? [])
+      if (!ids.length || ids.length > 50) throw new ActionRefusal(400, 'bad_request', 'Name between 1 and 50 downloads.')
+      const items: PlanItem[] = [], skipped: Plan['skipped'] = [], rowIds: number[] = [], cmds: Command[] = []
+      for (const id of ids) {
+        const rows = resolveDownload(allRows, id)
+        if (!rows) { skipped.push({ downloadId: id, name: id, reason: 'no longer in the queue' }); continue }
+        const finished = req.instance === 'lidarr' ? isDoneMusic(rows, albumInfo) : isDone(rows, info)
+        const bad = problemOf(rows) !== null || isSampleOnly(rows) || (req.instance !== 'lidarr' && isIncomplete(rows, info))
+        if (finished || !bad) { skipped.push({ downloadId: id, name: nameOf(rows), reason: 'no longer has a problem' }); continue }
+        const c = searchCommands(req.instance, rows)
+        if (!c.length) { skipped.push({ downloadId: id, name: nameOf(rows), reason: 'not matched to anything, so nothing to search for' }); continue }
+        items.push(item(id, rows)); rowIds.push(...rowIdsOf(rows)); cmds.push(...c)
+      }
+      if (!items.length) throw new ActionRefusal(409, 'nothing_to_do', 'None of those downloads still has a problem, so nothing was changed.')
       return { ...base, items, skipped, rowIds: distinct(rowIds), blocklist: true, commands: mergeCommands(cmds) }
     }
     case 'clear-done': {
@@ -288,11 +336,11 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
   if (!opts.preview && req.action === 'swap-pack' && !req.downloadIds?.length) throw new ActionRefusal(400, 'bad_request', 'Confirm the swap with the downloads you were shown.')
   // "Done" also means every episode it covers has a file now: read that fresh, here, never trusting the page.
   const get = (p: string, t?: number) => client.get(p, t)
-  const info = req.action === 'clear-done' && req.instance !== 'lidarr'
+  const info = (req.action === 'clear-done' || req.action === 'fix-many') && req.instance !== 'lidarr'
     ? await (req.instance === 'sonarr' ? readEpisodeInfo(get, rows, Date.now()) : readMovieInfo(get, rows, Date.now()))
     : undefined
   // Music: a cache of its own, so the track files are read now and never from an earlier reading.
-  const albumInfo = req.action === 'clear-done' && req.instance === 'lidarr' ? await readAlbumInfo(get, rows, Date.now(), new FileCache()) : undefined
+  const albumInfo = (req.action === 'clear-done' || req.action === 'fix-many') && req.instance === 'lidarr' ? await readAlbumInfo(get, rows, Date.now(), new FileCache()) : undefined
   const plan = planAction(rows, req, info, albumInfo)
   if (opts.preview) return { plan }
 
@@ -314,13 +362,14 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
 
   try {
     if (plan.qbitHash) {
+      const hashes = plan.qbitHashes ?? [plan.qbitHash]
       const q = await deps.qbit()
       if (!q?.get || !q.postForm) throw new ActionRefusal(409, 'no_qbit', 'qBittorrent is not set up in the Arr Stack plug-in.')
-      const known = await q.get(`/api/v2/torrents/info?hashes=${plan.qbitHash}`, 10_000)
+      const known = await q.get(`/api/v2/torrents/info?hashes=${hashes.join('|')}`, 10_000)
       if (!Array.isArray(known) || !known.length) throw new ActionRefusal(409, 'not_in_qbit', 'qBittorrent does not have this torrent, so it was not moved.')
-      await q.postForm('/api/v2/torrents/topPrio', { hashes: plan.qbitHash }, 10_000)
+      await q.postForm('/api/v2/torrents/topPrio', { hashes: hashes.join('|') }, 10_000)
       res.done = true
-      res.summary = `Moved "${plan.items[0].name}" to the top of qBittorrent's queue.`
+      res.summary = plan.items.length === 1 ? `Moved "${plan.items[0].name}" to the top of the download queue.` : `Moved ${plural(plan.items.length, 'download')} to the top of the download queue.`
       await finish(res, true)
       return { plan, result: res }
     }
@@ -361,7 +410,7 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
     switch (req.action) {
       case 'remove': res.summary = `Removed ${nm} from the queue and the download client${plan.blocklist ? ', and blocklisted the release' : ''}.`; break
       case 'find-another': res.summary = `Removed ${nm} and blocklisted the release. Searching for another copy of ${res.searched.join(' and ')}.`; break
-      case 'fix-stalled': res.summary = `Removed ${nm} and blocklisted them. Searching for another copy of ${res.searched.join(', ')}.${plan.skipped.length ? ` Skipped ${plural(plan.skipped.length, 'download')} that changed meanwhile.` : ''}`; break
+      case 'fix-many': case 'fix-stalled': res.summary = `Removed ${nm} and blocklisted them. Searching for another copy of ${res.searched.join(', ')}.${plan.skipped.length ? ` Skipped ${plural(plan.skipped.length, 'download')} that changed meanwhile.` : ''}`; break
       case 'clear-done': res.summary = `Cleared ${nm} from the queue (not blocklisted). Everything they cover is already in your library.${plan.skipped.length ? ` Skipped ${plural(plan.skipped.length, 'download')} that changed meanwhile.` : ''}`; break
       case 'swap-pack': res.summary = `Removed ${nm} (not blocklisted) and searched for a ${plan.seasonLabel} pack. Checking in about 20 seconds whether one was grabbed.`; break
       case 'retry-import': {

@@ -150,7 +150,10 @@ test('the top: sync ring and one sentence; FFmpeg is short; the guide length is 
   })
   const html = renderToStaticMarkup(<LiveTvView tv={bad} canAct onAct={noop} nowMs={NOW_MS} />)
   assert.match(html, />1\/2</); assert.match(html, /Present/); assert.ok(!/Can stream|CAN STREAM/i.test(html))
-  assert.match(html, /1 channel has programmes Tunarr marks as missing \(6 in the next 48 hours\)/); assert.match(html, /2 libraries are not rescanning in Tunarr\. That does not stop their programmes playing/)
+  assert.ok(!/marks as missing/.test(html), 'the library-sync sentence belongs to the warning alone, never to the summary as well')
+  const warned = renderToStaticMarkup(<LiveTvView tv={{ ...bad, warnings: [{ level: 'warning', text: '1 channel has programmes that Tunarr marks as missing from their library (6 in the next 48 h of guide), so they may not play.' }] }} canAct onAct={noop} nowMs={NOW_MS} />)
+  assert.equal((warned.match(/marks as missing/g) ?? []).length, 1, 'said once')
+  assert.match(html, /2 libraries are not rescanning in Tunarr\. That does not stop their programmes playing/)
   assert.match(html, /FFmpeg 7\.1/); assert.ok(!/N7\.1-214/i.test(html)); assert.match(html, /Guide 46\.3 h or more/)
   assert.equal((html.match(/of guide/g) ?? []).length, 0, 'not repeated on every row')
   assert.equal(syncedWord(tv({ channels: [ch({ ready: null })] })), null)
@@ -168,8 +171,10 @@ test('a long list is grouped and collapsed: only groups to look at are open; a s
   assert.ok(/<details[^>]* open=""/.test(short))
 })
 
-test('the Arr tab bar parks under the sticky header and scrolls sideways instead of wrapping', () => {
+test('the Arr header and tab bar park under the top bar and scroll sideways instead of wrapping', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'components', 'plugins', 'arr', 'arrux.module.css'), 'utf8')
+  assert.match(css, /\.head \{ position: sticky; top: var\(--hx-top-h, 0px\)/); assert.match(css, /\.tabs \{ display: flex;[^}]*overflow-x: auto/)
   const page = fs.readFileSync(path.join(__dirname, '..', 'app', 'plugins', '[id]', 'page.tsx'), 'utf8')
-  assert.match(page, /aria-label="Arr Stack views" className="sticky[^"]*overflow-x-auto/); assert.match(page, /top: 'var\(--hx-top-h, 0px\)'/); assert.match(page, /<div className="overflow-x-clip">/, 'a clipping (not scrolling) wrapper, or the bar cannot stick')
+  assert.match(page, /<div className="overflow-x-clip">/, 'a clipping (not scrolling) wrapper, or the header cannot stick')
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'components', 'layout', 'TopBar.tsx'), 'utf8'), /--hx-top-h/)
 })

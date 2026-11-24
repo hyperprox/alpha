@@ -12,6 +12,7 @@ import { auditOrThrow } from '../audit'
 import { pickMediaServer, serversFromSettings } from '../arr/media-server'
 import { currentRouterService } from '../arr-router/production'
 import { RequestsService } from './service'
+import { registerRequestsStuck } from '../arr-queue/stuck-hook'
 import type { SortedMove } from './logic'
 
 const endpoint = (key: string) => async (): Promise<CoreEndpointClient | null> => {
@@ -46,3 +47,24 @@ export function requestsService(log?: (m: string) => void): RequestsService {
 
 /** Tests and the demo build set their own (or none). */
 export function setRequestsService(s: RequestsService | null): void { shared = s }
+
+// How many things in the requests need a person (failed requests, and faults in Seerr's own links), as one number
+// for the Arr Stack summary. It never waits for Seerr: it answers with the last count and refreshes in the background
+// at most every 30 seconds, from the same cached readings the Requests tab uses.
+let stuckNow = 0
+let stuckAt = 0
+let stuckBusy = false
+export function requestsStuck(): number {
+  if (!stuckBusy && Date.now() - stuckAt > 30_000) {
+    stuckBusy = true
+    void (async () => {
+      try {
+        const s = requestsService()
+        const [l, h] = await Promise.all([s.list(false), s.health()])
+        stuckNow = (l.configured ? l.counts.failed : 0) + (h.configured ? h.problems.length + (h.stale.length ? 1 : 0) : 0)
+      } catch { /* keep the last count */ } finally { stuckBusy = false; stuckAt = Date.now() }
+    })()
+  }
+  return stuckNow
+}
+registerRequestsStuck(requestsStuck)

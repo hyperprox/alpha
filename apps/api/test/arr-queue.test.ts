@@ -212,7 +212,7 @@ test('route: signed in only, read-only, one shared reading per few seconds, no k
   const a = Fastify({ logger: false })
   await registerGate(a)
   await a.register(authRoutes, { prefix: '/api/auth' })
-  await a.register(buildArrQueueRoutes({ sonarr: async () => sonarr, radarr: async () => radarr, now: () => clock, ttlMs: 3000 }), { prefix: '/api/plugins/arrstack' })
+  await a.register(buildArrQueueRoutes({ qbit: async () => null, requestsStuck: () => 0, sonarr: async () => sonarr, radarr: async () => radarr, now: () => clock, ttlMs: 3000 }), { prefix: '/api/plugins/arrstack' })
   await a.ready()
   try {
     const anon = await a.inject({ method: 'GET', url: '/api/plugins/arrstack/queue' })
@@ -252,7 +252,7 @@ test('route: a read slower than the TTL is shared by every request that arrives 
   const a = Fastify({ logger: false })
   await registerGate(a)
   await a.register(authRoutes, { prefix: '/api/auth' })
-  await a.register(buildArrQueueRoutes({ sonarr: async () => sonarr, radarr: async () => null, now: () => clock, ttlMs: 3000 }), { prefix: '/api/plugins/arrstack' })
+  await a.register(buildArrQueueRoutes({ qbit: async () => null, requestsStuck: () => 0, sonarr: async () => sonarr, radarr: async () => null, now: () => clock, ttlMs: 3000 }), { prefix: '/api/plugins/arrstack' })
   await a.ready()
   try {
     const { cookie } = await signIn(a, 'viewer@example.com', 'viewer master password')

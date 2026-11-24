@@ -3,7 +3,7 @@
 // =============================================================================
 //  HyperProx — Arr Stack, Queue actions
 //
-//  What a person can do about a problem in the queue: find another copy, remove (optionally blocklisting),
+//  What a person can do about a problem in the queue: get another copy ("Fix"), remove (optionally blocklisting),
 //  retry a blocked import, move a torrent to the top, swap a season's single episodes for a season pack, fix
 //  every stalled download at once, clear the finished ones (everything already in the library) from the queue, and
 //  "find a faster copy" (BetterCopy.tsx: a release search for what the download is for; the pick replaces it). Admins only: a viewer or operator sees no buttons at all, and the server refuses
@@ -23,7 +23,7 @@ import { queueTarget } from './better-view'
 
 export type Instance = 'sonarr' | 'radarr' | 'lidarr'
 export interface ActReq {
-  action: 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'clear-done' | 'swap-check'
+  action: 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'fix-many' | 'clear-done' | 'swap-check'
   instance: Instance
   downloadId?: string; downloadIds?: string[]; blocklist?: boolean; showKey?: string; seasonKey?: string; known?: string[]
 }
@@ -57,9 +57,10 @@ const useAct = () => useContext(ActCtx)
 
 const SWAP_CHECK_MS = 20_000
 
-export function ActionsProvider({ children, refresh, canPrioritise }: { children: ReactNode; refresh?: () => void; canPrioritise: boolean }) {
+/** `admin` is only for a test or a preview: it stands in for the signed-in person's role. */
+export function ActionsProvider({ children, refresh, canPrioritise, admin }: { children: ReactNode; refresh?: () => void; canPrioritise: boolean; admin?: boolean }) {
   const { role } = useSession()
-  const canAct = atLeast(role, 'admin')
+  const canAct = admin ?? atLeast(role, 'admin')
   const [flows, setFlows] = useState<Record<string, Flow>>({})
   const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
   const alive = useRef(true)
@@ -140,7 +141,7 @@ function Confirm({ k, f }: { k: string; f: Flow }) {
   const swap = f.spec.reqs.some(r => r.action === 'swap-pack')
   const remove = f.spec.reqs.every(r => r.action === 'remove')
   const blocklisted = f.spec.choice ? f.blocklist : f.plans.some(p => p.blocklist)
-  const verb = f.spec.done ? 'Clear from queue' : remove ? 'Remove' : swap ? 'Swap for a pack' : 'Find another'
+  const verb = f.spec.done ? 'Clear from queue' : remove ? 'Remove' : swap ? 'Swap for a pack' : 'Get another copy'
   return (
     <div className={c.actBox} role="group" aria-label={`Confirm: ${f.spec.title}`}>
       <p className={c.actLead}>{f.spec.title}: this will remove {plural(items.length, 'download')} from the download client and the queue.</p>
@@ -211,43 +212,125 @@ export function ActionResults() {
 
 export interface ActDownload { id: string; name: string; state: string; done?: boolean; problem: string | null; protocol: string | null; sizeLeft: number; episodes: number }
 
-const TORRENT_ID = /^d:(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$/
+const chunks = <T,>(xs: T[], n = 50): T[][] => { const o: T[][] = []; for (let i = 0; i < xs.length; i += n) o.push(xs.slice(i, i + n)); return o }
 
-export function DownloadActions({ instance, d }: { instance: Instance; d: ActDownload }) {
+/** What one menu or Fix button works on: a show, film or artist (all its downloads), or one download. */
+export interface FixTarget {
+  /** Anything unique for the row: keys the inline box. */
+  id: string
+  title: string
+  instance: Instance
+  downloadIds: string[]
+  /** Downloads with a problem: the Fix gets a new copy for these. */
+  problemIds: string[]
+  /** The blocked imports among them, which can be tried again first. */
+  retryIds: string[]
+  /** Torrents that can be moved to the top. */
+  torrentIds: string[]
+  /** The one download "Find better copy" can search for (only when there is exactly one). */
+  findable: string | null
+  done: boolean
+}
+export const itemKey = (t: Pick<FixTarget, 'instance' | 'id'>) => `item:${t.instance}:${t.id}`
+
+export interface FixOption { label: string; run: () => void }
+
+/**
+ * The one Fix for a row. A stuck, failed, incomplete or sample download: "Get another copy" (removes it, blocklists the
+ * release and searches again; the server re-checks each download first). A blocked import adds "Try the import again",
+ * and the page may add its own choice (`extra`). One option runs at once; several open a short list.
+ */
+export function useFix(t: FixTarget, extra: FixOption[] = []) {
   const a = useAct()
-  const [faster, setFaster] = useState(false)
-  if (!a?.canAct) return null
-  const swapTarget = queueTarget(instance, d.id)
-  const k = `dl:${instance}:${d.id}`
-  const busy = ['asking', 'running', 'confirm'].includes(a.flows[k]?.phase ?? '')
-  // An incomplete pack or a preview clip: a new copy is the answer. There is deliberately no "import anyway".
-  const incomplete = d.problem === 'incomplete' || d.problem === 'sample'
-  const blocked = !incomplete && (d.state === 'importBlocked' || d.state === 'importFailed')
-  if (d.done) {
-    // Finished: everything it covers is in the library. The only thing to do is clear it (Remove, never blocklisted).
-    return (
-      <>
-        <div className={c.actRow}>
-          <button type="button" className={c.actGo} disabled={busy} onClick={() => a.start(k, { title: 'Clear from queue', reqs: [{ action: 'clear-done', instance, downloadIds: [d.id] }], destructive: true, done: true })}>Clear from queue</button>
-        </div>
-        <ActionBox k={k} />
-      </>
-    )
+  const [choosing, setChoosing] = useState(false)
+  const k = itemKey(t)
+  const options: FixOption[] = []
+  if (a && t.retryIds.length) {
+    options.push({ label: 'Try the import again', run: () => a.start(k, { title: 'Try the import again', reqs: t.retryIds.slice(0, 50).map(id => ({ action: 'retry-import' as const, instance: t.instance, downloadId: id })), destructive: false }) })
   }
+  if (a && t.problemIds.length) {
+    options.push({ label: 'Get another copy', run: () => a.start(k, { title: 'Get another copy', reqs: chunks(t.problemIds).map(ids => ({ action: 'fix-many' as const, instance: t.instance, downloadIds: ids })), destructive: true }) })
+  }
+  options.push(...extra)
+  const busy = ['asking', 'running', 'confirm'].includes(a?.flows[k]?.phase ?? '')
+  return {
+    k, options, choosing, busy, canFix: !!a?.canAct && options.length > 0,
+    fix: () => { if (options.length === 1) options[0].run(); else if (options.length > 1) setChoosing(true) },
+    go: (o: FixOption) => { setChoosing(false); o.run() },
+    cancel: () => setChoosing(false),
+  }
+}
+export type Fix = ReturnType<typeof useFix>
+
+/** The short list under a Fix that has more than one way to go. */
+export function FixChoices({ fix }: { fix: Fix }) {
+  if (!fix.choosing) return null
   return (
-    <>
+    <div className={c.actBox} role="group" aria-label="How to fix it">
+      <p className={c.actLead}>How should it be fixed?</p>
       <div className={c.actRow}>
-        <button type="button" className={incomplete ? c.actGo : c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Find another', reqs: [{ action: 'find-another', instance, downloadId: d.id }], destructive: true })}>Find another</button>
-        <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Remove', reqs: [{ action: 'remove', instance, downloadId: d.id }], destructive: true, choice: true })}>Remove</button>
-        {blocked && <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Retry import', reqs: [{ action: 'retry-import', instance, downloadId: d.id }], destructive: false })}>Retry import</button>}
-        {a.canPrioritise && d.protocol === 'torrent' && TORRENT_ID.test(d.id) && (
-          <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Prioritise', reqs: [{ action: 'prioritise', instance, downloadId: d.id }], destructive: false })}>Move to top</button>
-        )}
-        {swapTarget && <button type="button" className={c.actBtn} disabled={busy} onClick={() => setFaster(true)}>Find a faster copy</button>}
+        {fix.options.map(o => <button key={o.label} type="button" className={c.actGo} onClick={() => fix.go(o)}>{o.label}</button>)}
+        <button type="button" className={c.actBtn} onClick={fix.cancel}>Cancel</button>
       </div>
-      <ActionBox k={k} />
-      {faster && swapTarget && <BetterDialog target={swapTarget} app={instance} title={d.name} onClose={() => setFaster(false)} />}
-    </>
+    </div>
+  )
+}
+
+/** The one Fix button of a "Needs you" entry. */
+export function FixButton({ fix, label = 'Fix' }: { fix: Fix; label?: string }) {
+  if (!fix.canFix) return null
+  return <button type="button" className={c.actGo} disabled={fix.busy} onClick={fix.fix}>{label}</button>
+}
+
+/** Which entries a row's "⋯" menu offers. Fix only when there is something to fix; Find better copy only for a single download. */
+export function menuPlan(t: FixTarget, hasFix: boolean, canPrioritise: boolean) {
+  return {
+    clear: t.done,
+    fix: hasFix,
+    better: !!t.findable && !!queueTarget(t.instance, t.findable),
+    top: canPrioritise && t.torrentIds.length > 0,
+    remove: !t.done,
+  }
+}
+
+/**
+ * The one "⋯" menu of a row: Fix, Find better copy, Move to top, Remove (which asks first). "Find better copy" is the
+ * release search (BetterCopy.tsx) for a single download, and replaces what used to be two overlapping buttons, "Find
+ * another" and "Find a faster copy": Fix is the automatic one. Admins only; everyone else sees no menu.
+ */
+export function ItemMenu({ t, fix }: { t: FixTarget; fix: Fix }) {
+  const a = useAct()
+  const [open, setOpen] = useState(false)
+  const [better, setBetter] = useState(false)
+  const root = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const away = (e: MouseEvent) => { if (root.current && !root.current.contains(e.target as Node)) setOpen(false) }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', away); document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc) }
+  }, [open])
+  if (!a?.canAct) return null
+  const k = itemKey(t)
+  const swapTarget = t.findable ? queueTarget(t.instance, t.findable) : null
+  const plan = menuPlan(t, fix.options.length > 0, a.canPrioritise)
+  const item = (label: string, onClick: () => void, danger = false) => (
+    <button type="button" role="menuitem" className={danger ? c.menuDanger : undefined} disabled={fix.busy} onClick={() => { setOpen(false); onClick() }}>{label}</button>
+  )
+  return (
+    <span className={c.menuWrap} ref={root}>
+      <button type="button" className={c.dots} aria-haspopup="menu" aria-expanded={open} aria-label={`Actions for ${t.title}`} onClick={() => setOpen(o => !o)}>⋯</button>
+      {open && (
+        <div role="menu" className={c.menu} aria-label={`Actions for ${t.title}`}>
+          {plan.clear && item('Clear from queue', () => a.start(k, { title: 'Clear from queue', reqs: chunks(t.downloadIds).map(ids => ({ action: 'clear-done' as const, instance: t.instance, downloadIds: ids })), destructive: true, done: true }))}
+          {plan.fix && item('Fix', fix.fix)}
+          {plan.better && item('Find better copy', () => setBetter(true))}
+          {plan.top && item('Move to top', () => a.start(k, { title: 'Move to top', reqs: chunks(t.torrentIds).map(ids => ({ action: 'prioritise' as const, instance: t.instance, downloadIds: ids })), destructive: false }))}
+          {plan.remove && item('Remove', () => a.start(k, { title: 'Remove', reqs: chunks(t.downloadIds).map(ids => ({ action: 'remove' as const, instance: t.instance, downloadIds: ids })), destructive: true, choice: true }), true)}
+        </div>
+      )}
+      {better && swapTarget && <BetterDialog target={swapTarget} app={t.instance} title={t.title} onClose={() => setBetter(false)} />}
+    </span>
   )
 }
 

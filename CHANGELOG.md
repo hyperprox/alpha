@@ -21,6 +21,25 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-24 — Arr Stack: less scrolling, one clear summary
+
+### New
+- The Arr Stack page opens on **Needs you**: everything that is stuck, failed or blocked, each with one **Fix** button, or **All good ✓** when there is nothing. A request that failed and a problem with Seerr's links are listed there too.
+    - Technical: `plain.needs` in `GET /api/plugins/arrstack/queue`; fix uses the new `fix-many` queue action (re-checks each download on a fresh read), `retry-import` for a blocked import, and the existing "Map by filename".
+- **Downloading** is one line per show, film or artist, in the order the downloads really run, with a status in plain words: "downloading · 3.9 h" or "waiting · 4th in line". Something that has not started no longer shows a made-up time like "80.7d left". Tap a row for its seasons, tap a season for its files; release names and download-client words are only under **Technical details**.
+    - Technical: the order is qBittorrent's queue priority, read in the same reading (`plain.items`); a time left is shown only for a download that is moving and only under two days.
+- Each row has one **⋯** menu: **Fix**, **Find better copy**, **Move to top** and **Remove** (which asks first). **Find better copy** replaces the two overlapping buttons "Find another" and "Find a faster copy".
+    - Technical: `remove` and `prioritise` queue actions now take `downloadIds` (up to 50), so a whole show is one confirmed action.
+
+### Improved
+- One summary, in the same words everywhere: the header and the Arr Stack tile on the plug-ins page both say, for example, "56 shows · 3 films · 15 downloading now · 9.2 MB/s · 1 stuck". It counts shows, films and artists, not episodes or torrents, and says so. The raw counts, each with its unit, are on **Advanced**.
+    - Technical: the tile now reads the queue through the same code as the route (`lib/arr-queue/read.ts` and `plain.ts`), so its numbers and speed units match the page.
+- Six tabs: **Needs you · Downloading · Requests · Coming up · Live TV · Advanced**. The pipeline picture, the VPN panel, folder sorting and the seven detail tables moved to **Advanced**. A tab you used before opens the one that replaced it.
+- Laid out for a phone first: a compact header that stays at the top with the summary, Pause, Refresh and the tabs, less padding, and rows that wrap instead of running off the screen.
+
+### Fixed
+- Live TV no longer says the same thing twice: the warning about programmes Tunarr marks as missing was shown both under the ring and in the problem list. It is shown once now.
+
 ## 2026-11-24 — AI operator: a ladder of models
 
 ### New

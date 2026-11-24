@@ -120,7 +120,6 @@ export function LiveTvView({ tv, canAct, onAct, nowMs = Date.now() }: { tv: Live
             <Pill tone={tv.version.behind ? 'warn' : undefined}>Tunarr {versionWord(tv.version)}</Pill>
             {tv.version.ffmpeg && <Pill>FFmpeg {tv.version.ffmpeg}</Pill>}
           </div>
-          {sync && <p className={c.note}>{sync.value === 1 ? 'No programme in any channel\u2019s next 48 hours is marked missing by Tunarr.' : `${tv.summary.unsynced} ${tv.summary.unsynced === 1 ? 'channel has' : 'channels have'} programmes Tunarr marks as missing (${tv.summary.unsyncedProgrammes} in the next 48 hours).`}</p>}
           {tv.summary.notRescanning > 0 && <p className={c.note}>{tv.summary.notRescanning} {tv.summary.notRescanning === 1 ? 'library is' : 'libraries are'} not rescanning in Tunarr. That does not stop their programmes playing.</p>}
           {tv.sources.length > 0 && (
             <ul className={c.sources} aria-label="Media sources">

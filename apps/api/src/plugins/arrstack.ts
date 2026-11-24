@@ -20,7 +20,10 @@ import type {
   Plugin, PluginContext, PluginTileData, PluginDetail,
   PluginMetric, PluginStuckImport } from '../lib/plugin-host'
 import type { ArrDownloadState, ArrVisual } from '../lib/plugin-visual-types'
-import { buildQueueData } from '../lib/arr-queue/logic'
+import type { CoreEndpointClient } from '../lib/plugin-host'
+import { readQbit, readQueue } from '../lib/arr-queue/read'
+import { buildPlain, rateWord } from '../lib/arr-queue/plain'
+import { requestsStuckCount } from '../lib/arr-queue/stuck-hook'
 import { bytes as fmtBytes } from '../lib/arr-queue/format'
 import { tunarrProvider } from '../lib/arr-tunarr/provider'
 
@@ -422,68 +425,43 @@ export const arrstackPlugin: Plugin = {
   },
 
   async load(ctx: PluginContext): Promise<PluginTileData> {
-    const { arrs, indexers, transfer, torrents } = await readAll(ctx)
-    const queued  = arrs.reduce((t, a) => t + a.total, 0)
-    const blocked = arrs.reduce((t, a) => t + importBlocked(a.queue).length, 0)
-    const stalled = arrs.reduce((t, a) => t + downloadStalled(a.queue).length, 0)
-    const down    = arrs.filter(a => a.error)
+    // The same reading the page's queue route makes (lib/arr-queue/read.ts and plain.ts), so the tile, the page
+    // header and the Advanced tab quote the same numbers: shows, films and artists, not rows or torrents.
+    const client = (key: string): CoreEndpointClient | null => {
+      if (key !== 'default' && !ctx.has(key)) return null
+      const c = key === 'default' ? ctx : ctx.from(key)
+      return { get: (p: string, t?: number) => c.get(p, t ? { timeoutMs: t } : undefined) } as unknown as CoreEndpointClient
+    }
+    const [q, qbit, indexers] = await Promise.all([
+      readQueue({ sonarr: client('default'), radarr: client('radarr'), lidarr: client('lidarr'), now: Date.now() }),
+      ctx.has('qbit') ? readQbit(client('qbit')) : null,
+      ctx.has('prowlarr') ? ctx.from('prowlarr').get('/api/v1/indexer').catch(() => null) : null,
+    ])
+    const plain = buildPlain(q, qbit, requestsStuckCount())
+    const sm = plain.summary
+    const down = (['sonarr', 'radarr', 'lidarr'] as const).filter(k => q.services[k].configured && !q.services[k].ok)
+    const configured = (['sonarr', 'radarr', 'lidarr'] as const).filter(k => q.services[k].configured)
 
     const rows: Array<{ label: string; value: string; tone?: Tone }> = []
-    if (blocked) rows.push({ label: 'Needs you', value: `${blocked} blocked import${blocked === 1 ? '' : 's'}`, tone: 'bad' })
-    if (stalled) rows.push({ label: 'Stalled',   value: `${stalled} download${stalled === 1 ? '' : 's'}`, tone: 'warn' })
-
-    if (transfer) {
-      rows.push({ label: 'Transfer', value: `↓ ${rate(transfer.dl_info_speed)} · ↑ ${rate(transfer.up_info_speed)}` })
+    if (plain.needs.length) {
+      const names = plain.needs.slice(0, 3).map(n => n.title).join(', ')
+      rows.push({ label: 'Needs you', value: `${plain.needs.length} ${plain.needs.length === 1 ? 'item' : 'items'}: ${names}${plain.needs.length > 3 ? ` and ${plain.needs.length - 3} more` : ''}`, tone: plain.needs.some(n => n.severity === 'bad') ? 'bad' : 'warn' })
+    } else if (sm.requestsStuck) {
+      rows.push({ label: 'Needs you', value: `${sm.requestsStuck} ${sm.requestsStuck === 1 ? 'request' : 'requests'}`, tone: 'warn' })
     }
-    if (torrents) {
-      const moving = torrents.filter((t: any) => (t.dlspeed ?? 0) > 0 || (t.upspeed ?? 0) > 0).length
-      const downloading = torrents.filter((t: any) => Number(t.progress ?? 1) < 1).length
-      rows.push({
-        label: 'Torrents',
-        value: `${downloading} downloading · ${moving} moving of ${torrents.length}`,
-      })
-      // The one currently pulling hardest, named — "12 active" says nothing
-      // about whether the thing you are waiting for is one of them.
-      const top = [...torrents].sort((a: any, b: any) => Number(b.dlspeed ?? 0) - Number(a.dlspeed ?? 0))[0]
-      if (top && Number(top.dlspeed ?? 0) > 0) {
-        rows.push({
-          label: 'Fastest',
-          value: `${String(top.name).slice(0, 34)} · ${rate(top.dlspeed)} · ${(Number(top.progress) * 100).toFixed(0)}%`,
-        })
-      }
-    }
-    if (indexers) {
+    if (qbit?.transfer) rows.push({ label: 'Speed', value: `↓ ${rateWord(num(qbit.transfer.dl_info_speed))} · ↑ ${rateWord(num(qbit.transfer.up_info_speed))}` })
+    if (sm.sizeLeft) rows.push({ label: 'Left to fetch', value: fmtBytes(sm.sizeLeft) })
+    if (Array.isArray(indexers)) {
       const on = indexers.filter((i: any) => i.enable).length
       const off = indexers.length - on
-      rows.push({ label: 'Indexers', value: off ? `${on} on · ${off} off` : `${on} searching`,
-                  tone: on ? (off ? 'warn' : 'good') : 'bad' })
+      rows.push({ label: 'Indexers', value: off ? `${on} on · ${off} off` : `${on} searching`, tone: on ? (off ? 'warn' : 'good') : 'bad' })
     }
-    for (const a of arrs) {
-      if (a.error) rows.push({ label: a.label, value: 'unreachable', tone: 'bad' })
-    }
-    // The queue as downloads, not rows: a 23-episode pack is one.
-    const sq = arrs.find(a => a.label === 'Sonarr'), rq = arrs.find(a => a.label === 'Radarr'), lq = arrs.find(a => a.label === 'Lidarr')
-    const qs = buildQueueData({
-      sonarr: { rows: sq && !sq.error ? sq.queue : null, configured: !!sq },
-      radarr: { rows: rq && !rq.error ? rq.queue : null, configured: !!rq },
-      ...(lq ? { lidarr: { rows: !lq.error ? lq.queue : null, configured: true } } : {}),
-    }).summary
-    if (qs.downloads) {
-      rows.unshift({
-        label: 'Queue',
-        value: `${qs.downloads} download${qs.downloads === 1 ? '' : 's'} · ${qs.shows} show${qs.shows === 1 ? '' : 's'}`
-          + `${qs.movies ? ` · ${qs.movies} movie${qs.movies === 1 ? '' : 's'}` : ''}`
-          + `${qs.artists ? ` · ${qs.artists} artist${qs.artists === 1 ? '' : 's'}` : ''} · ${fmtBytes(qs.sizeLeft)} left`,
-      })
-      const bad = qs.stalled + qs.warnings
-      if (bad) rows.push({ label: 'Warnings', value: `${bad} stalled or warning`, tone: 'warn' })
-    }
+    for (const k of down) rows.push({ label: k === 'sonarr' ? 'Sonarr' : k === 'radarr' ? 'Radarr' : 'Lidarr', value: 'unreachable', tone: 'bad' })
+    rows.push({ label: 'Counted as', value: `${q.services.lidarr.configured ? 'shows, films and artists' : 'shows and films'}, not episodes or torrents` })
 
     return {
-      headline: down.length === arrs.length && arrs.length
-        ? 'Not reachable'
-        : `${queued} in queue`,
-      tone: down.length || blocked ? 'bad' : stalled ? 'warn' : 'good',
+      headline: down.length === configured.length && configured.length ? 'Not reachable' : sm.text,
+      tone: down.length || plain.needs.some(n => n.severity === 'bad') ? 'bad' : sm.stuck ? 'warn' : 'good',
       rows,
     }
   },

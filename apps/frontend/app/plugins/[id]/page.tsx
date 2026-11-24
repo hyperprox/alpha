@@ -31,12 +31,16 @@ import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugin
 import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
 import { PlexLibrary } from '@/components/plugins/plex/Library'
 import { ArrUpcoming } from '@/components/plugins/arr/Upcoming'
-import { ArrQueue, useArrQueue } from '@/components/plugins/arr/Queue'
+import { ArrActions, ArrQueue, useArrQueue } from '@/components/plugins/arr/Queue'
+import { ArrNeeds } from '@/components/plugins/arr/Needs'
+import { ArrHeader, readTab, type ArrTab } from '@/components/plugins/arr/ArrHeader'
+import { ArrBehindNumbers } from '@/components/plugins/arr/Advanced'
+import { needsCount, summaryLine } from '@/components/plugins/arr/arr-plain'
 import { ArrVpn } from '@/components/plugins/arr/Vpn'
 import { ArrRouter } from '@/components/plugins/arr/Router'
 import { ArrRequests } from '@/components/plugins/arr/Requests'
 import { ArrLiveTv } from '@/components/plugins/arr/LiveTv'
-import { ArrView, MeshView, PlexView, RouterView, UnmanicView, arrChips, plexChips, routerChips, unmanicChips, type Stuck } from '@/components/plugins/visual/views'
+import { ArrView, MeshView, PlexView, RouterView, UnmanicView, plexChips, routerChips, unmanicChips, type Stuck } from '@/components/plugins/visual/views'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
 interface Table  { title: string; columns: Column[]; rows: Array<Record<string, any>>; empty?: string; total?: number }
@@ -285,13 +289,14 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     try { const t = window.localStorage.getItem('hp.plex.tab'); if (t === 'now' || t === 'clearout' || t === 'library') setPlexTabRaw(t) } catch { /* no storage */ }
   }, [])
   const isArr = params.id === 'arrstack'
-  const [arrTab, setArrTabRaw] = useState<'overview' | 'queue' | 'requests' | 'upcoming' | 'sorting' | 'livetv'>('queue')
+  // "Needs you" opens first. A tab remembered by the older page (Queue, Upcoming, Overview, Sorting) opens the one that replaced it.
+  const [arrTab, setArrTabRaw] = useState<ArrTab>('needs')
   useEffect(() => {
-    try { const t = window.localStorage.getItem('hp.arr.tab'); if (t === 'overview' || t === 'queue' || t === 'requests' || t === 'upcoming' || t === 'sorting' || t === 'livetv') setArrTabRaw(t) } catch { /* no storage */ }
+    try { const t = readTab(window.localStorage.getItem('hp.arr.tab')); if (t) setArrTabRaw(t) } catch { /* no storage */ }
   }, [])
-  const setArrTab = (t: 'overview' | 'queue' | 'requests' | 'upcoming' | 'sorting' | 'livetv') => { setArrTabRaw(t); try { window.localStorage.setItem('hp.arr.tab', t) } catch { /* no storage */ } }
-  // "See the queue" on a downloading item: the Queue tab.
-  const showArrQueue = () => { setArrTab('queue'); window.scrollTo({ top: 0 }) }
+  const setArrTab = (t: ArrTab) => { setArrTabRaw(t); try { window.localStorage.setItem('hp.arr.tab', t) } catch { /* no storage */ } }
+  // "See the queue" on a downloading item: the Downloading tab.
+  const showArrQueue = () => { setArrTab('downloading'); window.scrollTo({ top: 0 }) }
   // The grouped queue every few seconds from one light call (like Plex's /live), paused while the tab is hidden.
   const arrQ = useArrQueue(isArr && live && configured === true)
   const setPlexTab = (t: 'now' | 'clearout' | 'library') => { setPlexTabRaw(t); try { window.localStorage.setItem('hp.plex.tab', t) } catch { /* no storage */ } }
@@ -351,7 +356,9 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
 
   const v = detail?.ok ? detail.visual : undefined
   const unmatchedStuck = v?.kind === 'arrstack' ? stuck.filter(x => !v.blocked.some(b => b.downloadId === x.id)) : stuck
-  const chips: StatChip[] = !detail?.ok ? [] : v?.kind === 'plex' ? plexChips(v) : v?.kind === 'arrstack' ? arrChips(v, arrQ.data?.summary)
+  // Finished Arr Stack downloads the library cannot file and no queue entry shows: counted with the stuck ones.
+  const arrUnfiled = isArr ? unmatchedStuck : []
+  const chips: StatChip[] = !detail?.ok ? [] : v?.kind === 'plex' ? plexChips(v) : v?.kind === 'arrstack' ? []
     : v?.kind === 'unmanic' ? unmanicChips(v) : v?.kind === 'mikrotik' ? routerChips(v)
     : (detail.stats ?? []).slice(0, 4).map(x => ({ label: x.label, value: x.value, tone: x.tone === 'bad' ? 'crit' as const : x.tone === 'warn' ? 'warn' as const : undefined }))
 
@@ -388,7 +395,8 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
   return (
     <div className="overflow-x-clip">
       <div className={vs.page}>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {/* The Arr Stack has its own compact header (below) with these controls built in once it has a reading. */}
+        {!(isArr && detail?.ok) && <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {fetchedAt && !isPlex && !isArr && <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>{agoLabel(fetchedAt)}</span>}
             {(isPlex || isArr) && live && (() => {
@@ -428,11 +436,19 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
               {loading ? 'reading…' : 'Refresh'}
             </button>
           </div>
-        </div>
+        </div>}
 
         <PluginSwitcher current={params.id} />
 
-        <HudHeader level={2} eyebrow={`Plug-in${detail?.ok ? ' · live data' : ''}`} title={name} icon={PLUGIN_ICON[params.id] ?? 'plugin'} chips={chips} label={`${name} overview`} />
+        {isArr && detail?.ok
+          ? (() => {
+              const at = arrQ.at
+              const last = Math.max(at ?? 0, fetchedAt ?? 0)
+              return <ArrHeader summary={summaryLine(arrQ.data?.plain, arrUnfiled.length)} live={live} fresh={!!at && Date.now() - at < 15_000} lastWord={last ? agoLabel(last) : null}
+                onLive={everySeconds > 0 ? () => setLive(!live) : undefined} onRefresh={() => { void load(); arrQ.refresh() }} loading={loading}
+                tab={arrTab} onTab={setArrTab} needs={needsCount(arrQ.data?.plain, arrUnfiled.length)} />
+            })()
+          : <HudHeader level={2} eyebrow={`Plug-in${detail?.ok ? ' · live data' : ''}`} title={name} icon={PLUGIN_ICON[params.id] ?? 'plugin'} chips={chips} label={`${name} overview`} />}
 
         {loading && !detail && <p className="text-sm" role="status" style={{ color: 'var(--text-dimmer)' }}>reading…</p>}
 
@@ -457,35 +473,35 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
                 ))}
               </div>
             )}
-            {isArr && v?.kind === 'arrstack' && (
-              <div role="tablist" aria-label="Arr Stack views" className="sticky z-10 -mx-1 flex gap-2 overflow-x-auto px-1 py-2"
-                style={{ top: 'var(--hx-top-h, 0px)', background: 'var(--ground)', scrollbarWidth: 'none' }}>
-                {([['queue', 'Queue'], ['requests', 'Requests'], ['overview', 'Overview'], ['upcoming', 'Upcoming'], ['sorting', 'Sorting'], ['livetv', 'Live TV']] as const).map(([k, label]) => (
-                  <button key={k} role="tab" aria-selected={arrTab === k} onClick={() => setArrTab(k)}
-                    className="h-10 shrink-0 rounded-md border px-4 font-display text-sm font-semibold uppercase tracking-[0.1em]"
-                    style={{ borderColor: arrTab === k ? 'color-mix(in srgb, var(--accent) 45%, transparent)' : 'var(--border-strong)',
-                      color: arrTab === k ? 'var(--accent)' : 'var(--text)', background: arrTab === k ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent' }}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
             {v?.kind === 'plex' && (!isPlex || plexTab === 'now') && <PlexView v={v} />}
             {/* What nobody watches, and the whole library. Read on their own (Plex itself), so they never slow the live view. */}
             {isPlex && plexTab === 'clearout' && <PlexClearOut live={live} />}
             {isPlex && plexTab === 'library' && <PlexLibrary />}
-            {v?.kind === 'arrstack' && arrTab === 'queue' && <><ArrVpn /><ArrQueue q={arrQ} /></>}
-            {v?.kind === 'arrstack' && arrTab === 'requests' && <ArrRequests />}
-            {v?.kind === 'arrstack' && arrTab === 'overview' && <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />}
-            {v?.kind === 'arrstack' && arrTab === 'upcoming' && <ArrUpcoming onQueue={showArrQueue} />}
-            {v?.kind === 'arrstack' && arrTab === 'sorting' && <ArrRouter />}
-            {v?.kind === 'arrstack' && arrTab === 'livetv' && <ArrLiveTv />}
+            {v?.kind === 'arrstack' && (
+              <ArrActions q={arrQ}>
+                {arrTab === 'needs' && <ArrNeeds data={arrQ.data} error={arrQ.error} stuck={stuck} unfiled={arrUnfiled} rescueNote={rescueNote} onMap={rescue}
+                  summary={arrQ.data ? `${arrQ.data.plain.summary.text.replace(/ · nothing stuck$/, '')}.` : undefined} />}
+                {arrTab === 'downloading' && <ArrQueue q={arrQ} />}
+                {arrTab === 'requests' && <ArrRequests />}
+                {arrTab === 'comingup' && <ArrUpcoming onQueue={showArrQueue} />}
+                {arrTab === 'livetv' && <ArrLiveTv />}
+                {arrTab === 'advanced' && (
+                  <div className="flex flex-col gap-3">
+                    <ArrBehindNumbers data={arrQ.data} v={v} />
+                    <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />
+                    <ArrVpn />
+                    <details className="min-w-0"><summary className="flex min-h-10 cursor-pointer items-center font-display text-[15px] font-semibold uppercase tracking-[0.08em]" style={{ color: 'var(--text-soft)' }}>Folder sorting</summary><ArrRouter /></details>
+                    {(tableCount > 0 || !!detail.stats?.length) && <DetailsSection count={tableCount}>{statsGrid}{tables}</DetailsSection>}
+                  </div>
+                )}
+              </ArrActions>
+            )}
             {v?.kind === 'unmanic' && <UnmanicView v={v} />}
             {v?.kind === 'mikrotik' && <RouterView v={v} onChanged={() => load(true)} />}
             {v?.kind === 'meshcentral' && <MeshView v={v} />}
 
             {/* Downloads that are complete and cannot be filed, when the page has no alert card for them. */}
-            {unmatchedStuck.length > 0 && (
+            {!isArr && unmatchedStuck.length > 0 && (
               <section className="rounded-lg border p-5"
                 style={{ background: 'var(--surface)', borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)' }}>
                 <div className="mb-2 flex items-baseline gap-2">
@@ -527,7 +543,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
             )}
 
             {/* A plug-in that sends no visual still gets its figures and tables in full, as before. */}
-            {v ? (tableCount > 0 || !!detail.stats?.length) && (
+            {isArr ? null : v ? (tableCount > 0 || !!detail.stats?.length) && (
               <DetailsSection count={tableCount}>{statsGrid}{tables}</DetailsSection>
             ) : (<>{statsGrid}{tables}</>)}
           </>

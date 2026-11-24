@@ -473,7 +473,7 @@ async function app(deps: Parameters<typeof buildArrQueueRoutes>[0]) {
   const a = Fastify({ logger: false })
   await registerGate(a)
   await a.register(authRoutes, { prefix: '/api/auth' })
-  await a.register(buildArrQueueRoutes(deps), { prefix: '/api/plugins/arrstack' })
+  await a.register(buildArrQueueRoutes({ qbit: async () => null, requestsStuck: () => 0, ...deps }), { prefix: '/api/plugins/arrstack' })
   await a.ready()
   return a
 }
@@ -648,11 +648,10 @@ test('tile: Lidarr is read on v1, counted in the queue, and named in the tile ro
   const rows = [lrow({ albumId: 301, downloadId: 'T1' }), lrow({ albumId: 302, downloadId: 'T2', trackedDownloadStatus: 'warning', trackedDownloadState: 'importBlocked', statusMessages: [{ title: 'a.flac', messages: ['No audio files were found that are eligible for import'] }] })]
   const ctx = ctxOf({ default: sonarrQuiet, lidarr: lidarrAnswers(rows) })
   const tile = await arrstackPlugin.load(ctx)
-  assert.equal(tile.headline, '2 in queue')
+  assert.equal(tile.headline, '1 artist · 1 downloading now · 1 stuck', 'the tile counts artists, not rows, and says what it counts')
   assert.equal(tile.tone, 'bad', 'a blocked import in Lidarr needs a person, like in Sonarr')
-  const q = tile.rows.find(r => r.label === 'Queue')!
-  assert.match(q.value, /2 downloads · 0 shows · 1 artist/)
-  assert.ok(tile.rows.some(r => r.label === 'Needs you' && /1 blocked import/.test(r.value)))
+  assert.ok(tile.rows.some(r => r.label === 'Needs you' && /1 item/.test(r.value)))
+  assert.ok(tile.rows.some(r => r.label === 'Counted as' && /^shows, films and artists, not episodes/.test(r.value)))
   assert.ok(ctx.asked.filter(a => a.startsWith('lidarr:')).every(a => a.startsWith('lidarr:/api/v1/')), 'Lidarr is only ever asked on v1')
   assert.ok(ctx.asked.some(a => a.startsWith('lidarr:/api/v1/queue?') && a.includes('includeArtist=true') && a.includes('includeAlbum=true')))
 })

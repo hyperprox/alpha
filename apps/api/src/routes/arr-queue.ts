@@ -28,12 +28,14 @@
 import type { FastifyPluginAsync } from 'fastify'
 import { findPlugin } from '../plugins'
 import { pluginEndpointClient, type CoreEndpointClient } from '../lib/plugin-host'
-import { buildQueueData, readAllQueue, type QueueData } from '../lib/arr-queue/logic'
+import type { QueueData } from '../lib/arr-queue/logic'
+import { readQbit, readQueue } from '../lib/arr-queue/read'
+import { buildPlain, type PlainData } from '../lib/arr-queue/plain'
 import { ACTIONS, ActionRefusal, DESTRUCTIVE, runAction, type ActionName, type ActionRequest } from '../lib/arr-queue/actions'
-import { readAlbumInfo, readEpisodeInfo, readMovieInfo } from '../lib/arr-queue/lookup'
 import { auditOrThrow } from '../lib/audit'
 import { hasRole } from '../lib/roles'
 import { MissLimiter } from '../lib/plex-art'
+import { requestsStuckCount } from '../lib/arr-queue/stuck-hook'
 
 const arrClient = async (endpoint: 'default' | 'radarr' | 'lidarr'): Promise<CoreEndpointClient | null> => {
   const p = findPlugin('arrstack')
@@ -47,40 +49,25 @@ const qbitClient = async (): Promise<CoreEndpointClient | null> => {
 
 const READ_DEADLINE_MS = 45_000
 const STALE_MS = 60_000
-/** The episode and file lookups for "Why this download" get this long, on top of the queue read. */
-const LOOKUP_BUDGET_MS = 10_000
-
 const msg = (e: any) => {
   if (e?.name === 'AbortError' || e?.name === 'TimeoutError' || /abort/i.test(String(e?.message ?? ''))) return 'timed out'
   return String(e?.message ?? e).slice(0, 160)
 }
 
-export async function readQueue(deps: { sonarr: CoreEndpointClient | null; radarr: CoreEndpointClient | null; lidarr?: CoreEndpointClient | null; now: number; lookupMs?: number }): Promise<QueueData> {
-  const one = async (c: CoreEndpointClient | null, kind: 'sonarr' | 'radarr' | 'lidarr') => {
-    if (!c) return { rows: null, info: undefined as any, configured: false, error: undefined as string | undefined }
-    try {
-      const get = (p: string, t?: number) => c.get(p, t)
-      const rows = await readAllQueue(get, kind)
-      // What is on disk for what was queued, for "Why this download": batched, inside this one shared reading.
-      // Its own budget: if the lookups run long they are dropped and the queue is still returned, without the lines.
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const budget = new Promise<undefined>(res => { timer = setTimeout(() => res(undefined), deps.lookupMs ?? LOOKUP_BUDGET_MS) })
-      const info = await Promise.race([kind === 'sonarr' ? readEpisodeInfo(get, rows, deps.now) : kind === 'lidarr' ? readAlbumInfo(get, rows, deps.now) : readMovieInfo(get, rows, deps.now), budget]).finally(() => clearTimeout(timer))
-      return { rows, info: info as any, configured: true, error: undefined as string | undefined }
-    }
-    catch (e) { return { rows: null, info: undefined, configured: true, error: msg(e) } }
-  }
-  const [sonarr, radarr, lidarr] = await Promise.all([one(deps.sonarr, 'sonarr'), one(deps.radarr, 'radarr'), one(deps.lidarr ?? null, 'lidarr')])
-  return buildQueueData({ sonarr, radarr, lidarr, now: deps.now })
-}
+/** What the route answers: the grouped queue, and the same queue in plain words (lib/arr-queue/plain.ts). */
+export type QueueAnswer = QueueData & { plain: PlainData }
+export { readQueue, readQbit }
 
 export function buildArrQueueRoutes(deps: {
   sonarr?: () => Promise<CoreEndpointClient | null>; radarr?: () => Promise<CoreEndpointClient | null>; lidarr?: () => Promise<CoreEndpointClient | null>
   qbit?: () => Promise<CoreEndpointClient | null>
   audit?: (action: string, details: Record<string, unknown>) => Promise<void>
   limiter?: MissLimiter
+  /** How many requests need a person (failed ones, Seerr faults). Production reads it from the requests service; tests pass their own. */
+  requestsStuck?: () => number
   now?: () => number; ttlMs?: number
 } = {}): FastifyPluginAsync {
+  const requestsStuck = deps.requestsStuck ?? requestsStuckCount
   const qbit = deps.qbit ?? qbitClient
   const audit = deps.audit ?? ((a: string, d: Record<string, unknown>) => auditOrThrow(a, 'plugin:arrstack', d))
   // Thirty requests a minute per person: a preview and its confirmation are two.
@@ -93,7 +80,7 @@ export function buildArrQueueRoutes(deps: {
   // One reading shared by everyone. The in-flight promise is shared, and the TTL starts when the read FINISHES (so a
   // slow read never lets each new request start another one). A hung read is cut off at READ_DEADLINE_MS, and one
   // older than STALE_MS is replaced. A failed one is dropped at once (only if it is still the current one).
-  let memo: { startedAt: number; doneAt: number | null; p: Promise<QueueData> } | null = null
+  let memo: { startedAt: number; doneAt: number | null; p: Promise<QueueAnswer> } | null = null
 
   return async (fastify) => {
     fastify.get('/queue', async (_req, reply) => {
@@ -101,14 +88,18 @@ export function buildArrQueueRoutes(deps: {
       const fresh = memo && (memo.doneAt === null ? t - memo.startedAt <= STALE_MS : t - memo.doneAt <= ttl)
       if (!fresh) {
         const work = (async () => {
-          const data = await readQueue({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), lidarr: await lidarr().catch(() => null), now: t })
+          const qc = await qbit().catch(() => null)
+          const [data, torrents] = await Promise.all([
+            readQueue({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), lidarr: await lidarr().catch(() => null), now: t }),
+            readQbit(qc),
+          ])
           // Moving a torrent up needs qBittorrent in the plug-in's settings: the page hides the button otherwise.
-          return { ...data, capabilities: { prioritise: !!(await qbit().catch(() => null)) } }
+          return { ...data, plain: buildPlain(data, torrents, requestsStuck()), capabilities: { prioritise: !!qc } }
         })()
         let timer: ReturnType<typeof setTimeout> | undefined
         const deadline = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timed out reading the queue')), READ_DEADLINE_MS) })
         const p = Promise.race([work, deadline]).finally(() => clearTimeout(timer))
-        const mine: { startedAt: number; doneAt: number | null; p: Promise<QueueData> } = { startedAt: t, doneAt: null, p }
+        const mine: { startedAt: number; doneAt: number | null; p: Promise<QueueAnswer> } = { startedAt: t, doneAt: null, p }
         memo = mine
         p.then(() => { mine.doneAt = now() }, () => { if (memo === mine) memo = null })
         work.catch(() => {})
@@ -178,7 +169,7 @@ function parseBody(b: unknown): ActionRequest | string {
   if (o.showKey !== undefined && !str(o.showKey, 40)) return 'Bad show.'
   if (o.seasonKey !== undefined && !str(o.seasonKey, 40)) return 'Bad season.'
   if (o.blocklist !== undefined && typeof o.blocklist !== 'boolean') return 'Bad blocklist value.'
-  const needsOne = ['find-another', 'remove', 'retry-import', 'prioritise'].includes(o.action as string)
+  const needsOne = ['find-another', 'retry-import'].includes(o.action as string) || (['remove', 'prioritise'].includes(o.action as string) && o.downloadIds === undefined)
   if (needsOne && o.downloadId === undefined) return 'Name the download.'
   return {
     action: o.action as ActionName, instance: o.instance, downloadId: o.downloadId as string | undefined,

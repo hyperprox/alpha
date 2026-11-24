@@ -1993,7 +1993,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 
 | Plug-in | What it shows |
 |---|---|
-| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, **see what's available** for any missing item, **find a better copy** of anything you have or a faster copy of a slow download, a **VPN panel** for stacks behind Gluetun, a **Requests** tab for Seerr, **sorting new requests into your folders**, and a **Live TV** tab for Tunarr |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; **Needs you** first (everything stuck, failed or blocked, each with one Fix button, or "All good ✓"); a compact **Downloading** list, one line per show, film or artist in the order the downloads really run; one sentence of summary that the plug-in's tile and header share; indexer status dots and health warnings; what is coming up, music releases included; **give up after X tries** on what never arrives, **see what's available** for any missing item, **find a better copy** of anything you have or of a download that is slow or stuck, a **VPN panel** for stacks behind Gluetun, a **Requests** tab for Seerr, **sorting new requests into your folders**, and a **Live TV** tab for Tunarr; the pipeline picture, folder sorting, the raw counts and every table are under **Advanced** |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables (each device shows its port, or its Wi-Fi network and signal, and what your switch says it is), firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console. A device using an address outside your own networks is flagged "Address outside your networks" with its hardware address, port, last seen, whether the address was made by software, and whether it is talking. An admin can press "Block addresses that are not yours": after a confirmation that names what will be added, the router gets one list of your networks and one rule at the top of its forward rules that drops traffic from any other address on your network link. Undo removes exactly those two things. An admin can also manage the router from the page: make a device's address permanent (a fixed DHCP address), add, edit, switch off and remove port forwards (listed in plain words, with an extra tick for risky ports such as Remote Desktop, SSH, file sharing or databases), and block the internet for one device, on a schedule if wanted. Every change shows its plan in words first, saves the router's settings, and puts a safety switch on the router that undoes the change by itself if HyperProx cannot confirm it within 90 seconds. HyperProx refuses a change that would cut it off from the router, and the page keeps a change history with an Undo button for each change. It needs a router login that can write, and the plug-in says so if yours can only read |
 | Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
@@ -2011,31 +2011,63 @@ happened and the site record stays, so **Preview again** offers only what is lef
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
 dot), then the plug-in's own picture of what is happening. Every table it has always had is still there,
-folded into **Details** at the bottom, filterable. The pages follow your light or dark theme, work on a
+folded into **Details** at the bottom, filterable (on the Arr Stack page they are on its **Advanced** tab). The pages follow your light or dark theme, work on a
 phone, and stop animating when your system asks for reduced motion. Names on the router page come from
 the router (DHCP leases, ARP comments) and, where it has none, from HyperProx's own list of which cluster
 guest has which address. On the Arr Stack page, an import blocked because the filenames carry no season
 and episode offers **Map by filename**, the same rescue as before.
 
-**Arr Stack queue.** The Arr Stack page opens on a **Queue** tab (next to Requests, Overview, Upcoming and Sorting) that
-updates by itself, like the Plex page: the queue about every 4 seconds and the rest of the page every 30
-seconds. Both stop while the browser tab is hidden and catch up when you come back. The **pause** button
-turns it off, and **Refresh** is now a small extra for when you want a reading right away. Behind the page, HyperProx
-reads the queue once and shares that reading with every open page for 3 seconds after it finishes (a slow reading is
-shared while it runs, and given up after 45 seconds), so extra tabs do not cost Sonarr and Radarr extra requests.
+**Arr Stack page.** The Arr Stack page is made to be read on a phone. A compact header stays at the top while you scroll:
+the name, one sentence of summary, whether the page is live, **Pause** and **Refresh**, and six tabs: **Needs you**,
+**Downloading**, **Requests**, **Coming up**, **Live TV** and **Advanced**. It opens on **Needs you**. The page updates
+by itself, like the Plex page: the queue about every 4 seconds and the rest of the page every 30 seconds. Both stop
+while the browser tab is hidden and catch up when you come back. **Pause** turns it off, and **Refresh** is a small
+extra for when you want a reading right away. Behind the page, HyperProx reads the queue once and shares that reading
+with every open page for 3 seconds after it finishes (a slow reading is shared while it runs, and given up after 45
+seconds), so extra tabs do not cost Sonarr and Radarr extra requests. The page remembers the tab you last used.
+
+- **One summary, in plain words.** For example: "56 shows · 3 films · 15 downloading now · 9.2 MB/s · 1 stuck". It counts
+  shows, films and (with Lidarr) artists, never episodes, queue rows or torrents: a season pack, or twenty single
+  episodes of one show, is one show. "Downloading now" is the shows, films and artists that are moving right now, the
+  speed is qBittorrent's, and "stuck" is the downloads that are stuck, failed or blocked, plus failed requests and
+  faults in Seerr's links to Radarr, Sonarr and your media server. The page header, the Needs you tab and the Arr Stack
+  tile on the plug-ins page all take this sentence and these numbers from the same reading, so they agree. (A finished
+  download the library cannot file, found by the page on its own, is added to the page's count but not to the tile's.)
+  The line under the Downloading heading says what is counted, and the **Advanced** tab lists the raw counts (queue
+  rows, downloads, the download client's torrents) each with its unit.
+- **Needs you.** The first tab. Each thing that waits on a person is one card with a plain sentence and one **Fix** button
+  (admins; everyone else is told to ask one): a stuck, failed or blocked download, a request that failed (**Fix: try
+  again**), a problem with Seerr's links (its own reconnect buttons), and a finished download that cannot be filed
+  (**Fix: map by filename**). A show with several stuck downloads is one card. **Fix** on a download gets another
+  copy (removes it, blocklists the release and searches again for exactly what it covered); on a blocked import it
+  first offers **Try the import again** as well, and **Map by filename** when the files have been read. With two or more
+  stuck downloads, **Fix all stuck** does them together. When nothing needs you the tab says **All good ✓**.
+- **Downloading.** One line per show, film or artist, with its place in the queue on the left, in the order the downloads
+  really run: qBittorrent's own queue order, where requests, the reserved slots and everything else have already been
+  sorted. (Without qBittorrent saved in the plug-in's settings HyperProx cannot know that order, so shows come first,
+  problems and the soonest to finish at the top, then films, then artists.) The status is plain: **downloading · 3.9 h**
+  (the client's time left, shown only when it is under two days; longer than that it just says downloading),
+  **waiting · 4th in line** (a place among the ones waiting, never a time: something that has not started gets no ETA),
+  stuck, paused, or finished and ready to clear. Tap a row to see its seasons (or albums); tap a season to see its
+  files. A file shows how much is left of its size, its progress, the plain reason Sonarr or Radarr gave if something is
+  wrong, and **Why this download**. The release name, quality, protocol, download client, indexer and the client's own
+  state are only under that file's **Technical details**.
+- **One ⋯ menu per row** (admins): **Fix** (only when something is wrong), **Find better copy** (for a single download:
+  the release search described further down), **Move to top** (torrents, when the qBittorrent address is saved) and
+  **Remove** (it asks first, listing exactly which downloads go, with a "Blocklist this release" box that is off). A
+  finished download gets **Clear from queue** instead of Fix and Remove. On a show or an artist the menu works on all of
+  its downloads at once.
 
 - **Every download, not 200 rows.** HyperProx reads every page of the Sonarr and Radarr queues. Sonarr
   lists a queue row for each episode, so a 23-episode season pack arrives as 23 rows. HyperProx folds the
   rows that share a download ID into one download, then groups them **show, then season, then download**.
   A pack that spans several seasons gets its own group, such as S03–S04. Movies are a flat list.
-- **What each download shows.** A progress bar and percentage, how much is left of the total size, the time
-  left (or "no ETA"), its state, its quality, protocol (torrent or usenet), download client and indexer,
-  and for a show the episode count and range, such as "E01–E23". The size is the pack's size, counted once.
-- **Problems come first.** A download is marked Failed, Import blocked, Stalled (Sonarr or Radarr say it is
-  stalled) or Warning, and the message Sonarr or Radarr gave is printed under it. Groups and downloads are
-  sorted with problems first, then the soonest to finish. The **Problems** button hides everything else: a show
-  appears only if it has a real problem, and under it you see only its problem seasons and downloads (the show's own
-  totals still count the whole show, and the line under its name says so).
+- **What each download shows.** A progress bar and percentage, how much is left of the total size, its status in plain
+  words, and for a show the episode count and range, such as "E01–E23". The size is the pack's size, counted once.
+  Its quality, protocol (torrent or usenet), download client and indexer are under **Technical details**.
+- **Problems are named, not coloured only.** A download is marked failed, can't be added to the library, stuck (Sonarr or
+  Radarr say it is stalled) or has a warning, and the message Sonarr or Radarr gave is printed under it. Every one of them
+  is a card on **Needs you**; the Downloading list keeps them in their place in the queue.
 - **Done is not a problem.** A download that is at 100% and import-blocked (or import-pending) is shown as **Done:
   nothing left to import**, in a calm colour, when every message Sonarr or Radarr gave is "already imported", "Not an
   upgrade for existing ...", "Not a quality revision upgrade for existing ...", "Not a Custom Format upgrade for
@@ -2043,19 +2075,19 @@ shared while it runs, and given up after 45 seconds), so extra tabs do not cost 
   missing", **and** every episode (or the film) it covers now has a file in the library. It means everything the
   download covers is already in your library (imported, or kept as a better copy). If any other message is there (no files eligible, a wrong match, permissions, a sample, a missing file), or the
   download is not at 100%, it stays a real problem. Done downloads are not counted as needs-you, stalled or warnings;
-  they have their own **ready to clear** count in the summary, they sort after the real problems, and they never turn
-  a season or a show red. The raw messages stay under a collapsed **Details**.
+  they read "finished, ready to clear", and they never turn a season or a show red. The raw messages stay under a
+  collapsed **Details**.
 - **Sample clip.** When the only thing Sonarr or Radarr said about a download is "Sample", it took the file for a
   preview clip, not the episode or film. That is a real problem (red, counted under needs you), never done. It says,
   for example: "Sonarr thinks this is a preview clip, not the episode: episodes of this show run about 11 min, and this
-  download is only 64 MB." (If the queue gives no runtime, it says how small the download is.) The main button is
-  **Find another**. There is no "import anyway", and Retry import is hidden.
+  download is only 64 MB." (If the queue gives no runtime, it says how small the download is.) The Fix is
+  **Get another copy**. There is no "import anyway", and retrying the import is not offered.
 - **Incomplete pack.** Sometimes a release is named as a whole season, so Sonarr queues every episode of it, but the
   torrent held only a few files. Every message then says "already imported", yet many of the episodes it claims still
   have no file, and Sonarr never searches for episodes that sit in the queue. That is a real problem, shown in red as
   **Incomplete pack** (and counted under needs you), never as done. It says, for example: "This release claims S02
   (E01–E58) but only contained E01–E10; 40 episodes are still missing and won't be searched while it sits here." The
-  main button is **Find another**: it blocklists the release and searches the season again. If HyperProx cannot look
+  Fix is **Get another copy**: it blocklists the release and searches the season again. If HyperProx cannot look
   the episodes up, it cannot vouch for a download, so a finished import-blocked download stays an ordinary blocked
   import rather than being called done.
 - **Why this download.** Each download carries one line saying why it exists and what it will do. For a show,
@@ -2076,13 +2108,7 @@ shared while it runs, and given up after 45 seconds), so extra tabs do not cost 
   tell afterwards whether an imported episode was new or an upgrade, so it says imported.) This costs a few
   batched requests inside the shared reading, never one per queue row, and the lookups of file qualities are kept
   for 60 seconds. If Sonarr or Radarr cannot answer them, the line is simply left out.
-- **Collapsible.** Click a show or a season to fold it. Seasons start open. Shows with a problem start open, and so
-  does every show when there are three shows or fewer; **Expand all** and **Collapse all** override that.
-- **The summary.** Tiles at the top and chips in the page header show how many downloads and shows are
-  queued, how much is left to fetch, and how many are stalled or have warnings. The Arr Stack tile on the
-  plug-ins page shows the same in its Queue row.
-
-**What you can do about a problem.** Admins get buttons in the Queue tab; viewers and operators see none.
+**What you can do about a problem.** Admins get the Fix buttons on Needs you and the ⋯ menu on the Downloading tab; viewers and operators see none.
 They act on queue downloads only. They never delete anything in your library. Before anything is removed, the
 page shows a confirm step that lists exactly which downloads will go (the server reads the queue fresh and says
 what it found), and you click to confirm. There is no extra confirmation step, because nothing permanent is lost.
@@ -2090,27 +2116,31 @@ Every action is written to the audit log (who, which downloads, whether it was b
 log cannot be written, nothing happens. Actions are limited to 30 requests a minute per person. API tokens cannot
 use them. The result shows right under the buttons, and the queue refreshes itself straight away.
 
-- **Find another** (on any download). Removes it from the download client and the queue, blocklists the
-  release, then asks Sonarr or Radarr to search again for exactly what it covered: the episode (or the few
-  episodes named in the release), the whole season when it was a season pack, or the movie. A download Sonarr or
-  Radarr never matched to an episode or movie is refused, because there is nothing to search for; use Remove.
-- **Remove.** The same removal with a "Blocklist this release" box (off by default) and no search.
-- **Retry import** (on a blocked or failed import). Asks Sonarr or Radarr to check its downloads again and shows
-  the import messages. If a message looks like a permissions problem, HyperProx adds a line of advice and nothing
-  more: it does not change permissions. A wrong match just shows the message; there is no manual mapping here.
-- **Move to top** (torrents, and only when the qBittorrent address is saved in the plug-in's settings; the
-  button is hidden otherwise). Moves the torrent to the top of qBittorrent's queue. qBittorrent has to have
-  queueing switched on for the order to matter.
-- **Swap singles for a season pack** (on a season with two or more single-episode downloads still going).
+- **Fix** and **Get another copy** (a stuck, failed, incomplete or sample download). Removes it from the download client and
+  the queue, blocklists the release, then asks Sonarr or Radarr to search again for exactly what it covered: the episode
+  (or the few episodes named in the release), the whole season when it was a season pack, or the movie. For a show it
+  does this for each of its downloads that still has a problem; the server reads the queue fresh and checks each one
+  first, so one that has cleared up or finished since is left alone and named. A download Sonarr or Radarr never matched
+  to an episode or movie is skipped, because there is nothing to search for; use Remove.
+- **Remove.** The same removal with a "Blocklist this release" box (off by default) and no search. On a show or an
+  artist it removes all of that item's downloads, at most 50 at a time.
+- **Try the import again** (on a blocked or failed import, as part of Fix). Asks Sonarr or Radarr to check its downloads
+  again and shows the import messages. If a message looks like a permissions problem, HyperProx adds a line of advice and
+  nothing more: it does not change permissions. A wrong match just shows the message.
+- **Move to top** (torrents, and only when the qBittorrent address is saved in the plug-in's settings; the entry is
+  hidden otherwise). Moves the torrent, or all of a show's torrents, to the top of qBittorrent's queue. qBittorrent has
+  to have queueing switched on for the order to matter.
+- **Find better copy** (on a download that is on its own, not on a whole show). The release search described below.
+- **Swap singles for a season pack** (under a season with two or more single-episode downloads still going).
   Removes those singles without blocklisting them, so they can come back, then searches for the season. About
   20 seconds later it looks at the queue and says either which season pack was grabbed, or "no season pack
   found; singles will be re-grabbed". Finished downloads waiting to import are left alone.
-- **Fix all stalled** (above the list, and per show). Find another over every stalled download. The confirm lists
-  each one; any that stopped being stalled before you confirmed are skipped and named.
-- **Clear from queue** (on a done download; it replaces the other buttons, which are hidden for done downloads).
+- **Fix all stuck** (on Needs you, when two or more downloads are stalled). Get another copy for every stalled download.
+  The confirm lists each one; any that stopped being stalled before you confirmed are skipped and named.
+- **Clear from queue** (on a done download; it replaces Fix and Remove, which are hidden for done downloads).
   Removes it from the queue and the download client without blocklisting it and without searching: the same
   Remove, with the same confirm, admin-only rule and audit entry.
-- **Clear all done (N)** (next to Fix all stalled). The same, for every done download at once. The confirm lists them.
+- **Clear all done (N)** (at the top of Downloading). The same, for every done download at once. The confirm lists them.
   The server reads the queue fresh and checks each one is still done before it removes it; any that is not (or has
   left the queue) is skipped and named, and if none is still done nothing is changed. Never blocklisted.
 
@@ -2155,11 +2185,11 @@ Lidarr address in the plug-in's settings, which says to leave it blank if you do
   read in batches inside the shared reading, never one request per row, and the file qualities are kept for 60 seconds
   (and read again as soon as the album's file count or size on disk changes). If Lidarr cannot answer, the line is left out.
 - **Actions.** The same buttons with the same rules: admin only, API tokens refused, no extra confirmation step, written to
-  the audit log before they run, 30 a minute, a confirm step, and the queue read fresh by the server. **Find another**
+  the audit log before they run, 30 a minute, a confirm step, and the queue read fresh by the server. **Fix** (get another copy)
   removes the download, blocklists the release (without letting Lidarr start its own search) and then asks Lidarr to
-  run an album search for exactly the albums it covered; **Remove**, **Retry import**, **Move to top** (qBittorrent, torrents
+  run an album search for exactly the albums it covered; **Remove**, **Try the import again**, **Move to top** (qBittorrent, torrents
   only), **Clear from queue** (done downloads only, never blocklisted, rechecked on a fresh reading) and **Fix all
-  stalled** work as they do for TV. Swapping singles for a season pack is a TV idea, so it is not offered for music.
+  stuck** work as they do for TV. Swapping singles for a season pack is a TV idea, so it is not offered for music.
 - **Upcoming.** A **Music** button joins TV and Films. It lists albums with a release date in the range you pick, from
   Lidarr's calendar, with the cover, artist and kind (Album, EP, Single): **Have it** when every track is on disk,
   **Downloading** with its progress when it is in the queue, **Waiting** on the day it comes out when tracks are
@@ -2181,7 +2211,7 @@ while you look at it, and everyone who can open the Arr Stack page can see it.
   then show gaps.
 - **Missing programmes.** Tunarr marks each programme as present or missing. The tab counts how many of each channel's next
   48 hours are marked missing and warns about them, because those programmes may not play. A library that Tunarr no longer
-  rescans is only mentioned as a note, since its programmes still play. It is what Tunarr reports, not a play test.
+  rescans is only mentioned as a note, since its programmes still play. It is what Tunarr reports, not a play test. The warning is said once, in the list of problems, and not repeated under the ring.
 - **Health.** Tunarr's version against the newest release, its ffmpeg version (the number, such as 7.1), whether each media source answers, and
   Tunarr's own health warnings. A channel that cannot stream says why: it has no programming, nothing is scheduled on it
   right now, or its stream session has failed. A media source that does not answer is a warning of its own, because
@@ -2196,7 +2226,7 @@ while you look at it, and everyone who can open the Arr Stack page can see it.
   its version and the newest release. The update itself is the guest's ordinary Docker update (pull the image, recreate
   the stack); if the stack pins an exact tag, the Updates page says to edit the tag first.
 
-**Weekly search and give up.** Under **Missing, searching** on the Upcoming tab, for TV, films and music separately.
+**Weekly search and give up.** Under **Missing, searching** on the Coming up tab, for TV, films and music separately.
 
 - **Weekly search.** On the day and hour you pick (Monday at 08:00 unless you change it; every time on the panel is the
   server's, and says so),
@@ -2254,7 +2284,7 @@ imported, or nothing usable found.
   it yet, and removes and blocklists the download if a program file is in it. When no check is possible (a usenet
   download, no qBittorrent connection, or no file list in time) the result says plainly that its files were not checked.
 
-**Find a better copy.** On the Upcoming tab (admin), for anything already in your library: type a film, show or album
+**Find a better copy.** On the Coming up tab (admin), for anything already in your library: type a film, show or album
 name, pick the film, album, a whole season or one episode, and HyperProx runs one release search for it. Items marked
 **Have it** in the schedule have the same button.
 
@@ -2279,7 +2309,7 @@ name, pick the film, album, a whole season or one episode, and HyperProx runs on
   and the app's reasons ("Radarr refuses this because: smaller than your size limit; tagged low quality by your custom
   formats. Download it anyway?"), and the choice is written to the audit log, with those reasons, before anything is
   downloaded. API tokens cannot do it. HyperProx does not change your quality profile to get around a refusal.
-- **This download is too slow: Find a faster copy.** On the Queue tab, each download has **Find a faster copy**. It
+- **This download is too slow: Find better copy.** In the ⋯ menu of a download on the Downloading tab, **Find better copy** (it replaces the older "Find a faster copy" and "Find another" buttons: **Fix** is the automatic one, this is the one where you choose). It
   searches for what that download is for (the film, the album, the episode or the season), from a fresh read of the
   queue. When you pick a release, it is downloaded and moved to the top first; once it shows in the queue, the slow
   download is removed from qBittorrent and blocklisted, without starting another search. Only that download's own
@@ -2291,8 +2321,8 @@ name, pick the film, album, a whole season or one episode, and HyperProx runs on
   person. A second click while a search is still running waits for that same search. Every search and download is written to the audit log first; if the entry cannot be written, nothing runs.
   API tokens cannot use it.
 
-**VPN panel.** When your Arr Stack was installed with the VPN option (Gluetun, with qBittorrent behind it), the Queue
-tab opens with a VPN panel: whether the tunnel is up, where it comes out, the forwarded port beside the port
+**VPN panel.** When your Arr Stack was installed with the VPN option (Gluetun, with qBittorrent behind it), the
+**Advanced** tab has a VPN panel: whether the tunnel is up, where it comes out, the forwarded port beside the port
 qBittorrent listens on, download and upload speed, and how long the tunnel has been up. The tunnel's public address is
 shown to admins only; everyone else sees that it is hidden. Without Gluetun, the panel does not appear.
 
@@ -2352,7 +2382,7 @@ downloading, available, failed, declined), and where each one is now. Built for 
 - Seerr's address and key are never on the page: posters come through HyperProx, one checked file name at a time.
 
 **Sort requests into folders.** Request apps such as Seerr send every film to one folder and every show to another,
-and the person asking cannot choose. On the Arr Stack's **Sorting** tab, HyperProx can move each new request into the
+and the person asking cannot choose. On the Arr Stack's **Advanced** tab (under **Folder sorting**), HyperProx can move each new request into the
 folder it belongs in, about a minute after it is added and usually before it downloads.
 
 - **Your folders, your order.** For films and for shows there is a list of rules, each a kind of item and the folder it
