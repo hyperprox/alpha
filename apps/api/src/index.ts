@@ -20,9 +20,10 @@ import { networkRoutes }         from './routes/network'
 import { prometheusRoutes } from './routes/prometheus'
 import { storageRoutes }         from './routes/storage'
 import { ollamaRoutes }          from './routes/ollama'
-import { aiRoutes }              from './routes/ai'
+import { aiRoutes, operatorWiring } from './routes/ai'
 import { makeOperatorRoutes }     from './routes/ai-operator'
-import { operatorService }        from './lib/ai/operator/production'
+import { operatorService, handbookStore } from './lib/ai/operator/production'
+import { makeHandbookRoutes }      from './routes/ai-handbook'
 import { gpuRoutes }             from './routes/gpu'
 import { targetsRoutes }         from './routes/targets'
 import { setupChecklistRoutes }  from './routes/setup-checklist'
@@ -200,7 +201,9 @@ async function main() {
   await server.register(prometheusRoutes)
   await server.register(ollamaRoutes, { prefix: '/api/ai' })
   // The AI operator's tier router: its own prefix, so it is registered before the general AI routes.
-  await server.register(makeOperatorRoutes({ service: () => operatorService(server.prisma) }), { prefix: '/api/ai/operator' })
+  await server.register(makeOperatorRoutes({ service: () => operatorService(server.prisma, operatorWiring(server.prisma)) }), { prefix: '/api/ai/operator' })
+  // The handbook the operator reads: playbooks and house rules.
+  await server.register(makeHandbookRoutes({ store: () => handbookStore(server.prisma) }), { prefix: '/api/ai/handbook' })
   await server.register(aiRoutes,    { prefix: '/api/ai' })
   await server.register(gpuRoutes,   { prefix: '/api/gpu' })
   await server.register(targetsRoutes, { prefix: '/api/targets' })

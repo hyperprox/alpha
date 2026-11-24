@@ -447,6 +447,11 @@ export interface PluginDetail {
    * into a figure. Optional: a page without it shows the tables.
    */
   visual?: PluginVisual
+  /**
+   * The same reading in plain sentences, for the AI (Ask and the operator) and not drawn on the page. Optional: a plug-in
+   * that has none is read from its `visual`.
+   */
+  readings?: string[]
 }
 
 export interface PluginTileData {

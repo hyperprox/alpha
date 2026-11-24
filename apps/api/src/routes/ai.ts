@@ -22,13 +22,13 @@ import { currentContext, type RequestContext } from '../lib/auth'
 
 import { startLoop, type Extraction, type IntentResult, type LoopDeps } from '../lib/ai/loop'
 import { matchIntent, NO_TASK_ANSWER, confidentDeploy } from '../lib/ai/intent'
-import { answerQuestion, type AskSource } from '../lib/ai/ask'
+import { answerQuestion, loadWithin, type AskSource } from '../lib/ai/ask'
 import { hintsForRole } from '../lib/ai/inventory-hints'
 import { isInventoryQuestion } from '../lib/ai/inventory'
 import { peekInventory, homeInventory, INVENTORY_FRESH_MS } from '../lib/homepage'
 import { loadPolicy, policyForCluster } from '../lib/updates/policy'
 import { hasRole } from '../lib/roles'
-import { coreSources, pluginSources, type CertLite } from '../lib/ai/ask-sources'
+import { coreSources, pluginSources, type CertLite, type ClusterSummary } from '../lib/ai/ask-sources'
 import { PLUGINS }            from '../plugins'
 import { pveFromEnv, connectionKey } from '../lib/pve-env'
 import { listClusters, clusterRow, HOME_ID } from '../lib/clusters/registry'
@@ -67,6 +67,9 @@ import { lastTargets } from '../lib/updates/targets-summary'
 import { placementService } from '../lib/placement/production'
 import { operatorSource } from '../lib/ai/operator/source'
 import { currentOperatorService } from '../lib/ai/operator/production'
+import type { OperatorWiring } from '../lib/ai/operator/production'
+import { tunarrSource } from '../lib/ai/operator/live'
+import { tunarrService } from '../lib/arr-tunarr/production'
 import { qnapSource, alertsSource, notifySource, housesSource, sitesSource, siteMetricsSource, toChannelLite, type NasEntry, type HouseRead, type SiteLite } from '../lib/ai/home-sources'
 import { type SiteMetricsSource } from '../lib/ai/site-metrics'
 import { parseHomeAction, prepareHomeAction, applyHomeAction, isTokenSid, type HomePlan, type HomePrepareDeps, type HomeApplyDeps, type HomeSite, type HomeNas } from '../lib/ai/home-actions'
@@ -449,6 +452,26 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
     ...extra.filter(s => s.id !== 'cluster' && s.id !== 'backups'),
     ...boundTo(HOME_ID, pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary, detail: runPluginDetail, skip: ['qnap', 'pbs'] }), runInCluster),
   ]
+}
+
+/**
+ * What the AI operator reads and hides (lib/ai/operator): the same read-only sources the Ask box uses, for the home
+ * cluster, plus Live TV; and the node and guest names to take out of anything sent to a cloud model.
+ */
+export function operatorWiring(prisma: unknown): OperatorWiring {
+  const sources = (): AskSource[] => [
+    ...productionClusterSources(homeRef(), null, prisma),
+    tunarrSource({ unlocked: isUnlocked, read: () => tunarrService().read(hasRole((currentContext()?.role ?? 'viewer') as Role, 'admin')) }),
+  ]
+  return {
+    sources,
+    knownHosts: async () => {
+      const cluster = sources().find(s => s.id === 'cluster')
+      if (!cluster || !isUnlocked()) return []
+      const data = (await loadWithin(cluster, { cacheKey: 'operator:names' })).sum.data as ClusterSummary | undefined
+      return data ? [...data.nodes.map(n => n.node), ...data.guests.map(g => g.name)] : []
+    },
+  }
 }
 
 /** The Ceph warnings accepted for this cluster in the Updates policy (ceph.accepted_warnings): said as known warnings. */

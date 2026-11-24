@@ -120,7 +120,7 @@ export function makeOperatorRoutes(deps: { service?: () => OperatorService | nul
       const sid = req.session?.sid
       if (!sid) return sendRefusal(reply, 401, 'signed_out', 'Sign in to ask the operator.')
       const input: AskInput = {
-        text: b.text, source: 'ui', userRef: sid, actor: String(who() ?? ''),
+        text: b.text, source: 'ui', userRef: sid, actor: String(who() ?? ''), role: String(req.session?.role ?? ''),
         force: isTier(b.force) ? b.force : null,
         ...(approving ? { approval: b.approval } : {}),
         ...(b.attempt && typeof b.attempt.verified === 'boolean' ? { attempt: { verified: b.attempt.verified, ...(isTier(b.attempt.tier) ? { tier: b.attempt.tier } : {}) } } : {}),

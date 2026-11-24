@@ -605,9 +605,11 @@ export function pluginSources(d: PluginDeps): AskSource[] {
         if (!d.unlocked()) return { headline: `${m.name}: locked.`, lines: [], locked: true }
         if (!p.summary) {
           // The page's own figures (Plex now playing, the arr pipeline, Unmanic, the router), said by code.
-          const v = (await d.detail!(p)).visual
+          const det = await d.detail!(p)
+          const v = det.visual
           if (!v) return nothing
-          const lines = visualLines(v).slice(0, 40).map(l => shorten(l, 200))
+          // The plug-in's own plain sentences first (the Arr Stack's queue, by show), then the figures.
+          const lines = [...(det.readings ?? []), ...visualLines(v)].slice(0, 40).map(l => shorten(l, 200))
           return { headline: shorten(`${m.name}: ${lines[0] ?? 'nothing to report'}`, 80), lines }
         }
         const r = await d.run(p)

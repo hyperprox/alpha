@@ -6,6 +6,10 @@ import { auditOrThrow } from '../../audit'
 import { PrismaOperatorStore } from './store'
 import { OperatorService } from './service'
 import { setOperatorDeps, type TierCall } from './router'
+import { PrismaPlaybookStore, type PlaybookStore } from './playbook-store'
+import { buildContext, playbookMatcher } from './context'
+import { readLive, type LiveReading } from './live'
+import type { AskSource } from '../ask'
 
 const LOCAL_KEY = ['ai', 'operator-local', 'api_key'] as const
 
@@ -29,11 +33,23 @@ export function makeCall(baseUrl: () => Promise<string>): TierCall {
 }
 
 let shared: OperatorService | null = null
+let handbook: PlaybookStore | null = null
 
-export function operatorService(prisma?: unknown): OperatorService {
+export interface OperatorWiring {
+  /** The read-only areas a question may be about (the Ask box's sources, plus Live TV). Read per question, in the asker's role. */
+  sources?: () => AskSource[]
+  /** Host and guest names to hide before anything goes to the cloud, beyond the addresses found in the text. */
+  knownHosts?: () => Promise<string[]>
+}
+
+export function operatorService(prisma?: unknown, wiring: OperatorWiring = {}): OperatorService {
   if (shared) return shared
   if (!prisma) throw new Error('The AI operator needs the database.')
   const store = new PrismaOperatorStore(prisma as any)
+  const book = handbookStore(prisma)
+  const live = wiring.sources
+    ? async (q: string, role?: string): Promise<LiveReading[]> => readLive(q, wiring.sources!(), { cacheKey: `operator:${role ?? ''}` })
+    : undefined
   shared = new OperatorService({
     store,
     call: makeCall(async () => (await store.getSettings()).localBaseUrl),
@@ -43,10 +59,19 @@ export function operatorService(prisma?: unknown): OperatorService {
     saveLocalKey: v => setCredential(...LOCAL_KEY, v, true),
     clearLocalKey: () => deleteCredential(...LOCAL_KEY),
     audit: (action, resource, details) => auditOrThrow(action, resource, details),
+    knownHosts: wiring.knownHosts,
+    playbooks: book,
+    matcher: playbookMatcher(book),
+    context: (q, who) => buildContext(q, { store: book, live: live ? x => live(x, who.role) : undefined }),
   })
   // The chat-connector seam: askOperator() with no deps argument uses these.
   setOperatorDeps(shared.routerDeps())
   return shared
+}
+
+/** The handbook's store, for the playbook routes and the importer. */
+export function handbookStore(prisma: unknown): PlaybookStore {
+  return (handbook ??= new PrismaPlaybookStore(prisma as any))
 }
 
 export function currentOperatorService(): OperatorService | null { return shared }

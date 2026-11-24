@@ -7,8 +7,21 @@ export interface TierStatus { tier: Tier; enabled: boolean; model: string; cloud
 export interface ChainStep { tier: Tier; model: string; outcome: 'answered' | 'error' | 'skipped'; confidence?: string; note?: string; costUsd?: number }
 export interface Spend { month: string; monthUsd: number; capUsd: number }
 
+/** What the handbook and live readings gave an answer: the playbooks it used, the areas read live, how many house rules. */
+export interface Used { playbooks: Array<{ id: string; title: string }>; live: string[]; rules: number }
+
+/** One plain line for under an answer: what it was built from. Empty when it was the question alone. */
+export function usedSentence(u: Used | undefined): string {
+  if (!u) return ''
+  const parts: string[] = []
+  if (u.playbooks.length) parts.push(`${u.playbooks.length === 1 ? 'the playbook' : 'the playbooks'} ${u.playbooks.map(p => `"${p.title}"`).join(' and ')}`)
+  if (u.live.length) parts.push(`live readings of ${u.live.join(' and ')}`)
+  if (u.rules) parts.push(`${u.rules} house ${u.rules === 1 ? 'rule' : 'rules'}`)
+  return parts.length ? `Built from ${parts.join(', ')}.` : ''
+}
+
 export type OperatorResult =
-  | { status: 'answered'; answer: string; tier: Tier; model: string; confidence: string; chain: ChainStep[]; notes: string[]; costUsd: number; redacted: boolean; localOnly: boolean }
+  | { status: 'answered'; answer: string; tier: Tier; model: string; confidence: string; chain: ChainStep[]; notes: string[]; costUsd: number; redacted: boolean; localOnly: boolean; used?: Used; drafted?: { id: string; title: string } }
   | { status: 'needs_approval'; tier: 'opus'; model: string; reason: string; promptPreview: string; approvalToken: string; chain: ChainStep[]; notes: string[]; partial?: { answer: string; tier: Tier; confidence: string } }
   | { status: 'refused'; code: string; message: string; chain: ChainStep[]; notes: string[] }
 

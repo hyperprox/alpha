@@ -23,6 +23,7 @@ import type { ArrDownloadState, ArrVisual } from '../lib/plugin-visual-types'
 import type { CoreEndpointClient } from '../lib/plugin-host'
 import { readQbit, readQueue } from '../lib/arr-queue/read'
 import { buildPlain, rateWord } from '../lib/arr-queue/plain'
+import { plainLines } from '../lib/arr-queue/lines'
 import { requestsStuckCount } from '../lib/arr-queue/stuck-hook'
 import { bytes as fmtBytes } from '../lib/arr-queue/format'
 import { tunarrProvider } from '../lib/arr-tunarr/provider'
@@ -480,7 +481,22 @@ export const arrstackPlugin: Plugin = {
     const tor = torrents ?? []
     const now = Date.now() / 1000
 
+    // The queue in plain sentences for the AI operator: not drawn on the page, and a failed read only loses them.
+    const readings = await (async () => {
+      const c = (key: string): CoreEndpointClient | null => {
+        if (key !== 'default' && !ctx.has(key)) return null
+        const x = key === 'default' ? ctx : ctx.from(key)
+        return { get: (path: string, t?: number) => x.get(path, t ? { timeoutMs: t } : undefined) } as unknown as CoreEndpointClient
+      }
+      const [q, qbit] = await Promise.all([
+        readQueue({ sonarr: c('default'), radarr: c('radarr'), lidarr: c('lidarr'), now: Date.now() }),
+        ctx.has('qbit') ? readQbit(c('qbit')) : null,
+      ])
+      return plainLines(buildPlain(q, qbit, requestsStuckCount()))
+    })().catch(() => [] as string[])
+
     return {
+      readings,
       // Library numbers only while Lidarr answers: a cached reading of one that has gone quiet would look current.
       visual: buildArrVisual({ arrs, indexers, indexerStatus: Array.isArray(indexerStatus) ? indexerStatus : null, transfer, torrents,
         music: arrs.some(a => a.label === 'Lidarr' && !a.error) ? music : null }),

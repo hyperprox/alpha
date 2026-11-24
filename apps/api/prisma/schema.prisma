@@ -803,3 +803,33 @@ model AiOperatorFingerprint {
 
   @@index([fingerprint, at])
 }
+
+// The AI operator's handbook (phase 2): playbooks the operator looks up, and the house rules it always follows.
+model AiPlaybook {
+  id           String   @id @default(cuid())
+  key          String   @unique
+  title        String
+  tags         String[] @default([])
+  symptoms     String[] @default([])
+  severity     String   @default("medium")
+  area         String   @default("")
+  checks       String   @default("")
+  cause        String   @default("")
+  fix          String   @default("")
+  safety       String   @default("")
+  testScenario String   @default("")
+  source       String   @default("user")
+  approved     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([approved])
+}
+
+model AiHouseRules {
+  id        String   @id
+  text      String   @default("")
+  rules     Json     @default("[]")
+  updatedBy String   @default("")
+  updatedAt DateTime @updatedAt
+}

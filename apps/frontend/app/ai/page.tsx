@@ -745,6 +745,7 @@ export default function AIPage() {
           >{t}</button>
         ))}
         <a href="/ai/operator" style={{ padding: '10px 18px', fontSize: 15, fontWeight: 600, color: 'var(--text-dim)', textDecoration: 'none', borderBottom: '2px solid transparent' }}>Operator</a>
+        <a href="/ai/handbook" style={{ padding: '10px 18px', fontSize: 15, fontWeight: 600, color: 'var(--text-dim)', textDecoration: 'none', borderBottom: '2px solid transparent' }}>Handbook</a>
       </div>
 
       {/* ── WIZARD TAB ── */}

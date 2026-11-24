@@ -1,4 +1,4 @@
-// The AI operator (phase 1): the tier router. See router.ts for the entry point, askOperator().
+// The AI operator: the tier router (phase 1), then the handbook of playbooks and house rules, and live readings (phase 2). See router.ts for the entry point, askOperator().
 export * from './types'
 export * from './pricing'
 export { redactForCloud, unredact } from './redact'
@@ -8,3 +8,8 @@ export { askOperator, setOperatorDeps, fingerprintOf, normalizeAnswer, monthSpen
 export { OperatorService } from './service'
 export { MemoryOperatorStore, PrismaOperatorStore, type OperatorStore } from './store'
 export { operatorSource } from './source'
+export * from './playbook'
+export { MemoryPlaybookStore, PrismaPlaybookStore, upsertByKey, type PlaybookStore } from './playbook-store'
+export { rankPlaybooks, pickPlaybooks, pickRules, tokens, stem } from './retrieve'
+export { buildContext, renderPlaybook, playbookMatcher as handbookMatcher, type OperatorContext } from './context'
+export { readLive, liveBlock, tunarrSource, tunarrLines, type LiveReading } from './live'

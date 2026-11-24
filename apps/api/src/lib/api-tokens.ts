@@ -188,7 +188,8 @@ export function tokenForbidden(method: string, path: string): boolean {
   // NGINX, Caddy and Envoy: connecting one, every action on it, and disconnecting it are a signed-in admin's act.
   if ((m === 'POST' || m === 'DELETE') && /^\/api\/plugins\/(nginx|caddy|envoy)\/instances(\/[^/]+(\/actions\/[^/]+)?)?$/.test(p)) return true
   // AI operator: its settings, the local-tier key, and asking it (which can spend money) are a signed-in admin's act.
-  if (m !== 'GET' && m !== 'HEAD' && /^\/api\/ai\/operator(\/|$)/.test(p)) return true
+  // The handbook (playbooks and house rules) is what it reads before it answers, so changing it is the same.
+  if (m !== 'GET' && m !== 'HEAD' && /^\/api\/ai\/(operator|handbook)(\/|$)/.test(p)) return true
   // Installing a new HyperProx, or changing how it updates itself, is a person's act (routes/self-update.ts).
   if (p === '/api/self-update/install' || p === '/api/self-update/settings') return true
   return false

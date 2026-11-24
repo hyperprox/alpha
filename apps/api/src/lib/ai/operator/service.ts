@@ -16,6 +16,9 @@ export interface ServiceDeps {
   clearLocalKey: () => Promise<void>
   knownHosts?: () => Promise<string[]>
   audit?: OperatorDeps['audit']
+  matcher?: OperatorDeps['matcher']
+  context?: OperatorDeps['context']
+  playbooks?: OperatorDeps['playbooks']
   now?: () => Date
 }
 
@@ -103,6 +106,7 @@ export class OperatorService {
   routerDeps(): OperatorDeps {
     return {
       store: this.d.store, call: this.d.call, vaultUnlocked: this.d.vaultUnlocked, knownHosts: this.d.knownHosts, audit: this.d.audit, now: this.d.now,
+      matcher: this.d.matcher, context: this.d.context, playbooks: this.d.playbooks,
       tierReady: async (t, s) => {
         const r = await this.readiness(t, s)
         return { ready: r.configured, missing: r.missing ? `it still needs ${r.missing}` : undefined }

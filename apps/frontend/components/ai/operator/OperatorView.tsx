@@ -9,7 +9,7 @@
 
 import s from './operator.module.css'
 import {
-  TIERS, TIER_BLURB, chainText, ladderState, ladderWord, spendPercent, spendSentence, spendTone, tierWord, usd,
+  TIERS, TIER_BLURB, chainText, ladderState, ladderWord, spendPercent, spendSentence, spendTone, tierWord, usd, usedSentence,
   type OperatorResult, type Spend, type Tier, type TierStatus,
 } from '@/lib/operator-view'
 
@@ -94,6 +94,8 @@ export function AnswerCard({ result, onApprove, busy }: { result: OperatorResult
       </div>
       <p className={s.answerText}>{result.answer}</p>
       <p className={s.hint}>{`Tried: ${chainText(result.chain)}. ${result.costUsd > 0 ? `Cost about ${usd(result.costUsd)}.` : 'No cost.'}${result.redacted ? ' Addresses and host names were hidden before it was sent.' : ''}`}</p>
+      {usedSentence(result.used) && <p className={s.hint}>{usedSentence(result.used)}</p>}
+      {result.drafted && <p className={s.hint}>{`A draft playbook, "${result.drafted.title}", was saved in the Handbook. It waits for your approval.`}</p>}
       {result.notes.map(n => <p key={n} className={s.hint}>{n}</p>)}
     </div>
   )

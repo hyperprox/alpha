@@ -21,6 +21,19 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-24 — AI operator: the handbook and live readings
+
+### New
+- **AI → Handbook** holds your **playbooks** (written-down fixes) and **house rules**. The operator now reads the rules and the best-matching playbooks before it answers, and ends its answer with which playbooks it used. Add, edit, approve, export and delete them on the page, paste one in as markdown, or load a whole folder of them.
+    - Technical: `/api/ai/handbook/*`; tables `AiPlaybook` and `AiHouseRules`; `lib/ai/operator/` (`playbook.ts`, `retrieve.ts`, `context.ts`, `importer.ts`); `scripts/import-playbooks.ts`. Matching is keyword scoring, no embeddings; at most three playbooks and about 17,000 characters of context.
+- The operator can now see what is happening right now. It is given short read-only readings of the areas a question is about: the cluster, the Arr Stack queue (what is waiting and its place in line, what is stuck), Unmanic, Plex and Live TV. It cannot change anything.
+    - Technical: reuses the Ask box's sources (`routes/ai.ts` `operatorWiring`) plus a Live TV source; the Arr Stack plug-in's detail gains `readings` (`lib/arr-queue/lines.ts`).
+- When Haiku, Sonnet or Opus answers a fault that no playbook covered, it also drafts a playbook. The draft waits in the Handbook for your approval and is not used until you give it.
+
+### Improved
+- Playbooks, rules and readings are hidden the same way as your question before anything goes to the cloud.
+- A download that shows 0 seeds while it waits for a slot is now explained as waiting, not dead, when the matching playbook is in the Handbook.
+
 ## 2026-11-24 — Arr Stack: less scrolling, one clear summary
 
 ### New

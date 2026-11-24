@@ -16,6 +16,9 @@ import { parseForce } from './force'
 import { redactForCloud, unredact } from './redact'
 import { estimateCostUsd, monthStart, roughTokens, wouldExceedCap } from './pricing'
 import type { OperatorStore } from './store'
+import type { OperatorContext } from './context'
+import type { PlaybookStore } from './playbook-store'
+import { normalizePlaybook, type Playbook } from './playbook'
 
 // ── What the router needs from outside ──────────────────────────────────────
 
@@ -41,6 +44,13 @@ export interface OperatorDeps {
   /** Host names to hide before a cloud call, in addition to the addresses and domain names found in the text. */
   knownHosts?: () => Promise<string[]>
   matcher?: PlaybookMatcher
+  /**
+   * The handbook and live readings for a question (lib/ai/operator/context.ts): house rules, the best playbooks and the
+   * read-only readings it is about. Without it the question goes alone, as in phase 1.
+   */
+  context?: (question: string, who: { role?: string }) => Promise<OperatorContext>
+  /** Where a cloud tier's drafted playbook is saved, unapproved. Without it nothing is drafted. */
+  playbooks?: PlaybookStore
   now?: () => Date
   /** One audit row per question. It is given names, counts and outcomes, never the question or the answer. */
   audit?: (action: string, resource: string, details: Record<string, unknown>) => Promise<void>
@@ -61,16 +71,25 @@ export interface AskInput {
   fingerprint?: string
   /** For the audit row: who, in words. */
   actor?: string
+  /** The asker's role. The live readings are taken with it, so a question never shows more than the page would. */
+  role?: string
 }
 
 export interface SpendInfo { monthUsd: number; capUsd: number; month: string }
 
 interface Common { chain: ChainStep[]; problemClass: ProblemClass; classifiedBy: ClassifiedBy; playbook?: PlaybookMatch; notes: string[] }
 
+/** What the handbook and live readings contributed to an answer, so the page can say so. */
+export interface Used { playbooks: Array<{ id: string; title: string }>; live: string[]; rules: number }
+
 export type OperatorResult =
   | (Common & {
       status: 'answered'; answer: string; tier: Tier; model: string; confidence: Confidence; verified: boolean | null
       costUsd: number; redacted: boolean; localOnly: boolean; spend: SpendInfo
+      /** The playbooks the answer used, the areas read live, and how many house rules were given. */
+      used: Used
+      /** A playbook a cloud tier drafted from this answer, waiting for approval in the handbook. */
+      drafted?: { id: string; title: string }
     })
   | (Common & {
       status: 'needs_approval'; tier: 'opus'; model: string; reason: string; promptPreview: string
@@ -90,10 +109,27 @@ export const ANSWER_SCHEMA = {
     answer: { type: 'string', description: 'The answer, in plain language.' },
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
     verified: { type: ['boolean', 'null'], description: 'true or false only if you checked an outcome; otherwise null.' },
+    used: { type: 'array', items: { type: 'integer' }, description: 'The [P] numbers of the playbooks you used, or an empty list.' },
   },
   required: ['answer', 'confidence', 'verified'],
   additionalProperties: false,
 } as const
+
+const DRAFT_SCHEMA = {
+  type: ['object', 'null'],
+  description: 'When the answer is a fix for a fault that no playbook covered, a playbook for it; otherwise null.',
+  properties: {
+    title: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }, symptoms: { type: 'array', items: { type: 'string' } },
+    severity: { type: 'string', enum: ['low', 'medium', 'high'] }, area: { type: 'string' },
+    checks: { type: 'string', description: 'Read-only checks to run first.' }, cause: { type: 'string' }, fix: { type: 'string' },
+    safety: { type: 'string', description: 'What not to do, and what needs a person to approve first.' },
+    testScenario: { type: 'string', description: 'A situation and the conclusion a correct answer reaches.' },
+  },
+  required: ['title', 'symptoms', 'cause', 'fix', 'safety'],
+} as const
+
+/** The answer shape; cloud tiers asked about a fault may also draft a playbook. */
+export const answerSchema = (draft: boolean) => (draft ? { ...ANSWER_SCHEMA, properties: { ...ANSWER_SCHEMA.properties, draft: DRAFT_SCHEMA } } : ANSWER_SCHEMA)
 
 const CLASS_SCHEMA = {
   type: 'object',
@@ -105,7 +141,10 @@ const SYSTEM =
   'You are the operator assistant inside HyperProx, a Proxmox control plane. Answer the question for a homelab or small-business ' +
   'administrator in plain language, concisely, with concrete steps when steps are needed. Hosts and addresses may appear as ' +
   'placeholders such as host-1 or addr-2: use them exactly as written. Set confidence to low when you are guessing or the ' +
-  'question lacks what you need; a low answer is passed to a stronger model, which is better than a wrong one.'
+  'question lacks what you need; a low answer is passed to a stronger model, which is better than a wrong one. ' +
+  'When PLAYBOOKS, HOUSE RULES or LIVE READINGS are given, they come from this system: follow the rules, use a matching playbook and ' +
+  'name it by its [P] number in used, and point to the real item in the live readings instead of speaking in general terms. ' +
+  'Never claim to have run or changed anything: you only read, and you only advise.'
 
 const CLASS_SYSTEM =
   'Classify a request to a server-operations assistant. known: a routine task with a standard procedure (restart a service, check ' +
@@ -128,7 +167,8 @@ export function normalizeAnswer(v: unknown): AnswerPayload {
   const c = o.confidence
   if (typeof c === 'number' && Number.isFinite(c)) confidence = c < 0.4 ? 'low' : c < 0.75 ? 'medium' : 'high'
   else if (c === 'low' || c === 'medium' || c === 'high') confidence = c
-  return { answer: o.answer, confidence, verified: typeof o.verified === 'boolean' ? o.verified : null }
+  const used = Array.isArray(o.used) ? o.used.filter((n): n is number => Number.isInteger(n) && n > 0).slice(0, 10) : undefined
+  return { answer: o.answer, confidence, verified: typeof o.verified === 'boolean' ? o.verified : null, ...(used ? { used } : {}), ...(o.draft && typeof o.draft === 'object' ? { draft: o.draft } : {}) }
 }
 
 export function approvalBinding(question: string): string { return sha(JSON.stringify(['ai.operator.opus', question])) }
@@ -165,14 +205,22 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
   if (!question) return refuse('empty', 'Type a question first.', chain, notes)
   let force: Tier | null = isTier(input.force) ? input.force : parsed.tier
 
-  // Which tiers can be used at all, in ladder order.
-  const localOnlyTopic = settings.localOnlyTopics.find(t => question.toLowerCase().includes(t.toLowerCase()))
+  // The handbook and the live readings. A failure here never stops the question: it goes without them, and says so.
+  let handbook: OperatorContext | null = null
+  if (deps.context) {
+    try { handbook = await deps.context(question, { role: input.role }); notes.push(...handbook.notes) }
+    catch { notes.push('The handbook and live readings could not be read, so this answer is from the question alone.') }
+  }
+
+  // Which tiers can be used at all, in ladder order. A keep-it-local topic in the question, or in what is attached to it, keeps it here.
+  const searched = `${question}\n${handbook?.block ?? ''}`.toLowerCase()
+  const localOnlyTopic = settings.localOnlyTopics.find(t => searched.includes(t.toLowerCase()))
   const ready = new Map<Tier, { ready: boolean; missing?: string }>()
   for (const t of TIERS) ready.set(t, settings.tiers[t].enabled ? await deps.tierReady(t, settings) : { ready: false, missing: 'turned off' })
   const spent = await monthSpend(deps.store, now)
   const capReached = settings.monthlyCapUsd > 0 && spent >= settings.monthlyCapUsd
   const usable = (t: Tier) => ready.get(t)!.ready && !(isCloud(t) && (localOnlyTopic !== undefined || capReached))
-  if (localOnlyTopic !== undefined) notes.push(`This question mentions "${localOnlyTopic}", which is on your keep-it-local list, so only the local model was used.`)
+  if (localOnlyTopic !== undefined) notes.push(`This question, or the handbook and readings that go with it, mentions "${localOnlyTopic}", which is on your keep-it-local list, so only the local model was used.`)
   if (capReached) notes.push(`The monthly cap of $${settings.monthlyCapUsd.toFixed(2)} is used up, so only the local model was used.`)
 
   if (force && isCloud(force) && localOnlyTopic !== undefined) {
@@ -237,7 +285,9 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
   // Run up the ladder.
   const hosts = settings.redactBeforeCloud && deps.knownHosts ? await deps.knownHosts().catch(() => []) : []
   const prompt = (input.attempt?.verified === false ? `Note: a fix suggested earlier was tried and did not work.\n\n` : '') + question
-  const red = settings.redactBeforeCloud ? redactForCloud(prompt, hosts) : { text: prompt, map: {} as Record<string, string> }
+  // What a tier is sent: the question, then the handbook and readings. The cloud copy has all of it hidden together.
+  const withContext = handbook?.block ? `${prompt}\n\n${handbook.block}` : prompt
+  const red = settings.redactBeforeCloud ? redactForCloud(withContext, hosts) : { text: withContext, map: {} as Record<string, string> }
   const redactedAny = Object.keys(red.map).length > 0
 
   let best: { payload: AnswerPayload; tier: Tier; model: string } | null = null
@@ -254,7 +304,7 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
     return {
       status: 'needs_approval', tier: 'opus', model, chain, problemClass: cls.problemClass, classifiedBy: cls.by, playbook: cls.playbook, notes,
       reason: `${why} Approving sends the text below to Anthropic${settings.redactBeforeCloud ? ' with addresses and host names hidden' : ''} and uses your Anthropic key.`,
-      promptPreview: red.text.slice(0, 1500), approvalToken: token, expiresAt, redacted: redactedAny,
+      promptPreview: red.text.slice(0, 24_000), approvalToken: token, expiresAt, redacted: redactedAny,
       ...(best ? { partial: { answer: best.payload.answer, tier: best.tier, confidence: best.payload.confidence } } : {}),
     }
   }
@@ -263,7 +313,7 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
     const tier = order[idx]
     const model = settings.tiers[tier].model
     if (tier === 'opus' && settings.opusNeedsApproval && !approved) return finishApproval()
-    const sendText = isCloud(tier) ? red.text : prompt
+    const sendText = isCloud(tier) ? red.text : withContext
     if (isCloud(tier)) {
       const est = estimateCostUsd(tier, settings, roughTokens(sendText + SYSTEM), 1000)
       if (wouldExceedCap(spent + totalCost, est, settings.monthlyCapUsd)) {
@@ -274,7 +324,8 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
       }
     }
     try {
-      const r = await deps.call({ tier, model, system: SYSTEM, user: sendText, schema: ANSWER_SCHEMA as any, name: 'operator_answer' })
+      const drafting = isCloud(tier) && !!deps.playbooks && cls.problemClass !== 'build'
+      const r = await deps.call({ tier, model, system: drafting ? SYSTEM + DRAFT_NOTE : SYSTEM, user: sendText, schema: answerSchema(drafting) as any, name: 'operator_answer' })
       const payload = normalizeAnswer(r.value)
       const u = r.usage ?? { inputTokens: roughTokens(sendText + SYSTEM), outputTokens: roughTokens(payload.answer) }
       const cost = await recordUsage(deps, settings, tier, model, u, now, input.source)
@@ -292,7 +343,7 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
   if (!best && capStopped && usable('local') && !chain.some(c => c.tier === 'local')) {
     const model = settings.tiers.local.model
     try {
-      const r = await deps.call({ tier: 'local', model, system: SYSTEM, user: prompt, schema: ANSWER_SCHEMA as any, name: 'operator_answer' })
+      const r = await deps.call({ tier: 'local', model, system: SYSTEM, user: withContext, schema: ANSWER_SCHEMA as any, name: 'operator_answer' })
       const payload = normalizeAnswer(r.value)
       const u = r.usage ?? { inputTokens: roughTokens(prompt + SYSTEM), outputTokens: roughTokens(payload.answer) }
       await recordUsage(deps, settings, 'local', model, u, now, input.source)
@@ -311,8 +362,18 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
   await auditRow(deps, input, 'answered', chain, cls.problemClass, redactedAny, totalCost)
   const sentRedacted = isCloud(best.tier) && redactedAny
   const finalSpend = spent + totalCost
+  const back = (t: string) => (sentRedacted ? unredact(t, red.map) : t)
+  const given = handbook?.playbooks ?? []
+  const picked = [...new Set((best.payload.used ?? []).filter(n => n >= 1 && n <= given.length))].map(n => given[n - 1])
+  const usedPb = picked.length ? picked : given
+  const label = usedPb.length ? `\n\nPlaybooks used: ${usedPb.map(p => p.title).join('; ')}.` : ''
+  const drafted = isCloud(best.tier) && !usedPb.length && best.payload.confidence !== 'low' && cls.problemClass !== 'build'
+    ? await saveDraft(deps, input, best.payload.draft, back)
+    : undefined
   return {
-    status: 'answered', answer: sentRedacted ? unredact(best.payload.answer, red.map) : best.payload.answer,
+    status: 'answered', answer: back(best.payload.answer) + label,
+    used: { playbooks: usedPb, live: handbook?.live ?? [], rules: handbook?.rulesUsed ?? 0 },
+    ...(drafted ? { drafted } : {}),
     tier: best.tier, model: best.model, confidence: best.payload.confidence, verified: best.payload.verified ?? null,
     chain, problemClass: cls.problemClass, classifiedBy: cls.by, playbook: cls.playbook, notes,
     costUsd: totalCost, redacted: sentRedacted, localOnly: localOnlyTopic !== undefined,
@@ -337,6 +398,26 @@ async function recordUsage(deps: OperatorDeps, s: OperatorSettings, tier: Tier, 
   const row: UsageRow = { tier, model, inputTokens: u.inputTokens, outputTokens: u.outputTokens, costUsd, at, source: source.slice(0, 60) }
   await deps.store.addUsage(row)
   return costUsd
+}
+
+const DRAFT_NOTE =
+  ' If your answer is a fix for a fault and no playbook given matches it, also fill in draft: a playbook another operator could follow ' +
+  '(read-only checks first, the cause, the fix, what not to do). Otherwise leave draft null. A person reviews it before it is ever used.'
+
+/** A cloud answer's draft, saved unapproved in the handbook. Never throws: the answer is already good. */
+async function saveDraft(deps: OperatorDeps, input: AskInput, raw: unknown, back: (t: string) => string): Promise<{ id: string; title: string } | undefined> {
+  if (!deps.playbooks || !raw || typeof raw !== 'object') return undefined
+  try {
+    const d = raw as Record<string, unknown>
+    const fix = (v: unknown) => (typeof v === 'string' ? back(v) : Array.isArray(v) ? v.map(x => (typeof x === 'string' ? back(x) : x)) : v)
+    const n = normalizePlaybook({ ...Object.fromEntries(Object.entries(d).map(([k, v]) => [k, fix(v)])), source: 'cloud-draft', approved: false, key: undefined })
+    if (!n.ok || !n.value.fix || !n.value.cause) return undefined
+    const have = await deps.playbooks.list()
+    if (have.some((p: Playbook) => p.title.toLowerCase() === n.value.title.toLowerCase())) return undefined
+    const row = await deps.playbooks.create(n.value)
+    try { await deps.audit?.('ai.playbook.draft', 'ai:playbook', { by: input.actor ?? input.source, id: row.id, source: input.source.slice(0, 60) }) } catch { /* the draft is saved either way */ }
+    return { id: row.id, title: row.title }
+  } catch { return undefined }
 }
 
 async function auditRow(deps: OperatorDeps, input: AskInput, status: string, chain: ChainStep[], cls: ProblemClass, redacted: boolean, cost: number): Promise<void> {

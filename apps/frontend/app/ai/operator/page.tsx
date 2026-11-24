@@ -100,7 +100,7 @@ export default function OperatorPage() {
           { label: 'Opus', value: settings.opusNeedsApproval ? 'asks first' : 'runs freely', tone: settings.opusNeedsApproval ? 'good' : 'warn' },
           { label: 'Privacy', value: settings.redactBeforeCloud ? 'hidden before cloud' : 'not hidden', tone: settings.redactBeforeCloud ? 'good' : 'warn' },
         ]} />
-      <p className={f.hint}><Link href="/ai">Back to AI</Link></p>
+      <p className={f.hint}><Link href="/ai">Back to AI</Link> · <Link href="/ai/handbook">Handbook: playbooks and house rules</Link></p>
 
       {locked && <p className={f.notice} role="status">HyperProx is locked, so keys cannot be read or saved. Sign in to unlock it.</p>}
       {error && <p className={f.error} role="alert">{error}</p>}

@@ -1223,6 +1223,42 @@ version it answers questions and drafts; it does not change anything on your clu
   If HyperProx is locked, the operator does nothing and says so. Changing settings and asking need an admin sign-in; an
   API token cannot change them or ask. Viewers can read the tiers, the spend and the switches, but not the local server's address or the keep-it-local words.
 
+### AI operator (handbook)
+
+**AI → Handbook** is what the operator reads before it answers: **playbooks** (written-down fixes) and **house rules**.
+Nothing is trained; the operator looks things up each time.
+
+- **A playbook** has a title, tags, symptoms (what you would notice), a severity (low, medium or high), an area, and
+  five written parts: **Checks**, **Cause**, **Fix**, **Safety** and a **Test scenario**. Only **approved** playbooks are
+  given to the operator. Add, edit, approve, withdraw, export and delete them on the page, which is laid out for a phone
+  first. Deleting asks first.
+- **House rules** are one free-text note plus a list of rules, one per line. They go with every question, and where a
+  rule and a playbook disagree the rule wins. The rules that touch the question come first; the rest are sent while they fit
+  (about 5,000 characters), so the local model's 16K context always has room left for the answer.
+- **Paste or import markdown.** A playbook is a markdown file that starts with `---`, then `title`, `tags`, `symptoms`,
+  `severity` and `area`, and the sections `## Checks`, `## Cause`, `## Fix`, `## Safety` and `## Test scenario`. **Paste
+  markdown** on the page adds one (it waits for approval). To load a whole folder into your own HyperProx, run
+  `cd apps/api && node --env-file=../../.env --import tsx scripts/import-playbooks.ts /path/to/folder` on the HyperProx
+  guest (add `--overwrite` to update ones already there). It reads the files and writes to the database only: they are
+  approved, marked **Imported**, and a file named `house-rules.md` becomes the house rules. `README.md` and `INDEX.md`
+  are skipped, and running it twice changes nothing. Keep the folder outside the HyperProx repository.
+- **Finding the right playbook.** Each question is matched against the approved playbooks by keywords (no embedding
+  model): words in the tags and title count most, then symptoms, then the written parts, and rare words count more than
+  common ones. The best one to three are sent with the question; if nothing matches well, none are. **Test a question**
+  on the page shows which would be used. The answer ends with **Playbooks used: ...**, and the answer card says what it was
+  built from.
+- **Live readings.** The operator is also given short, read-only readings of the areas the question is about, taken just
+  now through the readings HyperProx already makes: the cluster, the Arr Stack queue (each show or film that is waiting
+  or stuck, with its place in line), Unmanic, Plex, Live TV and the other plug-ins. At most three areas, read with
+  your own role and a time limit, so a slow one never holds the question up. It cannot call anything or change anything.
+- **Cloud models write drafts.** When Haiku, Sonnet or Opus answers a question about a fault that no playbook covered,
+  and is not unsure, it also drafts a playbook. The draft is saved as **Drafted by a cloud model** and **Waiting for
+  approval**; it is never used until you approve it. A model cannot approve its own draft.
+- **Privacy.** Before anything goes to a cloud model, the house rules, playbooks and live readings are hidden the same
+  way as your question (addresses, domain names and your node and guest names become placeholders and are put back in the
+  reply), and a keep-it-local topic found in them keeps the question on the local model. Reading the handbook needs any sign-in. Changing it needs an admin sign-in, an API token cannot change it, and
+  every change is recorded in the audit log by name, never by text.
+
 The AI assistant can answer questions about the operator's own setup (which tiers are ready, the month's spend), and
 never sees keys or your questions.
 

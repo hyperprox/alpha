@@ -106,7 +106,7 @@ export function normalizeSettings(input: unknown): OperatorSettings {
 export type Confidence = 'low' | 'medium' | 'high'
 
 /** The shape every tier is asked to answer in. `verified` is for a caller that reports a fix outcome. */
-export interface AnswerPayload { answer: string; confidence: Confidence; verified: boolean | null }
+export interface AnswerPayload { answer: string; confidence: Confidence; verified: boolean | null; used?: number[]; draft?: unknown }
 
 export interface ChainStep {
   tier: Tier
