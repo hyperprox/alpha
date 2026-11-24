@@ -80,6 +80,9 @@ export const CREDENTIAL_DEFS: CredentialDef[] = [
   { category: 'ai', provider: 'openai',    key: 'api_key',  label: 'OpenAI API Key',    masked: true,  envKey: 'OPENAI_API_KEY' },
   { category: 'ai', provider: 'openai',    key: 'model',    label: 'OpenAI Model',      masked: false, envKey: 'OPENAI_MODEL' },
   { category: 'ai', provider: 'openai',    key: 'base_url', label: 'OpenAI Base URL',   masked: false, envKey: 'OPENAI_BASE_URL' },
+  // The AI operator's local tier (lib/ai/operator): an OpenAI-compatible server on the network. Only its key is
+  // secret, so only the key is here; its address and model are ordinary settings in the database. No envKey.
+  { category: 'ai', provider: 'operator-local', key: 'api_key', label: 'AI operator local-tier key', masked: true },
 
   // Remote access (lib/remote). No envKey: these were never in .env.
   { category: 'remote', provider: 'tailscale', key: 'api_token',           label: 'API access token',                 masked: true  },

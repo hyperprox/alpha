@@ -21,6 +21,15 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-24 — AI operator: a ladder of models
+
+### New
+- **AI → Operator** sends each question to the cheapest model that can answer it: a local model first, then Haiku, Sonnet and Opus, moving up when an answer is not confident, when a fix did not work, or when the same problem keeps coming back. Every answer says which model gave it and which were tried first.
+    - Technical: `/api/ai/operator/*` (settings, tiers, spend, ask, ask/approve, key); `lib/ai/operator/`; tables `AiOperatorSetting`, `AiOperatorUsage`, `AiOperatorFingerprint`; `callStructured` takes an optional endpoint override, timeout and usage callback.
+- Opus asks for your approval each time by default, showing what would be sent. A monthly spending cap, shown as a meter, keeps the cloud tiers from going past what you set; at the cap only the local model is used.
+- Addresses and host names are hidden before a question goes to the cloud and put back in the answer, and a keep-it-local list stops chosen topics from ever leaving. The local model's key goes straight into the vault.
+    - Technical: the key is the credential `ai/operator-local/api_key`; API tokens are refused on every write route.
+
 ## 2026-11-23 — ASUS: AiMesh nodes you can manage
 
 ### New

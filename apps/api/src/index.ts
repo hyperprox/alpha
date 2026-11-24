@@ -21,6 +21,8 @@ import { prometheusRoutes } from './routes/prometheus'
 import { storageRoutes }         from './routes/storage'
 import { ollamaRoutes }          from './routes/ollama'
 import { aiRoutes }              from './routes/ai'
+import { makeOperatorRoutes }     from './routes/ai-operator'
+import { operatorService }        from './lib/ai/operator/production'
 import { gpuRoutes }             from './routes/gpu'
 import { targetsRoutes }         from './routes/targets'
 import { setupChecklistRoutes }  from './routes/setup-checklist'
@@ -197,6 +199,8 @@ async function main() {
   await server.register(storageRoutes,         { prefix: '/api/storage' })
   await server.register(prometheusRoutes)
   await server.register(ollamaRoutes, { prefix: '/api/ai' })
+  // The AI operator's tier router: its own prefix, so it is registered before the general AI routes.
+  await server.register(makeOperatorRoutes({ service: () => operatorService(server.prisma) }), { prefix: '/api/ai/operator' })
   await server.register(aiRoutes,    { prefix: '/api/ai' })
   await server.register(gpuRoutes,   { prefix: '/api/gpu' })
   await server.register(targetsRoutes, { prefix: '/api/targets' })

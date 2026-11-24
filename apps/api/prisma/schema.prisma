@@ -770,3 +770,36 @@ model ArrRouterSetting {
   updatedBy String   @default("")
   updatedAt DateTime @updatedAt
 }
+
+// AI operator, phase 1 (lib/ai/operator): the tier router's settings (one JSON row), what each model call used and
+// cost (an estimate), and a log of problem fingerprints (a hash of the question, never its text) so a problem that
+// comes back starts one tier higher. Nothing secret: the local tier's key is in the vault.
+model AiOperatorSetting {
+  id        String   @id
+  data      Json     @default("{}")
+  updatedBy String   @default("")
+  updatedAt DateTime @updatedAt
+}
+
+model AiOperatorUsage {
+  id           String   @id @default(cuid())
+  tier         String
+  model        String
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  costUsd      Float    @default(0)
+  source       String   @default("")
+  at           DateTime @default(now())
+
+  @@index([at])
+}
+
+model AiOperatorFingerprint {
+  id           String   @id @default(cuid())
+  fingerprint  String
+  tier         String
+  problemClass String
+  at           DateTime @default(now())
+
+  @@index([fingerprint, at])
+}

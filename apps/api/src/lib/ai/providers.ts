@@ -171,13 +171,35 @@ export interface StructuredRequest<T> {
 }
 
 /** Returns the reply's text. */
-export type RawSend = (provider: ProviderId, body: Record<string, unknown>) => Promise<string>
+export type RawSend = (provider: ProviderId, body: Record<string, unknown>, ctx?: SendContext) => Promise<string>
+
+/** Token counts a provider reported for one call. */
+export interface CallUsage { inputTokens: number; outputTokens: number }
+
+/** An OpenAI-compatible server to call directly, whatever the active provider is (the operator's local tier). */
+export interface EndpointOverride { baseUrl: string; apiKey?: string; model?: string }
+
+/** Extra, optional input for one send: the endpoint override, a timeout and a place to report token usage. */
+export interface SendContext {
+  endpoint?: EndpointOverride
+  timeoutMs?: number
+  onUsage?: (u: CallUsage) => void
+}
 
 export interface StructuredOptions {
   /** Overrides the stored model (and skips the credential lookup). */
   model?: string
   /** Ollama only: threads per request. Overrides the setting and OLLAMA_NUM_THREAD. */
   numThread?: number
+  /**
+   * Call this OpenAI-compatible server instead of the active provider. The stored OpenAI provider settings are
+   * neither read nor changed. Its key (if any) is passed in by the caller; this module never stores it.
+   */
+  endpoint?: EndpointOverride
+  /** Overrides the 180 s default for a cloud or endpoint call. */
+  timeoutMs?: number
+  /** Told the token counts the provider reported, when it reports them. */
+  onUsage?: (u: CallUsage) => void
 }
 
 /**
@@ -360,12 +382,27 @@ export function anthropicText(response: { stop_reason?: string | null; content?:
   return block.text
 }
 
-async function httpSend(provider: ProviderId, body: Record<string, unknown>): Promise<string> {
+async function httpSend(provider: ProviderId, body: Record<string, unknown>, ctx: SendContext = {}): Promise<string> {
+  if (ctx.endpoint) {
+    const base = ctx.endpoint.baseUrl.replace(/\/+$/, '')
+    const res = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(ctx.endpoint.apiKey ? { Authorization: `Bearer ${ctx.endpoint.apiKey}` } : {}) },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(ctx.timeoutMs ?? 180_000),
+    })
+    if (!res.ok) throw providerError(String(body.model), res.status, await res.text())
+    const data: any = await res.json()
+    reportOpenaiUsage(data, ctx)
+    return openaiText(data)
+  }
   if (provider === 'anthropic') {
     const apiKey = await cred('anthropic', 'api_key')
     if (!apiKey) throw new ModelCallError(NO_MODEL_MESSAGE, 'not-configured')
     const client = new Anthropic({ apiKey })
-    const response = await client.messages.create(body as any, { timeout: 180_000 })
+    const response = await client.messages.create(body as any, { timeout: ctx.timeoutMs ?? 180_000 })
+    const u = (response as any)?.usage
+    if (ctx.onUsage && u) ctx.onUsage({ inputTokens: Number(u.input_tokens) || 0, outputTokens: Number(u.output_tokens) || 0 })
     return anthropicText(response as any)
   }
   if (provider === 'openai') {
@@ -376,16 +413,23 @@ async function httpSend(provider: ProviderId, body: Record<string, unknown>): Pr
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(ctx.timeoutMs ?? 180_000),
     })
     if (!res.ok) throw providerError(String(body.model), res.status, await res.text())
-    return openaiText(await res.json())
+    const data: any = await res.json()
+    reportOpenaiUsage(data, ctx)
+    return openaiText(data)
   }
   const url = (await cred('ollama', 'url')) || process.env.OLLAMA_URL || ''
   if (!url) throw new ModelCallError(NO_MODEL_MESSAGE, 'not-configured')
   const { timeoutMs, unreadable } = await ollamaSettings()
   if (unreadable) throw new Error(`Ollama's settings could not be read: ${unreadable}`)
   return ollamaSend(url, body, timeoutMs)
+}
+
+function reportOpenaiUsage(data: any, ctx: SendContext): void {
+  const u = data?.usage
+  if (ctx.onUsage && u) ctx.onUsage({ inputTokens: Number(u.prompt_tokens) || 0, outputTokens: Number(u.completion_tokens) || 0 })
 }
 
 /** One Ollama chat call. Every failure is a ModelCallError that says which of four things went wrong. */
@@ -430,15 +474,18 @@ export async function callStructured<T>(
   send: RawSend = httpSend,
   opts: StructuredOptions = {},
 ): Promise<T> {
-  const id = provider ?? (await activeProvider())
-  const model = opts.model ?? (await modelFor(id))
+  // An endpoint override speaks the OpenAI shape and never consults the stored provider or its model.
+  const id: ProviderId = opts.endpoint ? 'openai' : (provider ?? (await activeProvider()))
+  const model = opts.model ?? opts.endpoint?.model ?? (await modelFor(id))
+  const ctx: SendContext | undefined = opts.endpoint || opts.onUsage || opts.timeoutMs
+    ? { endpoint: opts.endpoint, timeoutMs: opts.timeoutMs, onUsage: opts.onUsage } : undefined
   const numThread = id === 'ollama' ? (opts.numThread ?? (await ollamaSettings()).numThread) : undefined
   const body = id === 'anthropic' ? anthropicBody(r, model)
     : id === 'openai' ? openaiBody(r, model)
     : ollamaBody(r, model, numThread)
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const text = await send(id, body) // transport errors and refusals are not parse failures: not retried
+    const text = await (ctx ? send(id, body, ctx) : send(id, body)) // transport errors and refusals are not parse failures: not retried
     try {
       return r.parse(JSON.parse(unwrapJson(String(text))))
     } catch { /* the error text can quote the reply; not kept */ }

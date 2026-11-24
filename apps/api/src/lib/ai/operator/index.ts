@@ -1,0 +1,10 @@
+// The AI operator (phase 1): the tier router. See router.ts for the entry point, askOperator().
+export * from './types'
+export * from './pricing'
+export { redactForCloud, unredact } from './redact'
+export { parseForce } from './force'
+export { classify, classifyByRules, setPlaybookMatcher, playbookMatcher, noPlaybooks, type PlaybookMatcher, type PlaybookMatch, type PlaybookContext } from './classify'
+export { askOperator, setOperatorDeps, fingerprintOf, normalizeAnswer, monthSpend, tierName, type AskInput, type OperatorResult, type OperatorDeps, type TierCall, type TierCallArgs } from './router'
+export { OperatorService } from './service'
+export { MemoryOperatorStore, PrismaOperatorStore, type OperatorStore } from './store'
+export { operatorSource } from './source'

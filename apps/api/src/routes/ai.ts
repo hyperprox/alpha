@@ -65,6 +65,8 @@ import { placementSource, balanceSource } from '../lib/ai/placement-source'
 import { updatesSource } from '../lib/ai/updates-source'
 import { lastTargets } from '../lib/updates/targets-summary'
 import { placementService } from '../lib/placement/production'
+import { operatorSource } from '../lib/ai/operator/source'
+import { currentOperatorService } from '../lib/ai/operator/production'
 import { qnapSource, alertsSource, notifySource, housesSource, sitesSource, siteMetricsSource, toChannelLite, type NasEntry, type HouseRead, type SiteLite } from '../lib/ai/home-sources'
 import { type SiteMetricsSource } from '../lib/ai/site-metrics'
 import { parseHomeAction, prepareHomeAction, applyHomeAction, isTokenSid, type HomePlan, type HomePrepareDeps, type HomeApplyDeps, type HomeSite, type HomeNas } from '../lib/ai/home-actions'
@@ -391,6 +393,8 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
   // Before the per-cluster sources, so "is my NAS healthy" is the NAS and not the cluster's network storage.
   const attached: AskSource[] = [
     qnapSource({ list: () => nasEntries({ cachedFirst: true }), role, unlocked: isUnlocked }),
+    // Read-only: the AI operator's tiers, approvals, monthly spend and privacy settings (no keys, no questions).
+    operatorSource({ unlocked: isUnlocked, service: currentOperatorService }),
     pbsSource({ unlocked: isUnlocked, list: async () => {
       const svc = pbsService()
       return Promise.all((await svc.instances.list()).map(async m => {

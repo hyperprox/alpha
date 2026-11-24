@@ -1,0 +1,16 @@
+/* Form pieces for the AI operator page. Barlow body, IBM Plex Mono labels, 6px inputs. */
+.field { display: grid; gap: 6px; margin-bottom: 14px; }
+.label { font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
+.input { width: 100%; box-sizing: border-box; min-height: 44px; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--ground-deep); color: var(--text); font-family: var(--font-body); font-size: 16px; }
+.input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+textarea.input { resize: vertical; }
+.hint { margin: 0 0 12px; font-size: 14px; color: var(--text-muted); }
+.check { display: flex; gap: 10px; align-items: center; min-height: 44px; font-size: 16px; color: var(--text); }
+.check input { width: 20px; height: 20px; accent-color: var(--accent); }
+.tierRow { display: grid; gap: 8px; margin-bottom: 12px; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+.secondary { min-height: 44px; padding: 0 18px; border-radius: 6px; border: 1px solid var(--border-strong); background: transparent; color: var(--text); font-family: var(--font-display); font-size: 17px; font-weight: 600; cursor: pointer; }
+.notice { margin: 0 0 12px; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--warn); color: var(--warn-2); font-size: 14px; }
+.error { margin: 0 0 12px; padding: 10px 12px; border-radius: 6px; border: 1px solid #ef6b6b; color: #ffb4b4; font-size: 14px; }
+.ok { margin: 0 0 12px; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--good); color: var(--good-soft); font-size: 14px; }
+@media (min-width: 700px) { .tierRow { grid-template-columns: 180px 1fr; align-items: center; } }

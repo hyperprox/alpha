@@ -1193,6 +1193,39 @@ those summaries are not sent. API tokens, passwords, certificate fingerprints, t
 copy folders HyperProx stores are never sent. A reason Proxmox gives for a failed backup, and what a plug-in
 reports, are passed on as they were written.
 
+### AI operator (tiers)
+
+**AI → Operator** is a question box that sends each question to the cheapest model that can answer it, and moves
+up only when it has to. There are four tiers, cheapest first: a **local model** (any server that speaks the OpenAI
+chat format, so nothing leaves your network), then **Haiku**, **Sonnet** and **Opus** from Anthropic. In this first
+version it answers questions and drafts; it does not change anything on your cluster.
+
+- **Where a question starts.** A request to build something (a script, a service) starts on Sonnet. Anything else,
+  such as a fault, starts on the local model. Start a question with "ask Sonnet:" (or Haiku, Opus, local) to pick the
+  tier yourself.
+- **When it moves up.** Every answer says how sure the model is. A low-confidence answer goes to the next tier that
+  is switched on and set up, and a tier that is off is never called. So does the same problem coming back within two
+  hours, and a fix that you report did not work. One question tries at most four tiers. Every answer is labelled
+  with the tier and model that gave it and the tiers tried before it.
+- **Opus asks first.** By default Opus never runs on its own: you see why, and exactly what would be sent, and
+  approve it once. The approval works for that question only and expires after five minutes. You can turn this off under **Safety**.
+- **Spend.** Each call is recorded with its tokens and an estimated cost from a built-in price table (you can
+  override the prices through the settings API). A monthly cap in dollars (0 means none) is counted per calendar month
+  (UTC). Once it is used up, or a call would go over it, the cloud tiers are skipped and only the local model is used.
+  The local model costs nothing. These are estimates; your provider's invoice is the real figure.
+- **Privacy.** Before anything goes to Anthropic, IP addresses, domain names and the host part of web links are replaced with
+  placeholders such as `addr-1` and `host-1`, and put back in the reply you see. Switch this off under **Safety**
+  (that asks you to confirm). A list of keep-it-local topics keeps any question that mentions one of them on the
+  local model, whatever tier you ask for.
+- **Keys.** The Haiku, Sonnet and Opus tiers use the Anthropic key from **AI Assistant → Providers**. The local
+  model's key, if it needs one, is pasted on the Operator page and goes straight into the vault; the page only ever
+  shows "stored" or "not stored". Its address and the model names are ordinary settings in the database, not secrets.
+  If HyperProx is locked, the operator does nothing and says so. Changing settings and asking need an admin sign-in; an
+  API token cannot change them or ask. Viewers can read the tiers, the spend and the switches, but not the local server's address or the keep-it-local words.
+
+The AI assistant can answer questions about the operator's own setup (which tiers are ready, the month's spend), and
+never sees keys or your questions.
+
 ### Catalogue
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
