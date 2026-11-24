@@ -97,9 +97,9 @@ export type OperatorResult =
       /** What a lower tier already said, when this came about by escalation. */
       partial?: { answer: string; tier: Tier; confidence: Confidence }
     })
-  | { status: 'refused'; code: RefusalCode; message: string; chain: ChainStep[]; notes: string[] }
+  | { status: 'refused'; code: RefusalCode; message: string; chain: ChainStep[]; notes: string[]; retryWith?: Tier }
 
-export type RefusalCode = 'vault_locked' | 'empty' | 'tier_unavailable' | 'no_tier' | 'approval_invalid' | 'cap' | 'no_answer'
+export type RefusalCode = 'vault_locked' | 'empty' | 'tier_unavailable' | 'no_tier' | 'approval_invalid' | 'cap' | 'no_answer' | 'tier_error'
 
 // ── Prompts and schemas ─────────────────────────────────────────────────────
 
@@ -294,6 +294,8 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
   let idx = order.indexOf(first)
   let capStopped = false
   let totalCost = 0
+  // A tier that failed (bad key, offline, 5xx, no usable reply). Never a reason to try another tier: only a quality signal moves up.
+  let failed: Tier | null = null
 
   const finishApproval = async (): Promise<OperatorResult> => {
     const { token, expiresAt } = mintConfirm(input.userRef, approvalBinding(question), now.getTime())
@@ -335,6 +337,8 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
       if (payload.confidence !== 'low') break
     } catch (e) {
       chain.push({ tier, model, outcome: 'error', note: plainError(e) })
+      failed = tier
+      break
     }
     idx++
   }
@@ -351,6 +355,14 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
       best = { payload, tier: 'local', model }
     } catch (e) { chain.push({ tier: 'local', model, outcome: 'error', note: plainError(e) }) }
   }
+
+  if (failed && !best) {
+    const alt = nextUsableAfter(failed)
+    const retryWith = alt === 'haiku' || alt === 'sonnet' ? alt : undefined
+    await auditRow(deps, input, 'refused', chain, cls.problemClass, redactedAny, totalCost)
+    return { ...refuse('tier_error', `${tierName(failed).replace(/^the/, 'The')} is unreachable (bad key or offline) — nothing was sent elsewhere.`, chain, notes), ...(retryWith ? { retryWith } : {}) }
+  }
+  if (failed && best) notes.push(`${tierName(failed)} could not be reached, so this is the answer from ${tierName(best.tier)}. Nothing further was tried.`)
 
   if (!best) {
     const msg = capStopped ? 'The monthly cap stopped the cloud tiers and the local model could not answer.' : 'No tier could answer. ' + (chain.find(c => c.outcome === 'error')?.note ?? '')

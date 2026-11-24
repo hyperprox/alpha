@@ -170,15 +170,44 @@ test('escalation never calls a disabled tier', async () => {
   assert.ok(!r.calls.some(c => c.tier === 'haiku'))
 })
 
-test('a tier that errors escalates; the error is in the chain in plain words', async () => {
-  const r = rig()
-  r.script.local = [{ fail: true }]
-  const out = await ask(r, 'Why is the backup failing')
-  assert.equal(out.status, 'answered')
-  if (out.status === 'answered') {
-    assert.deepEqual(out.chain.map(c => c.outcome), ['error', 'answered'])
-    assert.equal(out.tier, 'haiku')
+test('a failing tier never escalates: local down returns an error and sends nothing to the cloud', async () => {
+  for (const msg of ['HTTP 401 unauthorized', 'request timed out', 'HTTP 503 bad gateway', 'ECONNREFUSED']) {
+    const r = rig()
+    r.deps.call = async a => { r.calls.push(a); if (a.tier === 'local') throw new Error(msg); throw new Error('cloud must not be called') }
+    const out = await ask(r, 'Why is the backup failing')
+    assert.equal(out.status, 'refused', msg)
+    if (out.status !== 'refused') return
+    assert.equal(out.code, 'tier_error')
+    assert.match(out.message, /nothing was sent elsewhere/)
+    assert.equal(out.retryWith, 'haiku')
+    assert.deepEqual(out.chain.map(c => c.outcome), ['error'])
+    assert.ok(!r.calls.some(c => c.tier !== 'local'), 'no cloud call')
   }
+})
+
+test('a cloud tier failing with 401 does not fall through to the next cloud tier', async () => {
+  const r = rig()
+  r.deps.call = async a => { r.calls.push(a); if (a.tier === 'haiku') throw new Error('HTTP 401 invalid x-api-key'); return { value: { answer: 'x', confidence: 'high', verified: null }, usage: null } }
+  const out = await ask(r, 'ask Haiku: why is the backup failing')
+  assert.equal(out.status, 'refused')
+  if (out.status === 'refused') assert.equal(out.code, 'tier_error')
+  assert.deepEqual(r.calls.filter(c => c.name === 'operator_answer').map(c => c.tier), ['haiku'])
+})
+
+test('a failure above a low-confidence answer keeps that answer and stops', async () => {
+  const r = rig()
+  r.script.local = [{ confidence: 'low', answer: 'local guess' }]
+  r.script.haiku = [{ fail: true }]
+  const out = await ask(r, 'Why is the backup failing')
+  assert.equal(out.status === 'answered' && out.tier, 'local')
+  assert.ok(!r.calls.some(c => c.tier === 'sonnet'))
+})
+
+test('low confidence still escalates to the next tier', async () => {
+  const r = rig()
+  r.script.local = [{ confidence: 'low' }]
+  const out = await ask(r, 'Why is the backup failing')
+  assert.equal(out.status === 'answered' && out.tier, 'haiku')
 })
 
 test('escalation never runs Opus without approval; the lower answer comes with the request', async () => {

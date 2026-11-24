@@ -1205,7 +1205,7 @@ version it answers questions and drafts; it does not change anything on your clu
   tier yourself.
 - **When it moves up.** Every answer says how sure the model is. A low-confidence answer goes to the next tier that
   is switched on and set up, and a tier that is off is never called. So does the same problem coming back within two
-  hours, and a fix that you report did not work. One question tries at most four tiers. Every answer is labelled
+  hours, and a fix that you report did not work. One question tries at most four tiers. A model that cannot be reached (wrong key, offline, server error) never moves the question up: you get a plain error and nothing is sent to another model. Every answer is labelled
   with the tier and model that gave it and the tiers tried before it.
 - **Opus asks first.** By default Opus never runs on its own: you see why, and exactly what would be sent, and
   approve it once. The approval works for that question only and expires after five minutes. You can turn this off under **Safety**.

@@ -21,6 +21,12 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-24 — AI operator: a broken tier no longer sends your question elsewhere
+
+### Fixed
+- If a model cannot be reached (wrong or missing key, offline, a server error), the operator now tells you so and stops. Before, it passed the question on to the cloud models. It moves up a tier only when the answer is not good enough: low confidence, a fix that did not work, the same problem again, a build request, or a tier you chose yourself.
+    - Technical: `askOperator` stops at the first tier that throws and returns `refused` / `tier_error` with `retryWith` (haiku or sonnet) for a one-click retry; a lower answer already in hand is kept.
+
 ## 2026-11-24 — AI operator: the handbook and live readings
 
 ### New
