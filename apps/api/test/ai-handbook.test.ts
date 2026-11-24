@@ -157,7 +157,6 @@ test('a markdown playbook is read into its fields, and written back out the same
 
 test('a bad playbook is refused in words, never thrown', () => {
   assert.equal(parsePlaybookMarkdown('no frontmatter here').ok, false)
-  assert.equal(parsePlaybookMarkdown('---\ntitle: [unclosed\n---\n').ok, false)
   const noTitle = parsePlaybookMarkdown('---\ntags: [a]\n---\n## Fix\nx')
   assert.equal(noTitle.ok, false)
   assert.equal(normalizePlaybook({ title: 'x', severity: 'nonsense', source: 'nonsense' }).ok, true)
@@ -165,10 +164,34 @@ test('a bad playbook is refused in words, never thrown', () => {
   assert.ok(n.ok && n.value.severity === 'medium' && n.value.source === 'user' && n.value.approved === false)
 })
 
-test('house rules: bullets become rules (sub-bullets joined), the rest stays as text', () => {
+test('a hand-written playbook with a colon or quote in a symptom is still read', () => {
+  const md = `---
+title: Odd "quotes" and colons
+tags: [a, 'b c']
+symptoms:
+  - log says "failed: no space left"
+  - the job shows state: error
+severity: low
+area: jobs
+---
+## Fix
+Do the thing.
+`
+  const r = parsePlaybookMarkdown(md, 'odd.md')
+  assert.ok(r.ok)
+  if (!r.ok) return
+  assert.deepEqual(r.value.symptoms, ['log says "failed: no space left"', 'the job shows state: error'])
+  assert.deepEqual(r.value.tags, ['a', 'b c'])
+  assert.equal(r.value.title, 'Odd "quotes" and colons')
+  assert.equal(r.value.severity, 'low')
+  assert.equal(parsePlaybookMarkdown('---\n???\n---\n').ok, false)
+})
+
+test('house rules: bullets become rules (sub-bullets joined, headed by their section), the rest stays as text', () => {
   const r = parseRulesMarkdown(RULES_MD)
   assert.equal(r.rules.length, 3)
-  assert.match(r.rules[1], /waiting, not dead\. Judge it only after/)
+  assert.match(r.rules[1], /^Downloads: A queued torrent is waiting, not dead\. Judge it only after/)
+  assert.match(r.rules[2], /^Cluster: Never restart/)
   assert.match(r.text, /Where a rule conflicts/)
   assert.doesNotMatch(r.text, /Never pause/)
 })

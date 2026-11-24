@@ -49,7 +49,7 @@ function index(p: Playbook): Indexed {
 export const WEIGHTS = { tags: 3, title: 3, symptoms: 2.2, area: 1, body: 0.45 } as const
 /** A playbook must reach this to be offered at all, and a fraction of the best one's score to stay. */
 export const MIN_SCORE = 2.5
-export const KEEP_FRACTION = 0.4
+export const KEEP_FRACTION = 0.6
 
 export interface Ranked { playbook: Playbook; score: number; why: string[] }
 
