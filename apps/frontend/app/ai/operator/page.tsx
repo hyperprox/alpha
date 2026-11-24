@@ -4,7 +4,7 @@
 //  HyperProx — AI, Operator, Tiers
 //
 //  The ladder of models the operator climbs (local, Haiku, Sonnet, Opus), what each costs, what is hidden before
-//  anything leaves, and a box to ask it a question. The local model's key is pasted here and goes straight to the
+//  anything leaves. Asking it a question happens in the AI side panel, on every page. The local model's key is pasted here and goes straight to the
 //  vault: this page is only ever told "stored" or "not stored".
 // =============================================================================
 
@@ -12,10 +12,10 @@ import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { apiJson } from '@/lib/api'
 import { Page, HudHeader, Panel } from '@/components/visual/kit'
-import { AnswerCard, Ladder, SpendMeter } from '@/components/ai/operator/OperatorView'
+import { Ladder, SpendMeter } from '@/components/ai/operator/OperatorView'
 import s from '@/components/ai/operator/operator.module.css'
 import f from './form.module.css'
-import { TIERS, parseTopics, tierWord, type OperatorResult, type Spend, type Tier, type TierStatus } from '@/lib/operator-view'
+import { TIERS, parseTopics, tierWord, type Spend, type Tier, type TierStatus } from '@/lib/operator-view'
 
 interface Settings {
   tiers: Record<Tier, { enabled: boolean; model: string }>
@@ -36,11 +36,6 @@ export default function OperatorPage() {
   const [saved, setSaved] = useState('')
   const [topics, setTopics] = useState('')
   const [keyText, setKeyText] = useState('')
-  const [question, setQuestion] = useState('')
-  const [force, setForce] = useState<'auto' | Tier>('auto')
-  const [result, setResult] = useState<OperatorResult | null>(null)
-  const [askedText, setAskedText] = useState('')
-  const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
     const [a, b, c] = await Promise.all([
@@ -73,18 +68,6 @@ export default function OperatorPage() {
     await load()
   }
 
-  const ask = async (approval?: string) => {
-    setBusy(true); setError('')
-    const text = approval ? askedText : question
-    if (!approval) setAskedText(question)
-    const r = await apiJson<{ result: OperatorResult }>(approval ? '/api/ai/operator/ask/approve' : '/api/ai/operator/ask', 'POST',
-      approval ? { text, approval } : { text, force: force === 'auto' ? null : force })
-    setBusy(false)
-    if (!r.ok) { setError(r.error ?? 'The operator did not answer.'); return }
-    setResult(r.body!.result)
-    void load()
-  }
-
   if (!settings) {
     return <Page><p className={f.hint}>{error || 'Loading the operator...'}</p></Page>
   }
@@ -100,7 +83,7 @@ export default function OperatorPage() {
           { label: 'Opus', value: settings.opusNeedsApproval ? 'asks first' : 'runs freely', tone: settings.opusNeedsApproval ? 'good' : 'warn' },
           { label: 'Privacy', value: settings.redactBeforeCloud ? 'hidden before cloud' : 'not hidden', tone: settings.redactBeforeCloud ? 'good' : 'warn' },
         ]} />
-      <p className={f.hint}><Link href="/ai">Back to AI</Link> · <Link href="/ai/handbook">Handbook: playbooks and house rules</Link></p>
+      <p className={f.hint}><Link href="/ai">Back to AI</Link> · <Link href="/ai/handbook">Handbook: playbooks and house rules</Link> · Ask the operator in the AI side panel, on the right of every page.</p>
 
       {locked && <p className={f.notice} role="status">HyperProx is locked, so keys cannot be read or saved. Sign in to unlock it.</p>}
       {error && <p className={f.error} role="alert">{error}</p>}
@@ -108,22 +91,6 @@ export default function OperatorPage() {
 
       <Panel title="The ladder" sub="A question starts on the cheapest tier that can handle it and moves up only when it has to.">
         <Ladder tiers={tiers} />
-      </Panel>
-
-      <Panel title="Ask the operator" sub="Try it here. Start your question with “ask Sonnet:” (or Haiku, Opus, local) to choose a tier yourself.">
-        <label className={f.field}>
-          <span className={f.label}>Your question</span>
-          <textarea className={f.input} rows={4} maxLength={8000} value={question} onChange={e => setQuestion(e.target.value)} placeholder="Why is the nightly backup slow?" />
-        </label>
-        <label className={f.field}>
-          <span className={f.label}>Which tier</span>
-          <select className={f.input} value={force} onChange={e => setForce(e.target.value as any)}>
-            <option value="auto">Automatic (recommended)</option>
-            {TIERS.map(t => <option key={t} value={t}>Always {tierWord(t)}</option>)}
-          </select>
-        </label>
-        <button type="button" className={s.primary} disabled={busy || !question.trim() || locked} onClick={() => void ask()}>{busy ? 'Thinking...' : 'Ask'}</button>
-        {result && <AnswerCard result={result} busy={busy} onApprove={result.status === 'needs_approval' ? () => void ask(result.approvalToken) : undefined} />}
       </Panel>
 
       <Panel title="Spend" sub="Estimated from token counts, not billed. Your provider's invoice is the real figure.">

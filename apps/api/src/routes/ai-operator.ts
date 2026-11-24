@@ -13,6 +13,8 @@
 //    GET  /spend           viewer: this month's estimated spend against the cap
 //    POST /ask             admin: ask a question; the answer says which tier gave it and which were tried. Opus asks
 //                          first (status needs_approval) unless the setting is off.
+//                          `item` (optional) is the one Arr Stack download the person pointed at; the answer may then carry `proposals`
+//                          (lib/ai/operator/fixes.ts): fixes to show as cards. Nothing is run by the operator.
 //    POST /ask/approve     admin: the same question again with the single-use approval token from /ask
 //  Every write is a signed-in admin's act: API tokens are refused by name (tokenForbidden).
 // =============================================================================
@@ -27,6 +29,7 @@ import { currentOperatorService } from '../lib/ai/operator/production'
 import type { OperatorService } from '../lib/ai/operator/service'
 import { isTier, type OperatorSettings } from '../lib/ai/operator/types'
 import type { AskInput } from '../lib/ai/operator/router'
+import { parseItem } from '../lib/ai/operator/fixes'
 
 const MAX_QUESTION = 8000
 const MAX_KEY = 600
@@ -117,11 +120,14 @@ export function makeOperatorRoutes(deps: { service?: () => OperatorService | nul
       if (b.text.length > MAX_QUESTION) return sendRefusal(reply, 400, 'invalid', 'That question is too long. Keep it under 8,000 characters.')
       if (b.force !== undefined && b.force !== null && b.force !== '' && b.force !== 'auto' && !isTier(b.force)) return sendRefusal(reply, 400, 'invalid', 'Pick local, haiku, sonnet or opus, or leave the tier on automatic.')
       if (approving && (typeof b.approval !== 'string' || !b.approval)) return sendRefusal(reply, 400, 'invalid', 'This needs the approval from the first answer.')
+      const item = b.item === undefined || b.item === null ? null : parseItem(b.item)
+      if (b.item !== undefined && b.item !== null && !item) return sendRefusal(reply, 400, 'invalid', 'That item could not be read. Ask again from the page.')
       const sid = req.session?.sid
       if (!sid) return sendRefusal(reply, 401, 'signed_out', 'Sign in to ask the operator.')
       const input: AskInput = {
         text: b.text, source: 'ui', userRef: sid, actor: String(who() ?? ''), role: String(req.session?.role ?? ''),
         force: isTier(b.force) ? b.force : null,
+        ...(item ? { item } : {}),
         ...(approving ? { approval: b.approval } : {}),
         ...(b.attempt && typeof b.attempt.verified === 'boolean' ? { attempt: { verified: b.attempt.verified, ...(isTier(b.attempt.tier) ? { tier: b.attempt.tier } : {}) } } : {}),
         ...(typeof b.fingerprint === 'string' && b.fingerprint ? { fingerprint: b.fingerprint.slice(0, 80) } : {}),

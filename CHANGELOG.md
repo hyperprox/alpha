@@ -21,6 +21,19 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-24 — The AI side panel
+
+### New
+- The AI now sits in a panel on the right of every page, so you can ask without leaving what you are doing. Drag its edge to resize it, fold it to a thin rail, and it remembers how you left it. The conversation stays while you move between pages. On a phone it is a round button that opens a full-height sheet.
+- The panel knows which page you are on. On Arr Stack's Downloading tab, **Ask about this** sends one download to the panel, so "why is this stuck?" is about that download.
+- Each answer shows which tier gave it and the playbooks it used. You can force a tier, approve Opus right in the conversation, and see this month's spend against your cap. A slow local answer shows a working line with the seconds counting while you keep using the page.
+- When a model cannot be reached, the panel offers a button such as **Ask Haiku instead**. Nothing is sent to another model until you press it.
+- For a download you pointed at, an answer can suggest fixes as cards (look for another copy, retry the import, move it to the top). They do nothing until you press the button, and they use the same admin check, confirmation and audit as the ⋯ menu.
+
+### Improved
+- The AI assistant moved into the panel's **Assistant** tab. The AI page keeps the models and providers, and AI → Operator keeps only the operator's settings.
+    - Technical: `components/ai/panel/*` (state in `AiPanelProvider`, mounted in `AppShell`), `components/ai/AssistantChat.tsx` (the former wizard tab), `lib/ai-panel.ts`. `POST /api/ai/operator/ask` and `/ask/approve` take an optional `item` (one Arr queue download); an answer then carries `proposals` from `lib/ai/operator/fixes.ts`, limited to find-another, retry-import and prioritise for that download. Cards call `/api/plugins/arrstack/queue/actions`. Open state and width are in localStorage per user; the conversation is in sessionStorage.
+
 ## 2026-11-24 — AI operator: a broken tier no longer sends your question elsewhere
 
 ### Fixed

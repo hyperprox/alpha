@@ -1084,7 +1084,7 @@ Admin-only. See [docs/updates.md](docs/updates.md).
 
 ### AI Assistant
 
-Type a question ("how many containers are running?") or a request ("deploy Gitea at
+Open the **Assistant** tab of the AI side panel (it moved there from the AI page, so it stays open on every page), then type a question ("how many containers are running?") or a request ("deploy Gitea at
 git.example.com"). Questions are answered from live summaries of the cluster, DNS, proxy, certificates
 and plug-ins, and common ones are answered without calling a model. Requests become a plan built from
 the real cluster (nodes, free memory, storage, DNS zones, free IDs) and checked before you see it; the
@@ -1193,9 +1193,23 @@ those summaries are not sent. API tokens, passwords, certificate fingerprints, t
 copy folders HyperProx stores are never sent. A reason Proxmox gives for a failed backup, and what a plug-in
 reports, are passed on as they were written.
 
+### AI side panel
+
+The AI sits in a panel on the right of every page, so you can ask without leaving what you are doing. It is not on the sign-in page.
+
+- **Always there.** Drag its left edge (or press the left and right arrow keys on it) to change the width, between 300 and 640 px and never more than half the window. The arrow at the top folds it to a thin rail. Open or folded, and the width, are remembered for each person in that browser. The conversation stays while you move between pages and is kept for the browser session; **Clear** empties it.
+- **On a phone** (768 px wide or less) it is a round button in the corner that opens a full-height sheet. The conversation is the same one.
+- **It knows where you are.** Each question carries the name of the page. On Arr Stack's Downloading tab, **Ask about this** on a row sends that download to the panel, so "why is this stuck?" is about that item. Only admins see the button. Other pages do not have it yet.
+- **Ask tab.** This is the operator (see AI operator below). Every answer shows which tier gave it and the playbooks it used. **Tier** lets you force one tier instead of Automatic. The month's estimated spend against your cap is at the top. If Opus needs your OK, the approval is in the conversation, with exactly what would be sent. If a model cannot be reached, the answer says so and offers a button such as **Ask Haiku instead**. Nothing is sent to another model until you press it.
+- **Slow answers.** A local model can take a minute or two. The panel shows that it is working, with the seconds counting, and the rest of the page stays usable meanwhile. HyperProx waits for the whole answer; it does not show it word by word.
+- **Proposed fixes.** When you point the panel at one Arr Stack download, the answer can suggest fixes as cards: look for another copy, retry the import, or move it to the top. The operator only suggests them. A card does nothing until you press its button, and then it runs the same action as the ⋯ menu on that row, with the same admin role, confirmation and audit entry. Looking for another copy shows what it would remove first, and then asks you to confirm.
+- **Assistant tab.** The AI assistant, described in the next section, moved here from the AI page. **AI** keeps the models and providers, and **AI → Operator** keeps only the operator's settings.
+
+The Ask tab needs the admin role. Without it the panel says so and the box is switched off.
+
 ### AI operator (tiers)
 
-**AI → Operator** is a question box that sends each question to the cheapest model that can answer it, and moves
+**AI → Operator** holds the operator's settings. You ask it questions in the AI side panel, which sends each question to the cheapest model that can answer it, and moves
 up only when it has to. There are four tiers, cheapest first: a **local model** (any server that speaks the OpenAI
 chat format, so nothing leaves your network), then **Haiku**, **Sonnet** and **Opus** from Anthropic. In this first
 version it answers questions and drafts; it does not change anything on your cluster.

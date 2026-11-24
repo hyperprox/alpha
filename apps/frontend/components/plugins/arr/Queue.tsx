@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { apiJson, failureText } from '@/lib/api'
 import { Panel, ProgressBar, styles as s } from '@/components/visual/kit'
+import { AskAbout } from '@/components/ai/panel/AskAbout'
 import { ActionBox, ActionResults, ActionsProvider, ClearDone, FixChoices, ItemMenu, SeasonActions, itemKey, useFix, type FixTarget, type Instance } from './QueueActions'
 import { KIND_WORD, findableId, leftWord, sizeWord, type PlainChild, type PlainData, type PlainDownload, type PlainItem } from './arr-plain'
 import c from './queue.module.css'
@@ -130,6 +131,7 @@ export function FileRow({ pd, d, instance, title, canFindBetter }: { pd: PlainDo
       <div className={c.fileHead}>
         <span className={c.fileLeft}>{leftWord(pd.sizeLeft) || 'nothing left to fetch'} of {sizeWord(pd.size)}{pd.episodes > 1 ? ` · ${plural(pd.episodes, 'episode')}${d?.episodeRange ? ` (${d.episodeRange})` : ''}` : ''}</span>
         <Status state={pd.state} text={pd.text} />
+        <AskAbout item={{ kind: 'arr-queue', instance, downloadId: pd.id, title, detail: pd.text }} />
         <ItemMenu t={target} fix={fix} />
       </div>
       <ProgressBar value={pd.progress} variant={pd.state === 'stuck' ? 'stall' : 'normal'} label={`${title}: ${pd.progress}%`} />
@@ -193,6 +195,7 @@ export function ItemRow({ it, dmap, swapSingles }: { it: PlainItem; dmap: Map<st
           </span>
           <Status state={it.state} text={it.text} />
         </button>
+        {(it.problemIds[0] ?? it.downloadIds[0]) && <AskAbout item={{ kind: 'arr-queue', instance: it.instance, downloadId: it.problemIds[0] ?? it.downloadIds[0], title: it.title, detail: `${KIND_WORD[it.kind]} · ${it.text}` }} />}
         <ItemMenu t={target} fix={fix} />
       </div>
       <div className={c.thin} aria-hidden><i style={{ width: `${Math.max(0, Math.min(100, it.progress))}%` }} /></div>

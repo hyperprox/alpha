@@ -5,6 +5,7 @@
 //  Nothing here reads a secret: a tier is called through `deps.call`, which fetches its own key from the vault.
 // =============================================================================
 
+import { FIXES_SCHEMA, FIX_NOTE, proposalsFor, type AskItem, type FixProposal } from './fixes'
 import { createHash } from 'node:crypto'
 import { mintConfirm, takeConfirm } from '../../confirm'
 import {
@@ -71,6 +72,8 @@ export interface AskInput {
   fingerprint?: string
   /** For the audit row: who, in words. */
   actor?: string
+  /** The one item the person pointed at ("Ask about this"). The answer may then carry proposed fixes for it. */
+  item?: AskItem
   /** The asker's role. The live readings are taken with it, so a question never shows more than the page would. */
   role?: string
 }
@@ -88,6 +91,8 @@ export type OperatorResult =
       costUsd: number; redacted: boolean; localOnly: boolean; spend: SpendInfo
       /** The playbooks the answer used, the areas read live, and how many house rules were given. */
       used: Used
+      /** Fixes the panel may offer as cards: only for `item`, only the known safe actions. Nothing here has run. */
+      proposals?: FixProposal[]
       /** A playbook a cloud tier drafted from this answer, waiting for approval in the handbook. */
       drafted?: { id: string; title: string }
     })
@@ -129,7 +134,10 @@ const DRAFT_SCHEMA = {
 } as const
 
 /** The answer shape; cloud tiers asked about a fault may also draft a playbook. */
-export const answerSchema = (draft: boolean) => (draft ? { ...ANSWER_SCHEMA, properties: { ...ANSWER_SCHEMA.properties, draft: DRAFT_SCHEMA } } : ANSWER_SCHEMA)
+export const answerSchema = (draft: boolean, fixes = false) =>
+  draft || fixes
+    ? { ...ANSWER_SCHEMA, properties: { ...ANSWER_SCHEMA.properties, ...(draft ? { draft: DRAFT_SCHEMA } : {}), ...(fixes ? { fixes: FIXES_SCHEMA } : {}) } }
+    : ANSWER_SCHEMA
 
 const CLASS_SCHEMA = {
   type: 'object',
@@ -168,7 +176,7 @@ export function normalizeAnswer(v: unknown): AnswerPayload {
   if (typeof c === 'number' && Number.isFinite(c)) confidence = c < 0.4 ? 'low' : c < 0.75 ? 'medium' : 'high'
   else if (c === 'low' || c === 'medium' || c === 'high') confidence = c
   const used = Array.isArray(o.used) ? o.used.filter((n): n is number => Number.isInteger(n) && n > 0).slice(0, 10) : undefined
-  return { answer: o.answer, confidence, verified: typeof o.verified === 'boolean' ? o.verified : null, ...(used ? { used } : {}), ...(o.draft && typeof o.draft === 'object' ? { draft: o.draft } : {}) }
+  return { answer: o.answer, confidence, verified: typeof o.verified === 'boolean' ? o.verified : null, ...(used ? { used } : {}), ...(o.draft && typeof o.draft === 'object' ? { draft: o.draft } : {}), ...(Array.isArray(o.fixes) ? { fixes: o.fixes } : {}) }
 }
 
 export function approvalBinding(question: string): string { return sha(JSON.stringify(['ai.operator.opus', question])) }
@@ -327,7 +335,7 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
     }
     try {
       const drafting = isCloud(tier) && !!deps.playbooks && cls.problemClass !== 'build'
-      const r = await deps.call({ tier, model, system: drafting ? SYSTEM + DRAFT_NOTE : SYSTEM, user: sendText, schema: answerSchema(drafting) as any, name: 'operator_answer' })
+      const r = await deps.call({ tier, model, system: SYSTEM + (drafting ? DRAFT_NOTE : '') + (input.item ? FIX_NOTE : ''), user: sendText, schema: answerSchema(drafting, !!input.item) as any, name: 'operator_answer' })
       const payload = normalizeAnswer(r.value)
       const u = r.usage ?? { inputTokens: roughTokens(sendText + SYSTEM), outputTokens: roughTokens(payload.answer) }
       const cost = await recordUsage(deps, settings, tier, model, u, now, input.source)
@@ -347,7 +355,7 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
   if (!best && capStopped && usable('local') && !chain.some(c => c.tier === 'local')) {
     const model = settings.tiers.local.model
     try {
-      const r = await deps.call({ tier: 'local', model, system: SYSTEM, user: withContext, schema: ANSWER_SCHEMA as any, name: 'operator_answer' })
+      const r = await deps.call({ tier: 'local', model, system: SYSTEM + (input.item ? FIX_NOTE : ''), user: withContext, schema: answerSchema(false, !!input.item) as any, name: 'operator_answer' })
       const payload = normalizeAnswer(r.value)
       const u = r.usage ?? { inputTokens: roughTokens(prompt + SYSTEM), outputTokens: roughTokens(payload.answer) }
       await recordUsage(deps, settings, 'local', model, u, now, input.source)
@@ -386,6 +394,7 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
     status: 'answered', answer: back(best.payload.answer) + label,
     used: { playbooks: usedPb, live: handbook?.live ?? [], rules: handbook?.rulesUsed ?? 0 },
     ...(drafted ? { drafted } : {}),
+    ...(input.item ? { proposals: proposalsFor(input.item, best.payload.fixes) } : {}),
     tier: best.tier, model: best.model, confidence: best.payload.confidence, verified: best.payload.verified ?? null,
     chain, problemClass: cls.problemClass, classifiedBy: cls.by, playbook: cls.playbook, notes,
     costUsd: totalCost, redacted: sentRedacted, localOnly: localOnlyTopic !== undefined,

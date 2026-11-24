@@ -7,7 +7,9 @@
 //  moves when the person prefers reduced motion (operator.module.css). Stroke icons only.
 // =============================================================================
 
+import type { ReactNode } from 'react'
 import s from './operator.module.css'
+import { retryLabel, stripPlaybookLabel } from '@/lib/ai-panel'
 import {
   TIERS, TIER_BLURB, chainText, ladderState, ladderWord, spendPercent, spendSentence, spendTone, tierWord, usd, usedSentence,
   type OperatorResult, type Spend, type Tier, type TierStatus,
@@ -63,12 +65,17 @@ export function SpendMeter({ spend }: { spend: Spend }) {
   )
 }
 
-export function AnswerCard({ result, onApprove, busy }: { result: OperatorResult; onApprove?: () => void; busy?: boolean }) {
+/**
+ * One answer. `onRetry` is for a tier that failed: the button only sends when it is clicked, never by itself.
+ * `extra` is drawn under an answer (the panel's fix cards).
+ */
+export function AnswerCard({ result, onApprove, onRetry, busy, extra }: { result: OperatorResult; onApprove?: () => void; onRetry?: (t: Tier) => void; busy?: boolean; extra?: ReactNode }) {
   if (result.status === 'refused') {
     return (
       <div className={`${s.answer} ${s.answerWarn}`} role="alert">
         <p className={s.answerText}>{result.message}</p>
         {result.notes.map(n => <p key={n} className={s.hint}>{n}</p>)}
+        {result.retryWith && onRetry && <button type="button" className={s.primary} onClick={() => onRetry(result.retryWith!)} disabled={busy}>{retryLabel(result.retryWith)}</button>}
       </div>
     )
   }
@@ -92,11 +99,13 @@ export function AnswerCard({ result, onApprove, busy }: { result: OperatorResult
         <span className={s.badgeDim}>{result.model}</span>
         <span className={s.badgeDim}>confidence {result.confidence}</span>
       </div>
-      <p className={s.answerText}>{result.answer}</p>
+      <p className={s.answerText}>{stripPlaybookLabel(result.answer)}</p>
+      {result.used && result.used.playbooks.length > 0 && <p className={s.hint}>{`Playbooks used: ${result.used.playbooks.map(p => p.title).join('; ')}.`}</p>}
       <p className={s.hint}>{`Tried: ${chainText(result.chain)}. ${result.costUsd > 0 ? `Cost about ${usd(result.costUsd)}.` : 'No cost.'}${result.redacted ? ' Addresses and host names were hidden before it was sent.' : ''}`}</p>
       {usedSentence(result.used) && <p className={s.hint}>{usedSentence(result.used)}</p>}
       {result.drafted && <p className={s.hint}>{`A draft playbook, "${result.drafted.title}", was saved in the Handbook. It waits for your approval.`}</p>}
       {result.notes.map(n => <p key={n} className={s.hint}>{n}</p>)}
+      {extra}
     </div>
   )
 }

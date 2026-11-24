@@ -1,5 +1,7 @@
 // The AI operator page's words and numbers, kept apart from the markup so they can be tested.
 
+import type { FixProposal } from '@/lib/ai-panel'
+
 export type Tier = 'local' | 'haiku' | 'sonnet' | 'opus'
 export const TIERS: Tier[] = ['local', 'haiku', 'sonnet', 'opus']
 
@@ -21,9 +23,9 @@ export function usedSentence(u: Used | undefined): string {
 }
 
 export type OperatorResult =
-  | { status: 'answered'; answer: string; tier: Tier; model: string; confidence: string; chain: ChainStep[]; notes: string[]; costUsd: number; redacted: boolean; localOnly: boolean; used?: Used; drafted?: { id: string; title: string } }
+  | { status: 'answered'; answer: string; tier: Tier; model: string; confidence: string; chain: ChainStep[]; notes: string[]; costUsd: number; redacted: boolean; localOnly: boolean; used?: Used; drafted?: { id: string; title: string }; proposals?: FixProposal[]; spend?: Spend }
   | { status: 'needs_approval'; tier: 'opus'; model: string; reason: string; promptPreview: string; approvalToken: string; chain: ChainStep[]; notes: string[]; partial?: { answer: string; tier: Tier; confidence: string } }
-  | { status: 'refused'; code: string; message: string; chain: ChainStep[]; notes: string[] }
+  | { status: 'refused'; code: string; message: string; chain: ChainStep[]; notes: string[]; retryWith?: Tier }
 
 export const tierWord = (t: Tier): string => (t === 'local' ? 'Local model' : t[0].toUpperCase() + t.slice(1))
 
