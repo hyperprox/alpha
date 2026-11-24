@@ -15,10 +15,15 @@
 //                          first (status needs_approval) unless the setting is off.
 //                          `item` (optional) is the one Arr Stack download the person pointed at; the answer may then carry `proposals`
 //                          (lib/ai/operator/fixes.ts): fixes to show as cards. Nothing is run by the operator.
+//                          With `"async": true` in the body it answers at once with a job id (202) and works in the
+//                          background, so no proxy or browser timeout sits between a slow local model and the answer.
+//    GET  /ask/:id         admin: the job's state: running (with seconds), done (with the same `result` /ask returns) or
+//                          failed. Only the session that asked can read it. A job is stopped after 6 minutes.
 //    POST /ask/approve     admin: the same question again with the single-use approval token from /ask
 //  Every write is a signed-in admin's act: API tokens are refused by name (tokenForbidden).
 // =============================================================================
 
+import { randomUUID } from 'node:crypto'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { sendFailure, sendRefusal } from '../lib/failure'
 import { requireConfirm } from '../lib/confirm'
@@ -33,6 +38,12 @@ import { parseItem } from '../lib/ai/operator/fixes'
 
 const MAX_QUESTION = 8000
 const MAX_KEY = 600
+/** The longest an asynchronous question may run; after this the job fails with a plain sentence. */
+export const JOB_LIMIT_MS = 6 * 60_000
+/** How long a finished job stays readable. */
+const JOB_KEEP_MS = 10 * 60_000
+
+interface Job { owner: string; startedAt: number; state: 'running' | 'done' | 'failed'; result?: unknown; error?: string; endedAt?: number }
 
 /** Does this change make the operator less private or less restricted? Those are confirmed. */
 export function loosening(cur: OperatorSettings, next: OperatorSettings): string[] {
@@ -51,7 +62,7 @@ function changedFields(a: OperatorSettings, b: OperatorSettings): string[] {
   return out
 }
 
-export function makeOperatorRoutes(deps: { service?: () => OperatorService | null; audit?: typeof auditOrThrow } = {}): FastifyPluginAsync {
+export function makeOperatorRoutes(deps: { service?: () => OperatorService | null; audit?: typeof auditOrThrow; jobLimitMs?: number } = {}): FastifyPluginAsync {
   const svc = deps.service ?? currentOperatorService
   const audit = deps.audit ?? auditOrThrow
 
@@ -63,6 +74,9 @@ export function makeOperatorRoutes(deps: { service?: () => OperatorService | nul
   const fail = (req: FastifyRequest, reply: FastifyReply, e: unknown) =>
     sendFailure(req, reply, e, 'The AI operator could not do that. The details are in the log.', { status: 502 })
   const who = () => auditBy(contextActor()).by
+  const jobs = new Map<string, Job>()
+  const limitMs = deps.jobLimitMs ?? JOB_LIMIT_MS
+  const sweep = () => { const now = Date.now(); for (const [k, j] of jobs) if (j.endedAt && now - j.endedAt > JOB_KEEP_MS) jobs.delete(k) }
 
   return async fastify => {
     fastify.get('/settings', async (req, reply) => {
@@ -132,8 +146,32 @@ export function makeOperatorRoutes(deps: { service?: () => OperatorService | nul
         ...(b.attempt && typeof b.attempt.verified === 'boolean' ? { attempt: { verified: b.attempt.verified, ...(isTier(b.attempt.tier) ? { tier: b.attempt.tier } : {}) } } : {}),
         ...(typeof b.fingerprint === 'string' && b.fingerprint ? { fingerprint: b.fingerprint.slice(0, 80) } : {}),
       }
+      if (b.async === true) {
+        sweep()
+        if ([...jobs.values()].filter(j => j.owner === sid && j.state === 'running').length >= 3) return sendRefusal(reply, 429, 'busy', 'Three questions are already running. Wait for one to finish.')
+        const id = randomUUID()
+        const job: Job = { owner: sid, startedAt: Date.now(), state: 'running' }
+        jobs.set(id, job)
+        const finish = (patch: Partial<Job>) => { if (job.state === 'running') Object.assign(job, patch, { endedAt: Date.now() }) }
+        const timer = setTimeout(() => finish({ state: 'failed', error: `The operator took longer than ${Math.round(limitMs / 60_000)} minutes, so it was stopped. Try again, or pick a faster tier.` }), limitMs)
+        timer.unref?.()
+        s.ask(input).then(result => finish({ state: 'done', result }), e => {
+          req.log?.error?.({ err: e }, 'operator job failed')
+          finish({ state: 'failed', error: 'The AI operator could not do that. The details are in the log.' })
+        }).finally(() => clearTimeout(timer))
+        return reply.code(202).send({ ok: true, jobId: id })
+      }
       try { return reply.send({ ok: true, result: await s.ask(input) }) } catch (e) { return fail(req, reply, e) }
     }
+    fastify.get<{ Params: { id: string } }>('/ask/:id', async (req, reply) => {
+      const sid = req.session?.sid
+      const job = jobs.get(req.params.id)
+      if (!sid || !job || job.owner !== sid) return sendRefusal(reply, 404, 'not_found', 'That question is no longer running. Ask again.')
+      const seconds = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000)
+      if (job.state === 'running') return reply.send({ ok: true, state: 'running', seconds })
+      if (job.state === 'failed') return reply.send({ ok: true, state: 'failed', seconds, error: job.error })
+      return reply.send({ ok: true, state: 'done', seconds, result: job.result })
+    })
     fastify.post('/ask', (req, reply) => ask(req as any, reply, false))
     fastify.post('/ask/approve', (req, reply) => ask(req as any, reply, true))
   }

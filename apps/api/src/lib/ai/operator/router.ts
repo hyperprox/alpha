@@ -294,7 +294,7 @@ export async function askOperator(input: AskInput, deps: OperatorDeps | null = d
   const hosts = settings.redactBeforeCloud && deps.knownHosts ? await deps.knownHosts().catch(() => []) : []
   const prompt = (input.attempt?.verified === false ? `Note: a fix suggested earlier was tried and did not work.\n\n` : '') + question
   // What a tier is sent: the question, then the handbook and readings. The cloud copy has all of it hidden together.
-  const withContext = handbook?.block ? `${prompt}\n\n${handbook.block}` : prompt
+  const withContext = handbook?.block ? `${handbook.block}\n\nQUESTION:\n${prompt}` : prompt
   const red = settings.redactBeforeCloud ? redactForCloud(withContext, hosts) : { text: withContext, map: {} as Record<string, string> }
   const redactedAny = Object.keys(red.map).length > 0
 

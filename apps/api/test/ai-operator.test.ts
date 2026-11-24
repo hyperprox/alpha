@@ -640,3 +640,40 @@ test('the AI knowledge source summarises tiers, spend and privacy; locked it say
   const locked = await operatorSource({ unlocked: () => false, service: () => svc }).load()
   assert.equal(locked.locked, true)
 })
+
+test('routes: async ask returns a job id at once, the job is polled to its answer, and only its owner can read it', async () => {
+  const { app } = routeWorld()
+  const a = await app.inject({ method: 'POST', url: '/api/ai/operator/ask', payload: { text: 'Why is the backup failing', async: true } })
+  assert.equal(a.statusCode, 202)
+  const id = a.json().jobId
+  assert.ok(id)
+  let j: any
+  for (let i = 0; i < 50; i++) { j = (await app.inject({ method: 'GET', url: `/api/ai/operator/ask/${id}` })).json(); if (j.state !== 'running') break; await new Promise(r => setTimeout(r, 20)) }
+  assert.equal(j.state, 'done')
+  assert.deepEqual([j.result.status, j.result.tier], ['answered', 'local'])
+  const other = await app.inject({ method: 'GET', url: '/api/ai/operator/ask/not-a-job' })
+  assert.equal(other.statusCode, 404)
+})
+
+test('routes: an async job that runs past the limit fails with a plain sentence and a late answer is ignored', async () => {
+  const r = rig()
+  const svc: any = { ask: () => new Promise(res => setTimeout(() => res({ status: 'answered' }), 200)) }
+  const app = Fastify({ logger: false })
+  app.addHook('onRequest', async (req: any) => { req.session = { sid: 'sess-1', email: 'admin@example.org', role: 'admin' } })
+  app.register(makeOperatorRoutes({ service: () => svc, audit: async () => {}, jobLimitMs: 30 }), { prefix: '/api/ai/operator' })
+  const a = await app.inject({ method: 'POST', url: '/api/ai/operator/ask', payload: { text: 'slow one', async: true } })
+  const id = a.json().jobId
+  await new Promise(res => setTimeout(res, 300))
+  const j = (await app.inject({ method: 'GET', url: `/api/ai/operator/ask/${id}` })).json()
+  assert.equal(j.state, 'failed')
+  assert.match(j.error, /took longer than/)
+  void r
+})
+
+test('prompt: the house rules and playbooks come before the question, so the local server can reuse the prefix', async () => {
+  const r = rig()
+  r.deps.context = async () => ({ block: 'HOUSE RULES (x)\n1. rule', playbooks: [], live: [], rulesUsed: 1, notes: [] }) as any
+  await ask(r, 'Why is it slow')
+  const user = r.calls.find(c => c.name === 'operator_answer')!.user
+  assert.ok(user.indexOf('HOUSE RULES') < user.indexOf('Why is it slow'))
+})

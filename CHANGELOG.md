@@ -21,6 +21,13 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-24 — Slow local answers no longer time out
+
+### Fixed
+- A question the AI panel sends to a slow local model no longer fails with "HyperProx took too long to answer". The panel now starts the question and checks on it while the seconds count, so a long answer simply arrives. A question that runs past six minutes is stopped with a clear message.
+- Repeat questions start faster on a local model: the standing rules and playbooks now come first in the prompt and your question last, so the model can reuse what it already read.
+    - Technical: `POST /api/ai/operator/ask` accepts `async: true` and returns `202 {jobId}`; `GET /api/ai/operator/ask/:id` returns running, done or failed. Jobs are held in memory per session for 10 minutes. Without `async` the route behaves as before.
+
 ## 2026-11-24 — The AI side panel
 
 ### New

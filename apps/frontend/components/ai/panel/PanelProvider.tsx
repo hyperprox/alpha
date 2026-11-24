@@ -156,7 +156,20 @@ export function AiPanelProvider({ children }: { children: ReactNode }) {
   const run = useCallback(async (o: { full: string; item: PanelItem | null; page: string; force: Tier | null; approval?: string }) => {
     setPending({ startedAt: Date.now(), tier: o.force })
     const body = { text: o.full, force: o.force, ...(o.item ? { item: itemForApi(o.item) } : {}), ...(o.approval ? { approval: o.approval } : {}) }
-    const r = await apiJson<{ result: OperatorResult }>(o.approval ? '/api/ai/operator/ask/approve' : '/api/ai/operator/ask', 'POST', body)
+    // The question runs as a background job and the panel polls it, so a slow local model never hits a proxy or browser timeout.
+    const started = await apiJson<{ jobId: string }>(o.approval ? '/api/ai/operator/ask/approve' : '/api/ai/operator/ask', 'POST', { ...body, async: true })
+    let r: { ok: boolean; body: { result: OperatorResult } | null; error?: string } = { ok: false, body: null, error: started.error }
+    if (started.ok && started.body?.jobId) {
+      let misses = 0
+      for (;;) {
+        await new Promise(res => setTimeout(res, 1500))
+        const p = await apiJson<{ state: string; result?: OperatorResult; error?: string }>(`/api/ai/operator/ask/${encodeURIComponent(started.body.jobId)}`)
+        if (!p.ok) { if (p.status === 404 || ++misses > 5) { r = { ok: false, body: null, error: p.error }; break }; continue }
+        misses = 0
+        if (p.body?.state === 'done' && p.body.result) { r = { ok: true, body: { result: p.body.result } }; break }
+        if (p.body?.state === 'failed') { r = { ok: false, body: null, error: p.body.error }; break }
+      }
+    }
     setPending(null)
     const base = { id: newId(), role: 'assistant' as const, full: o.full, item: o.item, page: o.page }
     if (!r.ok || !r.body?.result) {

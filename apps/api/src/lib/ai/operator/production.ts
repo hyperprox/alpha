@@ -22,7 +22,7 @@ export function makeCall(baseUrl: () => Promise<string>): TierCall {
     if (a.tier === 'local') {
       const apiKey = (await getCredential(...LOCAL_KEY)) ?? ''
       const value = await callStructured(req, undefined, undefined, {
-        model: a.model, timeoutMs: a.timeoutMs, onUsage,
+        model: a.model, timeoutMs: a.timeoutMs ?? 330_000, onUsage,
         endpoint: { baseUrl: await baseUrl(), apiKey: apiKey || undefined, model: a.model },
       })
       return { value, usage }
