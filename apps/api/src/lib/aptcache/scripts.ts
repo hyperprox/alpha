@@ -128,7 +128,8 @@ CONF
   echo "apt-cacher-ng: ALL" >> "$tmp"; cat "$tmp" > /etc/hosts.deny; rm -f "$tmp"
   # At boot the service can start before eth0 has its address: apt-cacher-ng then fails to bind it, says so in one
   # log line and carries on listening on loopback only, so guests can never reach it. This drop-in makes the unit wait
-  # for the address first and fail (and so be restarted) if the address is still not bound once it is up.
+  # for the address first, and fail (so be restarted) only if the address exists yet is not bound. If the address never
+  # appears the check passes, so the cache keeps serving on loopback and never loops; the health check reports it.
   local ud=/etc/systemd/system/apt-cacher-ng.service.d
   mkdir -p "$ud"
   cat > "$ud/hyperprox-wait.conf" <<UNIT
@@ -138,7 +139,7 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 ExecStartPre=/bin/sh -c 'timeout 60 sh -c "until ip -4 -o addr show | grep -q inet.$LISTEN_IP/; do sleep 1; done" || true'
-ExecStartPost=/bin/sh -c 'ss -ltnH | grep -q $LISTEN_IP:$PORT'
+ExecStartPost=/bin/sh -c 'ip -4 -o addr show | grep -q inet.$LISTEN_IP/ || exit 0; ss -ltnH | grep -q $LISTEN_IP:$PORT'
 Restart=on-failure
 RestartSec=5
 UNIT

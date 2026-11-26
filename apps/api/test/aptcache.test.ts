@@ -675,6 +675,7 @@ test('apply: a systemd drop-in makes the unit wait for its LAN address and fail 
   assert.match(unit, /^After=network-online\.target$/m)
   assert.match(unit, /^ExecStartPre=.*grep -q inet\.10\.20\.30\.40\/.*$/m)
   assert.match(unit, /^ExecStartPost=.*grep -q 10\.20\.30\.40:3142'$/m)
+  assert.match(unit, /^ExecStartPost=.*\|\| exit 0;/m, 'no address at all must not fail the start')
   assert.match(unit, /^Restart=on-failure$/m)
   // The wait is bounded and never fails the start by itself.
   assert.match(unit, /timeout 60/); assert.match(unit, /\|\| true'$/m)
