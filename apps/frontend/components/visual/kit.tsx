@@ -125,6 +125,10 @@ export function RingGauge({ value, size = 84, stroke = 6, color = 'var(--hx-acce
   const c = 2 * Math.PI * r
   const rot = sweep >= 1 ? -90 : 90 + (360 * (1 - sweep)) / 2
   const mid = size / 2
+  // The number shrinks until it fits the ring's inner width (the ring pads 16% a side), however many digits it has ("41/42", "142/142").
+  // Never larger than the stylesheet's size, so rings whose numbers already fit look as before.
+  const chars = typeof text === 'string' || typeof text === 'number' ? String(text).length : 0
+  const fit = chars > 0 ? { fontSize: Math.max(10, Math.min(big ? 36.8 : 22.4, (size * 0.68) / (chars * 0.58))) } : undefined
   return (
     <div className={`${s.ring} ${big ? s.ringBig : ''}`} style={{ width: size, height: size }} role="img" aria-label={`${label}: ${typeof text === 'string' || typeof text === 'number' ? text : Math.round(clamp01(value) * 100) + '%'}`}>
       <svg viewBox={`0 0 ${size} ${size}`} aria-hidden>
@@ -142,7 +146,7 @@ export function RingGauge({ value, size = 84, stroke = 6, color = 'var(--hx-acce
       </svg>
       <div className={s.ringMid} aria-hidden>{compact
         ? <b style={{ fontSize: Math.max(10, Math.round(size * 0.27)), lineHeight: 1 }}>{text}</b>
-        : <><b>{text}</b><span>{label}</span></>}</div>
+        : <><b style={fit}>{text}</b><span>{label}</span></>}</div>
     </div>
   )
 }

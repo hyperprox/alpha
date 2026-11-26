@@ -114,18 +114,14 @@ export function LiveTvView({ tv, canAct, onAct, nowMs = Date.now() }: { tv: Live
       <div className={c.summary}>
         <RingGauge value={ringValue} size={84} big text={ringText} label={sync ? 'Present' : 'Playable'} color={bad ? 'var(--warn)' : 'var(--hx-accent)'} />
         <div className={c.facts}>
-          <div className={c.row}>
-            <Pill tone={tv.summary.viewers ? 'accent' : undefined}>{viewersWord(tv.summary.viewers)}</Pill>
-            <Pill tone={tv.summary.guideShort ? 'warn' : 'good'}>{hours === null ? 'Guide length unknown' : tv.summary.guideShort ? `Shortest guide ${hours} h` : `Guide ${hours} h or more`}</Pill>
-            <Pill tone={tv.version.behind ? 'warn' : undefined}>Tunarr {versionWord(tv.version)}</Pill>
-            {tv.version.ffmpeg && <Pill>FFmpeg {tv.version.ffmpeg}</Pill>}
-          </div>
+          <ul className={c.row} aria-label="Status">
+            <li><Pill tone={tv.summary.viewers ? 'accent' : undefined}>{viewersWord(tv.summary.viewers)}</Pill></li>
+            <li><Pill tone={tv.summary.guideShort ? 'warn' : 'good'}>{hours === null ? 'Guide length unknown' : tv.summary.guideShort ? `Shortest guide ${hours} h` : `Guide ${hours} h or more`}</Pill></li>
+            <li><Pill tone={tv.version.behind ? 'warn' : undefined}>Tunarr {versionWord(tv.version)}</Pill></li>
+            {tv.version.ffmpeg && <li><Pill>FFmpeg {tv.version.ffmpeg}</Pill></li>}
+            {tv.sources.map(x => <li key={x.name}><Pill tone={x.state === 'ok' ? 'good' : x.state === 'down' ? 'warn' : undefined}>{x.name}: {x.state === 'ok' ? 'connected' : x.state === 'down' ? 'not answering' : 'no answer'}</Pill></li>)}
+          </ul>
           {tv.summary.notRescanning > 0 && <p className={c.note}>{tv.summary.notRescanning} {tv.summary.notRescanning === 1 ? 'library is' : 'libraries are'} not rescanning in Tunarr. That does not stop their programmes playing.</p>}
-          {tv.sources.length > 0 && (
-            <ul className={c.sources} aria-label="Media sources">
-              {tv.sources.map(x => <li key={x.name}><Pill tone={x.state === 'ok' ? 'good' : x.state === 'down' ? 'warn' : undefined}>{x.name}: {x.state === 'ok' ? 'connected' : x.state === 'down' ? 'not answering' : 'no answer'}</Pill></li>)}
-            </ul>
-          )}
         </div>
       </div>
       {tv.warnings.length > 0 ? (
@@ -210,8 +206,9 @@ export function ArrLiveTv() {
     setResult(r.body.data); void load()
   }
 
-  if (!tv && !err) return <Panel title="Live TV" sub="TUNARR"><p className={s.empty}>Reading Tunarr…</p></Panel>
+  if (!tv && !err) return <div className={c.root}><Panel title="Live TV" sub="TUNARR"><p className={s.empty}>Reading Tunarr…</p></Panel></div>
   return (
+    <div className={c.root}>
     <Panel title="Live TV" sub="TUNARR">
       {err && <p className={c.bad} role="alert">{err}</p>}
       {result && (
@@ -223,5 +220,6 @@ export function ArrLiveTv() {
       {tv && !tv.configured && <p className={c.note} role="status">Tunarr is not set up here. Add its address in the Arr Stack settings (Tunarr address) to see your channels, the guide and who is streaming.</p>}
       {tv?.configured && <LiveTvView tv={tv} canAct={canAct && !ask} onAct={(act, name) => setAsk({ act, name })} />}
     </Panel>
+    </div>
   )
 }

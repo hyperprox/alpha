@@ -6,8 +6,7 @@
 
 /* ── Header: one compact sticky block (title, summary, live controls, tabs) ───────────────────────────────────── */
 .head { position: sticky; top: var(--hx-top-h, 0px); z-index: 10; background: var(--ground); margin: 0 -4px; padding: 4px 4px 0; border-bottom: 1px solid var(--hx-line); min-width: 0; }
-.headTop { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.name { flex: none; margin: 0; font: 700 1.15rem/1 var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--text-bright); }
+.headTop { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
 .live { flex: none; display: inline-flex; align-items: center; gap: 6px; font: 600 .66rem var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text-dimmer); }
 .live i { width: 8px; height: 8px; border-radius: 99px; background: var(--text-dimmer); }
 .live[data-fresh="true"] { color: var(--accent); }
@@ -18,7 +17,7 @@
 .ctl button[aria-pressed="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .ctl button:disabled { opacity: .4; }
 .ctl button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.summary { margin: 2px 0 0; font: 500 .8rem/1.35 var(--font-mono); color: var(--text-soft); letter-spacing: .02em; overflow-wrap: anywhere; }
+.summary { flex: 1 1 220px; min-width: 0; margin: 0; font: 500 .8rem/1.35 var(--font-mono); color: var(--text-soft); letter-spacing: .02em; overflow-wrap: anywhere; }
 .tabs { display: flex; gap: 6px; overflow-x: auto; padding: 6px 0 6px; scrollbar-width: none; min-width: 0; }
 .tabs::-webkit-scrollbar { display: none; }
 .tabs button { flex: none; min-height: 38px; padding: 0 12px; border-radius: 8px; cursor: pointer; background: transparent; color: var(--text);
