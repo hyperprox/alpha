@@ -126,6 +126,24 @@ CONF
   echo "apt-cacher-ng: 127.0.0.1$hosts" >> "$tmp"; cat "$tmp" > /etc/hosts.allow; rm -f "$tmp"
   tmp=$(mktemp); grep -v '^apt-cacher-ng:' /etc/hosts.deny > "$tmp" || true
   echo "apt-cacher-ng: ALL" >> "$tmp"; cat "$tmp" > /etc/hosts.deny; rm -f "$tmp"
+  # At boot the service can start before eth0 has its address: apt-cacher-ng then fails to bind it, says so in one
+  # log line and carries on listening on loopback only, so guests can never reach it. This drop-in makes the unit wait
+  # for the address first and fail (and so be restarted) if the address is still not bound once it is up.
+  local ud=/etc/systemd/system/apt-cacher-ng.service.d
+  mkdir -p "$ud"
+  cat > "$ud/hyperprox-wait.conf" <<UNIT
+# Written by HyperProx (hpx-aptcache apply). Change it with the helper, not by hand.
+[Unit]
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStartPre=/bin/sh -c 'timeout 60 sh -c "until ip -4 -o addr show | grep -q inet.$LISTEN_IP/; do sleep 1; done" || true'
+ExecStartPost=/bin/sh -c 'ss -ltnH | grep -q $LISTEN_IP:$PORT'
+Restart=on-failure
+RestartSec=5
+UNIT
+  chmod 644 "$ud/hyperprox-wait.conf"
+  systemctl daemon-reload
   systemctl restart apt-cacher-ng
   wait_port
 }

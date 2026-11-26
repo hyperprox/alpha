@@ -213,6 +213,7 @@ export class AptCacheService {
     catch (e: any) { return [{ id: 'unreachable', severity: 'bad', title: 'Could not read the package cache', detail: String(e?.message ?? e), fix: { id: 'recheck', label: 'Check again' } }] }
     const out: Problem[] = []
     if (!r.active) out.push({ id: 'stopped', severity: 'bad', title: 'The package cache is not running', detail: 'Guests fetch their packages directly until it runs again (nothing breaks, it just saves nothing).', fix: { id: 'restart', label: 'Start it again', confirm: `Start the package cache on ${i.name} again?` } })
+    if (r.active && r.listening === false) out.push({ id: 'not_listening', severity: 'bad', title: 'The package cache is running but not listening on its address', detail: 'It started before the network was up, so it only answers on the machine itself. No guest can reach it and every update goes direct. Restarting it fixes that.', fix: { id: 'restart', label: 'Restart it', confirm: `Restart the package cache on ${i.name}? Guests fetch directly for a few seconds.` } })
     if (r.disk && r.disk.sizeKb > 0) {
       const used = r.disk.usedKb / r.disk.sizeKb
       if (used >= 0.9) {
@@ -474,7 +475,7 @@ export class AptCacheService {
       const words = (k: number) => `${k} machine${k === 1 ? '' : 's'}`
       const out = results.filter(r => r.outcome === 'taken out').length, none = results.filter(r => r.outcome === 'had none').length
       return {
-        message: kind === 'repair' ? `The cache setting was written on ${words(results.filter(r => r.outcome === 'uses the cache').length)} of ${n} checked.`
+        message: kind === 'repair' ? repairMessage(results, n)
           : `HyperProx's cache setting was taken out of ${words(out)}; ${words(none)} had none${n - out - none ? `, and ${words(n - out - none)} could not be checked` : ''}.`,
         results,
       }
@@ -576,3 +577,12 @@ export function wordsOf(r: ClientRecord): string {
 }
 
 function gb(kb: number): string { return `${(kb / 1024 / 1024).toFixed(kb >= 10 * 1024 * 1024 ? 0 : 1)} GB` }
+
+/** Written is not the same as working: a guest can carry the setting and still not reach the cache. Say both. */
+export function repairMessage(results: Array<{ outcome: string }>, n: number): string {
+  const works = results.filter(r => r.outcome === 'uses the cache').length
+  const cannot = results.filter(r => r.outcome.startsWith('set, but')).length
+  const m = (k: number) => `${k} machine${k === 1 ? '' : 's'}`
+  const head = `The cache setting was written on ${m(works + cannot)} of ${n} checked, and ${m(works)} can reach the cache.`
+  return cannot > 0 && works === 0 ? `${head} The cache itself is not answering them: check that it is listening on its address.` : head
+}

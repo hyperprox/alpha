@@ -18,7 +18,7 @@ import { checkNetworks, networkProblem, inNetworks, networkOf } from '../src/lib
 import { parseStats, parseSelfTest, parseMaint } from '../src/lib/aptcache/parse'
 import { detectScript, dropInText, ensureScript, parseEnsure, parseRemove, REMOVE_SCRIPT, DROPIN, DETECT } from '../src/lib/aptcache/dropin'
 import { staticAddress } from '../src/lib/aptcache'
-import { AptCacheService, AptCacheRefusal, parseProbe, type AptCacheDeps, type ClientRegistry, type FleetTarget, type GuestRow, type InstallRow } from '../src/lib/aptcache/service'
+import { AptCacheService, AptCacheRefusal, parseProbe, repairMessage, type AptCacheDeps, type ClientRegistry, type FleetTarget, type GuestRow, type InstallRow } from '../src/lib/aptcache/service'
 import { runAptCacheSetup } from '../src/lib/aptcache/setup'
 import { ACNG_VERSION, HELPER, type CacheInstance, type CacheUseSetting } from '../src/lib/aptcache/types'
 import { prepareAptCache, type AptCacheHook } from '../src/lib/updates/apt-cache'
@@ -514,6 +514,7 @@ test('readings name clients by guest, never by address; problems each have a fix
   await s.record('home', 'lxc-102', { kind: 'guest', name: 'db', state: 'set', src: '10.20.30.52', reachable: false, at: 1 })
   const p = await new AptCacheService(w.deps).problems('lxc-9300')
   assert.deepEqual(p.map(x => x.id).sort(), ['disk_full', 'disk_grow', 'expiry_errors', 'guests_stuck', 'stopped'])
+  assert.ok(!p.some(x => x.id === 'not_listening'), 'stopped is reported on its own')
   assert.ok(p.every(x => x.fix), 'every problem has a fix')
   assert.ok(p.filter(x => x.fix!.id !== 'grow_disk').every(x => x.fix!.confirm || x.fix!.id === 'recheck' || x.fix!.id === 'maint'))
 })
@@ -665,4 +666,37 @@ test('parseEnsure reads result=unusable (apt could not run the check, setting ta
   assert.deepEqual(parseEnsure('result=unusable\n'), { result: 'unusable' })
   assert.match(ensureScript('10.20.30.40', 3142), /runuser -u _apt/)
   assert.match(ensureScript('10.20.30.40', 3142), /install -d -m 755/)
+})
+
+test('apply: a systemd drop-in makes the unit wait for its LAN address and fail (so restart) if it is not bound', () => {
+  const m = /<<UNIT\n([\s\S]*?)\nUNIT\n/.exec(HELPER_SCRIPT)
+  assert.ok(m, 'the drop-in is written by apply')
+  const unit = spawnSync('bash', ['-c', `LISTEN_IP=10.20.30.40; PORT=3142; cat <<UNIT\n${m![1]}\nUNIT\n`], { encoding: 'utf8' }).stdout
+  assert.match(unit, /^After=network-online\.target$/m)
+  assert.match(unit, /^ExecStartPre=.*grep -q inet\.10\.20\.30\.40\/.*$/m)
+  assert.match(unit, /^ExecStartPost=.*grep -q 10\.20\.30\.40:3142'$/m)
+  assert.match(unit, /^Restart=on-failure$/m)
+  // The wait is bounded and never fails the start by itself.
+  assert.match(unit, /timeout 60/); assert.match(unit, /\|\| true'$/m)
+  // The shell fragments in the unit are valid.
+  for (const line of unit.split('\n').filter(l => l.startsWith('ExecStart'))) {
+    const body = /-c '(.*)'$/.exec(line)![1]
+    assert.equal(bashOk(body).status, 0, line)
+  }
+  assert.ok(HELPER_SCRIPT.indexOf('daemon-reload') < HELPER_SCRIPT.indexOf('systemctl restart apt-cacher-ng'), 'reload before restart')
+})
+
+test('problems: running but not listening on its address is its own problem, with a restart fix', async () => {
+  const w = world()
+  w.deps.exec = async () => ({ code: 0, output: STATS.replace('listen=10.20.30.40', 'listen=10.20.30.40\nlistening=0') })
+  const p = await new AptCacheService(w.deps).problems('lxc-9300')
+  const x = p.find(y => y.id === 'not_listening')
+  assert.ok(x); assert.equal(x!.severity, 'bad'); assert.equal(x!.fix!.id, 'restart'); assert.ok(x!.fix!.confirm)
+})
+
+test('repair message: says how many were written and how many can reach the cache', () => {
+  const ok = { outcome: 'uses the cache' }, cut = { outcome: 'set, but it cannot reach the cache (it fetches directly)' }, bad = { outcome: 'not changed: x' }
+  assert.equal(repairMessage([ok, ok, bad], 3), 'The cache setting was written on 2 machines of 3 checked, and 2 machines can reach the cache.')
+  assert.match(repairMessage([cut, cut], 2), /written on 2 machines of 2 checked, and 0 machines can reach the cache\. The cache itself is not answering them/)
+  assert.doesNotMatch(repairMessage([cut, ok], 2), /not answering/)
 })
