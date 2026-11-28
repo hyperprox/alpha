@@ -83,10 +83,10 @@ export function rebootBanner(nodes: UpdatesNode[], reboots: UpdatesRebootStatus 
   const guests = reboots?.waiting.guests.length ?? 0
   if (!need.size && !guests) return null
   const what = [need.size ? plural(need.size, 'node') : '', guests ? plural(guests, 'guest') : ''].filter(Boolean).join(' and ')
-  if (remote) return `${what} need a reboot. HyperProx does not reboot a remote server by itself: reboot each by hand from its row below.`
+  if (remote) return `${what} ${need.size + guests === 1 ? 'needs' : 'need'} a reboot. HyperProx does not reboot a remote server by itself: reboot each by hand from its row below.`
   const s = reboots?.available ? reboots.settings : null
-  if (s && (s.nodes || s.guests)) return `${what} need a reboot. Done automatically in the ${windowText(s.window)} window (${daysText(s.window.days)}), one at a time${s.quiet ? ', waiting while anyone is watching' : ''}.`
-  return `${what} need a reboot. Automatic reboots are off, so reboot each by hand from its row below.`
+  if (s && (s.nodes || s.guests)) return `${what} ${need.size + guests === 1 ? 'needs' : 'need'} a reboot. Done automatically in the ${windowText(s.window)} window (${daysText(s.window.days)}), one at a time${s.quiet ? ', waiting while anyone is watching' : ''}.`
+  return `${what} ${need.size + guests === 1 ? 'needs' : 'need'} a reboot. Automatic reboots are off, so reboot each by hand from its row below.`
 }
 
 // --- Rows --------------------------------------------------------------------------------------
@@ -160,7 +160,7 @@ export interface ScheduleLine { key: string; label: string; value: string }
 
 export function scheduleLines(i: {
   policy: UpdatesPolicyStatus | null
-  auto: { enabled: boolean } | null
+  auto?: { enabled: boolean } | null
   reboots: UpdatesRebootStatus | null
   remote: boolean
 }): ScheduleLine[] {
@@ -171,7 +171,7 @@ export function scheduleLines(i: {
   if (remote) lines.push({ key: 'install', label: 'Install automatically', value: 'never on a remote server: you press Update now' })
   else {
     const sch = policy?.schedule
-    lines.push({ key: 'install', label: 'Install automatically', value: !policy ? '…' : auto?.enabled || sch?.enabled ? `${cadence(sch?.cron)} · next ${nextText(sch?.nextRun)} · ${sch?.windowHours ?? 0} h window` : 'off' })
+    lines.push({ key: 'install', label: 'Install automatically', value: !policy ? '…' : sch?.enabled ? `${cadence(sch?.cron)} · next ${nextText(sch?.nextRun)} · ${sch?.windowHours ?? 0} h window` : 'off' })
   }
   if (remote) lines.push({ key: 'reboot', label: 'Reboot automatically', value: 'never on a remote server: reboot by hand' })
   else {

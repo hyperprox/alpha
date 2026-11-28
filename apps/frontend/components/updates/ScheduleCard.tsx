@@ -20,7 +20,8 @@ function useSelfLine(on: boolean): string | null {
     if (!on) return
     let alive = true
     apiJson<SelfStatus>('/api/self-update/status').then(r => {
-      if (!alive || !r.ok || !r.body) return
+      if (!alive) return
+      if (!r.ok || !r.body) { setLine('could not be read'); return }
       const av = r.body.check?.available
       setLine(`v${r.body.installed.version} · ${av ? `${av.label} is available` : r.body.check?.error ? 'could not check for a newer version' : 'up to date'}`)
     })

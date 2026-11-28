@@ -87,13 +87,16 @@ export function Icon({ name }: { name: 'refresh' | 'play' | 'dry' | 'reboot' }) 
 /** Confirmation dialog: Escape closes, focus moves in, Tab stays inside, focus returns on close. */
 export function ConfirmDialog({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   const box = useRef<HTMLDivElement>(null)
+  // The latest onClose, read through a ref: a new function on every render must not re-run the focus effect.
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
   useEffect(() => {
     const before = document.activeElement as HTMLElement | null
-    const focusables = () => Array.from(box.current?.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])') ?? []).filter(e => !(e as HTMLButtonElement).disabled)
+    const focusables = () => Array.from(box.current?.querySelectorAll<HTMLElement>('button, [href], input, select, [tabindex]:not([tabindex="-1"])') ?? []).filter(e => !(e as HTMLButtonElement).disabled)
     // Land on the cancel-side control, not the destructive one.
     ;(focusables()[1] ?? focusables()[0])?.focus()
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onClose(); return }
+      if (e.key === 'Escape') { closeRef.current(); return }
       if (e.key !== 'Tab') return
       const f = focusables()
       if (!f.length) return
@@ -103,7 +106,7 @@ export function ConfirmDialog({ title, onClose, children }: { title: string; onC
     }
     window.addEventListener('keydown', h)
     return () => { window.removeEventListener('keydown', h); before?.focus?.() }
-  }, [onClose])
+  }, [])
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
          onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>

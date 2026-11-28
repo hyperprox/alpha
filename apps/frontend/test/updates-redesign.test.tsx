@@ -50,7 +50,7 @@ test('banners appear only when relevant and say what happens', () => {
   assert.match(held, /node-c: upgrades only/); assert.match(held, /3 packages held/); assert.match(held, /kernel pinned/); assert.match(held, /kernel will not change/)
   assert.equal(rebootBanner([node('a')], reboots(), false), null)
   const auto = rebootBanner([node('a', { rebootRequired: true })], reboots(), false) ?? ''
-  assert.match(auto, /1 node need a reboot/); assert.match(auto, /one at a time/); assert.match(auto, /waiting while anyone is watching/)
+  assert.match(auto, /1 node needs a reboot/); assert.match(auto, /one at a time/); assert.match(auto, /waiting while anyone is watching/)
   assert.match(rebootBanner([node('a', { rebootRequired: true })], reboots({ settings: { ...reboots().settings, nodes: false } }), false) ?? '', /off, so reboot each by hand/)
   assert.match(rebootBanner([node('a', { rebootRequired: true })], null, true) ?? '', /does not reboot a remote server by itself/)
   const rb = renderToStaticMarkup(<UpdatesHero eyebrow="Updates" status={{ text: 't', sub: '', tone: 'warn' }} numbers={heroNumbers(null, null)} nextRun="x" reading={false} heldBanner={held} rebootBanner={auto}

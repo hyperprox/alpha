@@ -35,7 +35,7 @@ function GuestRow({ g, targets, disabled, onUpdate }: { g: UpdatesGuest; targets
       </summary>
       <div className="space-y-2 pb-3 pl-5 text-sm" style={{ color: 'var(--text-soft)' }}>
         {g.error && <p className="text-xs" style={{ color: 'var(--crit-soft)', overflowWrap: 'anywhere' }}>{isNoLoginText(g.error) ? 'No saved node login' : g.error}</p>}
-        {!g.snapshotCapable && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Bind mounts or storage block snapshots, so this guest is updated without one{g.noSnapshotAckId ? ' only when you approve it in Advanced' : ''}.</p>}
+        {!g.snapshotCapable && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Bind mounts or storage block snapshots, so this guest is updated without one; the run records that.</p>}
         <PkgSummary pkgs={g.pending} head={head} more={more} open={all} onToggle={() => setAll(a => !a)} />
         {compose.length > 0 && (
           <ul className="space-y-0.5 font-mono text-xs" aria-label="Compose projects">

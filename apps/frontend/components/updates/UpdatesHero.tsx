@@ -36,12 +36,12 @@ export interface HeroProps {
   busy: boolean
 }
 
-function Stat({ value, label, sub, tone }: { value: React.ReactNode; label: string; sub?: string; tone?: 'warn' | 'crit' | 'good' }) {
+function Stat({ value, label, sub, tone, text }: { value: React.ReactNode; label: string; sub?: string; tone?: 'warn' | 'crit' | 'good'; text?: boolean }) {
   const color = tone === 'crit' ? 'var(--crit)' : tone === 'warn' ? 'var(--warn-2)' : tone === 'good' ? 'var(--good)' : 'var(--text-bright)'
   return (
-    <div className="rounded-[10px] border p-2.5" style={{ background: 'var(--ground-inset)', borderColor: 'var(--hx-line)' }}>
-      <b className="block font-display font-bold" style={{ fontSize: 24, lineHeight: 1.1, color }}>{value}</b>
-      <span className="block text-xs" style={{ color: 'var(--text-muted)' }}>{label}</span>
+    <div className="min-w-0 rounded-[10px] border p-2.5" style={{ background: 'var(--ground-inset)', borderColor: 'var(--hx-line)' }}>
+      <dd className="m-0 break-words font-display font-bold" style={{ fontSize: text ? 16 : 24, lineHeight: 1.2, color }}>{value}</dd>
+      <dt className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</dt>
       {sub && <span className="block text-[11px]" style={{ color: 'var(--text-dim)' }}>{sub}</span>}
     </div>
   )
@@ -54,8 +54,8 @@ export function UpdatesHero(p: HeroProps) {
   const dash = p.reading ? '…' : undefined
   return (
     <section aria-label="Updates" className="space-y-4 rounded-[14px] border p-4 sm:p-5" style={{ background: 'var(--surface)', borderColor: 'var(--hx-line)' }}>
+      <p className="flex flex-wrap items-center gap-2 font-mono uppercase" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>{p.eyebrow}{p.tag}</p>
       <div role="status" aria-live="polite">
-        <p className="flex flex-wrap items-center gap-2 font-mono uppercase" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>{p.eyebrow}{p.tag}</p>
         <p className="mt-1 font-display font-semibold" style={{ fontSize: 28, lineHeight: 1.12, color: TONE[p.status.tone] }}>{p.status.text}</p>
         {p.status.sub && <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>{p.status.sub}</p>}
       </div>
@@ -63,7 +63,7 @@ export function UpdatesHero(p: HeroProps) {
       <dl className="grid grid-cols-3 gap-2" aria-label="Where this cluster stands">
         <Stat value={dash ?? n.behind} label="machines behind" sub={!p.reading && n.total ? `of ${n.total}` : undefined} tone={p.reading ? undefined : n.behind ? 'warn' : 'good'} />
         <Stat value={dash ?? n.securityMachines} label="machines with security fixes" sub={!p.reading && n.securityPackages ? `${n.securityPackages} security packages` : undefined} tone={p.reading ? undefined : n.securityMachines ? 'crit' : 'good'} />
-        <Stat value={p.nextRun} label="next automatic install" />
+        <Stat value={p.nextRun} label={p.nextRun === 'by hand' ? 'installs' : 'next automatic install'} text />
       </dl>
 
       {p.heldBanner && (

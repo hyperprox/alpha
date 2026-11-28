@@ -537,7 +537,7 @@ export default function UpdatesPage() {
     <Page remote={remote}>
       <ClusterHeader c={cluster} />
 
-      <UpdatesHero eyebrow="Updates" tag={tag} status={shown} numbers={numbers} reading={!inv && !errs.inv}
+      <UpdatesHero eyebrow="Updates" tag={tag} status={shown} numbers={numbers} reading={!inv}
         nextRun={nextRunText(policy, remote)}
         heldBanner={inv ? heldBanner(inv.nodes) : null} rebootBanner={inv ? rebootBanner(inv.nodes, reboots, remote) : null}
         buttonLabel={buttonLabel}
@@ -574,7 +574,7 @@ export default function UpdatesPage() {
         </>
       )}
 
-      <Panel title="Nodes" tag={tag} edge={edge} right={inv ? <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{nodesWith.length} of {inv.nodes.length} behind</span> : undefined}>
+      <Panel title="Nodes" tag={tag} edge={edge} right={inv ? <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{nodesWith.length} of {inv.nodes.length} behind · read {fmtTime(inv.refreshedAt)}</span> : undefined}>
         {errs.inv ? null
           : !inv ? <Empty>Reading the machines…</Empty>
           : inv.nodes.length === 0 ? <Empty>No nodes reported.</Empty>
