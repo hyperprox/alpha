@@ -21,6 +21,18 @@ Write it by hand. Never paste commit messages. Keep "Before you update" for thin
 know or do before they install. Newest entry at the top.
 -->
 
+## 2026-11-28 — A calmer Updates page
+
+### Improved
+- The Updates page now opens on one card per cluster: how things stand, how many machines are behind and how many have security fixes, when the next automatic install is, and one Update now button. It still shows the order and asks you to confirm before anything changes.
+- Nodes and guests are one row each. Open a row to see what is pending; a node's Reboot is quiet and inside its row, and a guest has Update just this.
+- One Schedule card says when HyperProx checks, installs, reboots and updates itself, with Edit schedule and one Check now. Everything else is under Advanced, which is closed every time you open the page.
+- The security numbers say what they count: machines with security fixes, and security packages, instead of two different numbers both called "security".
+
+### Fixed
+- The overview ring that showed dots while it waited is gone. While the machines are being read the page says so, and if reading fails it says why and offers Try again.
+    - Technical: the Updates page no longer renders the HUD, the number tiles or the per-guest bar chart; the per-package tree is under Advanced only. No API changes.
+
 ## 2026-11-24 — Slow local answers no longer time out
 
 ### Fixed

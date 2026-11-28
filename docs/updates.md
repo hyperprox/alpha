@@ -173,16 +173,16 @@ before it runs. A HyperProx restart in the middle of any other step stops the ru
 
 **Messages**: `updates.reboots.started` when a run begins (which nodes and guests, what was left out and why), and
 `updates.reboots.finished` with each machine, kernel before and after, and roughly how long it was away, or
-`updates.reboots.stopped`. **Reboot now (rolling)** on the card runs the same engine straight away, waiting for
+`updates.reboots.stopped`. **Reboot now (rolling)** on the Automatic reboots card (under **Advanced**) runs the same engine straight away, waiting for
 viewers at most the window's length; optionally every node, not only those that need it.
 
 ## Choosing what to update
 
-The Updates page lists everything that can be updated as a tree: Ceph, each node (its packages one by
+Under **Advanced**, **Pick individual packages** lists everything that can be updated as a tree: Ceph, each node (its packages one by
 one, and a reboot row when a reboot is due), and under each node its guests (their packages, their
 compose projects and their apps). Every row has its own count, its exact packages, images or versions,
-and a box. Tick any mix and press **Update selected**, or press **Update this** on one row. **Update
-everything** ticks what a run of the whole plan does and goes the same way. The select buttons tick all
+and a box. Tick any mix and press **Update selected**, or press **Update this** on one row. **Update now**
+on the top card, and **Update just this** on a guest's row, go the same way: the order first, then your confirmation. The select buttons tick all
 guests, all compose projects, all nodes, or only the security updates.
 
 Before anything starts you see the order it runs in. Guests come before their node, Ceph before the
@@ -322,9 +322,17 @@ cluster name, the same set of node names, or a lone node with the home node's na
 
 ## The simple page and Install updates automatically
 
-The Updates page opens on one status line, an **Update now** button and a list of machines while a run is
-going; everything else (Everything or Guests only, Dry run, Refresh, choosing targets, policy, the daily check,
-history, Automatic reboots) is under **Advanced**. **Update now** checks first when the last check is more than an
+The Updates page opens on one card per cluster: a status line, three numbers (machines behind, machines with
+security fixes, next automatic install), the **Held by policy** and **Reboots needed** notes when they apply, and one
+**Update now** button, with the machines of a run listed while it goes. A machine is a node or a guest; the security
+number counts machines, and the security-package count under it counts packages. Below are **Nodes** and
+**Guests** (one row each; a node's row opens to its pending packages, first few and a count, and its Reboot, which
+still asks first; a guest's row opens to its packages, apps and compose projects, with **Update just this**) and one
+**Schedule** card: the daily check, the automatic install, the reboot window and HyperProx's own update, with
+**Edit schedule…** (the install switch and the reboot window) and **Check now**. Everything else (Everything or Guests only, Dry run,
+the policy file, choosing individual packages, the last check per cluster, the full history, HyperProx itself,
+Automatic reboots with Reboot now (rolling), and finding compose projects) is under **Advanced**, closed on every visit.
+**Update now** checks first when the last check is more than an
 hour old or partial, then shows the real plan in one question (how many machines, snapshots first where possible and which
 guests cannot have one, anything left out, reboots in the reboot window or left for you by hand) and runs it. The
 question is bound to that plan's hash: when the run re-reads the plan after refreshing and it is the same, it goes

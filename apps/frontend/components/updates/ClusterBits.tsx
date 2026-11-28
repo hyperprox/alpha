@@ -64,24 +64,26 @@ function checkLine(r: UpdatesCheckCluster): string {
   if (r.result === 'skipped') return `Not checked ${fmtTime(r.at)}: ${r.reason ?? 'skipped'}.${last}`
   if (r.notice) return `Checked ${fmtTime(r.at)}, but not completely: ${r.notice}`
   if (!r.available) return `Checked ${fmtTime(r.at)}: nothing to update.${r.unread.length ? ` ${r.unread.length} not read.` : ''}`
-  return `Checked ${fmtTime(r.at)}: ${r.available} machine${r.available === 1 ? '' : 's'} with updates, ${r.packages} package${r.packages === 1 ? '' : 's'}${r.security ? `, ${r.security} security` : ''}.${r.unread.length ? ` ${r.unread.length} not read.` : ''}`
+  const sec = r.targets.filter(t => t.packages > 0 && t.security.length > 0).length
+  const fixes = r.security ? ` (${r.security} security package${r.security === 1 ? '' : 's'}, on ${sec} machine${sec === 1 ? '' : 's'})` : ''
+  return `Checked ${fmtTime(r.at)}: ${r.available} machine${r.available === 1 ? '' : 's'} with updates, ${r.packages} package${r.packages === 1 ? '' : 's'}${fixes}.${r.unread.length ? ` ${r.unread.length} not read.` : ''}`
 }
 
-/** The daily read-only check: when it last ran, what it found per cluster, and Check now. */
+/** What the daily read-only check found, per cluster. With `onCheck` it also has Check now (the page uses the Schedule card's instead). */
 export function CheckPanel({ status, error, busy, onCheck, current }: {
-  status: UpdatesCheckStatus | null; error: string | null; busy: boolean; onCheck: () => void; current: string
+  status: UpdatesCheckStatus | null; error: string | null; busy: boolean; onCheck?: () => void; current: string
 }) {
   const mine = rowFor(status, current)
   const incomplete = !!mine && (mine.result !== 'ok' || mine.unread.length > 0 || !!mine.notice)
   return (
-    <Panel title="Daily check" right={
+    <Panel title={onCheck ? 'Daily check' : 'Last check, per cluster'} right={
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
           Read-only: refreshes package lists and asks apt what it would do. {status?.nextRun ? `Next ${fmtTime(status.nextRun)}.` : ''}
         </span>
-        <span title={status?.manualAfter && Date.parse(status.manualAfter) > Date.now() ? `Manual checks are at least 15 minutes apart; the next can start ${fmtTime(status.manualAfter)}.` : undefined}>
+        {onCheck && <span title={status?.manualAfter && Date.parse(status.manualAfter) > Date.now() ? `Manual checks are at least 15 minutes apart; the next can start ${fmtTime(status.manualAfter)}.` : undefined}>
           <Btn small kind={incomplete ? 'primary' : 'ghost'} onClick={onCheck} disabled={busy || !!status?.running || !!status?.blocked || (!!status?.manualAfter && Date.parse(status.manualAfter) > Date.now())}>{status?.running ? 'Checking…' : 'Check now'}</Btn>
-        </span>
+        </span>}
       </div>
     }>
       {status?.blocked && <div className="pb-3"><Notice tone="crit">{status.blocked}</Notice></div>}

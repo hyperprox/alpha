@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { UpdatesRebootStatus } from '@hyperprox/types'
 import { daysText, windowText, whenText, summaryText, nodeWaitText, rebootLikely, rollingStages } from '../lib/auto-reboots'
 import { RebootsCard } from '../components/updates/RebootsCard'
-import { NodesTable } from '../components/updates/NodesTable'
+import { NodeRows } from '../components/updates/NodeRows'
 
 const base = (over: Partial<UpdatesRebootStatus> = {}): UpdatesRebootStatus => ({
   cluster: { id: 'home', name: 'Home', kind: 'home' }, available: true,
@@ -37,7 +37,7 @@ test('a waiting node says when it reboots instead of offering a Reboot button', 
   assert.equal(nodeWaitText(base(), 'node-a'), null)
   assert.equal(nodeWaitText(base({ waiting: { ...base().waiting, at: null } }), 'node-b'), null, 'off: the button stays')
   const nodes: any[] = ['node-a', 'node-b'].map(n => ({ node: n, online: true, pending: [], cephPending: false, kernelPending: false, rebootRequired: n === 'node-b', rebootPending: false, policy: { upgrade: 'upgrade', reboot: 'manual' }, holdsOk: null, pinOk: null, isSelf: false }))
-  const html = renderToStaticMarkup(<NodesTable nodes={nodes} canReboot onReboot={() => {}} waitText={n => nodeWaitText(base(), n)} />)
+  const html = renderToStaticMarkup(<NodeRows nodes={nodes} canReboot onReboot={() => {}} waitText={n => nodeWaitText(base(), n)} />)
   assert.match(html, /Waiting for its automatic reboot at Fri 03:00/)
   assert.equal((html.match(/aria-label="Reboot node-/g) ?? []).length, 1, 'only node-a keeps its Reboot button')
 })
@@ -70,7 +70,7 @@ test('the card: waiting list with its time, a run in progress node by node, Make
     active: job,
     leftOn: { jobId: 'j0', node: 'node-c', maintenance: true, noout: true },
     history: [{ id: 'j0', kind: 'window', status: 'failed', startedAt: '2027-01-14T03:00:00Z', finishedAt: '2027-01-14T03:40:00Z', summary: 'Stopped: node-c did not come back', machines: [] }],
-  })} error={null} busy={false} jobActive={false} onSave={() => {}} onRebootNow={() => {}} onMakeSafe={() => {}} />)
+  })} error={null} busy={false} jobActive={false} onRebootNow={() => {}} onMakeSafe={() => {}} />)
   assert.match(html, /Waiting for its automatic reboot at Fri 03:00/)
   assert.match(html, /Rolling reboot in progress/)
   assert.match(html, /Make safe/)
@@ -82,7 +82,7 @@ test('the card: waiting list with its time, a run in progress node by node, Make
 })
 
 test('a remote cluster: the card says HyperProx does not reboot its nodes on its own, and offers nothing', () => {
-  const html = renderToStaticMarkup(<RebootsCard status={base({ available: false, unavailable: 'HyperProx does not reboot the nodes of a remote cluster on its own.' })} error={null} busy={false} jobActive={false} onSave={() => {}} onRebootNow={() => {}} onMakeSafe={() => {}} />)
+  const html = renderToStaticMarkup(<RebootsCard status={base({ available: false, unavailable: 'HyperProx does not reboot the nodes of a remote cluster on its own.' })} error={null} busy={false} jobActive={false} onRebootNow={() => {}} onMakeSafe={() => {}} />)
   assert.match(html, /does not reboot the nodes of a remote cluster/)
   assert.ok(!/Reboot now/.test(html))
 })

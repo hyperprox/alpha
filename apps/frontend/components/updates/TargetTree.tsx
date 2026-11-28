@@ -5,7 +5,7 @@ import type { UpdatesTarget } from '@hyperprox/types'
 import { styles } from '@/components/visual/kit'
 import { forest, tickState, toggle, cascade, helperSelection, type Forest, type Helper, type Tick } from '@/lib/update-targets'
 import { Badge, Btn, Chevron } from './ui'
-import { PkgList } from './NodesTable'
+import { PkgList } from './PkgList'
 
 const KIND_WORD: Record<string, string> = {
   'ceph': 'Ceph', 'node': 'node', 'node-pkg': 'package', 'node-reboot': 'reboot', 'guest': 'guest', 'guest-pkg': 'package',

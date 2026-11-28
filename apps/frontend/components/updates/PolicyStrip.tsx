@@ -2,15 +2,13 @@
 
 import type { UpdatesPolicyStatus, UpdatesScope } from '@hyperprox/types'
 import { styles } from '@/components/visual/kit'
-import { Badge, Btn, Icon, Notice, fmtTime } from './ui'
+import { Badge, Btn, Icon, Notice } from './ui'
 
-export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, refreshing, scope, onScope }: {
+export function PolicyStrip({ policy, error, busy, activeJob, onRun, scope, onScope }: {
   policy: UpdatesPolicyStatus | null
   error: string | null
   busy: boolean             // a request from this page is in flight
   activeJob: boolean
-  refreshing: boolean
-  onRefresh: () => void
   onRun: (mode: 'run' | 'dry-run') => void
   scope: UpdatesScope
   onScope: (s: UpdatesScope) => void
@@ -26,13 +24,6 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
           {policy ? (
             <>
               <Badge tone={loaded ? 'good' : 'warn'}>{loaded ? 'policy loaded' : 'policy not loaded'}</Badge>
-              <Badge tone={policy.schedule.enabled ? 'accent' : 'muted'}>{policy.schedule.enabled ? 'schedule on' : 'schedule off'}</Badge>
-              {policy.schedule.enabled && (
-                <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>
-                  <span title={policy.schedule.cron}>next {fmtTime(policy.schedule.nextRun)}</span>
-                  <span style={{ color: 'var(--text-dimmer)' }}> · window {policy.schedule.windowHours}h</span>
-                </span>
-              )}
             </>
           ) : (
             <span className="text-sm" style={{ color: 'var(--text-muted)' }}>{error ? 'Policy status unavailable' : 'Reading policy...'}</span>
@@ -52,15 +43,15 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
               </button>
             ))}
           </div>
-          <span title={activeJob ? 'The running job keeps the inventory current.' : undefined}>
-            <Btn onClick={onRefresh} disabled={refreshing || activeJob}><Icon name="refresh" />{refreshing ? 'Refreshing...' : 'Refresh'}</Btn>
-          </span>
           <span title={dryWhy}>
             <Btn onClick={() => onRun('dry-run')} disabled={activeJob || busy}><Icon name="dry" />Dry run</Btn>
           </span>
-          <span title={why}>
-            <Btn kind="primary" onClick={() => onRun('run')} disabled={!loaded || activeJob || busy}><Icon name="play" />{scope === 'guests' ? 'Update all guests' : 'Update everything'}</Btn>
-          </span>
+          {/* The one Update now button is on the top card; this is only for the narrower scope. */}
+          {scope === 'guests' && (
+            <span title={why}>
+              <Btn kind="primary" onClick={() => onRun('run')} disabled={!loaded || activeJob || busy}><Icon name="play" />Update all guests</Btn>
+            </span>
+          )}
         </div>
       </div>
       {error && <Notice tone="crit">{error}</Notice>}

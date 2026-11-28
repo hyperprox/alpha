@@ -10,8 +10,10 @@ import { wsBase } from '@/lib/ws'
 import { useSession } from '@/lib/session'
 import { Btn, ConfirmDialog, Empty, Notice, Panel, fmtTime } from '@/components/updates/ui'
 import { PolicyStrip } from '@/components/updates/PolicyStrip'
-import { NodesTable } from '@/components/updates/NodesTable'
-import { appRows } from '@/components/updates/AppsTable'
+import { NodeRows } from '@/components/updates/NodeRows'
+import { GuestRows } from '@/components/updates/GuestRows'
+import { ScheduleCard } from '@/components/updates/ScheduleCard'
+import { UpdatesHero } from '@/components/updates/UpdatesHero'
 import { PlanList } from '@/components/updates/PlanList'
 import { TargetTree } from '@/components/updates/TargetTree'
 import { ItemOrder } from '@/components/updates/ItemList'
@@ -20,14 +22,15 @@ import { JobPanel, type LogLine } from '@/components/updates/JobPanel'
 import { History } from '@/components/updates/History'
 import { SelfUpdatePanel } from '@/components/updates/SelfUpdatePanel'
 import { ClusterHeader, ClusterTag, CheckPanel, RebootPreviewList, useUpdatesCluster } from '@/components/updates/ClusterBits'
-import { Page, HudHeader, Tiles, GlowBars, type Tone } from '@/components/visual/kit'
+import { Page } from '@/components/visual/kit'
 import { clusterColor } from '@/lib/clusters'
 import { NodeLoginAction } from '@/components/vault/NodeLoginAction'
 import { isNoLoginText } from '@/lib/node-login'
 import { updatesPageParts } from '@/lib/updates-cluster'
 import { RebootsCard } from '@/components/updates/RebootsCard'
 import { nodeWaitText, rebootLikely } from '@/lib/auto-reboots'
-import { SimpleUpdates } from '@/components/updates/SimpleUpdates'
+import { imageNewer } from '@/lib/updates-overview'
+import { heldBanner, heroNumbers, nextRunText, rebootBanner, scheduleLines } from '@/lib/updates-overview'
 import { CHECKING_NOW_TEXT, planFacts, EMPTY_SELECTION_TEXT, UP_TO_DATE_TEXT, autoInstallLine, confirmSentence, freshness, plainRefusal, rowFor, statusLine, updateNow } from '@/lib/updates-simple'
 
 const ACTIVE = ['running', 'paused', 'awaiting-confirm']
@@ -38,9 +41,6 @@ function apiError(r: ApiResult, what: string): string {
   if (r.status === 404) return `The Updates API is not available on this server yet (${what}).`
   return plainRefusal(r, `load ${what}`)
 }
-
-// Whether any of a guest's docker images has a newer one waiting.
-const imageNewer = (g: UpdatesInventory['guests'][number]) => (g.dockerImages ?? []).some(i => i.latest !== null && i.latest !== i.current)
 
 // One page for every cluster: /updates is home, /clusters/<id>/updates a remote (same component). The cluster is
 // named on every card, preview and confirmation, and every API call carries it (lib/api.ts).
@@ -92,8 +92,9 @@ export default function UpdatesPage() {
   const confirmAnswer = useRef<((yes: boolean) => void) | null>(null)
   const latestCheck = useRef<UpdatesCheckStatus | null>(null)
   const [auto, setAuto] = useState<{ enabled: boolean; time: string } | null>(null)
+  // Collapsed on every visit; the one link that points inside it (#hyperprox) opens it.
   const [advanced, setAdvanced] = useState(false)
-  useEffect(() => { try { setAdvanced(localStorage.getItem('hx-updates-advanced') === '1') } catch { /* private window */ } }, [])
+  useEffect(() => { if (typeof window !== 'undefined' && window.location.hash === '#hyperprox') setAdvanced(true) }, [])
 
   // The socket handlers outlive any one render, so they read the active job through a ref.
   const activeRef = useRef<UpdatesJob | null>(null)
@@ -517,57 +518,43 @@ export default function UpdatesPage() {
   const rebootWhy = !policy?.loaded ? 'Reboots are disabled until the policy file loads.' : jobActive ? 'A job is already active.' : undefined
   const inactiveJobs = jobs.filter(j => !(active && j.id === active.id))
 
-  // The overview numbers: how many machines have something pending. Read from the inventory, nothing new fetched.
-  const nodesWith = inv ? inv.nodes.filter(n => n.pending.length > 0) : []
+  // The numbers on the top card: machines, never packages (the security-package count is labelled as packages).
   const guestsWith = inv ? inv.guests.filter(g => g.managed && (g.pending.length > 0 || imageNewer(g))) : []
-  const appsWith = inv ? appRows(inv.guests).filter(r => !!r.a.latest && !!r.a.approvalId) : []
-  const managedGuests = inv ? inv.guests.filter(g => g.managed).length : 0
-  const total = inv ? inv.nodes.length + managedGuests : 0
-  const behind = nodesWith.length + guestsWith.length
-  const security = inv ? inv.nodes.filter(n => n.pending.some(p => p.security)).length + inv.guests.filter(g => g.pending.some(p => p.security)).length + appsWith.filter(r => r.a.isSecurity).length : 0
+  const nodesWith = inv ? inv.nodes.filter(n => n.pending.length > 0) : []
   const needsLogin = !!inv && (inv.nodes.some(n => isNoLoginText(n.error)) || inv.guests.some(g => isNoLoginText(g.error)))
-  const level: Tone = security ? 'crit' : behind || appsWith.length ? 'warn' : 'good'
-  const verdict = !inv ? 'Reading the inventory' : inv.notice ? 'Not every guest could be read' : security ? 'Security updates waiting' : behind || appsWith.length ? 'Updates are waiting' : 'Everything is current'
 
   const row = rowFor(check, cluster.id)
-  const shown = statusLine({ row, checking: !!check?.running, phase, job: active, loaded: !!check || !!checkErr })
+  const numbers = heroNumbers(row && freshness(row) !== 'none' ? row : null, inv)
+  const base = statusLine({ row, checking: !!check?.running, phase, job: active, loaded: !!check || !!checkErr })
+  // A read that left guests out never says everything is current.
+  const shown = inv?.notice && base.text === UP_TO_DATE_TEXT ? { text: 'Not every guest could be read', sub: base.sub, tone: 'warn' as const } : base
   const lastJob = inactiveJobs.find(j => j.trigger !== 'dry-run') ?? null
-  const buttonLabel = phase ?? (active?.status === 'running' ? 'Updating…' : check?.running ? 'Checking…' : 'Update now')
+  const buttonLabel = phase ?? (active?.status === 'running' ? 'Updating…' : check?.running ? 'Checking…' : numbers.behind > 0 ? `Update now · ${numbers.behind} machine${numbers.behind === 1 ? '' : 's'}` : 'Update now')
+  const manualWait = !!check?.manualAfter && Date.parse(check.manualAfter) > Date.now()
+  const canCheck = !busy && !check?.running && !check?.blocked && !manualWait && !jobActive
 
   return (
     <Page remote={remote}>
       <ClusterHeader c={cluster} />
 
-      <SimpleUpdates status={shown} buttonLabel={buttonLabel} message={notice}
+      <UpdatesHero eyebrow="Updates" tag={tag} status={shown} numbers={numbers} reading={!inv && !errs.inv}
+        nextRun={nextRunText(policy, remote)}
+        heldBanner={inv ? heldBanner(inv.nodes) : null} rebootBanner={inv ? rebootBanner(inv.nodes, reboots, remote) : null}
+        buttonLabel={buttonLabel}
         canUpdate={!!policy?.loaded && !jobActive && !check?.running && !phase}
-        onUpdateNow={() => void updateNowPressed()}
-        auto={!remote && auto ? { enabled: auto.enabled, line: autoInstallLine(auto.time, reboots), canChange: true } : null}
-        onToggleAuto={on => void toggleAuto(on)}
+        onUpdateNow={() => void updateNowPressed()} message={notice}
         job={active} lastJob={lastJob} onJobAction={v => void jobAction(v)} busy={busy} />
       {policy && !policy.loaded && <Notice tone="warn">Updates are off until the policy file loads.</Notice>}
-
-      <details open={advanced} onToggle={e => { const o = (e.currentTarget as HTMLDetailsElement).open; setAdvanced(o); try { localStorage.setItem('hx-updates-advanced', o ? '1' : '0') } catch { /* ignore */ } }}>
-        <summary className="cursor-pointer select-none py-2 text-sm font-semibold" style={{ color: 'var(--text-soft)' }}>Advanced</summary>
-        <div className="mt-3 space-y-5">
-      <HudHeader level={2} eyebrow={`Manage · ${cluster.name}`} title={<>{verdict} {tag}</>} label="Updates overview"
-        ring={{ value: total ? (total - behind) / total : 0, text: inv ? `${behind}` : '…', label: 'machines with updates pending' }}
-        chips={[
-          { label: 'Nodes with updates', value: inv ? `${nodesWith.length}/${inv.nodes.length}` : '…', tone: nodesWith.length ? 'warn' : 'good' },
-          { label: 'Guests with updates', value: inv ? `${guestsWith.length}/${managedGuests}` : '…', tone: guestsWith.length ? 'warn' : 'good' },
-          ...(parts.apps ? [{ label: 'Apps with updates', value: inv ? appsWith.length : '…', tone: (appsWith.length ? 'warn' : 'good') as Tone }] : []),
-          { label: 'Machines with security updates', value: inv ? security : '…', tone: level === 'crit' ? 'crit' : 'good' },
-        ]}>
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Pending packages on every node and guest of {cluster.name}, and the ordered plan to bring them current.
-          {remote && ' The preview is apt\'s own simulation; nothing changes until you confirm.'}
-          {inv && <span className="font-mono"> Inventory read {fmtTime(inv.refreshedAt)}.</span>}
-        </p>
-      </HudHeader>
-
-      <PolicyStrip policy={policy} error={errs.policy ?? null} busy={busy} activeJob={jobActive} refreshing={refreshing}
-                   onRefresh={refresh} onRun={start} scope={scope} onScope={setScope} />
-
+      {check?.blocked && <Notice tone="crit">{check.blocked}</Notice>}
       {inv?.notice && <Notice tone="warn">{inv.notice}</Notice>}
+      {(errs.inv || checkErr) && (
+        <Notice tone="warn">
+          <div className="flex flex-wrap items-center gap-3">
+            <span>{errs.inv ?? checkErr}</span>
+            <Btn small onClick={() => void refresh()} disabled={refreshing || jobActive}>{refreshing ? 'Trying again…' : 'Try again'}</Btn>
+          </div>
+        </Notice>
+      )}
 
       {needsLogin && (
         <Notice tone="warn">
@@ -578,38 +565,49 @@ export default function UpdatesPage() {
         </Notice>
       )}
 
-      <CheckPanel status={check} error={checkErr} busy={busy} onCheck={() => void checkNow()} current={cluster.id} />
+      {active && (
+        <>
+          <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>This job runs on {tag}</div>
+          <JobPanel job={active} logs={logs} busy={busy}
+                    onConfirm={() => jobAction('confirm')} onCancel={() => jobAction('cancel')} onResume={() => jobAction('resume')}
+                    onRollback={setRollback} />
+        </>
+      )}
+
+      <Panel title="Nodes" tag={tag} edge={edge} right={inv ? <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{nodesWith.length} of {inv.nodes.length} behind</span> : undefined}>
+        {errs.inv ? null
+          : !inv ? <Empty>Reading the machines…</Empty>
+          : inv.nodes.length === 0 ? <Empty>No nodes reported.</Empty>
+          : <NodeRows nodes={inv.nodes} canReboot={canReboot} rebootWhy={rebootWhy} onReboot={n => void openReboot(n)} waitText={n => nodeWaitText(reboots, n)} />}
+      </Panel>
+
+      <Panel title="Guests" tag={tag} edge={edge} right={inv ? <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{guestsWith.length} of {inv.guests.filter(g => g.managed).length} behind</span> : undefined}>
+        {errs.inv ? null
+          : !inv ? <Empty>Reading the machines…</Empty>
+          : inv.guests.length === 0 ? <Empty>No guests reported.</Empty>
+          : <GuestRows guests={inv.guests} targets={tree?.targets ?? null} disabled={jobActive || busy || !policy?.loaded} onUpdate={ids => void askToRun(ids)} />}
+      </Panel>
+
+      <ScheduleCard lines={scheduleLines({ policy, auto, reboots, remote })} tag={tag} showSelf={parts.selfUpdate}
+        checkLabel={check?.running ? 'Checking…' : 'Check now'} canCheck={canCheck}
+        checkWhy={manualWait ? `Manual checks are at least 15 minutes apart; the next can start ${fmtTime(check?.manualAfter)}.` : jobActive ? 'A job is already active.' : undefined}
+        onCheck={() => void checkNow()} canEdit={!jobActive}
+        auto={!remote && auto ? { enabled: auto.enabled, line: autoInstallLine(auto.time, reboots) } : null} onToggleAuto={on => void toggleAuto(on)}
+        reboots={remote ? null : reboots} busy={busy} onSaveReboots={s => void saveReboots(s)} />
+
+      <details open={advanced} onToggle={e => setAdvanced((e.currentTarget as HTMLDetailsElement).open)}>
+        <summary className="cursor-pointer select-none py-2 text-sm font-semibold" style={{ color: 'var(--text-soft)' }}>Advanced</summary>
+        <div className="mt-3 space-y-5">
+      <PolicyStrip policy={policy} error={errs.policy ?? null} busy={busy} activeJob={jobActive}
+                   onRun={start} scope={scope} onScope={setScope} />
 
       {/* HyperProx's own version and update: not on a remote's page (it updates this install, nothing on a remote). */}
       {parts.selfUpdate && <SelfUpdatePanel />}
 
-      {active && <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>This job runs on {tag}</div>}
-      {active && (
-        <JobPanel job={active} logs={logs} busy={busy}
-                  onConfirm={() => jobAction('confirm')} onCancel={() => jobAction('cancel')} onResume={() => jobAction('resume')}
-                  onRollback={setRollback} />
-      )}
-
-      <Panel title="Nodes" tag={tag} edge={edge}>
-        {inv && inv.nodes.length > 0 && (
-          <div className="mb-3">
-            <Tiles label="Pending packages per node" items={inv.nodes.map(n => ({
-              label: `${n.node}${n.online ? '' : ' (offline)'}${n.rebootRequired ? ' · reboot required' : ''}`,
-              value: n.pending.length, tone: !n.online ? 'crit' : n.pending.some(p => p.security) ? 'crit' : n.pending.length ? 'warn' : 'good',
-              title: `${n.pending.length} pending package${n.pending.length === 1 ? '' : 's'}`,
-            }))} />
-          </div>
-        )}
-        {errs.inv ? <Notice tone="warn">{errs.inv}</Notice>
-          : !inv ? <Empty>Reading inventory...</Empty>
-          : inv.nodes.length === 0 ? <Empty>No nodes reported.</Empty>
-          : <NodesTable nodes={inv.nodes} canReboot={canReboot} rebootWhy={rebootWhy} onReboot={n => void openReboot(n)} waitText={n => nodeWaitText(reboots, n)} />}
-      </Panel>
-
       <RebootsCard status={reboots} error={rebootsErr} busy={busy} jobActive={jobActive} tag={tag}
-                   onSave={p => void saveReboots(p)} onRebootNow={all => void rebootNow(all)} onMakeSafe={() => void makeSafe()} />
+                   onRebootNow={all => void rebootNow(all)} onMakeSafe={() => void makeSafe()} />
 
-      <Panel title="Choose what to update" tag={tag} edge={edge} right={
+      <Panel title="Pick individual packages" tag={tag} edge={edge} right={
         <span className="flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
           Tick any node, package, guest{parts.apps ? ', compose project or app' : ' or compose project'}. A reboot is only ever chosen on its own row.
           {parts.discoverCompose && (
@@ -620,15 +618,8 @@ export default function UpdatesPage() {
           )}
         </span>
       }>
-        {guestsWith.length > 0 && (
-          <div className="mb-3">
-            <GlowBars label="Pending packages per guest, most first" warm
-              items={[...guestsWith].sort((x, y) => y.pending.length - x.pending.length).slice(0, 8)
-                .map(g => ({ label: `${g.vmid} ${g.name}`, value: g.pending.length, text: String(g.pending.length), key: String(g.vmid) }))} />
-          </div>
-        )}
         {treeErr ? <Notice tone="warn">{treeErr}</Notice>
-          : !tree ? <Empty>Reading inventory...</Empty>
+          : !tree ? <Empty>Reading the machines…</Empty>
           : <TargetTree targets={tree.targets} clusterName={cluster.name} chosen={chosen} onChange={setChosen}
                         onUpdate={ids => void askToRun(ids)} disabled={jobActive || busy || !policy?.loaded} />}
         {policy && !policy.loaded && <p className="mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>Updates are disabled until the policy file loads.</p>}
@@ -641,10 +632,12 @@ export default function UpdatesPage() {
               ? (order ? <ItemOrder plan={order} /> : <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Working out the order...</p>)
               : errs.plan ? <Notice tone="warn">{errs.plan}</Notice>
               : !plan ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Building plan...</p>
-              : <><p className="mb-2 text-xs" style={{ color: 'var(--text-muted)' }}>What &quot;Update everything&quot; would run. Tick rows above to run only those.</p><PlanList plan={plan} /></>}
+              : <><p className="mb-2 text-xs" style={{ color: 'var(--text-muted)' }}>What a run of everything would do. Tick rows above to run only those.</p><PlanList plan={plan} /></>}
           </div>
         </Panel>
       )}
+
+      <CheckPanel status={check} error={checkErr} busy={busy} current={cluster.id} />
 
       <Panel title="History" tag={tag}>
         {errs.jobs ? <Notice tone="warn">{errs.jobs}</Notice>

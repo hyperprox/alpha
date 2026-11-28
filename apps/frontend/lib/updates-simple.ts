@@ -83,7 +83,7 @@ export function statusLine(i: { row: UpdatesCheckCluster | null; checking: boole
   const machines = i.row.available
   const sec = i.row.targets.filter(t => t.packages > 0 && t.security.length > 0).length
   if (!machines) return { text: UP_TO_DATE_TEXT, sub: `${last}`, tone: 'good' }
-  return { text: `${plural(machines, 'machine')} ${machines === 1 ? 'has' : 'have'} updates${sec ? ` (${sec} security)` : ''}`, sub: last, tone: sec ? 'crit' : 'warn' }
+  return { text: `${plural(machines, 'machine')} ${machines === 1 ? 'has' : 'have'} updates${sec ? ` (${sec} with security fixes)` : ''}`, sub: last, tone: sec ? 'crit' : 'warn' }
 }
 
 /** One sentence for the finished run, in plain words. */

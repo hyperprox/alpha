@@ -34,7 +34,6 @@ test('the page draws the self-update, the apps count and the discovery button fr
   const src = fs.readFileSync(path.join(__dirname, '../app/updates/page.tsx'), 'utf8')
   assert.match(src, /\{parts\.selfUpdate && <SelfUpdatePanel \/>\}/)
   assert.equal((src.match(/<SelfUpdatePanel/g) ?? []).length, 1, 'no other way onto the page')
-  assert.match(src, /parts\.apps \? \[\{ label: 'Apps with updates'/)
   assert.match(src, /\{parts\.discoverCompose && \(/)
   assert.match(src, /<NodeLoginAction small href=\{parts\.nodeLoginHref\} \/>/)
   assert.ok(!/home cluster only/i.test(src), 'nothing on the page says "home cluster only"')

@@ -15,7 +15,7 @@ test('the page draws the inventory notice as a warning above the daily check, an
   const src = fs.readFileSync(path.join(__dirname, '../app/updates/page.tsx'), 'utf8')
   assert.match(src, /\{inv\?\.notice && <Notice tone="warn">\{inv\.notice\}<\/Notice>\}/)
   assert.ok(src.indexOf('inv?.notice &&') < src.indexOf('<CheckPanel'), 'above the daily check')
-  assert.match(src, /inv\.notice \? 'Not every guest could be read'/)
+  assert.match(src, /inv\?\.notice && base\.text === UP_TO_DATE_TEXT \? \{ text: 'Not every guest could be read'/)
 })
 
 test('the daily check panel shows the notice instead of "nothing to update"', () => {

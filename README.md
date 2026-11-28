@@ -1029,7 +1029,7 @@ such as "this node only gets `apt upgrade`" or "check these package holds" go in
 `config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
 Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled. Tunarr, when it runs in Docker, is also listed there: the Updates page shows when it is behind the newest release, and says that its image is updated by the guest's normal Docker update (HyperProx does not update Tunarr in any other way).
 
-The page opens simply: one line saying how things stand, an **Update now** button (it checks first when the last check is old or partial, shows exactly what it will do in one question, then runs it in the safe order; if the plan changes before it starts, it asks again) and an **Install updates automatically** switch (every morning at 08:00), off until you turn it on. Everything else is under **Advanced**. A daily check that was skipped while HyperProx was locked runs by itself after you sign in, and a plan you never confirm is cancelled after a day.
+The page opens with one card per cluster: one line saying how things stand, three numbers (machines behind, machines with security fixes, and when the next automatic install is), a **Held by policy** note and a **Reboots needed** note when they apply, and one **Update now** button. Update now checks first when the last check is old or partial, shows exactly what it will do in one question, then runs it in the safe order; if the plan changes before it starts, it asks again. Below it are your **Nodes** (one row each; open a row to see what is pending and, quietly, its reboot, which still asks first), your **Guests** (open a row to see its packages and apps and press **Update just this**), and one **Schedule** card that says when HyperProx checks, installs, reboots and updates itself. **Edit schedule…** holds the **Install updates automatically** switch (every morning at 08:00, off until you turn it on) and the reboot window; **Check now** reads the machines again on demand. Everything else (Everything or Guests only, Dry run, the policy file, choosing individual packages, the full history, HyperProx's own update, rolling reboots and finding compose projects) is under **Advanced**, closed every time you open the page. A daily check that was skipped while HyperProx was locked runs by itself after you sign in, and a plan you never confirm is cancelled after a day.
 
 **Package cache.** With the package cache from the Catalogue, each package is downloaded once for all your guests:
 Updates points each guest's apt at it just before apt runs, with a fallback to going direct whenever the cache does
@@ -1054,7 +1054,7 @@ updates are only on the home cluster's page. A remote's rules go in its own `clu
 same policy file; without one, safe defaults apply.
 
 **Automatic reboots.** The point is not to press Reboot after a kernel update. Turn on **Automatic
-reboots** on the Updates page (off for a new install), for nodes, guests or both, and pick a window
+reboots** under **Edit schedule…** on the Updates page (off for a new install), for nodes, guests or both, and pick a window
 (03:00 to 06:00 every day by default, in the cluster's time zone). In the window, every node that needs a
 reboot (a new kernel, or the node asks for one) is rebooted one at a time, HyperProx's own node last, through
 the same safe path as the Reboot button: every node online, quorum kept with the node gone, Ceph healthy and

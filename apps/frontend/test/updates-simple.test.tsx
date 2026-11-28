@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import "./css-stub"
 import { renderToStaticMarkup } from 'react-dom/server'
-import { SimpleUpdates } from '../components/updates/SimpleUpdates'
+import { UpdatesHero } from '../components/updates/UpdatesHero'
 import { CheckPanel } from '../components/updates/ClusterBits'
 import { planFacts, freshness, statusLine, updateNow, plainRefusal, partialWhy, progressOf, finishedLine, autoInstallLine, confirmSentence, CHECKING_NOW_TEXT, UP_TO_DATE_TEXT, type UpdateNowDeps } from '../lib/updates-simple'
 
@@ -31,7 +31,7 @@ test('status line in every state', () => {
   assert.equal(line(row()).text, 'Everything is up to date')
   assert.match(line(row()).sub, /Last full check/)
   const two = line(row({ available: 2, targets: [tgt('a', ['openssl']), tgt('b')] }))
-  assert.equal(two.text, '2 machines have updates (1 security)')
+  assert.equal(two.text, '2 machines have updates (1 with security fixes)')
   assert.equal(line(row({ available: 1, targets: [tgt('a')] })).text, '1 machine has updates')
   assert.equal(line(row(), { checking: true }).text, 'Checking…')
   assert.equal(line(row(), { phase: 'Checking first…' }).text, 'Checking first…')
@@ -48,11 +48,13 @@ test('status line in every state', () => {
 test('progress is a per-machine list with ticks', () => {
   const rows = progressOf(job([step('a', 'ok'), step('b', 'running'), step('c', 'pending'), step('d', 'failed'), step('cluster', 'ok')]))
   assert.deepEqual(rows.map(r => `${r.name}:${r.state}`), ['a:done', 'b:working', 'c:waiting', 'd:failed'])
-  const html = renderToStaticMarkup(<SimpleUpdates status={line(row())} buttonLabel="Update now" canUpdate message={null} auto={null} onToggleAuto={() => {}} onUpdateNow={() => {}} job={job([step('a', 'ok'), step('b', 'pending')])} lastJob={null} onJobAction={() => {}} busy={false} />)
+  const html = renderToStaticMarkup(<UpdatesHero {...heroProps({ job: job([step('a', 'ok'), step('b', 'pending')]) })} />)
   assert.match(html, /✓/); assert.match(html, /waiting/)
   assert.match(finishedLine(job([step('a', 'ok')], 'done', { finishedAt: mins(2) })) ?? '', /1 machine updated, nothing needs attention/)
   assert.match(finishedLine(job([step('a', 'failed')], 'failed')) ?? '', /need/)
 })
+
+const heroProps = (over: object = {}): any => ({ eyebrow: 'Updates', status: line(row()), numbers: { behind: 0, securityMachines: 0, securityPackages: null, total: 3 }, nextRun: '08:00', reading: false, heldBanner: null, rebootBanner: null, buttonLabel: 'Update now', canUpdate: true, message: null, onUpdateNow: () => {}, job: null, lastJob: null, onJobAction: () => {}, busy: false, ...over })
 
 const deps = (over: Partial<UpdateNowDeps> & { log?: string[] } = {}): UpdateNowDeps => {
   const log = over.log ?? []
@@ -124,12 +126,11 @@ test('the confirmation is one sentence from the real plan: counts, snapshots tha
   assert.equal(autoInstallLine('08:00', rb), 'Every morning at 08:00, reboots 09:00–12:00.')
 })
 
-test('the switch and button render; the switch is off by default', () => {
-  const p: any = { status: line(row()), buttonLabel: 'Update now', canUpdate: true, message: null, onToggleAuto: () => {}, onUpdateNow: () => {}, job: null, lastJob: null, onJobAction: () => {}, busy: false }
-  const html = renderToStaticMarkup(<SimpleUpdates {...p} auto={{ enabled: false, line: 'Every morning at 08:00, reboots 09:00–12:00.', canChange: true }} />)
-  assert.match(html, /Everything is up to date/); assert.match(html, /Update now/)
-  assert.match(html, /role="switch"[^>]*aria-checked="false"|aria-checked="false"[^>]*role="switch"/)
-  assert.match(html, /every morning at 08:00/)
+test('the hero has one Update now button and no switch (the switch lives in Edit schedule)', () => {
+  const html = renderToStaticMarkup(<UpdatesHero {...heroProps()} />)
+  assert.match(html, /Everything is up to date/); assert.equal((html.match(/Update now/g) ?? []).length, 1)
+  assert.ok(!/role="switch"/.test(html))
+  assert.match(html, /asks you to confirm before anything changes/)
 })
 
 test('the daily check card explains a partial result and offers Check now prominently', () => {
@@ -145,6 +146,10 @@ test('the page never sends an empty selection and keeps everything under Advance
   assert.match(src, /if \(!ids\.length\) return \{ error: EMPTY_SELECTION_TEXT \}/)
   assert.match(src, /nothingToUpdate/)
   assert.ok(CHECKING_NOW_TEXT.startsWith('Nothing to update yet'))
-  assert.ok(src.indexOf('<SimpleUpdates') < src.indexOf('>Advanced<') && src.indexOf('>Advanced<') < src.indexOf('<PolicyStrip') && src.indexOf('<PolicyStrip') < src.indexOf('<RebootsCard'))
-  for (const keep of ['<History', '<TargetTree', '<CheckPanel', '<RebootsCard', 'Dry run'.length ? '<PolicyStrip' : '']) assert.ok(src.includes(keep), keep)
+  const at = (x: string) => src.indexOf(x)
+  assert.ok(at('<UpdatesHero') < at('<NodeRows') && at('<NodeRows') < at('<GuestRows') && at('<GuestRows') < at('<ScheduleCard') && at('<ScheduleCard') < at('>Advanced<'), 'hero, nodes, guests, schedule, then Advanced')
+  assert.ok(at('>Advanced<') < at('<PolicyStrip') && at('<PolicyStrip') < at('<RebootsCard') && at('<RebootsCard') < at('<TargetTree'), 'everything else is under Advanced')
+  for (const keep of ['<History', '<TargetTree', '<CheckPanel', '<RebootsCard', '<PolicyStrip', '<JobPanel']) assert.ok(src.includes(keep), keep)
+  assert.equal((src.match(/<UpdatesHero/g) ?? []).length, 1)
+  assert.ok(!/localStorage/.test(src), 'Advanced is collapsed on every visit')
 })
